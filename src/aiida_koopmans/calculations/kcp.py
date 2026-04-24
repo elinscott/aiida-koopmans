@@ -1,0 +1,343 @@
+"""CalcJob for Quantum ESPRESSO's kcp.x (Koopmans-modified Car-Parrinello).
+
+kcp.x is the Koopmans-spectral-functional variant of QE's CP code. It shares the
+binary name and uses CG internally, but the algorithm is fundamentally different
+from vanilla cp.x — this plugin is intentionally not a subclass of
+``aiida_quantumespresso.calculations.cp.CpCalculation``.
+"""
+
+from __future__ import annotations
+
+import copy
+from pathlib import PurePosixPath
+
+from aiida.common import CalcInfo, CodeInfo
+from aiida.engine import CalcJob
+from aiida.orm import ArrayData, Dict, RemoteData, StructureData
+from aiida.plugins import DataFactory
+from aiida_quantumespresso.utils.convert import convert_input_to_namelist_entry
+
+UpfData = DataFactory("pseudo.upf")
+
+
+class KcpCalculation(CalcJob):
+    """AiiDA plugin for running kcp.x, the Koopmans-modified CP code in Quantum ESPRESSO."""
+
+    _INPUT_FILE = "aiida.cpi"
+    _OUTPUT_FILE = "aiida.cpo"
+    _CRASH_FILE = "CRASH"
+    _PREFIX = "aiida"
+    _OUTPUT_SUBFOLDER = "out"
+    _PSEUDO_SUBFOLDER = "pseudo"
+    _ALPHAREF_FILE = "file_alpharef.txt"
+    _ALPHAREF_EMPTY_FILE = "file_alpharef_empty.txt"
+
+    # Canonical kcp.x namelist order. Namelists outside this list are emitted
+    # at the end of the input file in insertion order.
+    _NAMELIST_ORDER = ("CONTROL", "SYSTEM", "ELECTRONS", "IONS", "CELL", "EE", "NKSIC")
+
+    # Keys the CalcJob owns; users cannot set them in ``parameters``.
+    _BLOCKED_KEYS = {
+        "CONTROL": frozenset({"outdir", "pseudo_dir", "prefix"}),
+        "SYSTEM": frozenset({"nat", "ntyp", "ibrav"}),
+    }
+
+    @classmethod
+    def define(cls, spec):
+        """Declare the inputs, outputs, and exit codes for the CalcJob."""
+        super().define(spec)
+
+        spec.input(
+            "structure",
+            valid_type=StructureData,
+            help="The input structure.",
+        )
+        spec.input(
+            "parameters",
+            valid_type=Dict,
+            help=(
+                "Nested namelist dictionary, e.g. "
+                "``{'CONTROL': {...}, 'SYSTEM': {...}, 'ELECTRONS': {...}, "
+                "'NKSIC': {...}, ...}``. Namelist names are case-insensitive."
+            ),
+        )
+        spec.input(
+            "alphas",
+            valid_type=Dict,
+            required=False,
+            help=(
+                "Orbital-dependent screening parameters. Dict with keys "
+                "``'filled'`` and ``'empty'`` mapping to flat lists of floats. "
+                "Required when the parameters request orbital-dependent screening."
+            ),
+        )
+        spec.input(
+            "parent_folder",
+            valid_type=RemoteData,
+            required=False,
+            help=(
+                "Remote folder of a prior kcp.x run. Its ``out/`` directory is "
+                "symlinked into place so wavefunctions / densities can be reused."
+            ),
+        )
+        spec.input(
+            "settings",
+            valid_type=Dict,
+            required=False,
+            help="Optional CalcJob-level settings (cmdline overrides, extra retrieve paths).",
+        )
+        spec.input_namespace(
+            "pseudos",
+            valid_type=UpfData,
+            dynamic=True,
+            required=True,
+            help="Mapping of atomic kind name to UpfData.",
+        )
+
+        spec.inputs["metadata"]["options"]["parser_name"].default = "koopmans.kcp"
+        spec.inputs["metadata"]["options"]["input_filename"].default = cls._INPUT_FILE
+        spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
+        spec.inputs["metadata"]["options"]["withmpi"].default = True
+        spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
+
+        spec.output(
+            "output_parameters",
+            valid_type=Dict,
+            required=True,
+            help="Scalar results: energies, HOMO/LUMO, job_done, walltime, convergence summary.",
+        )
+        spec.output(
+            "output_eigenvalues",
+            valid_type=ArrayData,
+            required=False,
+            help="Kohn-Sham eigenvalues in eV, shape ``(nspin, nbnd)``.",
+        )
+        spec.output(
+            "output_lambdas",
+            valid_type=ArrayData,
+            required=False,
+            help="Hamiltonian lambda matrices (one per spin) in eV, read from hamiltonian*.xml.",
+        )
+        spec.output(
+            "output_bare_lambdas",
+            valid_type=ArrayData,
+            required=False,
+            help="Bare Hamiltonian lambda matrices, present when ``do_bare_eigs=.true.``.",
+        )
+
+        spec.exit_code(
+            301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing."
+        )
+        spec.exit_code(
+            302, "ERROR_OUTPUT_STDOUT_MISSING", message="The kcp.x stdout file was not retrieved."
+        )
+        spec.exit_code(
+            303, "ERROR_OUTPUT_STDOUT_READ", message="The kcp.x stdout could not be read."
+        )
+        spec.exit_code(
+            310,
+            "ERROR_OUTPUT_STDOUT_INCOMPLETE",
+            message="The kcp.x stdout ends before ``JOB DONE``.",
+        )
+        spec.exit_code(
+            320,
+            "ERROR_OUTPUT_HAM_MISSING",
+            message="Expected hamiltonian XML file(s) missing from retrieved folder.",
+        )
+        spec.exit_code(
+            400,
+            "ERROR_JOB_NOT_CONVERGED",
+            message="kcp.x finished but the outer loop did not converge.",
+        )
+
+    def prepare_for_submission(self, folder):
+        """Render the input file and build the ``CalcInfo``."""
+        parameters = copy.deepcopy(self.inputs.parameters.get_dict())
+        parameters = self._normalize_parameters(parameters)
+
+        structure = self.inputs.structure
+        pseudos = dict(self.inputs.pseudos)
+
+        control = parameters.setdefault("CONTROL", {})
+        control["outdir"] = f"./{self._OUTPUT_SUBFOLDER}/"
+        control["pseudo_dir"] = f"./{self._PSEUDO_SUBFOLDER}/"
+        control["prefix"] = self._PREFIX
+        control.setdefault("calculation", "cp")
+        ndw = int(control.get("ndw", 50))
+
+        system = parameters.setdefault("SYSTEM", {})
+        system["ibrav"] = 0
+        system["nat"] = len(structure.sites)
+        system["ntyp"] = len(structure.kinds)
+        nspin = int(system.get("nspin", 1))
+        do_orbdep = bool(system.get("do_orbdep", False))
+
+        nksic = parameters.get("NKSIC", {})
+        odd_nkscalfact = bool(nksic.get("odd_nkscalfact", False))
+        do_bare_eigs = bool(nksic.get("do_bare_eigs", False))
+
+        # Render input file
+        content = self._render_namelists(parameters)
+        content += self._render_atomic_species(structure, pseudos)
+        content += self._render_atomic_positions(structure)
+        content += self._render_cell_parameters(structure)
+
+        with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
+            handle.write(content)
+
+        # Pseudos → local_copy_list. One UpfData per kind.
+        local_copy_list = []
+        seen_filenames: dict[str, str] = {}
+        for kind in structure.kinds:
+            upf = pseudos[kind.name]
+            previous_uuid = seen_filenames.get(upf.filename)
+            if previous_uuid is None:
+                seen_filenames[upf.filename] = upf.uuid
+                local_copy_list.append(
+                    (upf.uuid, upf.filename, f"{self._PSEUDO_SUBFOLDER}/{upf.filename}")
+                )
+            elif previous_uuid != upf.uuid:
+                raise ValueError(
+                    f"Two different UpfData nodes were provided that share the filename "
+                    f"``{upf.filename}``. Rename one before resubmission."
+                )
+
+        # Alpha files (required <-> do_orbdep + odd_nkscalfact).
+        alphas_requested = do_orbdep and odd_nkscalfact
+        alphas_provided = "alphas" in self.inputs
+        if alphas_requested and not alphas_provided:
+            raise ValueError(
+                "Parameters request orbital-dependent screening "
+                "(do_orbdep=.true., odd_nkscalfact=.true.) but no ``alphas`` input was provided."
+            )
+        if alphas_provided and not alphas_requested:
+            raise ValueError(
+                "``alphas`` input was provided but the parameters do not enable orbital-dependent "
+                "screening (need do_orbdep=.true. and odd_nkscalfact=.true.)."
+            )
+        if alphas_requested:
+            alphas = self.inputs.alphas.get_dict()
+            self._write_alpha_file(folder, alphas.get("filled", []), self._ALPHAREF_FILE)
+            self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
+
+        # Parent folder → remote_symlink_list (symlink its out/ into ours).
+        remote_symlink_list = []
+        if "parent_folder" in self.inputs:
+            parent = self.inputs.parent_folder
+            parent_out = str(PurePosixPath(parent.get_remote_path()) / self._OUTPUT_SUBFOLDER)
+            remote_symlink_list.append(
+                (parent.computer.uuid, parent_out, self._OUTPUT_SUBFOLDER)
+            )
+
+        # Retrieve list.
+        retrieve_list: list[str] = [self._OUTPUT_FILE, self._CRASH_FILE]
+        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
+        if do_orbdep:
+            for ispin in range(1, nspin + 1):
+                tag = str(ispin) if nspin > 1 else ""
+                retrieve_list.append(f"{ham_dir}/hamiltonian{tag}.xml")
+                retrieve_list.append(f"{ham_dir}/hamiltonian_emp{tag}.xml")
+                if do_bare_eigs:
+                    retrieve_list.append(f"{ham_dir}/hamiltonian0{tag}.xml")
+                    retrieve_list.append(f"{ham_dir}/hamiltonian0_emp{tag}.xml")
+
+        if "settings" in self.inputs:
+            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
+            retrieve_list.extend(extra)
+
+        code_info = CodeInfo()
+        code_info.code_uuid = self.inputs.code.uuid
+        code_info.cmdline_params = ["-in", self._INPUT_FILE]
+        code_info.stdout_name = self._OUTPUT_FILE
+
+        calc_info = CalcInfo()
+        calc_info.codes_info = [code_info]
+        calc_info.local_copy_list = local_copy_list
+        calc_info.remote_symlink_list = remote_symlink_list
+        calc_info.retrieve_list = retrieve_list
+
+        return calc_info
+
+    # ------------------------------------------------------------------
+    # Input-rendering helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def _normalize_parameters(cls, parameters: dict) -> dict:
+        """Uppercase namelist names, lowercase keys within, and reject blocked keys."""
+        normalized: dict[str, dict] = {}
+        for namelist, options in parameters.items():
+            nl = namelist.upper()
+            if not isinstance(options, dict):
+                raise ValueError(f"Namelist ``{namelist}`` must map to a dict, got {type(options).__name__}.")
+            blocked = cls._BLOCKED_KEYS.get(nl, frozenset())
+            row: dict = {}
+            for key, val in options.items():
+                k = key.lower()
+                if k in blocked:
+                    raise ValueError(
+                        f"Parameter ``{nl}/{k}`` is set by the CalcJob and cannot be overridden."
+                    )
+                row[k] = val
+            normalized[nl] = row
+        return normalized
+
+    @classmethod
+    def _render_namelists(cls, parameters: dict) -> str:
+        """Render namelists in canonical kcp.x order, then any unexpected ones."""
+        out: list[str] = []
+        rendered: set[str] = set()
+        for nl in cls._NAMELIST_ORDER:
+            options = parameters.get(nl)
+            if not options:
+                continue
+            out.append(cls._render_one_namelist(nl, options))
+            rendered.add(nl)
+        for nl, options in parameters.items():
+            if nl in rendered or not options:
+                continue
+            out.append(cls._render_one_namelist(nl, options))
+        return "".join(out)
+
+    @staticmethod
+    def _render_one_namelist(name: str, options: dict) -> str:
+        lines = [f"&{name}\n"]
+        for key, val in options.items():
+            lines.append(convert_input_to_namelist_entry(key, val))
+        lines.append("/\n")
+        return "".join(lines)
+
+    @staticmethod
+    def _render_atomic_species(structure: StructureData, pseudos: dict) -> str:
+        lines = ["ATOMIC_SPECIES\n"]
+        for kind in structure.kinds:
+            upf = pseudos[kind.name]
+            lines.append(f"  {kind.name}  {kind.mass:.6f}  {upf.filename}\n")
+        return "".join(lines)
+
+    @staticmethod
+    def _render_atomic_positions(structure: StructureData) -> str:
+        lines = ["ATOMIC_POSITIONS angstrom\n"]
+        for site in structure.sites:
+            x, y, z = site.position
+            lines.append(f"  {site.kind_name}  {x:.10f}  {y:.10f}  {z:.10f}\n")
+        return "".join(lines)
+
+    @staticmethod
+    def _render_cell_parameters(structure: StructureData) -> str:
+        lines = ["CELL_PARAMETERS angstrom\n"]
+        for vec in structure.cell:
+            lines.append(f"  {vec[0]:.10f}  {vec[1]:.10f}  {vec[2]:.10f}\n")
+        return "".join(lines)
+
+    @staticmethod
+    def _write_alpha_file(folder, alphas: list[float], filename: str) -> None:
+        """Write screening parameters in kcp.x ``file_alpharef[_empty].txt`` format.
+
+        Format: first line is the orbital count, subsequent lines are
+        ``{index} {alpha} 1.0`` (1-indexed).
+        """
+        content = f"{len(alphas)}\n"
+        content += "".join(f"{i + 1} {a} 1.0\n" for i, a in enumerate(alphas))
+        with folder.open(filename, "w", encoding="utf-8") as handle:
+            handle.write(content)

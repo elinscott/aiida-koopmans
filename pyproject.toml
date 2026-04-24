@@ -22,7 +22,10 @@ keywords = ["aiida", "plugin"]
 requires-python = ">=3.12"
 dependencies = [
     "aiida-core>=2.7,<3",
-    "aiida-workgraph>=0.8.0"
+    "aiida-workgraph>=0.8.0",
+    "aiida-wannier90>=2.2.0",
+    "aiida-quantumespresso>=4.16.0",
+    "aiida-wannier90-workflows[optimization]>=2.5.0"
 ]
 
 [project.optional-dependencies]
@@ -41,16 +44,20 @@ docs = [
 Source = "https://github.com/elinscott/aiida-koopmans"
 
 [project.entry-points."aiida.data"]
-"koopmans" = "aiida_koopmans.data:DiffParameters"
+"koopmans.aiida_quantumespresso.common.types.ElectronicType" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_quantumespresso.common.types.SpinType" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.WannierProjectionType" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.WannierDisentanglementType" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.WannierFrozenType" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.OptimizeStrategy" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.OptimizeMetric" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_wannier90_workflows.common.types.OptimizeMuReference" = "aiida.orm.nodes.data.enum:EnumData"
 
 [project.entry-points."aiida.calculations"]
-"koopmans" = "aiida_koopmans.calculations:DiffCalculation"
+"koopmans.kcp" = "aiida_koopmans.calculations.kcp:KcpCalculation"
 
 [project.entry-points."aiida.parsers"]
-"koopmans" = "aiida_koopmans.parsers:DiffParser"
-
-[project.entry-points."aiida.cmdline.data"]
-"koopmans" = "aiida_koopmans.cli:data_cli"
+"koopmans.kcp" = "aiida_koopmans.parsers.kcp:KcpParser"
 
 [tool.pytest.ini_options]
 # Configuration for [pytest](https://docs.pytest.org)
@@ -136,6 +143,10 @@ format-check = "ruff format --check --config pyproject.toml {args:.}"
 format-fix = "ruff format --config pyproject.toml {args:.}"
 lint-check = "ruff check --config pyproject.toml {args:.}"
 lint-fix = "ruff check --config pyproject.toml --fix --exit-non-zero-on-fix --show-fixes {args:.}"
+
+[tool.uv.sources]
+aiida-workgraph = { path = "../aiida-workgraph", editable = true }
+aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = true }
 
 [tool.hatch.envs.docs]
 features = ["docs"]
