@@ -1,0 +1,197 @@
+"""Workgraphs that wrap aiida-quantumespresso.pw workchains."""
+
+from __future__ import annotations
+
+from typing import Any, NotRequired, TypedDict
+
+from aiida import orm
+from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
+from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
+from aiida_workgraph import task
+from aiida_workgraph.utils import get_dict_from_builder
+
+
+class ScfBandsOutputs(TypedDict):
+    scf_parameters: orm.Dict
+    band_structure: orm.BandsData
+
+
+class ScfNscfOutputs(TypedDict):
+    scf_remote_folder: orm.RemoteData
+    nscf_remote_folder: orm.RemoteData
+    nscf_retrieved: orm.FolderData
+    nscf_output_parameters: orm.Dict
+    nscf_output_band: orm.BandsData
+    nscf_output_kpoints: NotRequired[orm.KpointsData]
+
+
+PwBaseTask = task(PwBaseWorkChain)
+PwBandsTask = task(PwBandsWorkChain)
+
+
+@task.graph
+def PwBandsTaskViaBuilder(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudo_family: str | None = None,
+    protocol: str | None = None,
+    overrides: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+    bands_kpoints: orm.KpointsData | None = None,
+) -> ScfBandsOutputs:
+    """Run PwBandsWorkChain using the protocol-based builder pattern.
+
+    This task wraps PwBandsWorkChain and uses get_builder_from_protocol to
+    construct the inputs from a simplified set of arguments (code, structure,
+    protocol, overrides, options).
+
+    Args:
+        code: The Code instance configured for the quantumespresso.pw plugin.
+        structure: The StructureData instance to use.
+        pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
+            If not specified, the protocol default is used.
+        protocol: Protocol to use. If not specified, the default will be used.
+        overrides: Optional dictionary of inputs to override protocol defaults.
+        options: Dictionary of options for metadata.options of nested CalcJobs.
+        bands_kpoints: Explicit KpointsData for the bands path. If provided,
+            seekpath is bypassed entirely.
+
+    Returns:
+        Dict with scf_parameters and band_structure outputs.
+    """
+    overrides = overrides or {}
+
+    # Unwrap TaggedValue from aiida-workgraph to plain string (temporary bugfix)
+    if pseudo_family is not None:
+        pseudo_family = str(pseudo_family)
+
+    # Inject pseudo_family into both scf and bands overrides
+    if pseudo_family is not None:
+        overrides.setdefault("scf", {}).setdefault("pseudo_family", pseudo_family)
+        overrides.setdefault("bands", {}).setdefault("pseudo_family", pseudo_family)
+
+    builder = PwBandsWorkChain.get_builder_from_protocol(
+        code=code,
+        structure=structure,
+        protocol=protocol,
+        overrides=overrides,
+        options=options or {},
+    )
+
+    # If nbnd is explicitly set, remove nbands_factor to avoid conflict
+    bands_system = overrides.get("bands", {}).get("pw", {}).get("parameters", {}).get("SYSTEM", {})
+    if "nbnd" in bands_system:
+        builder.pop("nbands_factor", None)
+
+    data = get_dict_from_builder(builder)
+
+    # Inject explicit bands_kpoints to bypass seekpath
+    if bands_kpoints is not None:
+        data.pop("bands_kpoints_distance", None)
+        data["bands_kpoints"] = bands_kpoints
+
+    # Submit the workchain with converted inputs
+    output = PwBandsTask(**data)
+
+    return ScfBandsOutputs(
+        scf_parameters=output.scf_parameters,
+        band_structure=output.band_structure,
+    )
+
+
+@task.graph
+def PwScfNscfTask(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudo_family: str | None = None,
+    protocol: str | None = None,
+    overrides: dict[str, Any] | None = None,
+    options: dict[str, Any] | None = None,
+) -> ScfNscfOutputs:
+    """Run SCF + NSCF using two PwBaseWorkChain steps.
+
+    The SCF step uses protocol defaults. The NSCF step reuses the SCF
+    charge density via ``parent_folder`` and sets ``calculation = 'nscf'``.
+
+    Overrides are split by namespace: ``overrides["scf"]`` applies to the
+    SCF step and ``overrides["nscf"]`` applies to the NSCF step.
+
+    Args:
+        code: The Code instance configured for the quantumespresso.pw plugin.
+        structure: The StructureData instance to use.
+        pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
+            If not specified, the protocol default is used.
+        protocol: Protocol to use. If not specified, the default will be used.
+        overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
+        options: Dictionary of options for metadata.options of nested CalcJobs.
+
+    Returns:
+        Dict with remote folders and retrieved data from both steps.
+    """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    overrides = overrides or {}
+
+    # Unwrap TaggedValue from aiida-workgraph to plain string (temporary bugfix)
+    if pseudo_family is not None:
+        pseudo_family = str(pseudo_family)
+
+    # Inject pseudo_family as a top-level override for both steps
+    scf_overrides = overrides.get("scf", {})
+    if pseudo_family is not None:
+        scf_overrides.setdefault("pseudo_family", pseudo_family)
+
+    # --- SCF builder ---
+    scf_builder = PwBaseWorkChain.get_builder_from_protocol(
+        code=code,
+        structure=structure,
+        protocol=protocol,
+        overrides=scf_overrides,
+        options=options or {},
+    )
+    scf_builder.pop("clean_workdir", None)
+    scf_data = get_dict_from_builder(scf_builder)
+    scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
+    scf_outputs = PwBaseTask(**scf_data)
+
+    # --- NSCF builder ---
+    # Start from protocol defaults, then merge NSCF-specific overrides
+    nscf_overrides = overrides.get("nscf", {})
+    if pseudo_family is not None:
+        nscf_overrides.setdefault("pseudo_family", pseudo_family)
+
+    # Ensure calculation type is nscf
+    nscf_defaults: dict[str, Any] = {
+        "pw": {
+            "parameters": {
+                "CONTROL": {"calculation": "nscf"},
+            },
+        },
+    }
+    nscf_merged = recursive_merge(nscf_defaults, nscf_overrides)
+
+    nscf_builder = PwBaseWorkChain.get_builder_from_protocol(
+        code=code,
+        structure=structure,
+        protocol=protocol,
+        overrides=nscf_merged,
+        options=options or {},
+    )
+    nscf_builder.pop("clean_workdir", None)
+
+    nscf_data = get_dict_from_builder(nscf_builder)
+
+    # Wire SCF remote_folder → NSCF parent_folder
+    nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
+
+    nscf_data.setdefault("metadata", {})["call_link_label"] = "nscf"
+    nscf_outputs = PwBaseTask(**nscf_data)
+
+    return ScfNscfOutputs(
+        scf_remote_folder=scf_outputs["remote_folder"],
+        nscf_remote_folder=nscf_outputs["remote_folder"],
+        nscf_retrieved=nscf_outputs["retrieved"],
+        nscf_output_parameters=nscf_outputs["output_parameters"],
+        nscf_output_band=nscf_outputs["output_band"],
+        nscf_output_kpoints=nscf_outputs["output_kpoints"],
+    )

@@ -1,7 +1,17 @@
 """WorkGraph-based workflows for koopmans calculations."""
 
-from aiida_koopmans.workgraphs.bands import PwBandsTaskViaBuilder, scf_bands_workgraph
+from __future__ import annotations
 
-__all__ = [
-    "PwBandsTaskViaBuilder", "scf_bands_workgraph"
-]
+from typing import TypedDict
+
+from aiida import orm
+
+
+class Codes(TypedDict, total=False):
+    """Code instances used across koopmans workgraphs."""
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+    projwfc: orm.AbstractCode
+    dos: orm.AbstractCode
