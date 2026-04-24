@@ -2,9 +2,18 @@
 
 Loads AiiDA's own pytest fixtures (``aiida_profile``, ``aiida_localhost``, ...) so
 individual tests can request them without having to boot a profile manually.
+Project-specific fixtures are defined in ``tests/fixtures.py`` and re-exported
+below so pytest picks them up for every test module.
 """
 
 import pytest
+
+from tests.fixtures import (  # noqa: F401
+    fake_upf,
+    ozone_pseudos,
+    ozone_structure,
+    periodic_ozone_structure,
+)
 
 pytest_plugins = ["aiida.tools.pytest_fixtures"]
 

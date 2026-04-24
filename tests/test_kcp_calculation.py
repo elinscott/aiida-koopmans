@@ -12,20 +12,10 @@ the realistic test input.
 from __future__ import annotations
 
 import io
-from types import SimpleNamespace
 
 import pytest
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-
-
-# Ozone atomic positions and cell from tutorials/tutorial_1/ozone.json.
-OZONE_CELL = [[14.1738, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.66]]
-OZONE_POSITIONS = [
-    ("O", [7.0869, 6.0, 5.89]),
-    ("O", [8.1738, 6.0, 6.55]),
-    ("O", [6.0, 6.0, 6.55]),
-]
 
 
 # ----------------------------------------------------------------------
@@ -106,24 +96,8 @@ class TestRenderNamelists:
 # ----------------------------------------------------------------------
 
 
-class FakeUpf(SimpleNamespace):
-    """Stand-in for aiida-pseudo UpfData with just the attributes the renderer needs."""
-
-
-@pytest.fixture
-def ozone_structure(aiida_profile):
-    """Ozone (O3) geometry in a non-periodic cell. Requires an AiiDA profile for StructureData."""
-    from aiida.orm import StructureData
-
-    struct = StructureData(cell=OZONE_CELL, pbc=False)
-    for symbol, position in OZONE_POSITIONS:
-        struct.append_atom(position=position, symbols=symbol, name=symbol)
-    return struct
-
-
-def test_render_atomic_species(ozone_structure):
-    pseudos = {"O": FakeUpf(filename="O.upf", uuid="fake-uuid-1")}
-    text = KcpCalculation._render_atomic_species(ozone_structure, pseudos)
+def test_render_atomic_species(ozone_structure, ozone_pseudos):
+    text = KcpCalculation._render_atomic_species(ozone_structure, ozone_pseudos)
     assert text.startswith("ATOMIC_SPECIES\n")
     assert "O" in text
     assert "O.upf" in text
@@ -138,19 +112,19 @@ def test_render_atomic_species(ozone_structure):
 def test_render_atomic_positions(ozone_structure):
     text = KcpCalculation._render_atomic_positions(ozone_structure)
     assert text.startswith("ATOMIC_POSITIONS angstrom\n")
-    for _, (x, y, z) in OZONE_POSITIONS:
-        for coord in (x, y, z):
+    for site in ozone_structure.sites:
+        for coord in site.position:
             assert f"{coord:.10f}" in text
-    # Three atoms → three non-header lines
     body = text.splitlines()[1:]
-    assert len(body) == 3
+    assert len(body) == len(ozone_structure.sites)
 
 
 def test_render_cell_parameters(ozone_structure):
     text = KcpCalculation._render_cell_parameters(ozone_structure)
     assert text.startswith("CELL_PARAMETERS angstrom\n")
-    assert "14.1738000000" in text
-    assert "12.6600000000" in text
+    for vec in ozone_structure.cell:
+        for coord in vec:
+            assert f"{coord:.10f}" in text
     body = text.splitlines()[1:]
     assert len(body) == 3
 
@@ -204,9 +178,8 @@ def test_write_alpha_file_empty_list_emits_header_only():
 # ----------------------------------------------------------------------
 
 
-def test_full_ozone_input_rendering_has_expected_sections(ozone_structure):
+def test_full_ozone_input_rendering_has_expected_sections(ozone_structure, ozone_pseudos):
     """Render a plausible ozone DFT-init input and check the overall structure."""
-    pseudos = {"O": FakeUpf(filename="O.upf", uuid="fake-uuid-1")}
     # After normalisation + injection, these are the params the CalcJob would use.
     params = KcpCalculation._normalize_parameters(
         {
@@ -226,7 +199,7 @@ def test_full_ozone_input_rendering_has_expected_sections(ozone_structure):
 
     content = (
         KcpCalculation._render_namelists(params)
-        + KcpCalculation._render_atomic_species(ozone_structure, pseudos)
+        + KcpCalculation._render_atomic_species(ozone_structure, ozone_pseudos)
         + KcpCalculation._render_atomic_positions(ozone_structure)
         + KcpCalculation._render_cell_parameters(ozone_structure)
     )

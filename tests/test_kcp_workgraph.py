@@ -1,0 +1,258 @@
+"""Unit tests for the kcp.x workgraph builders.
+
+Covers the pure-function building blocks (parameter dicts, scope guards,
+utility helpers). A full end-to-end WorkGraph construction test is deferred
+to the Phase-5 regression harness, which will have a real SG15 pseudo
+family available.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
+from aiida_koopmans.workgraphs.kcp import (
+    _build_dft_parameters,
+    _build_ki_parameters,
+    _validate_scope,
+)
+
+
+# ----------------------------------------------------------------------
+# _validate_scope — every NotImplementedError path
+# ----------------------------------------------------------------------
+
+
+class TestValidateScope:
+    def test_supported_baseline_passes(self, ozone_structure):
+        _validate_scope(
+            functional="ki",
+            init_orbitals="kohn-sham",
+            alpha_numsteps=1,
+            fix_spin_contamination=False,
+            mt_correction=False,
+            structure=ozone_structure,
+        )
+
+    @pytest.mark.parametrize("functional", ["kipz", "pkipz", "dft", ""])
+    def test_non_ki_functional_raises(self, ozone_structure, functional):
+        with pytest.raises(NotImplementedError, match="functional="):
+            _validate_scope(
+                functional=functional,
+                init_orbitals="kohn-sham",
+                alpha_numsteps=1,
+                fix_spin_contamination=False,
+                mt_correction=False,
+                structure=ozone_structure,
+            )
+
+    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs", "pz"])
+    def test_non_kohn_sham_init_raises(self, ozone_structure, init_orbitals):
+        with pytest.raises(NotImplementedError, match="init_orbitals="):
+            _validate_scope(
+                functional="ki",
+                init_orbitals=init_orbitals,
+                alpha_numsteps=1,
+                fix_spin_contamination=False,
+                mt_correction=False,
+                structure=ozone_structure,
+            )
+
+    def test_alpha_numsteps_greater_than_one_raises(self, ozone_structure):
+        with pytest.raises(NotImplementedError, match="alpha_numsteps="):
+            _validate_scope(
+                functional="ki",
+                init_orbitals="kohn-sham",
+                alpha_numsteps=3,
+                fix_spin_contamination=False,
+                mt_correction=False,
+                structure=ozone_structure,
+            )
+
+    def test_spin_contamination_raises(self, ozone_structure):
+        with pytest.raises(NotImplementedError, match="fix_spin_contamination"):
+            _validate_scope(
+                functional="ki",
+                init_orbitals="kohn-sham",
+                alpha_numsteps=1,
+                fix_spin_contamination=True,
+                mt_correction=False,
+                structure=ozone_structure,
+            )
+
+    def test_mt_correction_raises(self, ozone_structure):
+        with pytest.raises(NotImplementedError, match="mt_correction"):
+            _validate_scope(
+                functional="ki",
+                init_orbitals="kohn-sham",
+                alpha_numsteps=1,
+                fix_spin_contamination=False,
+                mt_correction=True,
+                structure=ozone_structure,
+            )
+
+    def test_periodic_structure_raises(self, periodic_ozone_structure):
+        with pytest.raises(NotImplementedError, match="Periodic systems"):
+            _validate_scope(
+                functional="ki",
+                init_orbitals="kohn-sham",
+                alpha_numsteps=1,
+                fix_spin_contamination=False,
+                mt_correction=False,
+                structure=periodic_ozone_structure,
+            )
+
+
+# ----------------------------------------------------------------------
+# Parameter builders
+# ----------------------------------------------------------------------
+
+
+_OZONE_KW = dict(
+    ecutwfc=65.0,
+    ecutrho=260.0,
+    nbnd=10,
+    nspin=2,
+    nelec=18,
+    nelup=9,
+    neldw=9,
+    tot_magnetization=None,
+)
+
+
+class TestBuildDftParameters:
+    def test_has_expected_namelists(self):
+        params = _build_dft_parameters(**_OZONE_KW)
+        assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS"}
+        assert "NKSIC" not in params
+        assert "EE" not in params
+
+    def test_dft_control_is_from_scratch_ndw_50(self):
+        params = _build_dft_parameters(**_OZONE_KW)
+        assert params["CONTROL"]["restart_mode"] == "from_scratch"
+        assert params["CONTROL"]["ndr"] == 50
+        assert params["CONTROL"]["ndw"] == 50
+        assert params["CONTROL"]["calculation"] == "cp"
+
+    def test_dft_system_no_orbdep(self):
+        params = _build_dft_parameters(**_OZONE_KW)
+        assert params["SYSTEM"]["do_orbdep"] is False
+        assert params["SYSTEM"]["nelec"] == 18
+        assert params["SYSTEM"]["nelup"] == 9
+        assert params["SYSTEM"]["neldw"] == 9
+        assert params["SYSTEM"]["nbnd"] == 10
+        assert params["SYSTEM"]["ecutwfc"] == 65.0
+        assert params["SYSTEM"]["ecutrho"] == 260.0
+
+    def test_dft_outerloop_enabled(self):
+        params = _build_dft_parameters(**_OZONE_KW)
+        assert params["ELECTRONS"]["do_outerloop"] is True
+        assert params["ELECTRONS"]["do_outerloop_empty"] is True
+
+    def test_conv_thr_scales_with_nelec(self):
+        params = _build_dft_parameters(**_OZONE_KW)
+        assert params["ELECTRONS"]["conv_thr"] == pytest.approx(1.8e-8)
+        assert params["ELECTRONS"]["esic_conv_thr"] == pytest.approx(1.8e-8)
+
+    def test_nspin_one_skips_spin_keys(self):
+        kw = {**_OZONE_KW, "nspin": 1, "nelup": None, "neldw": None}
+        params = _build_dft_parameters(**kw)
+        assert params["SYSTEM"]["nspin"] == 1
+        assert "nelup" not in params["SYSTEM"]
+        assert "neldw" not in params["SYSTEM"]
+
+
+class TestBuildKiParameters:
+    def test_has_nksic_and_ee(self):
+        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        assert "NKSIC" in params
+        assert "EE" in params
+        assert params["NKSIC"]["which_orbdep"] == "nki"
+        assert params["NKSIC"]["odd_nkscalfact"] is True
+        assert params["NKSIC"]["odd_nkscalfact_empty"] is True
+        assert params["NKSIC"]["do_bare_eigs"] is True
+
+    def test_ki_control_is_restart_ndr_50_ndw_60(self):
+        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        assert params["CONTROL"]["restart_mode"] == "restart"
+        assert params["CONTROL"]["ndr"] == 50
+        assert params["CONTROL"]["ndw"] == 60
+
+    def test_ki_enables_orbdep_and_disables_outerloop(self):
+        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        assert params["SYSTEM"]["do_orbdep"] is True
+        assert params["ELECTRONS"]["do_outerloop"] is False
+        assert params["ELECTRONS"]["do_outerloop_empty"] is False
+
+    def test_no_mt_correction_uses_compensation_none(self):
+        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        assert params["EE"]["which_compensation"] == "none"
+        assert "tcc_odd" not in params["EE"]
+
+
+# ----------------------------------------------------------------------
+# Utility helpers (aiida_koopmans/utils.py)
+# ----------------------------------------------------------------------
+
+
+class TestCountElectrons:
+    def test_nspin_two_closed_shell(self, ozone_structure, ozone_pseudos):
+        nelec, nelup, neldw = count_electrons(
+            ozone_structure, ozone_pseudos, nspin=2, tot_magnetization=None
+        )
+        assert (nelec, nelup, neldw) == (18, 9, 9)
+
+    def test_nspin_one_returns_none_spin_counts(self, ozone_structure, ozone_pseudos):
+        nelec, nelup, neldw = count_electrons(ozone_structure, ozone_pseudos, nspin=1)
+        assert (nelec, nelup, neldw) == (18, None, None)
+
+    def test_tot_magnetization_two(self, ozone_structure, ozone_pseudos):
+        nelec, nelup, neldw = count_electrons(
+            ozone_structure, ozone_pseudos, nspin=2, tot_magnetization=2
+        )
+        assert (nelec, nelup, neldw) == (18, 10, 8)
+
+    def test_inconsistent_magnetization_raises(self, ozone_structure, ozone_pseudos):
+        with pytest.raises(ValueError, match="non-integer spin populations"):
+            count_electrons(
+                ozone_structure, ozone_pseudos, nspin=2, tot_magnetization=1
+            )
+
+    def test_non_integer_total_charge_raises(self, ozone_structure, fake_upf):
+        pseudos = {"O": fake_upf(z_valence=5.7)}
+        with pytest.raises(ValueError, match="Non-integer total valence charge"):
+            count_electrons(ozone_structure, pseudos, nspin=2)
+
+
+class TestFilledAndEmptyCounts:
+    def test_closed_shell_nspin_two(self):
+        # Ozone DFT: 9 filled + 1 empty per spin channel → 18 filled + 2 empty
+        n_filled, n_empty = filled_and_empty_counts(
+            nspin=2, nbnd=10, nelec=18, nelup=9, neldw=9
+        )
+        assert (n_filled, n_empty) == (18, 2)
+
+    def test_open_shell_unequal_spins(self):
+        # 15 electrons, nelup=8 neldw=7, nbnd=10: empty = (10-8) + (10-7) = 5
+        n_filled, n_empty = filled_and_empty_counts(
+            nspin=2, nbnd=10, nelec=15, nelup=8, neldw=7
+        )
+        assert (n_filled, n_empty) == (15, 5)
+
+    def test_no_empty_when_nbnd_equals_filled(self):
+        n_filled, n_empty = filled_and_empty_counts(
+            nspin=2, nbnd=9, nelec=18, nelup=9, neldw=9
+        )
+        assert (n_filled, n_empty) == (18, 0)
+
+    def test_nspin_one(self):
+        n_filled, n_empty = filled_and_empty_counts(
+            nspin=1, nbnd=10, nelec=18, nelup=None, neldw=None
+        )
+        assert (n_filled, n_empty) == (9, 1)
+
+    def test_nspin_two_missing_spin_counts_raises(self):
+        with pytest.raises(ValueError, match="required when nspin=2"):
+            filled_and_empty_counts(
+                nspin=2, nbnd=10, nelec=18, nelup=None, neldw=None
+            )
