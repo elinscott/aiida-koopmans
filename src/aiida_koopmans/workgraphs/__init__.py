@@ -15,3 +15,4 @@ class Codes(TypedDict, total=False):
     wannier90: orm.AbstractCode
     projwfc: orm.AbstractCode
     dos: orm.AbstractCode
+    kcp: orm.AbstractCode
