@@ -31,9 +31,7 @@ def resolve_pseudo_family(family_label: str, structure: orm.StructureData) -> di
     from aiida_pseudo.groups.family.pseudo import PseudoPotentialFamily
 
     family = (
-        orm.QueryBuilder()
-        .append(PseudoPotentialFamily, filters={"label": family_label})
-        .one()[0]
+        orm.QueryBuilder().append(PseudoPotentialFamily, filters={"label": family_label}).one()[0]
     )
     return family.get_pseudos(structure=structure)
 
@@ -59,7 +57,7 @@ def count_electrons(
     nelec_total = 0.0
     for site in structure.sites:
         nelec_total += float(pseudos[site.kind_name].z_valence)
-    nelec = int(round(nelec_total))
+    nelec = round(nelec_total)
     if nelec != nelec_total:
         raise ValueError(
             f"Non-integer total valence charge {nelec_total} from pseudos — "
@@ -70,9 +68,7 @@ def count_electrons(
 
     m = tot_magnetization if tot_magnetization is not None else 0
     if (nelec + m) % 2 or (nelec - m) % 2:
-        raise ValueError(
-            f"nelec={nelec}, tot_magnetization={m} give non-integer spin populations."
-        )
+        raise ValueError(f"nelec={nelec}, tot_magnetization={m} give non-integer spin populations.")
     return nelec, (nelec + m) // 2, (nelec - m) // 2
 
 

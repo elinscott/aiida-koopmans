@@ -17,7 +17,6 @@ from aiida_koopmans.workgraphs.kcp import (
     _validate_scope,
 )
 
-
 # ----------------------------------------------------------------------
 # _validate_scope — every NotImplementedError path
 # ----------------------------------------------------------------------
@@ -108,16 +107,16 @@ class TestValidateScope:
 # ----------------------------------------------------------------------
 
 
-_OZONE_KW = dict(
-    ecutwfc=65.0,
-    ecutrho=260.0,
-    nbnd=10,
-    nspin=2,
-    nelec=18,
-    nelup=9,
-    neldw=9,
-    tot_magnetization=None,
-)
+_OZONE_KW = {
+    "ecutwfc": 65.0,
+    "ecutrho": 260.0,
+    "nbnd": 10,
+    "nspin": 2,
+    "nelec": 18,
+    "nelup": 9,
+    "neldw": 9,
+    "tot_magnetization": None,
+}
 
 
 class TestBuildDftParameters:
@@ -214,9 +213,7 @@ class TestCountElectrons:
 
     def test_inconsistent_magnetization_raises(self, ozone_structure, ozone_pseudos):
         with pytest.raises(ValueError, match="non-integer spin populations"):
-            count_electrons(
-                ozone_structure, ozone_pseudos, nspin=2, tot_magnetization=1
-            )
+            count_electrons(ozone_structure, ozone_pseudos, nspin=2, tot_magnetization=1)
 
     def test_non_integer_total_charge_raises(self, ozone_structure, fake_upf):
         pseudos = {"O": fake_upf(z_valence=5.7)}
@@ -227,22 +224,16 @@ class TestCountElectrons:
 class TestFilledAndEmptyCounts:
     def test_closed_shell_nspin_two(self):
         # Ozone DFT: 9 filled + 1 empty per spin channel → 18 filled + 2 empty
-        n_filled, n_empty = filled_and_empty_counts(
-            nspin=2, nbnd=10, nelec=18, nelup=9, neldw=9
-        )
+        n_filled, n_empty = filled_and_empty_counts(nspin=2, nbnd=10, nelec=18, nelup=9, neldw=9)
         assert (n_filled, n_empty) == (18, 2)
 
     def test_open_shell_unequal_spins(self):
         # 15 electrons, nelup=8 neldw=7, nbnd=10: empty = (10-8) + (10-7) = 5
-        n_filled, n_empty = filled_and_empty_counts(
-            nspin=2, nbnd=10, nelec=15, nelup=8, neldw=7
-        )
+        n_filled, n_empty = filled_and_empty_counts(nspin=2, nbnd=10, nelec=15, nelup=8, neldw=7)
         assert (n_filled, n_empty) == (15, 5)
 
     def test_no_empty_when_nbnd_equals_filled(self):
-        n_filled, n_empty = filled_and_empty_counts(
-            nspin=2, nbnd=9, nelec=18, nelup=9, neldw=9
-        )
+        n_filled, n_empty = filled_and_empty_counts(nspin=2, nbnd=9, nelec=18, nelup=9, neldw=9)
         assert (n_filled, n_empty) == (18, 0)
 
     def test_nspin_one(self):
@@ -253,6 +244,4 @@ class TestFilledAndEmptyCounts:
 
     def test_nspin_two_missing_spin_counts_raises(self):
         with pytest.raises(ValueError, match="required when nspin=2"):
-            filled_and_empty_counts(
-                nspin=2, nbnd=10, nelec=18, nelup=None, neldw=None
-            )
+            filled_and_empty_counts(nspin=2, nbnd=10, nelec=18, nelup=None, neldw=None)

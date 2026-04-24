@@ -10,7 +10,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 # Ozone geometry taken from koopmans/tutorials/tutorial_1/ozone.json.
 _OZONE_CELL = [[14.1738, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.66]]
 _OZONE_POSITIONS = [
@@ -38,20 +37,20 @@ def _build_ozone_structure(pbc: bool):
 
 
 @pytest.fixture
-def ozone_structure(aiida_profile):  # noqa: ARG001
-    """Ozone (O3) ``StructureData`` with the tutorial_1 geometry, non-periodic."""
+def ozone_structure(aiida_profile):
+    """Return an ozone (O3) ``StructureData`` with the tutorial_1 geometry, non-periodic."""
     return _build_ozone_structure(pbc=False)
 
 
 @pytest.fixture
-def periodic_ozone_structure(aiida_profile):  # noqa: ARG001
-    """Same ozone geometry but ``pbc=True``, for exercising periodic scope guards."""
+def periodic_ozone_structure(aiida_profile):
+    """Return the ozone geometry with ``pbc=True`` for exercising periodic scope guards."""
     return _build_ozone_structure(pbc=True)
 
 
 @pytest.fixture
 def fake_upf():
-    """Factory for stand-in UpfData objects.
+    """Return a factory class for stand-in UpfData objects.
 
     Usage in tests::
 
@@ -63,5 +62,5 @@ def fake_upf():
 
 @pytest.fixture
 def ozone_pseudos(fake_upf):
-    """Common pseudos dict for ozone tests: ``{"O": FakeUpf(...)}`` with oxygen's valence."""
+    """Return the ozone pseudos dict ``{"O": FakeUpf(...)}`` with oxygen's valence."""
     return {"O": fake_upf(filename="O.upf", uuid="fake-upf-uuid", z_valence=6.0)}

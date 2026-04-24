@@ -28,12 +28,12 @@ pytest_plugins = ["aiida.tools.pytest_fixtures"]
 
 
 @pytest.fixture(scope="function")
-def clear_database_after_test(aiida_profile):  # noqa: D401
+def clear_database_after_test(aiida_profile):
     """Override the deprecated-and-broken upstream fixture with a no-op yield."""
     yield aiida_profile
 
 
 @pytest.fixture(scope="function")
-def clear_database(clear_database_after_test):  # noqa: ARG001
+def clear_database(clear_database_after_test):
     """Override the deprecated alias to avoid the broken teardown chain."""
     yield

@@ -26,11 +26,11 @@ _BOHR_TO_ANG = CONSTANTS.bohr_to_ang
 class KcpParser(Parser):
     """Parse the stdout and Hamiltonian XML outputs of a ``KcpCalculation``."""
 
-    def parse(self, **kwargs: Any):  # noqa: ARG002  (AiiDA passes retrieved_temporary_folder)
+    def parse(self, **kwargs: Any):
         """Entry point called by AiiDA after the CalcJob finishes."""
         try:
             retrieved = self.retrieved
-        except Exception:  # noqa: BLE001
+        except Exception:
             return self.exit_codes.ERROR_NO_RETRIEVED_FOLDER
 
         stdout_filename = self.node.base.attributes.get("output_filename")
@@ -44,42 +44,51 @@ class KcpParser(Parser):
 
         parsed, eigenvalues = self._parse_stdout(stdout)
         self.out("output_parameters", orm.Dict(dict=parsed))
+        self._emit_eigenvalues(eigenvalues)
 
-        if eigenvalues:
-            eig_array = orm.ArrayData()
-            # Pad rows to equal length so we can stack; missing entries become NaN.
-            max_len = max(len(row) for row in eigenvalues)
-            padded = np.full((len(eigenvalues), max_len), np.nan)
-            for i, row in enumerate(eigenvalues):
-                padded[i, : len(row)] = row
-            eig_array.set_array("eigenvalues", padded)
-            self.out("output_eigenvalues", eig_array)
-
-        # Hamiltonian XMLs (only when do_orbdep is requested).
-        params = self.node.inputs.parameters.get_dict()
-        system = {k.lower(): v for k, v in params.get("SYSTEM", {}).items()}
-        nksic = {k.lower(): v for k, v in params.get("NKSIC", {}).items()}
-        do_orbdep = bool(system.get("do_orbdep", False))
-        do_bare_eigs = bool(nksic.get("do_bare_eigs", False))
-        nspin = int(system.get("nspin", 1))
-
-        if do_orbdep:
-            lambdas_status = self._parse_lambdas(
-                retrieved, nspin=nspin, bare=False
-            )
-            if lambdas_status is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
-                return lambdas_status
-            self.out("output_lambdas", lambdas_status)
-
-            if do_bare_eigs:
-                bare_status = self._parse_lambdas(retrieved, nspin=nspin, bare=True)
-                if bare_status is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
-                    return bare_status
-                self.out("output_bare_lambdas", bare_status)
+        lambdas_exit = self._emit_lambdas(retrieved)
+        if lambdas_exit is not None:
+            return lambdas_exit
 
         if not parsed.get("job_done", False):
             return self.exit_codes.ERROR_OUTPUT_STDOUT_INCOMPLETE
 
+        return None
+
+    def _emit_eigenvalues(self, eigenvalues: list[list[float]]) -> None:
+        """Pad the per-spin eigenvalue lists into a rectangular array and output it."""
+        if not eigenvalues:
+            return
+        max_len = max(len(row) for row in eigenvalues)
+        padded = np.full((len(eigenvalues), max_len), np.nan)
+        for i, row in enumerate(eigenvalues):
+            padded[i, : len(row)] = row
+        eig_array = orm.ArrayData()
+        eig_array.set_array("eigenvalues", padded)
+        self.out("output_eigenvalues", eig_array)
+
+    def _emit_lambdas(self, retrieved):
+        """Emit ``output_lambdas`` / ``output_bare_lambdas`` when do_orbdep is set.
+
+        Returns an exit-code node if Hamiltonian XMLs are missing, else ``None``.
+        """
+        params = self.node.inputs.parameters.get_dict()
+        system = {k.lower(): v for k, v in params.get("SYSTEM", {}).items()}
+        nksic = {k.lower(): v for k, v in params.get("NKSIC", {}).items()}
+        if not bool(system.get("do_orbdep", False)):
+            return None
+        nspin = int(system.get("nspin", 1))
+
+        lambdas = self._parse_lambdas(retrieved, nspin=nspin, bare=False)
+        if lambdas is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
+            return lambdas
+        self.out("output_lambdas", lambdas)
+
+        if bool(nksic.get("do_bare_eigs", False)):
+            bare = self._parse_lambdas(retrieved, nspin=nspin, bare=True)
+            if bare is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
+                return bare
+            self.out("output_bare_lambdas", bare)
         return None
 
     # ------------------------------------------------------------------
@@ -87,8 +96,14 @@ class KcpParser(Parser):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_stdout(stdout: str) -> tuple[dict[str, Any], list[list[float]]]:
-        """Extract the scalar results and per-spin eigenvalue lists from the .cpo text."""
+    def _parse_stdout(stdout: str) -> tuple[dict[str, Any], list[list[float]]]:  # noqa: C901
+        """Extract the scalar results and per-spin eigenvalue lists from the .cpo text.
+
+        The branching mirrors the distinct patterns in kcp.x stdout (total
+        energy, HOMO/LUMO, orbital data, eigenvalues, convergence, walltime,
+        JOB DONE). Decomposing one-pattern-per-helper would spread the
+        complexity without reducing it.
+        """
         results: dict[str, Any] = {
             "energy": None,
             "energy_units": "eV",
@@ -219,7 +234,7 @@ class KcpParser(Parser):
                 results["job_done"] = True
 
             if "wall time" in line:
-                # Format: "<anything>, <X>m<Y>s wall time"
+                # Expected shape: ``<prefix>, 3m 4s wall time``
                 try:
                     time_part = line.split(",")[1].strip()
                     # Drop trailing 'wall time'
@@ -238,13 +253,14 @@ class KcpParser(Parser):
 
     def _parse_lambdas(self, retrieved, nspin: int, bare: bool):
         """Return an ArrayData of lambda matrices or an exit-code sentinel on failure."""
-        prefix = self.node.process_class._PREFIX  # noqa: SLF001
+        prefix = self.node.process_class._PREFIX
         ndw = int(
-            {k.lower(): v for k, v in self.node.inputs.parameters.get_dict().get("CONTROL", {}).items()}.get(
-                "ndw", 50
-            )
+            {
+                k.lower(): v
+                for k, v in self.node.inputs.parameters.get_dict().get("CONTROL", {}).items()
+            }.get("ndw", 50)
         )
-        out_subfolder = self.node.process_class._OUTPUT_SUBFOLDER  # noqa: SLF001
+        out_subfolder = self.node.process_class._OUTPUT_SUBFOLDER
         ham_dir = f"{out_subfolder}/{prefix}_{ndw}.save/K00001"
 
         nspin_idx = list(range(1, nspin + 1))
@@ -306,7 +322,11 @@ def _safe_floats(string: str) -> list[float]:
 
 
 def _parse_convergence_line(line: str) -> dict[str, Any] | None:
-    """Parse the periodic ``iteration = N   eff iteration = M   Etot(Ha) = ... delta_E = ...`` lines."""
+    """Parse a kcp.x per-step convergence line.
+
+    The kcp.x stdout emits periodic lines of the form
+    ``iteration = N   eff iteration = M   Etot(Ha) = <float>   delta_E = <float>``.
+    """
     try:
         parts = [segment.split()[0] for segment in line.split("=")[1:]]
     except IndexError:
@@ -348,9 +368,11 @@ def _time_string_to_seconds(time_str: str) -> float:
 
 def _read_hamiltonian_xml(content: str) -> np.ndarray:
     """Parse a kcp.x hamiltonian XML into a complex square matrix (in eV)."""
-    root = ET.fromstring(content)
+    # Input comes from our own kcp.x run via AiiDA's retrieve list — not
+    # untrusted user XML — so the standard-library parser is safe here.
+    root = ET.fromstring(content)  # noqa: S314
     size = int(root.attrib["size"])
-    side = int(math.isqrt(size))
+    side = math.isqrt(size)
     if side * side != size:
         raise ValueError(f"Hamiltonian XML size {size} is not a perfect square.")
     if root.text is None:

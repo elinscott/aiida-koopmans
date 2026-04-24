@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import PurePosixPath
+from typing import ClassVar
 
 from aiida.common import CalcInfo, CodeInfo
 from aiida.engine import CalcJob
@@ -37,7 +38,7 @@ class KcpCalculation(CalcJob):
     _NAMELIST_ORDER = ("CONTROL", "SYSTEM", "ELECTRONS", "IONS", "CELL", "EE", "NKSIC")
 
     # Keys the CalcJob owns; users cannot set them in ``parameters``.
-    _BLOCKED_KEYS = {
+    _BLOCKED_KEYS: ClassVar[dict[str, frozenset[str]]] = {
         "CONTROL": frozenset({"outdir", "pseudo_dir", "prefix"}),
         "SYSTEM": frozenset({"nat", "ntyp", "ibrav"}),
     }
@@ -125,9 +126,7 @@ class KcpCalculation(CalcJob):
             help="Bare Hamiltonian lambda matrices, present when ``do_bare_eigs=.true.``.",
         )
 
-        spec.exit_code(
-            301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing."
-        )
+        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
         spec.exit_code(
             302, "ERROR_OUTPUT_STDOUT_MISSING", message="The kcp.x stdout file was not retrieved."
         )
@@ -158,92 +157,30 @@ class KcpCalculation(CalcJob):
         structure = self.inputs.structure
         pseudos = dict(self.inputs.pseudos)
 
-        control = parameters.setdefault("CONTROL", {})
-        control["outdir"] = f"./{self._OUTPUT_SUBFOLDER}/"
-        control["pseudo_dir"] = f"./{self._PSEUDO_SUBFOLDER}/"
-        control["prefix"] = self._PREFIX
-        control.setdefault("calculation", "cp")
-        ndw = int(control.get("ndw", 50))
-
-        system = parameters.setdefault("SYSTEM", {})
-        system["ibrav"] = 0
-        system["nat"] = len(structure.sites)
-        system["ntyp"] = len(structure.kinds)
-        nspin = int(system.get("nspin", 1))
-        do_orbdep = bool(system.get("do_orbdep", False))
-
+        self._inject_owned_keys(parameters, structure)
+        ndw = int(parameters["CONTROL"]["ndw"])
+        nspin = int(parameters["SYSTEM"].get("nspin", 1))
+        do_orbdep = bool(parameters["SYSTEM"].get("do_orbdep", False))
         nksic = parameters.get("NKSIC", {})
         odd_nkscalfact = bool(nksic.get("odd_nkscalfact", False))
         do_bare_eigs = bool(nksic.get("do_bare_eigs", False))
 
-        # Render input file
-        content = self._render_namelists(parameters)
-        content += self._render_atomic_species(structure, pseudos)
-        content += self._render_atomic_positions(structure)
-        content += self._render_cell_parameters(structure)
-
+        content = (
+            self._render_namelists(parameters)
+            + self._render_atomic_species(structure, pseudos)
+            + self._render_atomic_positions(structure)
+            + self._render_cell_parameters(structure)
+        )
         with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
             handle.write(content)
 
-        # Pseudos → local_copy_list. One UpfData per kind.
-        local_copy_list = []
-        seen_filenames: dict[str, str] = {}
-        for kind in structure.kinds:
-            upf = pseudos[kind.name]
-            previous_uuid = seen_filenames.get(upf.filename)
-            if previous_uuid is None:
-                seen_filenames[upf.filename] = upf.uuid
-                local_copy_list.append(
-                    (upf.uuid, upf.filename, f"{self._PSEUDO_SUBFOLDER}/{upf.filename}")
-                )
-            elif previous_uuid != upf.uuid:
-                raise ValueError(
-                    f"Two different UpfData nodes were provided that share the filename "
-                    f"``{upf.filename}``. Rename one before resubmission."
-                )
+        self._write_alpha_files(folder, do_orbdep=do_orbdep, odd_nkscalfact=odd_nkscalfact)
 
-        # Alpha files (required <-> do_orbdep + odd_nkscalfact).
-        alphas_requested = do_orbdep and odd_nkscalfact
-        alphas_provided = "alphas" in self.inputs
-        if alphas_requested and not alphas_provided:
-            raise ValueError(
-                "Parameters request orbital-dependent screening "
-                "(do_orbdep=.true., odd_nkscalfact=.true.) but no ``alphas`` input was provided."
-            )
-        if alphas_provided and not alphas_requested:
-            raise ValueError(
-                "``alphas`` input was provided but the parameters do not enable orbital-dependent "
-                "screening (need do_orbdep=.true. and odd_nkscalfact=.true.)."
-            )
-        if alphas_requested:
-            alphas = self.inputs.alphas.get_dict()
-            self._write_alpha_file(folder, alphas.get("filled", []), self._ALPHAREF_FILE)
-            self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
-
-        # Parent folder → remote_symlink_list (symlink its out/ into ours).
-        remote_symlink_list = []
-        if "parent_folder" in self.inputs:
-            parent = self.inputs.parent_folder
-            parent_out = str(PurePosixPath(parent.get_remote_path()) / self._OUTPUT_SUBFOLDER)
-            remote_symlink_list.append(
-                (parent.computer.uuid, parent_out, self._OUTPUT_SUBFOLDER)
-            )
-
-        # Retrieve list.
-        retrieve_list: list[str] = [self._OUTPUT_FILE, self._CRASH_FILE]
-        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
-        if do_orbdep:
-            for ispin in range(1, nspin + 1):
-                tag = str(ispin) if nspin > 1 else ""
-                retrieve_list.append(f"{ham_dir}/hamiltonian{tag}.xml")
-                retrieve_list.append(f"{ham_dir}/hamiltonian_emp{tag}.xml")
-                if do_bare_eigs:
-                    retrieve_list.append(f"{ham_dir}/hamiltonian0{tag}.xml")
-                    retrieve_list.append(f"{ham_dir}/hamiltonian0_emp{tag}.xml")
-
-        if "settings" in self.inputs:
-            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
-            retrieve_list.extend(extra)
+        local_copy_list = self._build_local_copy_list(structure, pseudos)
+        remote_symlink_list = self._build_remote_symlink_list()
+        retrieve_list = self._build_retrieve_list(
+            ndw=ndw, nspin=nspin, do_orbdep=do_orbdep, do_bare_eigs=do_bare_eigs
+        )
 
         code_info = CodeInfo()
         code_info.code_uuid = self.inputs.code.uuid
@@ -259,6 +196,92 @@ class KcpCalculation(CalcJob):
         return calc_info
 
     # ------------------------------------------------------------------
+    # prepare_for_submission helpers
+    # ------------------------------------------------------------------
+
+    def _inject_owned_keys(self, parameters: dict, structure: StructureData) -> None:
+        """Set the CONTROL/SYSTEM keys the CalcJob owns (outdir, pseudo_dir, ibrav, ...)."""
+        control = parameters.setdefault("CONTROL", {})
+        control["outdir"] = f"./{self._OUTPUT_SUBFOLDER}/"
+        control["pseudo_dir"] = f"./{self._PSEUDO_SUBFOLDER}/"
+        control["prefix"] = self._PREFIX
+        control.setdefault("calculation", "cp")
+        control.setdefault("ndw", 50)
+
+        system = parameters.setdefault("SYSTEM", {})
+        system["ibrav"] = 0
+        system["nat"] = len(structure.sites)
+        system["ntyp"] = len(structure.kinds)
+
+    def _build_local_copy_list(
+        self, structure: StructureData, pseudos: dict
+    ) -> list[tuple[str, str, str]]:
+        """Assemble ``local_copy_list`` for the pseudopotential files."""
+        local_copy_list: list[tuple[str, str, str]] = []
+        seen_filenames: dict[str, str] = {}
+        for kind in structure.kinds:
+            upf = pseudos[kind.name]
+            previous_uuid = seen_filenames.get(upf.filename)
+            if previous_uuid is None:
+                seen_filenames[upf.filename] = upf.uuid
+                local_copy_list.append(
+                    (upf.uuid, upf.filename, f"{self._PSEUDO_SUBFOLDER}/{upf.filename}")
+                )
+            elif previous_uuid != upf.uuid:
+                raise ValueError(
+                    f"Two different UpfData nodes were provided that share the filename "
+                    f"``{upf.filename}``. Rename one before resubmission."
+                )
+        return local_copy_list
+
+    def _write_alpha_files(self, folder, *, do_orbdep: bool, odd_nkscalfact: bool) -> None:
+        """Emit ``file_alpharef[_empty].txt`` when orbital-dependent screening is requested."""
+        alphas_requested = do_orbdep and odd_nkscalfact
+        alphas_provided = "alphas" in self.inputs
+        if alphas_requested and not alphas_provided:
+            raise ValueError(
+                "Parameters request orbital-dependent screening (do_orbdep=.true., "
+                "odd_nkscalfact=.true.) but no ``alphas`` input was provided."
+            )
+        if alphas_provided and not alphas_requested:
+            raise ValueError(
+                "``alphas`` input was provided but the parameters do not enable orbital-dependent "
+                "screening (need do_orbdep=.true. and odd_nkscalfact=.true.)."
+            )
+        if not alphas_requested:
+            return
+        alphas = self.inputs.alphas.get_dict()
+        self._write_alpha_file(folder, alphas.get("filled", []), self._ALPHAREF_FILE)
+        self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
+
+    def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
+        """If a ``parent_folder`` input is provided, symlink its ``out/`` into place."""
+        if "parent_folder" not in self.inputs:
+            return []
+        parent = self.inputs.parent_folder
+        parent_out = str(PurePosixPath(parent.get_remote_path()) / self._OUTPUT_SUBFOLDER)
+        return [(parent.computer.uuid, parent_out, self._OUTPUT_SUBFOLDER)]
+
+    def _build_retrieve_list(
+        self, *, ndw: int, nspin: int, do_orbdep: bool, do_bare_eigs: bool
+    ) -> list[str]:
+        """Assemble the ``retrieve_list``: stdout, CRASH, Hamiltonian XMLs, user extras."""
+        retrieve_list: list[str] = [self._OUTPUT_FILE, self._CRASH_FILE]
+        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
+        if do_orbdep:
+            for ispin in range(1, nspin + 1):
+                tag = str(ispin) if nspin > 1 else ""
+                retrieve_list.append(f"{ham_dir}/hamiltonian{tag}.xml")
+                retrieve_list.append(f"{ham_dir}/hamiltonian_emp{tag}.xml")
+                if do_bare_eigs:
+                    retrieve_list.append(f"{ham_dir}/hamiltonian0{tag}.xml")
+                    retrieve_list.append(f"{ham_dir}/hamiltonian0_emp{tag}.xml")
+        if "settings" in self.inputs:
+            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
+            retrieve_list.extend(extra)
+        return retrieve_list
+
+    # ------------------------------------------------------------------
     # Input-rendering helpers
     # ------------------------------------------------------------------
 
@@ -269,7 +292,9 @@ class KcpCalculation(CalcJob):
         for namelist, options in parameters.items():
             nl = namelist.upper()
             if not isinstance(options, dict):
-                raise ValueError(f"Namelist ``{namelist}`` must map to a dict, got {type(options).__name__}.")
+                raise ValueError(
+                    f"Namelist ``{namelist}`` must map to a dict, got {type(options).__name__}."
+                )
             blocked = cls._BLOCKED_KEYS.get(nl, frozenset())
             row: dict = {}
             for key, val in options.items():

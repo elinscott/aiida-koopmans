@@ -17,7 +17,6 @@ import pytest
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 
-
 # ----------------------------------------------------------------------
 # _normalize_parameters
 # ----------------------------------------------------------------------
@@ -66,7 +65,10 @@ class TestRenderNamelists:
         assert text.count("/\n") == 3
 
     def test_fortran_boolean_and_quoted_string(self):
-        params = {"CONTROL": {"calculation": "cp", "verbosity": "low"}, "NKSIC": {"do_innerloop": True}}
+        params = {
+            "CONTROL": {"calculation": "cp", "verbosity": "low"},
+            "NKSIC": {"do_innerloop": True},
+        }
         text = KcpCalculation._render_namelists(params)
         assert "calculation = 'cp'" in text
         assert "verbosity = 'low'" in text
@@ -140,7 +142,7 @@ class FakeFolder:
     def __init__(self):
         self.files: dict[str, str] = {}
 
-    def open(self, name, mode="r", encoding=None):  # noqa: ARG002
+    def open(self, name, mode="r", encoding=None):
         buf = io.StringIO()
         parent = self
 

@@ -1,13 +1,21 @@
+# See https://pre-commit.com for more information
+# Install the git hook via: ``pre-commit install``
+# Run on all files: ``pre-commit run --all-files``
 repos:
-- repo: local
-  hooks:
-  - id: format
-    name: format
-    entry: hatch fmt -f
-    language: system
-    types: [python]
-  - id: lint
-    name: lint
-    entry: hatch fmt -l
-    language: system
-    types: [python]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=500]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format

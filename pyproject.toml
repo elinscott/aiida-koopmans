@@ -77,32 +77,60 @@ filterwarnings = [
 source = ["src/aiida_koopmans"]
 
 [tool.ruff]
-line-length = 120
+# Keep this section in sync with koopmans2/pyproject.toml — both repos share
+# one lint/format policy for the rewrite.
+line-length = 100
+extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
+# DOC (pydoclint) is still a preview rule; opt in to that one alone without
+# pulling in preview rules from other categories.
+preview = true
+explicit-preview-rules = true
+# See https://docs.astral.sh/ruff/rules
+extend-select = [
+    "F",    # pyflakes
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "C90",  # mccabe
+    "I",    # isort
+    "UP",   # pyupgrade
+    "D",    # pydocstyle
+    "DOC",  # pydoclint (preview; activated by explicit-preview-rules)
+    "B",    # bugbear
+    "S",    # bandit
+    "T20",  # print
+    "N",    # pep8 naming
+    "ERA",  # eradicate commented out code
+    "NPY",  # numpy checks
+    "RUF",  # ruff rules
+    "C4",   # comprehensions
+]
 ignore = [
-  'F403',  # Star imports unable to detect undefined names
-  'F405',  # Import may be undefined or defined from star imports
-  'PLR0911',  # Too many return statements
-  'PLR0912',  # Too many branches
-  'PLR0913',  # Too many arguments in function definition
-  'PLR0915',  # Too many statements
-  'PLR2004',  # Magic value used in comparison
-  'RUF005',  # Consider iterable unpacking instead of concatenation
-  'RUF012'  # Mutable class attributes should be annotated with `typing.ClassVar`
+    "D105", # Missing docstring in magic method
+    "E203", # Conflicts with formatter on slice colons
 ]
-select = [
-  'E',  # pydocstyle
-  'W',  # pydocstyle
-  'F',  # pyflakes
-  'I',  # isort
-  'N',  # pep8-naming
-  'PLC',  # pylint-convention
-  'PLE',  # pylint-error
-  'PLR',  # pylint-refactor
-  'PLW',  # pylint-warning
-  'RUF'  # ruff
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: descriptive names replace per-method docstrings; assert is the core idiom.
+"tests/**/*.py" = ["D101", "D102", "D103", "D107", "S101"]
+# Allow re-export shape in __init__.py files.
+"src/aiida_koopmans/**/__init__.py" = ["F401", "F403"]
+# aiida-workgraph @task.graph functions are conventionally CamelCase
+# (see e.g. PwBandsTaskViaBuilder, Wannier90TaskViaBuilder upstream).
+"src/aiida_koopmans/workgraphs/*.py" = ["N802"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "aiida_koopmans",
+    "tests",
 ]
+
+[tool.ruff.format]
+docstring-code-format = true
 
 ## Hatch configurations
 
@@ -133,7 +161,7 @@ cov-report = "coverage report"
 python = ["3.12", "3.13", "3.14"]
 
 [tool.hatch.envs.hatch-static-analysis]
-dependencies = ["ruff==0.4.3"]
+dependencies = ["ruff==0.14.8"]  # keep in sync with .pre-commit-config.yaml
 
 [tool.hatch.envs.hatch-static-analysis.scripts]
 # Fixes are executed with `hatch fmt`.
