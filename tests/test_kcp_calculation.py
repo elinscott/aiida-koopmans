@@ -180,6 +180,102 @@ def test_write_alpha_file_empty_list_emits_header_only():
 # ----------------------------------------------------------------------
 
 
+def test_kcp_tutorial_1_ozone_ki(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    fixture_localhost,
+    aiida_local_code_factory,
+    ozone_structure,
+    ozone_real_pseudos,
+    tmp_path_factory,
+    file_regression,
+):
+    """Pin the kcp.x input file rendered for the KI-correction step of tutorial_1 (ozone).
+
+    Builds the exact ``KcpCalculation`` inputs that ``KoopmansDSCFTask`` would
+    hand to the KI step for the ozone / KI-DSCF tutorial — ecutwfc=65,
+    ecutrho=260, nbnd=10, nspin=2, ``do_orbdep=True``, restart from ndw=50 to
+    ndw=60 — and snapshot the rendered ``aiida.cpi``.
+
+    Mirrors ``aiida-quantumespresso.tests.calculations.test_cp:test_cp_autopilot``:
+    ``file_regression.check`` produces the snapshot on first run; subsequent
+    runs fail if the rendered input diverges.
+    """
+    from aiida import orm
+    from aiida.common import LinkType, datastructures
+
+    from aiida_koopmans.workgraphs.kcp import _build_ki_parameters
+
+    # Code (dummy bash executable — the test never submits anything).
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
+
+    # Need a RemoteData to stand in for the DFT-step parent_folder.
+    parent_calc = orm.CalcJobNode(computer=fixture_localhost, process_type="")
+    parent_calc.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
+    parent_calc.store()
+    remote = orm.RemoteData(
+        computer=fixture_localhost,
+        remote_path=tmp_path_factory.mktemp("kcp-parent").as_posix(),
+    )
+    remote.base.links.add_incoming(
+        parent_calc, link_type=LinkType.CREATE, link_label="remote_folder"
+    )
+    remote.store()
+
+    ki_params = _build_ki_parameters(
+        ecutwfc=65.0,
+        ecutrho=260.0,
+        nbnd=10,
+        nspin=2,
+        nelec=18,
+        nelup=9,
+        neldw=9,
+        tot_magnetization=None,
+        mt_correction=False,
+    )
+
+    # Matches what KoopmansDSCFTask builds for ``initial_alpha=0.6`` on ozone:
+    # 18 filled orbitals + 2 empty (nbnd=10, nspin=2, nelup=neldw=9).
+    alphas = orm.Dict(
+        dict={
+            "filled": [0.6] * 18,
+            "empty": [0.6] * 2,
+        }
+    )
+
+    inputs = {
+        "code": code,
+        "structure": ozone_structure,
+        "parameters": orm.Dict(dict=ki_params),
+        "alphas": alphas,
+        "pseudos": ozone_real_pseudos,
+        "parent_folder": remote,
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.kcp", inputs)
+
+    # Sanity: rendered-input filename + retrieve_list shape.
+    assert isinstance(calc_info, datastructures.CalcInfo)
+    assert calc_info.codes_info[0].cmdline_params == ["-in", "aiida.cpi"]
+    # KI writes ndw=60 with do_orbdep + do_bare_eigs → hamiltonian*.xml files retrieved.
+    retrieved = sorted(calc_info.retrieve_list)
+    assert "aiida.cpo" in retrieved
+    assert any("hamiltonian1.xml" in r for r in retrieved)
+    assert any("hamiltonian_emp1.xml" in r for r in retrieved)
+    assert any("hamiltonian01.xml" in r for r in retrieved)  # bare eigenvalues
+    # Alpha files were written to the sandbox.
+    contents = fixture_sandbox.get_content_list()
+    assert "file_alpharef.txt" in contents
+    assert "file_alpharef_empty.txt" in contents
+
+    with fixture_sandbox.open("aiida.cpi") as handle:
+        rendered = handle.read()
+
+    file_regression.check(rendered, encoding="utf-8", extension=".cpi")
+
+
 def test_full_ozone_input_rendering_has_expected_sections(ozone_structure, ozone_pseudos):
     """Render a plausible ozone DFT-init input and check the overall structure."""
     # After normalisation + injection, these are the params the CalcJob would use.

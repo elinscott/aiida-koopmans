@@ -1,0 +1,123 @@
+"""Parser regression tests for ``KcpParser``.
+
+Mirrors the pattern from ``aiida-quantumespresso.tests.parsers.test_cp``:
+a test-name subdirectory under ``tests/parsers/fixtures/kcp/`` holds a
+frozen copy of retrieved-folder contents from a known-good kcp.x run; the
+parser is invoked against that folder and its ``output_parameters`` dict
+is snapshotted with ``data_regression``.
+
+The fixtures for ``tutorial_1_ozone_ki`` come from a completed legacy
+``koopmans`` run at
+``/home/linsco_e/code/koopmans/tutorials/tutorial_1/01-koopmans-dscf-ki/``.
+File names have been adjusted to match the aiida-koopmans CalcJob's
+``prefix=aiida`` (legacy used ``prefix=kc``).
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from aiida import orm
+
+from aiida_koopmans.workgraphs.kcp import _build_ki_parameters
+
+
+def test_kcp_parser_tutorial_1_ozone_ki(
+    aiida_profile,
+    fixture_localhost,
+    generate_calc_job_node,
+    generate_parser,
+    ozone_structure,
+    ozone_real_pseudos,
+    data_regression,
+):
+    """Pin the parsed output of the KI-correction step of tutorial_1 (ozone).
+
+    Attaches the frozen legacy-run retrieved folder to a mock ``CalcJobNode``
+    and runs ``KcpParser`` against it. Snapshot captures the
+    ``output_parameters`` dict plus the shapes of the eigenvalue and lambda
+    array outputs.
+    """
+    ki_params = _build_ki_parameters(
+        ecutwfc=65.0,
+        ecutrho=260.0,
+        nbnd=10,
+        nspin=2,
+        nelec=18,
+        nelup=9,
+        neldw=9,
+        tot_magnetization=None,
+        mt_correction=False,
+    )
+    parameters = orm.Dict(dict=ki_params)
+
+    alphas = orm.Dict(
+        dict={
+            "filled": [0.6] * 18,
+            "empty": [0.6] * 2,
+        }
+    )
+
+    node = generate_calc_job_node(
+        entry_point_name="koopmans.kcp",
+        computer=fixture_localhost,
+        test_name="tutorial_1_ozone_ki",
+        fixture_subdir="kcp",
+        inputs={
+            "structure": ozone_structure,
+            "parameters": parameters,
+            "alphas": alphas,
+            "pseudos": ozone_real_pseudos,
+        },
+    )
+
+    parser = generate_parser("koopmans.kcp")
+    results, calcfunction = parser.parse_from_node(node, store_provenance=False)
+
+    assert calcfunction.is_finished, calcfunction.exception
+    assert calcfunction.is_finished_ok, calcfunction.exit_message
+    assert "output_parameters" in results
+    assert "output_eigenvalues" in results
+    assert "output_lambdas" in results
+    assert "output_bare_lambdas" in results
+
+    eig = results["output_eigenvalues"].get_array("eigenvalues")
+    lam_sp1 = results["output_lambdas"].get_array("spin_1")
+    lam_sp2 = results["output_lambdas"].get_array("spin_2")
+    bare_sp1 = results["output_bare_lambdas"].get_array("spin_1")
+
+    # Strip floats whose exact value is stdout-format-dependent from the
+    # snapshotted output_parameters, then record array shapes instead of full
+    # array contents so the snapshot stays small and diff-friendly.
+    params = results["output_parameters"].get_dict()
+    # ``walltime`` depends on the machine the legacy run was executed on.
+    params.pop("walltime", None)
+
+    snapshot = {
+        "output_parameters": _sanitize(params),
+        "eigenvalues_shape": list(eig.shape),
+        "eigenvalues_has_nan": bool(np.isnan(eig).any()),
+        "lambdas_spin_1_shape": list(lam_sp1.shape),
+        "lambdas_spin_2_shape": list(lam_sp2.shape),
+        "bare_lambdas_spin_1_shape": list(bare_sp1.shape),
+    }
+    data_regression.check(snapshot)
+
+
+def _sanitize(value):
+    """Recursively convert numbers to ``float``/``int`` so YAML output is stable."""
+    if isinstance(value, dict):
+        return {k: _sanitize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize(v) for v in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | np.integer):
+        return int(value)
+    if isinstance(value, float | np.floating):
+        # Round to 8 sig figs — legacy .cpo stdout floats have only ~6-10
+        # significant digits depending on the printf format, and a tighter
+        # comparison would flake on trivial last-bit differences.
+        if np.isnan(value):
+            return float("nan")
+        return float(f"{value:.8g}")
+    return value

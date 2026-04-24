@@ -1,0 +1,73 @@
+&CONTROL
+  calculation = 'cp'
+  verbosity = 'low'
+  iprint = 1
+  disk_io = 'high'
+  write_hr = .false.
+  ndr = 50
+  ndw = 60
+  restart_mode = 'restart'
+  outdir = './out/'
+  pseudo_dir = './pseudo/'
+  prefix = 'aiida'
+/
+&SYSTEM
+  ecutwfc =   6.5000000000d+01
+  ecutrho =   2.6000000000d+02
+  nbnd = 10
+  nspin = 2
+  do_ee = .true.
+  do_orbdep = .true.
+  fixed_state = .false.
+  do_wf_cmplx = .true.
+  nelec = 18
+  nelup = 9
+  neldw = 9
+  ibrav = 0
+  nat = 3
+  ntyp = 1
+/
+&ELECTRONS
+  electron_dynamics = 'cg'
+  passop =   2.0000000000d+00
+  ortho_para = 1
+  maxiter = 300
+  empty_states_maxstep = 300
+  do_outerloop = .false.
+  do_outerloop_empty = .false.
+  conv_thr =   1.8000000000d-08
+  esic_conv_thr =   1.8000000000d-08
+/
+&IONS
+  ion_dynamics = 'none'
+  ion_nstepe = 5
+/
+&EE
+  which_compensation = 'none'
+/
+&NKSIC
+  which_orbdep = 'nki'
+  odd_nkscalfact = .true.
+  odd_nkscalfact_empty = .true.
+  nkscalfact =   1.0000000000d+00
+  do_innerloop = .true.
+  do_innerloop_empty = .false.
+  do_innerloop_cg = .true.
+  innerloop_cg_nreset = 20
+  innerloop_cg_nsd = 2
+  innerloop_init_n = 3
+  innerloop_nmax = 100
+  hartree_only_sic = .false.
+  esic_conv_thr =   1.8000000000d-08
+  do_bare_eigs = .true.
+/
+ATOMIC_SPECIES
+  O  15.999400  O.upf
+ATOMIC_POSITIONS angstrom
+  O  7.0869000000  6.0000000000  5.8900000000
+  O  8.1738000000  6.0000000000  6.5500000000
+  O  6.0000000000  6.0000000000  6.5500000000
+CELL_PARAMETERS angstrom
+  14.1738000000  0.0000000000  0.0000000000
+  0.0000000000  12.0000000000  0.0000000000
+  0.0000000000  0.0000000000  12.6600000000

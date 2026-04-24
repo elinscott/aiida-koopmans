@@ -118,7 +118,7 @@ def DFTCPTask(
     graph that runs the symmetrization process — that graph is not yet
     ported.
     """
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
+    pseudos = resolve_pseudo_family(_unwrap(pseudo_family), structure)
     nelec, nelup, neldw = count_electrons(
         structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
     )
@@ -197,7 +197,7 @@ def KoopmansDSCFTask(
         options=options,
     )
 
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
+    pseudos = resolve_pseudo_family(_unwrap(pseudo_family), structure)
     nelec, nelup, neldw = count_electrons(
         structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
     )
@@ -243,6 +243,21 @@ def KoopmansDSCFTask(
         lambdas=ki_outputs["output_lambdas"],
         remote_folder=ki_outputs["remote_folder"],
     )
+
+
+# ----------------------------------------------------------------------
+# Socket-unwrap helper
+# ----------------------------------------------------------------------
+
+
+def _unwrap(value):
+    """Return the underlying value of a ``node_graph`` socket proxy, if any.
+
+    TODO: remove once upstream ``node_graph`` unwraps ``TaggedValue``
+    proxies before they hit AiiDA's ``QueryBuilder`` (which cannot bind a
+    ``wrapt.ObjectProxy`` as an SQL parameter). Tracked externally.
+    """
+    return getattr(value, "__wrapped__", value)
 
 
 # ----------------------------------------------------------------------

@@ -143,6 +143,7 @@ dependencies = [
     'coverage~=7.0',
     'pytest~=7.0',
     "pytest-cov~=4.1",
+    "pytest-regressions~=2.5",
     "ipdb"
 ]
 

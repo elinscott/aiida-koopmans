@@ -64,3 +64,32 @@ def fake_upf():
 def ozone_pseudos(fake_upf):
     """Return the ozone pseudos dict ``{"O": FakeUpf(...)}`` with oxygen's valence."""
     return {"O": fake_upf(filename="O.upf", uuid="fake-upf-uuid", z_valence=6.0)}
+
+
+@pytest.fixture
+def generate_upf_data(aiida_profile):
+    """Return a factory producing real (stored) ``UpfData`` nodes for parser/CalcJob tests.
+
+    Mirrors ``aiida-quantumespresso.tests.conftest.generate_upf_data``. The
+    stream content is a minimal valid UPF v2 header so the pseudo family
+    loader won't reject it during import.
+    """
+    import io
+
+    from aiida_pseudo.data.pseudo.upf import UpfData
+
+    def _generate_upf_data(element: str, z_valence: float = 6.0) -> UpfData:
+        content = (
+            f'<UPF version="2.0.1"><PP_HEADER\nelement="{element}"\n'
+            f'z_valence="{z_valence}"\n/></UPF>\n'
+        )
+        stream = io.BytesIO(content.encode("utf-8"))
+        return UpfData(stream, filename=f"{element}.upf")
+
+    return _generate_upf_data
+
+
+@pytest.fixture
+def ozone_real_pseudos(generate_upf_data):
+    """Return ``{"O": UpfData}`` with a real (AiiDA-storable) UpfData node for oxygen."""
+    return {"O": generate_upf_data("O", z_valence=6.0)}
