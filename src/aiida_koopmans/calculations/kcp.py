@@ -178,7 +178,8 @@ class KcpCalculation(CalcJob):
 
         local_copy_list = self._build_local_copy_list(structure, pseudos)
         remote_symlink_list = self._build_remote_symlink_list()
-        retrieve_list = self._build_retrieve_list(
+        retrieve_list = self._build_retrieve_list()
+        retrieve_temporary_list = self._build_retrieve_temporary_list(
             ndw=ndw, nspin=nspin, do_orbdep=do_orbdep, do_bare_eigs=do_bare_eigs
         )
 
@@ -192,6 +193,7 @@ class KcpCalculation(CalcJob):
         calc_info.local_copy_list = local_copy_list
         calc_info.remote_symlink_list = remote_symlink_list
         calc_info.retrieve_list = retrieve_list
+        calc_info.retrieve_temporary_list = retrieve_temporary_list
 
         return calc_info
 
@@ -262,24 +264,37 @@ class KcpCalculation(CalcJob):
         parent_out = str(PurePosixPath(parent.get_remote_path()) / self._OUTPUT_SUBFOLDER)
         return [(parent.computer.uuid, parent_out, self._OUTPUT_SUBFOLDER)]
 
-    def _build_retrieve_list(
-        self, *, ndw: int, nspin: int, do_orbdep: bool, do_bare_eigs: bool
-    ) -> list[str]:
-        """Assemble the ``retrieve_list``: stdout, CRASH, Hamiltonian XMLs, user extras."""
+    def _build_retrieve_list(self) -> list[str]:
+        """Files persisted in the ``retrieved`` FolderData: stdout, CRASH, user extras."""
         retrieve_list: list[str] = [self._OUTPUT_FILE, self._CRASH_FILE]
-        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
-        if do_orbdep:
-            for ispin in range(1, nspin + 1):
-                tag = str(ispin) if nspin > 1 else ""
-                retrieve_list.append(f"{ham_dir}/hamiltonian{tag}.xml")
-                retrieve_list.append(f"{ham_dir}/hamiltonian_emp{tag}.xml")
-                if do_bare_eigs:
-                    retrieve_list.append(f"{ham_dir}/hamiltonian0{tag}.xml")
-                    retrieve_list.append(f"{ham_dir}/hamiltonian0_emp{tag}.xml")
         if "settings" in self.inputs:
             extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
             retrieve_list.extend(extra)
         return retrieve_list
+
+    def _build_retrieve_temporary_list(
+        self, *, ndw: int, nspin: int, do_orbdep: bool, do_bare_eigs: bool
+    ) -> list:
+        """Files retrieved into a scratch folder for parsing then discarded.
+
+        Hamiltonian XMLs are intermediate artefacts; the parser turns them into
+        ``ArrayData`` outputs, after which the raw XMLs serve no purpose.
+        Tuple form ``(remote, '.', depth)`` preserves the
+        ``out/<prefix>_<ndw>.save/K00001/`` nesting AiiDA would otherwise flatten.
+        """
+        if not do_orbdep:
+            return []
+        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
+        temp_list: list = []
+        for ispin in range(1, nspin + 1):
+            tag = str(ispin) if nspin > 1 else ""
+            names = [f"hamiltonian{tag}.xml", f"hamiltonian_emp{tag}.xml"]
+            if do_bare_eigs:
+                names += [f"hamiltonian0{tag}.xml", f"hamiltonian0_emp{tag}.xml"]
+            for name in names:
+                remote_path = f"{ham_dir}/{name}"
+                temp_list.append((remote_path, ".", len(remote_path.split("/"))))
+        return temp_list
 
     # ------------------------------------------------------------------
     # Input-rendering helpers

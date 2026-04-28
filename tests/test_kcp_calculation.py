@@ -232,7 +232,8 @@ def test_kcp_tutorial_1_ozone_ki(
         nelup=9,
         neldw=9,
         tot_magnetization=None,
-        mt_correction=False,
+        mt_correction=not any(ozone_structure.pbc),
+        functional="ki",
     )
 
     # Matches what KoopmansDSCFTask builds for ``initial_alpha=0.6`` on ozone:
@@ -256,15 +257,17 @@ def test_kcp_tutorial_1_ozone_ki(
 
     calc_info = generate_calc_job(fixture_sandbox, "koopmans.kcp", inputs)
 
-    # Sanity: rendered-input filename + retrieve_list shape.
+    # Sanity: rendered-input filename + retrieve_list shapes.
     assert isinstance(calc_info, datastructures.CalcInfo)
     assert calc_info.codes_info[0].cmdline_params == ["-in", "aiida.cpi"]
-    # KI writes ndw=60 with do_orbdep + do_bare_eigs → hamiltonian*.xml files retrieved.
+    # ``retrieve_list`` persists stdout + CRASH only.
     retrieved = sorted(calc_info.retrieve_list)
     assert "aiida.cpo" in retrieved
-    assert any("hamiltonian1.xml" in r for r in retrieved)
-    assert any("hamiltonian_emp1.xml" in r for r in retrieved)
-    assert any("hamiltonian01.xml" in r for r in retrieved)  # bare eigenvalues
+    # Hamiltonian XMLs are intermediate artefacts → ``retrieve_temporary_list``.
+    temp_remote_paths = [item[0] for item in calc_info.retrieve_temporary_list]
+    assert any("hamiltonian1.xml" in r for r in temp_remote_paths)
+    assert any("hamiltonian_emp1.xml" in r for r in temp_remote_paths)
+    assert any("hamiltonian01.xml" in r for r in temp_remote_paths)  # bare eigenvalues
     # Alpha files were written to the sandbox.
     contents = fixture_sandbox.get_content_list()
     assert "file_alpharef.txt" in contents

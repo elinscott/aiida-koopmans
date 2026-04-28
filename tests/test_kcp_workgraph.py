@@ -29,7 +29,6 @@ class TestValidateScope:
             init_orbitals="kohn-sham",
             alpha_numsteps=1,
             fix_spin_contamination=False,
-            mt_correction=False,
             structure=ozone_structure,
         )
 
@@ -41,7 +40,6 @@ class TestValidateScope:
                 init_orbitals="kohn-sham",
                 alpha_numsteps=1,
                 fix_spin_contamination=False,
-                mt_correction=False,
                 structure=ozone_structure,
             )
 
@@ -53,7 +51,6 @@ class TestValidateScope:
                 init_orbitals=init_orbitals,
                 alpha_numsteps=1,
                 fix_spin_contamination=False,
-                mt_correction=False,
                 structure=ozone_structure,
             )
 
@@ -64,7 +61,6 @@ class TestValidateScope:
                 init_orbitals="kohn-sham",
                 alpha_numsteps=3,
                 fix_spin_contamination=False,
-                mt_correction=False,
                 structure=ozone_structure,
             )
 
@@ -75,18 +71,6 @@ class TestValidateScope:
                 init_orbitals="kohn-sham",
                 alpha_numsteps=1,
                 fix_spin_contamination=True,
-                mt_correction=False,
-                structure=ozone_structure,
-            )
-
-    def test_mt_correction_raises(self, ozone_structure):
-        with pytest.raises(NotImplementedError, match="mt_correction"):
-            _validate_scope(
-                functional="ki",
-                init_orbitals="kohn-sham",
-                alpha_numsteps=1,
-                fix_spin_contamination=False,
-                mt_correction=True,
                 structure=ozone_structure,
             )
 
@@ -97,7 +81,6 @@ class TestValidateScope:
                 init_orbitals="kohn-sham",
                 alpha_numsteps=1,
                 fix_spin_contamination=False,
-                mt_correction=False,
                 structure=periodic_ozone_structure,
             )
 
@@ -116,7 +99,10 @@ _OZONE_KW = {
     "nelup": 9,
     "neldw": 9,
     "tot_magnetization": None,
+    "mt_correction": False,
 }
+
+_KI_KW = {**_OZONE_KW, "functional": "ki"}
 
 
 class TestBuildDftParameters:
@@ -151,7 +137,6 @@ class TestBuildDftParameters:
     def test_conv_thr_scales_with_nelec(self):
         params = _build_dft_parameters(**_OZONE_KW)
         assert params["ELECTRONS"]["conv_thr"] == pytest.approx(1.8e-8)
-        assert params["ELECTRONS"]["esic_conv_thr"] == pytest.approx(1.8e-8)
 
     def test_nspin_one_skips_spin_keys(self):
         kw = {**_OZONE_KW, "nspin": 1, "nelup": None, "neldw": None}
@@ -162,31 +147,49 @@ class TestBuildDftParameters:
 
 
 class TestBuildKiParameters:
-    def test_has_nksic_and_ee(self):
-        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+    def test_has_nksic(self):
+        params = _build_ki_parameters(**_KI_KW)
         assert "NKSIC" in params
-        assert "EE" in params
         assert params["NKSIC"]["which_orbdep"] == "nki"
         assert params["NKSIC"]["odd_nkscalfact"] is True
         assert params["NKSIC"]["odd_nkscalfact_empty"] is True
         assert params["NKSIC"]["do_bare_eigs"] is True
 
     def test_ki_control_is_restart_ndr_50_ndw_60(self):
-        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        params = _build_ki_parameters(**_KI_KW)
         assert params["CONTROL"]["restart_mode"] == "restart"
         assert params["CONTROL"]["ndr"] == 50
         assert params["CONTROL"]["ndw"] == 60
 
     def test_ki_enables_orbdep_and_disables_outerloop(self):
-        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
+        params = _build_ki_parameters(**_KI_KW)
         assert params["SYSTEM"]["do_orbdep"] is True
         assert params["ELECTRONS"]["do_outerloop"] is False
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
 
-    def test_no_mt_correction_uses_compensation_none(self):
-        params = _build_ki_parameters(**_OZONE_KW, mt_correction=False)
-        assert params["EE"]["which_compensation"] == "none"
-        assert "tcc_odd" not in params["EE"]
+    def test_periodic_omits_ee_namelist(self):
+        # Periodic systems (mt_correction=False) emit no &EE block; do_ee=False
+        # in &SYSTEM keeps kcp.x from trying to read it.
+        params = _build_ki_parameters(**_KI_KW)
+        assert "EE" not in params
+        assert params["SYSTEM"]["do_ee"] is False
+
+    def test_aperiodic_emits_tcc(self):
+        kw = {**_KI_KW, "mt_correction": True}
+        params = _build_ki_parameters(**kw)
+        assert params["EE"]["which_compensation"] == "tcc"
+        assert params["SYSTEM"]["do_ee"] is True
+
+    def test_ki_disables_innerloop(self):
+        # ``do_innerloop`` is True only for PZ; KI / KIPZ run no inner loop.
+        # See legacy decision tree in koopmans/workflows/_koopmans_dscf.py:1129-1138.
+        params = _build_ki_parameters(**_KI_KW)
+        assert params["NKSIC"]["do_innerloop"] is False
+
+    def test_pz_enables_innerloop(self):
+        kw = {**_KI_KW, "functional": "pz"}
+        params = _build_ki_parameters(**kw)
+        assert params["NKSIC"]["do_innerloop"] is True
 
 
 # ----------------------------------------------------------------------

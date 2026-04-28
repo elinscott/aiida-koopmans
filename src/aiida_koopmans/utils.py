@@ -30,6 +30,14 @@ def resolve_pseudo_family(family_label: str, structure: orm.StructureData) -> di
     """
     from aiida_pseudo.groups.family.pseudo import PseudoPotentialFamily
 
+    # ``family_label`` may still be wrapped in ``node_graph.socket.TaggedValue``
+    # when this helper is called from a ``@task.graph`` body at build time:
+    # TaggedValue is needed for sub-task socket linking inside the graph, but
+    # SQLAlchemy can't bind a ``wrapt.ObjectProxy`` as a query parameter.
+    # ``__wrapped__`` peels the proxy; it's a no-op on plain strings. The
+    # execute-time path already hands us a primitive thanks to
+    # ``AiidaSerializationAdapter.deserialize``.
+    family_label = getattr(family_label, "__wrapped__", family_label)
     family = (
         orm.QueryBuilder().append(PseudoPotentialFamily, filters={"label": family_label}).one()[0]
     )

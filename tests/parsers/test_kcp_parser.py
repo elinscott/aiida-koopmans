@@ -47,6 +47,7 @@ def test_kcp_parser_tutorial_1_ozone_ki(
         neldw=9,
         tot_magnetization=None,
         mt_correction=False,
+        functional="ki",
     )
     parameters = orm.Dict(dict=ki_params)
 
@@ -70,8 +71,18 @@ def test_kcp_parser_tutorial_1_ozone_ki(
         },
     )
 
+    # The CalcJob streams Hamiltonian XMLs into ``retrieve_temporary_list``;
+    # the same fixture directory stands in for that scratch folder here.
+    from pathlib import Path
+
+    fixture_dir = Path(__file__).parent / "fixtures" / "kcp" / "tutorial_1_ozone_ki"
+
     parser = generate_parser("koopmans.kcp")
-    results, calcfunction = parser.parse_from_node(node, store_provenance=False)
+    results, calcfunction = parser.parse_from_node(
+        node,
+        store_provenance=False,
+        retrieved_temporary_folder=str(fixture_dir),
+    )
 
     assert calcfunction.is_finished, calcfunction.exception
     assert calcfunction.is_finished_ok, calcfunction.exit_message

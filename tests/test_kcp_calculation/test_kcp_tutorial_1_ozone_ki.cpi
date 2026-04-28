@@ -36,21 +36,20 @@
   do_outerloop = .false.
   do_outerloop_empty = .false.
   conv_thr =   1.8000000000d-08
-  esic_conv_thr =   1.8000000000d-08
 /
 &IONS
   ion_dynamics = 'none'
   ion_nstepe = 5
 /
 &EE
-  which_compensation = 'none'
+  which_compensation = 'tcc'
 /
 &NKSIC
   which_orbdep = 'nki'
   odd_nkscalfact = .true.
   odd_nkscalfact_empty = .true.
   nkscalfact =   1.0000000000d+00
-  do_innerloop = .true.
+  do_innerloop = .false.
   do_innerloop_empty = .false.
   do_innerloop_cg = .true.
   innerloop_cg_nreset = 20

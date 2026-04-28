@@ -27,7 +27,12 @@ class KcpParser(Parser):
     """Parse the stdout and Hamiltonian XML outputs of a ``KcpCalculation``."""
 
     def parse(self, **kwargs: Any):
-        """Entry point called by AiiDA after the CalcJob finishes."""
+        """Entry point called by AiiDA after the CalcJob finishes.
+
+        ``retrieved_temporary_folder`` is supplied by AiiDA when the CalcJob
+        declared a non-empty ``retrieve_temporary_list``; that's where the
+        Hamiltonian XMLs land for parsing before they're discarded.
+        """
         try:
             retrieved = self.retrieved
         except Exception:
@@ -46,7 +51,8 @@ class KcpParser(Parser):
         self.out("output_parameters", orm.Dict(dict=parsed))
         self._emit_eigenvalues(eigenvalues)
 
-        lambdas_exit = self._emit_lambdas(retrieved)
+        retrieved_temporary_folder = kwargs.get("retrieved_temporary_folder")
+        lambdas_exit = self._emit_lambdas(retrieved_temporary_folder)
         if lambdas_exit is not None:
             return lambdas_exit
 
@@ -67,25 +73,29 @@ class KcpParser(Parser):
         eig_array.set_array("eigenvalues", padded)
         self.out("output_eigenvalues", eig_array)
 
-    def _emit_lambdas(self, retrieved):
+    def _emit_lambdas(self, retrieved_temporary_folder):
         """Emit ``output_lambdas`` / ``output_bare_lambdas`` when do_orbdep is set.
 
-        Returns an exit-code node if Hamiltonian XMLs are missing, else ``None``.
+        Hamiltonian XMLs live in the retrieved-temporary folder (set by the
+        CalcJob's ``retrieve_temporary_list``). Returns an exit-code node if
+        the folder is missing or any XML is, else ``None``.
         """
         params = self.node.inputs.parameters.get_dict()
         system = {k.lower(): v for k, v in params.get("SYSTEM", {}).items()}
         nksic = {k.lower(): v for k, v in params.get("NKSIC", {}).items()}
         if not bool(system.get("do_orbdep", False)):
             return None
+        if retrieved_temporary_folder is None:
+            return self.exit_codes.ERROR_OUTPUT_HAM_MISSING
         nspin = int(system.get("nspin", 1))
 
-        lambdas = self._parse_lambdas(retrieved, nspin=nspin, bare=False)
+        lambdas = self._parse_lambdas(retrieved_temporary_folder, nspin=nspin, bare=False)
         if lambdas is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
             return lambdas
         self.out("output_lambdas", lambdas)
 
         if bool(nksic.get("do_bare_eigs", False)):
-            bare = self._parse_lambdas(retrieved, nspin=nspin, bare=True)
+            bare = self._parse_lambdas(retrieved_temporary_folder, nspin=nspin, bare=True)
             if bare is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
                 return bare
             self.out("output_bare_lambdas", bare)
@@ -251,8 +261,10 @@ class KcpParser(Parser):
     # Hamiltonian XML parsing
     # ------------------------------------------------------------------
 
-    def _parse_lambdas(self, retrieved, nspin: int, bare: bool):
+    def _parse_lambdas(self, retrieved_temporary_folder, nspin: int, bare: bool):
         """Return an ArrayData of lambda matrices or an exit-code sentinel on failure."""
+        from pathlib import Path
+
         prefix = self.node.process_class._PREFIX
         ndw = int(
             {
@@ -261,25 +273,27 @@ class KcpParser(Parser):
             }.get("ndw", 50)
         )
         out_subfolder = self.node.process_class._OUTPUT_SUBFOLDER
-        ham_dir = f"{out_subfolder}/{prefix}_{ndw}.save/K00001"
+        ham_dir = (
+            Path(retrieved_temporary_folder) / out_subfolder / f"{prefix}_{ndw}.save" / "K00001"
+        )
 
         nspin_idx = list(range(1, nspin + 1))
         array = orm.ArrayData()
         for ispin in nspin_idx:
             tag = str(ispin) if nspin > 1 else ""
             prefix_token = "hamiltonian0" if bare else "hamiltonian"
-            filename_filled = f"{ham_dir}/{prefix_token}{tag}.xml"
-            filename_empty = f"{ham_dir}/{prefix_token}_emp{tag}.xml"
+            filled_path = ham_dir / f"{prefix_token}{tag}.xml"
+            empty_path = ham_dir / f"{prefix_token}_emp{tag}.xml"
 
             try:
-                filled_content = retrieved.base.repository.get_object_content(filename_filled)
+                filled_content = filled_path.read_text()
             except (OSError, FileNotFoundError):
                 return self.exit_codes.ERROR_OUTPUT_HAM_MISSING
 
             filled = _read_hamiltonian_xml(filled_content)
 
             try:
-                empty_content = retrieved.base.repository.get_object_content(filename_empty)
+                empty_content = empty_path.read_text()
             except (OSError, FileNotFoundError):
                 empty = None
             else:

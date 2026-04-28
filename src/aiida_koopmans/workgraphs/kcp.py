@@ -118,7 +118,7 @@ def DFTCPTask(
     graph that runs the symmetrization process — that graph is not yet
     ported.
     """
-    pseudos = resolve_pseudo_family(_unwrap(pseudo_family), structure)
+    pseudos = resolve_pseudo_family(pseudo_family, structure)
     nelec, nelup, neldw = count_electrons(
         structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
     )
@@ -132,11 +132,14 @@ def DFTCPTask(
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
+        mt_correction=not any(structure.pbc),
     )
     if overrides:
         parameters = recursive_merge(parameters, dict(overrides))
 
-    inputs = _build_kcp_inputs(code, structure, parameters, pseudos, options=options)
+    inputs = _build_kcp_inputs(
+        code, structure, parameters, pseudos, options=options, name="dft_init"
+    )
     outputs = KcpBaseTask(**inputs)
 
     return DFTCPOutputs(
@@ -161,7 +164,6 @@ def KoopmansDSCFTask(
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
     initial_alpha: float = 0.6,
-    mt_correction: bool = False,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> KoopmansDSCFOutputs:
@@ -177,9 +179,10 @@ def KoopmansDSCFTask(
         init_orbitals=init_orbitals,
         alpha_numsteps=alpha_numsteps,
         fix_spin_contamination=fix_spin_contamination,
-        mt_correction=mt_correction,
         structure=structure,
     )
+
+    mt_correction = not any(structure.pbc)
 
     dft_overrides = overrides.get("dft") if overrides else None
     ki_overrides = overrides.get("ki") if overrides else None
@@ -195,9 +198,10 @@ def KoopmansDSCFTask(
         tot_magnetization=tot_magnetization,
         overrides=dft_overrides,
         options=options,
+        metadata={"call_link_label": "dft_init"},
     )
 
-    pseudos = resolve_pseudo_family(_unwrap(pseudo_family), structure)
+    pseudos = resolve_pseudo_family(pseudo_family, structure)
     nelec, nelup, neldw = count_electrons(
         structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
     )
@@ -212,6 +216,7 @@ def KoopmansDSCFTask(
         neldw=neldw,
         tot_magnetization=tot_magnetization,
         mt_correction=mt_correction,
+        functional=functional,
     )
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, dict(ki_overrides))
@@ -234,6 +239,7 @@ def KoopmansDSCFTask(
         options=options,
         alphas=alphas,
         parent_folder=dft["remote_folder"],
+        name="ki_final",
     )
     ki_outputs = KcpBaseTask(**ki_inputs)
 
@@ -243,21 +249,6 @@ def KoopmansDSCFTask(
         lambdas=ki_outputs["output_lambdas"],
         remote_folder=ki_outputs["remote_folder"],
     )
-
-
-# ----------------------------------------------------------------------
-# Socket-unwrap helper
-# ----------------------------------------------------------------------
-
-
-def _unwrap(value):
-    """Return the underlying value of a ``node_graph`` socket proxy, if any.
-
-    TODO: remove once upstream ``node_graph`` unwraps ``TaggedValue``
-    proxies before they hit AiiDA's ``QueryBuilder`` (which cannot bind a
-    ``wrapt.ObjectProxy`` as an SQL parameter). Tracked externally.
-    """
-    return getattr(value, "__wrapped__", value)
 
 
 # ----------------------------------------------------------------------
@@ -271,7 +262,6 @@ def _validate_scope(
     init_orbitals: str,
     alpha_numsteps: int,
     fix_spin_contamination: bool,
-    mt_correction: bool,
     structure: orm.StructureData,
 ) -> None:
     """Fail fast on inputs the MVP workflow cannot honour yet."""
@@ -299,11 +289,6 @@ def _validate_scope(
             "runs a 7-call spin-symmetrisation pre-pass; its AiiDA equivalent "
             "is a separate SpinSymmetrizeTask that hasn't been written yet."
         )
-    if mt_correction:
-        raise NotImplementedError(
-            "mt_correction=True (Martyna-Tuckerman) is not yet ported. The MVP "
-            "emits which_compensation='none' in the EE namelist."
-        )
     if any(structure.pbc):
         raise NotImplementedError(
             "Periodic systems are not yet supported. The MVP targets the "
@@ -327,6 +312,7 @@ def _build_dft_parameters(
     nelup: int | None,
     neldw: int | None,
     tot_magnetization: int | None,
+    mt_correction: bool,
 ) -> dict[str, Any]:
     """Parameter dict for the DFT initialization step."""
     conv_thr = 1.0e-9 * nelec
@@ -335,7 +321,7 @@ def _build_dft_parameters(
         "ecutrho": ecutrho,
         "nbnd": nbnd,
         "nspin": nspin,
-        "do_ee": True,
+        "do_ee": mt_correction,
         "do_orbdep": False,
         "fixed_state": False,
         "do_wf_cmplx": True,
@@ -348,7 +334,7 @@ def _build_dft_parameters(
             system["neldw"] = neldw
         if tot_magnetization is not None:
             system["tot_magnetization"] = tot_magnetization
-    return {
+    params: dict[str, Any] = {
         "CONTROL": {
             "calculation": "cp",
             "verbosity": "low",
@@ -369,13 +355,16 @@ def _build_dft_parameters(
             "do_outerloop": True,
             "do_outerloop_empty": True,
             "conv_thr": conv_thr,
-            "esic_conv_thr": conv_thr,
         },
         "IONS": {
             "ion_dynamics": "none",
             "ion_nstepe": 5,
         },
     }
+    # kcp.x reads ``&EE`` iff ``do_ee=.true.`` — keep the two consistent.
+    if mt_correction:
+        params["EE"] = {"which_compensation": "tcc"}
+    return params
 
 
 def _build_ki_parameters(
@@ -389,6 +378,7 @@ def _build_ki_parameters(
     neldw: int | None,
     tot_magnetization: int | None,
     mt_correction: bool,
+    functional: str,
 ) -> dict[str, Any]:
     """Parameter dict for the KI correction step. Restarts from the DFT save file."""
     params = _build_dft_parameters(
@@ -400,6 +390,7 @@ def _build_ki_parameters(
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
     )
     # Restart from the DFT save (ndw=50) and write to a new one (ndw=60).
     params["CONTROL"]["restart_mode"] = "restart"
@@ -409,22 +400,18 @@ def _build_ki_parameters(
     # Orbital-dependent screening.
     params["SYSTEM"]["do_orbdep"] = True
 
-    # KI is an inner-loop-only calculation — the outer loop is skipped.
+    # The orbital-dependent SCF runs no outer loop and no inner loop except
+    # for PZ — see the legacy decision tree in
+    # ``koopmans/src/koopmans/workflows/_koopmans_dscf.py:1129-1138``.
     params["ELECTRONS"]["do_outerloop"] = False
     params["ELECTRONS"]["do_outerloop_empty"] = False
-
-    params["EE"] = {
-        "which_compensation": "tcc" if mt_correction else "none",
-    }
-    if mt_correction:
-        params["EE"]["tcc_odd"] = True
 
     params["NKSIC"] = {
         "which_orbdep": "nki",
         "odd_nkscalfact": True,
         "odd_nkscalfact_empty": True,
         "nkscalfact": 1.0,
-        "do_innerloop": True,
+        "do_innerloop": functional == "pz",
         "do_innerloop_empty": False,
         "do_innerloop_cg": True,
         "innerloop_cg_nreset": 20,
@@ -452,8 +439,14 @@ def _build_kcp_inputs(
     options: dict[str, Any] | None = None,
     alphas: orm.Dict | None = None,
     parent_folder: orm.RemoteData | None = None,
+    name: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``."""
+    """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``.
+
+    ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
+    that's what shows up in ``verdi process list`` and the koopmans progress
+    table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
+    """
     inputs: dict[str, Any] = {
         "code": code,
         "structure": structure,
@@ -464,6 +457,11 @@ def _build_kcp_inputs(
         inputs["alphas"] = alphas
     if parent_folder is not None:
         inputs["parent_folder"] = parent_folder
+    metadata: dict[str, Any] = {}
     if options:
-        inputs["metadata"] = {"options": options}
+        metadata["options"] = options
+    if name:
+        metadata["call_link_label"] = name
+    if metadata:
+        inputs["metadata"] = metadata
     return inputs
