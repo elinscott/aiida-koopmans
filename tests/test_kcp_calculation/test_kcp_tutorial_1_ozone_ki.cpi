@@ -4,12 +4,12 @@
   iprint = 1
   disk_io = 'high'
   write_hr = .false.
-  ndr = 50
-  ndw = 60
   restart_mode = 'restart'
   outdir = './out/'
   pseudo_dir = './pseudo/'
   prefix = 'aiida'
+  ndr = 50
+  ndw = 60
 /
 &SYSTEM
   ecutwfc =   6.5000000000d+01
@@ -32,7 +32,6 @@
   passop =   2.0000000000d+00
   ortho_para = 1
   maxiter = 300
-  empty_states_maxstep = 300
   do_outerloop = .false.
   do_outerloop_empty = .false.
   conv_thr =   1.8000000000d-08

@@ -15,8 +15,8 @@ The MVP ``KoopmansDSCFTask`` executes **two** kcp.x calls:
    initial alphas = ``initial_alpha`` for every orbital)
 
 The legacy implementation for the same inputs executes 20 kcp.x calls
-including spin-symmetrization (7), a trial KI pass (1), a ΔSCF loop to
-compute the alphas (12), and a final KI (1). Porting the ΔSCF alpha loop
+including spin-symmetrization (7), a trial KI pass (1), a Delta SCF loop to
+compute the alphas (12), and a final KI (1). Porting the Delta SCF alpha loop
 and spin-symmetrization is deferred to later phases — the code below is
 structured so those extensions can slot in as additional ``@task.graph``
 helpers without reshaping the public ``KoopmansDSCFTask`` signature.
@@ -169,7 +169,7 @@ def KoopmansDSCFTask(
 ) -> KoopmansDSCFOutputs:
     """Koopmans DSCF workflow — DFT init followed by a KI correction.
 
-    **MVP scope.** Only the two-step DFT → KI pipeline is run. The ΔSCF
+    **MVP scope.** Only the two-step DFT → KI pipeline is run. The Delta SCF
     alpha-refinement loop is not executed yet; every orbital is assigned
     ``initial_alpha`` (legacy default 0.6). When the loop is added, this
     task's signature should not change — only its body.
@@ -280,7 +280,7 @@ def _validate_scope(
     if alpha_numsteps != 1:
         raise NotImplementedError(
             f"alpha_numsteps={alpha_numsteps} not yet supported. The MVP uses "
-            "the per-orbital initial_alpha and does not refine it via the ΔSCF "
+            "the per-orbital initial_alpha and does not refine it via the Delta SCF "
             "loop. Pass alpha_numsteps=1 for now."
         )
     if fix_spin_contamination:
@@ -334,6 +334,9 @@ def _build_dft_parameters(
             system["neldw"] = neldw
         if tot_magnetization is not None:
             system["tot_magnetization"] = tot_magnetization
+    # ``ndr`` and ``ndw`` are owned by the CalcJob (see
+    # ``KcpCalculation._inject_owned_keys``) — the builders deliberately
+    # leave them unset so there's only one source of truth.
     params: dict[str, Any] = {
         "CONTROL": {
             "calculation": "cp",
@@ -341,8 +344,6 @@ def _build_dft_parameters(
             "iprint": 1,
             "disk_io": "high",
             "write_hr": False,
-            "ndr": 50,
-            "ndw": 50,
             "restart_mode": "from_scratch",
         },
         "SYSTEM": system,
@@ -392,10 +393,9 @@ def _build_ki_parameters(
         tot_magnetization=tot_magnetization,
         mt_correction=mt_correction,
     )
-    # Restart from the DFT save (ndw=50) and write to a new one (ndw=60).
+    # ``restart_mode`` is the only ``&CONTROL`` key the KI builder owns; ndr/ndw
+    # are forced by the CalcJob (see ``_build_dft_parameters`` for context).
     params["CONTROL"]["restart_mode"] = "restart"
-    params["CONTROL"]["ndr"] = 50
-    params["CONTROL"]["ndw"] = 60
 
     # Orbital-dependent screening.
     params["SYSTEM"]["do_orbdep"] = True
@@ -405,6 +405,9 @@ def _build_ki_parameters(
     # ``koopmans/src/koopmans/workflows/_koopmans_dscf.py:1129-1138``.
     params["ELECTRONS"]["do_outerloop"] = False
     params["ELECTRONS"]["do_outerloop_empty"] = False
+    # ``empty_states_maxstep`` is only meaningful when ``do_outerloop_empty``
+    # is true; legacy strips it when the empty-manifold loop is disabled.
+    params["ELECTRONS"].pop("empty_states_maxstep", None)
 
     params["NKSIC"] = {
         "which_orbdep": "nki",
@@ -423,6 +426,305 @@ def _build_ki_parameters(
         "do_bare_eigs": True,
     }
     return params
+
+
+# ----------------------------------------------------------------------
+# Delta -SCF alpha-refinement sub-step builders
+# ----------------------------------------------------------------------
+#
+# These render the kcp.x inputs for the per-orbital sub-runs that compute
+# alpha screening parameters via Delta SCF. Step list (legacy ``tutorial_1`` /
+# ``02-calculate-screening-via-dscf/01-iteration-1/``):
+#
+#   filled orbital → ``dft_n-1``
+#   empty  orbital → ``dft_n+1_dummy`` (iter 1 only) → ``pz_print`` → ``dft_n+1``
+#
+# Common deltas vs ``_build_dft_parameters`` (legacy
+# ``_koopmans_dscf.py:1087-1126``):
+# - ``nbnd`` removed.
+# - ``conv_thr`` and ``esic_conv_thr`` 100x looser.
+# - ``empty_states_maxstep`` / ``do_outerloop_empty`` removed (no empty
+#   manifold treatment in these single-orbital runs).
+# - ``&NKSIC`` always present (even when ``do_orbdep=False``) carrying
+#   the shared inner-loop convergence knobs.
+#
+# Phase A scope: KI only (functional='ki'), single iteration, non-spin-
+# polarised, no orbital grouping, no Makov-Payne correction, no early
+# exit. See the deferred-items block at the end of this file.
+
+_LOOSE_CONV_FACTOR = 100.0  # legacy: ``conv_thr *= 100`` for alpha-loop sub-runs
+
+
+def _alpha_step_lite_nksic(
+    *, conv_thr: float, index_empty_to_save: int | None = None
+) -> dict[str, Any]:
+    """Minimal ``&NKSIC`` block emitted on every alpha-loop step.
+
+    All keys here appear in every legacy alpha-loop ``.cpi`` regardless of
+    ``do_orbdep``; ``index_empty_to_save`` is set only on the
+    empty-orbital sub-runs.
+    """
+    nksic: dict[str, Any] = {
+        "do_innerloop": False,
+        "do_innerloop_cg": True,
+        "innerloop_cg_nreset": 20,
+        "innerloop_cg_nsd": 2,
+        "innerloop_init_n": 3,
+        "innerloop_nmax": 100,
+        "hartree_only_sic": False,
+        "esic_conv_thr": conv_thr,
+    }
+    if index_empty_to_save is not None:
+        nksic["index_empty_to_save"] = index_empty_to_save
+    return nksic
+
+
+def _alpha_step_dft_base(
+    *,
+    ecutwfc: float,
+    ecutrho: float,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    mt_correction: bool,
+) -> dict[str, Any]:
+    """``&CONTROL/SYSTEM/ELECTRONS`` skeleton shared by every DFT-like alpha step.
+
+    Built from ``_build_dft_parameters`` then trimmed: ``nbnd`` dropped,
+    ``conv_thr`` loosened, empty-manifold knobs removed.
+    """
+    params = _build_dft_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=0,  # required by helper signature but stripped below.
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+    )
+    params["SYSTEM"].pop("nbnd", None)
+    params["ELECTRONS"].pop("empty_states_maxstep", None)
+    params["ELECTRONS"].pop("do_outerloop_empty", None)
+    params["ELECTRONS"]["conv_thr"] *= _LOOSE_CONV_FACTOR
+    return params
+
+
+def _build_dft_n_minus_1_parameters(
+    *,
+    ecutwfc: float,
+    ecutrho: float,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    mt_correction: bool,
+    fixed_band: int,
+) -> dict[str, Any]:
+    """``dft_n-1`` step: DFT with one electron removed from ``fixed_band``.
+
+    Run once per *filled* orbital being screened. Restarts from the
+    trial-KI save (provided by the caller via ``parent_folder``).
+    """
+    params = _alpha_step_dft_base(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+    )
+    params["CONTROL"]["restart_mode"] = "restart"
+    params["SYSTEM"]["fixed_band"] = fixed_band
+    params["SYSTEM"]["f_cutoff"] = 1.0e-5
+    params["SYSTEM"]["fixed_state"] = True
+    # ``do_outerloop`` already True from the DFT base.
+    params["NKSIC"] = _alpha_step_lite_nksic(conv_thr=params["ELECTRONS"]["conv_thr"])
+    return params
+
+
+def _build_dft_n_plus_1_dummy_parameters(
+    *,
+    ecutwfc: float,
+    ecutrho: float,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    mt_correction: bool,
+    fixed_band: int,
+    index_empty_to_save: int = 1,
+) -> dict[str, Any]:
+    """``dft_n+1_dummy`` step: scratch DFT with one electron *added*.
+
+    Run only on the first iteration of the alpha loop, once per *empty*
+    orbital. Sets up the save-directory layout that ``pz_print`` and
+    ``dft_n+1`` consume on subsequent steps.
+
+    Caller must pass ``nelec`` / ``nelup`` already incremented for the
+    N+1 charge state (legacy convention: spin-up gets the extra
+    electron).
+    """
+    params = _alpha_step_dft_base(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+    )
+    params["CONTROL"]["restart_mode"] = "from_scratch"
+    params["SYSTEM"]["fixed_band"] = fixed_band
+    params["SYSTEM"]["fixed_state"] = False
+    params["ELECTRONS"]["do_outerloop"] = False
+    params["NKSIC"] = _alpha_step_lite_nksic(
+        conv_thr=params["ELECTRONS"]["conv_thr"], index_empty_to_save=index_empty_to_save
+    )
+    return params
+
+
+def _build_dft_n_plus_1_parameters(
+    *,
+    ecutwfc: float,
+    ecutrho: float,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    mt_correction: bool,
+    fixed_band: int,
+    index_empty_to_save: int = 1,
+) -> dict[str, Any]:
+    """``dft_n+1`` step: SCF DFT with one electron in ``fixed_band``.
+
+    Restarts from ``dft_n+1_dummy`` plus ``pz_print``'s
+    ``evcfixed_empty.dat`` (``restart_from_wannier_pwscf=True``). The
+    caller is responsible for staging both files into the working dir.
+    """
+    params = _alpha_step_dft_base(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+    )
+    params["CONTROL"]["restart_mode"] = "restart"
+    params["SYSTEM"]["fixed_band"] = fixed_band
+    params["SYSTEM"]["f_cutoff"] = 1.0
+    params["SYSTEM"]["restart_from_wannier_pwscf"] = True
+    params["SYSTEM"]["fixed_state"] = True
+    params["NKSIC"] = _alpha_step_lite_nksic(
+        conv_thr=params["ELECTRONS"]["conv_thr"], index_empty_to_save=index_empty_to_save
+    )
+    return params
+
+
+def _build_pz_print_parameters(
+    *,
+    ecutwfc: float,
+    ecutrho: float,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    mt_correction: bool,
+    fixed_band: int,
+    index_empty_to_save: int = 1,
+) -> dict[str, Any]:
+    """``pz_print`` step: PZ run on the fixed empty orbital, prints anion wfc.
+
+    Sandwiched between ``dft_n+1_dummy`` and ``dft_n+1`` for empty
+    orbitals. Writes ``evcfixed_empty.dat`` (via
+    ``print_wfc_anion=True``) so ``dft_n+1`` can use it as a starting
+    wavefunction.
+
+    Runs at the *original* electron count (not N+1) — same nelec /
+    nelup / neldw as trial KI; only ``fixed_band`` differs.
+    """
+    params = _build_ki_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+        functional="pz",
+    )
+    params["SYSTEM"]["fixed_band"] = fixed_band
+    params["NKSIC"]["which_orbdep"] = "pz"
+    params["NKSIC"]["print_wfc_anion"] = True
+    params["NKSIC"]["index_empty_to_save"] = index_empty_to_save
+    return params
+
+
+# ----------------------------------------------------------------------
+# Phase A scope notes — what's intentionally deferred:
+# ----------------------------------------------------------------------
+#
+# This first slice of the alpha-refinement loop targets the simplest valid
+# input: ``functional='ki'``, single iteration, non-spin-polarised,
+# kohn-sham init orbitals, no orbital grouping. Specifically deferred:
+#
+# 1. **Multi-iteration with early exit.** Legacy runs up to
+#    ``alpha_numsteps`` iterations and exits early when every band's
+#    ``|Delta E - λ|`` falls below ``alpha_conv_thr``. Phase A runs exactly
+#    one iteration. Phase B will wrap the iteration body in an
+#    aiida-workgraph iteration primitive with a convergence predicate.
+#
+# 2. **Orbital grouping.** Legacy auto-groups orbitals by self-Hartree
+#    and spread tolerances and only refines one representative per
+#    group (``self.bands.assign_groups`` in ``_koopmans_dscf.py``).
+#    Phase A refines every band individually — correct but wasteful
+#    for systems with degeneracies (e.g. p-orbitals on cubic
+#    substrates).
+#
+# 3. **Spin-polarised systems** (``spin_polarized=True``). Legacy
+#    treats every (spin, index) pair as a unique group. Phase A
+#    assumes ``nspin=2`` closed-shell — both channels share one set
+#    of alpha values. Adding the spin-polarised branch needs per-spin
+#    iteration and per-(spin, band) ``fixed_band`` indexing.
+#
+# 4. **KIPZ / pKIPZ.** The PZ-style sub-prefixes (``kipz_n-1``,
+#    ``kipz_print``, ``kipz_n+1``) replace the DFT sub-prefixes for
+#    the KIPZ functional. Mostly mechanical — the existing scope
+#    guard in ``_validate_scope`` still rejects anything other than
+#    KI.
+#
+# 5. **Makov-Payne correction** to Delta E (``mp_correction``,
+#    ``eps_inf``). Legacy applies a per-orbital correction term when
+#    the system is charged-periodic. Phase A omits it — the
+#    structure scope guard already rejects periodic systems.
+#
+# 6. **Mixing across iterations** (``alpha_mixing``). Without a
+#    loop there's nothing to mix; relevant only once Phase B lands.
+#
+# 7. **alpha-independent calc reuse** across iterations. Legacy caches
+#    the ``dft_n-1`` results for filled orbitals because they don't
+#    depend on alpha (``_koopmans_dscf.py:806-815``). One-iteration
+#    Phase A doesn't need this.
+#
+# 8. **ML predict shortcut** (``self.ml.predict``). Legacy can
+#    short-circuit the loop using a pre-trained ML model. Out of
+#    scope.
+# ----------------------------------------------------------------------
 
 
 # ----------------------------------------------------------------------

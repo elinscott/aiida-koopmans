@@ -32,6 +32,14 @@ class KcpCalculation(CalcJob):
     _PSEUDO_SUBFOLDER = "pseudo"
     _ALPHAREF_FILE = "file_alpharef.txt"
     _ALPHAREF_EMPTY_FILE = "file_alpharef_empty.txt"
+    # All koopmans kcp.x runs use the same ndr/ndw pair. AiiDA scratch
+    # already isolates each calc, so per-step renumbering (legacy's
+    # ``ndw=63``, ``ndw=64``, …) buys us nothing — every calc reads from
+    # ``out/aiida_50.save/`` (symlinked from the parent's writeout) and
+    # writes to ``out/aiida_60.save/``. Override these in a subclass if
+    # you ever need a different scheme.
+    _NDR = 50
+    _NDW = 60
 
     # Canonical kcp.x namelist order. Namelists outside this list are emitted
     # at the end of the input file in insertion order.
@@ -158,7 +166,6 @@ class KcpCalculation(CalcJob):
         pseudos = dict(self.inputs.pseudos)
 
         self._inject_owned_keys(parameters, structure)
-        ndw = int(parameters["CONTROL"]["ndw"])
         nspin = int(parameters["SYSTEM"].get("nspin", 1))
         do_orbdep = bool(parameters["SYSTEM"].get("do_orbdep", False))
         nksic = parameters.get("NKSIC", {})
@@ -180,7 +187,7 @@ class KcpCalculation(CalcJob):
         remote_symlink_list = self._build_remote_symlink_list()
         retrieve_list = self._build_retrieve_list()
         retrieve_temporary_list = self._build_retrieve_temporary_list(
-            ndw=ndw, nspin=nspin, do_orbdep=do_orbdep, do_bare_eigs=do_bare_eigs
+            nspin=nspin, do_orbdep=do_orbdep, do_bare_eigs=do_bare_eigs
         )
 
         code_info = CodeInfo()
@@ -202,13 +209,21 @@ class KcpCalculation(CalcJob):
     # ------------------------------------------------------------------
 
     def _inject_owned_keys(self, parameters: dict, structure: StructureData) -> None:
-        """Set the CONTROL/SYSTEM keys the CalcJob owns (outdir, pseudo_dir, ibrav, ...)."""
+        """Set the CONTROL/SYSTEM keys the CalcJob owns (outdir, pseudo_dir, ibrav, ...).
+
+        Force the universal ``ndr`` / ``ndw`` so the symlink-rename in
+        ``_build_remote_symlink_list`` always knows which save directory
+        to map. Any caller-supplied ``ndr`` / ``ndw`` is overwritten on
+        purpose — chaining is via ``parent_folder``, not by manual
+        renumbering.
+        """
         control = parameters.setdefault("CONTROL", {})
         control["outdir"] = f"./{self._OUTPUT_SUBFOLDER}/"
         control["pseudo_dir"] = f"./{self._PSEUDO_SUBFOLDER}/"
         control["prefix"] = self._PREFIX
         control.setdefault("calculation", "cp")
-        control.setdefault("ndw", 50)
+        control["ndr"] = self._NDR
+        control["ndw"] = self._NDW
 
         system = parameters.setdefault("SYSTEM", {})
         system["ibrav"] = 0
@@ -257,12 +272,29 @@ class KcpCalculation(CalcJob):
         self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
-        """If a ``parent_folder`` input is provided, symlink its ``out/`` into place."""
+        """Stage the parent's save directory under the child's read slot.
+
+        Every ``KcpCalculation`` reads from ``out/<prefix>_50.save/`` and writes
+        to ``out/<prefix>_60.save/`` (see ``_NDR`` / ``_NDW``). When chained,
+        we symlink the parent's freshly-written ``aiida_60.save/`` into the
+        child's ``aiida_50.save/`` slot — kcp.x then doesn't need to know
+        anything about the parent's identity. Each child gets its own
+        AiiDA scratch directory so there are no naming collisions across
+        siblings.
+
+        Returns one symlink entry; an empty list when there is no parent
+        (the bootstrap DFT-init step).
+        """
         if "parent_folder" not in self.inputs:
             return []
         parent = self.inputs.parent_folder
-        parent_out = str(PurePosixPath(parent.get_remote_path()) / self._OUTPUT_SUBFOLDER)
-        return [(parent.computer.uuid, parent_out, self._OUTPUT_SUBFOLDER)]
+        parent_save = (
+            PurePosixPath(parent.get_remote_path())
+            / self._OUTPUT_SUBFOLDER
+            / f"{self._PREFIX}_{self._NDW}.save"
+        )
+        target_save = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDR}.save"
+        return [(parent.computer.uuid, str(parent_save), target_save)]
 
     def _build_retrieve_list(self) -> list[str]:
         """Files persisted in the ``retrieved`` FolderData: stdout, CRASH, user extras."""
@@ -273,7 +305,7 @@ class KcpCalculation(CalcJob):
         return retrieve_list
 
     def _build_retrieve_temporary_list(
-        self, *, ndw: int, nspin: int, do_orbdep: bool, do_bare_eigs: bool
+        self, *, nspin: int, do_orbdep: bool, do_bare_eigs: bool
     ) -> list:
         """Files retrieved into a scratch folder for parsing then discarded.
 
@@ -284,7 +316,7 @@ class KcpCalculation(CalcJob):
         """
         if not do_orbdep:
             return []
-        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{ndw}.save/K00001"
+        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDW}.save/K00001"
         temp_list: list = []
         for ispin in range(1, nspin + 1):
             tag = str(ispin) if nspin > 1 else ""

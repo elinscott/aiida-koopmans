@@ -112,12 +112,14 @@ class TestBuildDftParameters:
         assert "NKSIC" not in params
         assert "EE" not in params
 
-    def test_dft_control_is_from_scratch_ndw_50(self):
+    def test_dft_control_is_from_scratch(self):
+        # ndr/ndw are owned by ``KcpCalculation._inject_owned_keys`` (universal
+        # 50/60 across all kcp.x runs). The builder shouldn't set them.
         params = _build_dft_parameters(**_OZONE_KW)
         assert params["CONTROL"]["restart_mode"] == "from_scratch"
-        assert params["CONTROL"]["ndr"] == 50
-        assert params["CONTROL"]["ndw"] == 50
         assert params["CONTROL"]["calculation"] == "cp"
+        assert "ndr" not in params["CONTROL"]
+        assert "ndw" not in params["CONTROL"]
 
     def test_dft_system_no_orbdep(self):
         params = _build_dft_parameters(**_OZONE_KW)
@@ -155,11 +157,13 @@ class TestBuildKiParameters:
         assert params["NKSIC"]["odd_nkscalfact_empty"] is True
         assert params["NKSIC"]["do_bare_eigs"] is True
 
-    def test_ki_control_is_restart_ndr_50_ndw_60(self):
+    def test_ki_control_is_restart(self):
+        # See ``test_dft_control_is_from_scratch``: ndr/ndw live on the
+        # CalcJob, not the builder.
         params = _build_ki_parameters(**_KI_KW)
         assert params["CONTROL"]["restart_mode"] == "restart"
-        assert params["CONTROL"]["ndr"] == 50
-        assert params["CONTROL"]["ndw"] == 60
+        assert "ndr" not in params["CONTROL"]
+        assert "ndw" not in params["CONTROL"]
 
     def test_ki_enables_orbdep_and_disables_outerloop(self):
         params = _build_ki_parameters(**_KI_KW)

@@ -265,16 +265,12 @@ class KcpParser(Parser):
         """Return an ArrayData of lambda matrices or an exit-code sentinel on failure."""
         from pathlib import Path
 
-        prefix = self.node.process_class._PREFIX
-        ndw = int(
-            {
-                k.lower(): v
-                for k, v in self.node.inputs.parameters.get_dict().get("CONTROL", {}).items()
-            }.get("ndw", 50)
-        )
-        out_subfolder = self.node.process_class._OUTPUT_SUBFOLDER
+        cls = self.node.process_class
         ham_dir = (
-            Path(retrieved_temporary_folder) / out_subfolder / f"{prefix}_{ndw}.save" / "K00001"
+            Path(retrieved_temporary_folder)
+            / cls._OUTPUT_SUBFOLDER
+            / f"{cls._PREFIX}_{cls._NDW}.save"
+            / "K00001"
         )
 
         nspin_idx = list(range(1, nspin + 1))
