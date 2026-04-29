@@ -51,10 +51,12 @@ def test_kcp_parser_tutorial_1_ozone_ki(
     )
     parameters = orm.Dict(dict=ki_params)
 
+    from aiida_koopmans.types import SpinChannel
+
     alphas = orm.Dict(
         dict={
-            "filled": [0.6] * 18,
-            "empty": [0.6] * 2,
+            "filled": {SpinChannel.UP: [0.6] * 9, SpinChannel.DOWN: [0.6] * 9},
+            "empty": {SpinChannel.UP: [0.6], SpinChannel.DOWN: [0.6]},
         }
     )
 
@@ -92,9 +94,8 @@ def test_kcp_parser_tutorial_1_ozone_ki(
     assert "output_bare_lambdas" in results
 
     eig = results["output_eigenvalues"].get_array("eigenvalues")
-    lam_sp1 = results["output_lambdas"].get_array("spin_1")
-    lam_sp2 = results["output_lambdas"].get_array("spin_2")
-    bare_sp1 = results["output_bare_lambdas"].get_array("spin_1")
+    lam = results["output_lambdas"].get_array("lambdas")
+    bare = results["output_bare_lambdas"].get_array("lambdas")
 
     # Strip floats whose exact value is stdout-format-dependent from the
     # snapshotted output_parameters, then record array shapes instead of full
@@ -107,9 +108,8 @@ def test_kcp_parser_tutorial_1_ozone_ki(
         "output_parameters": _sanitize(params),
         "eigenvalues_shape": list(eig.shape),
         "eigenvalues_has_nan": bool(np.isnan(eig).any()),
-        "lambdas_spin_1_shape": list(lam_sp1.shape),
-        "lambdas_spin_2_shape": list(lam_sp2.shape),
-        "bare_lambdas_spin_1_shape": list(bare_sp1.shape),
+        "lambdas_shape": list(lam.shape),
+        "bare_lambdas_shape": list(bare.shape),
     }
     data_regression.check(snapshot)
 

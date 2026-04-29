@@ -26,12 +26,14 @@ from __future__ import annotations
 
 from typing import Any, TypedDict
 
+import numpy as np
 from aiida import orm
 from aiida.plugins import DataFactory
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
+from aiida_koopmans.types import AlphaScreening, SpinChannel
 from aiida_koopmans.utils import (
     count_electrons,
     filled_and_empty_counts,
@@ -44,22 +46,31 @@ UpfData = DataFactory("pseudo.upf")
 # ----------------------------------------------------------------------
 # Output / override typing
 # ----------------------------------------------------------------------
+#
+# Annotations declare what consumer pyfunctions see *after* aiida-pythonjob's
+# auto-deserialization: ``orm.Dict → dict``, single-key ``orm.ArrayData →
+# np.ndarray``. Lambdas/bare-lambdas come from the parser as a single
+# stacked ``(nspin, n, n)`` matrix (see ``KcpParser._parse_lambdas``); index
+# axis-0 by ``SpinChannel.index``. ``remote_folder`` stays as
+# ``orm.RemoteData`` because downstream ``parent_folder`` sockets take the
+# node, not its payload.
 
 
 class DFTCPOutputs(TypedDict):
     """Outputs of a single kcp.x DFT-only run."""
 
-    parameters: orm.Dict
-    eigenvalues: orm.ArrayData
+    parameters: dict
+    eigenvalues: np.ndarray
     remote_folder: orm.RemoteData
 
 
 class KoopmansDSCFOutputs(TypedDict):
     """Outputs of the KI correction step (the final result of a KI-DSCF workflow)."""
 
-    parameters: orm.Dict
-    eigenvalues: orm.ArrayData
-    lambdas: orm.ArrayData
+    parameters: dict
+    eigenvalues: np.ndarray
+    lambdas: np.ndarray
+    bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
 
 
@@ -94,8 +105,8 @@ class OrbitalDeltaSCFOutputs(TypedDict):
     indicator used by the iteration loop's stopping criterion.
     """
 
-    alpha: orm.Float
-    error: orm.Float
+    alpha: float
+    error: float
 
 
 # ----------------------------------------------------------------------
@@ -106,21 +117,24 @@ KcpBaseTask = task(KcpCalculation)
 
 
 # ----------------------------------------------------------------------
-# Pure-Python alpha computation, wrapped as a calcfunction for provenance.
+# Pure-Python alpha computation. ``@task.pyfunction`` runs in-process and
+# auto-deserialises Node inputs to native Python types so the body stays
+# AiiDA-agnostic. Provenance is preserved via the resulting ``PyFunction``
+# process node.
 # ----------------------------------------------------------------------
 
 
-@task.calcfunction(outputs=["alpha", "error"])
+@task(outputs=["alpha", "error"])
 def compute_alpha_from_dscf(
     *,
-    trial_output_parameters: orm.Dict,
-    perturbed_output_parameters: orm.Dict,
-    trial_lambdas: orm.ArrayData,
-    trial_bare_lambdas: orm.ArrayData,
-    spin_label: orm.Str,
-    band_index: orm.Int,
-    alpha_guess: orm.Float,
-    filled: orm.Bool,
+    trial_output_parameters: dict,
+    perturbed_output_parameters: dict,
+    trial_lambdas: np.ndarray,
+    trial_bare_lambdas: np.ndarray,
+    spin_channel: SpinChannel,
+    band_index: int,
+    alpha_guess: float,
+    filled: bool,
 ) -> dict:
     """Compute the new alpha for one orbital from its Delta-SCF perturbed run.
 
@@ -139,21 +153,18 @@ def compute_alpha_from_dscf(
 
     Both energies and lambdas are in eV (the parser converts from Hartree),
     so the units cancel on division. ``error = |dE - lambda_a|`` is the
-    convergence indicator the legacy loop monitors.
+    convergence indicator the legacy loop monitors. The lambda arrays are
+    stacked ``(nspin, n, n)``; ``spin_channel.index`` selects the spin axis.
     """
-    trial_e = trial_output_parameters.get_dict()["energy"]
-    perturbed_e = perturbed_output_parameters.get_dict()["energy"]
-    spin = spin_label.value
-    iband = band_index.value
-    lambda_a = float(trial_lambdas.get_array(spin)[iband, iband].real)
-    lambda_0 = float(trial_bare_lambdas.get_array(spin)[iband, iband].real)
-    if filled.value:
-        dE = trial_e - perturbed_e  # noqa: N806 -- dE matches eq. 10 notation
-    else:
-        dE = perturbed_e - trial_e  # noqa: N806
-    alpha_new = alpha_guess.value * (dE - lambda_0) / (lambda_a - lambda_0)
+    trial_e = trial_output_parameters["energy"]
+    perturbed_e = perturbed_output_parameters["energy"]
+    spin = spin_channel.index
+    lambda_a = float(trial_lambdas[spin, band_index, band_index].real)
+    lambda_0 = float(trial_bare_lambdas[spin, band_index, band_index].real)
+    dE = trial_e - perturbed_e if filled else perturbed_e - trial_e  # noqa: N806
+    alpha_new = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)
     error = abs(dE - lambda_a)
-    return {"alpha": orm.Float(alpha_new), "error": orm.Float(error)}
+    return {"alpha": alpha_new, "error": error}
 
 
 # ----------------------------------------------------------------------
@@ -198,7 +209,7 @@ def DFTCPTask(
         mt_correction=not any(structure.pbc),
     )
     if overrides:
-        parameters = recursive_merge(parameters, dict(overrides))
+        parameters = recursive_merge(parameters, overrides)
 
     inputs = _build_kcp_inputs(
         code, structure, parameters, pseudos, options=options, name="dft_init"
@@ -282,17 +293,32 @@ def KoopmansDSCFTask(
         functional=functional,
     )
     if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, dict(ki_overrides))
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
     n_filled, n_empty = filled_and_empty_counts(
         nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
     )
-    alphas = orm.Dict(
-        dict={
-            "filled": [initial_alpha] * n_filled,
-            "empty": [initial_alpha] * n_empty,
+    if nspin == 1:
+        alphas: AlphaScreening = {
+            "filled": {SpinChannel.NONE: [initial_alpha] * n_filled},
+            "empty": {SpinChannel.NONE: [initial_alpha] * n_empty},
         }
-    )
+    else:
+        # ``filled_and_empty_counts`` returns totals across spin channels;
+        # halve to get the per-spin lists for closed-shell (Phase A scope —
+        # spin-polarised systems are deferred).
+        n_filled_per_spin = n_filled // 2
+        n_empty_per_spin = n_empty // 2
+        alphas = {
+            "filled": {
+                SpinChannel.UP: [initial_alpha] * n_filled_per_spin,
+                SpinChannel.DOWN: [initial_alpha] * n_filled_per_spin,
+            },
+            "empty": {
+                SpinChannel.UP: [initial_alpha] * n_empty_per_spin,
+                SpinChannel.DOWN: [initial_alpha] * n_empty_per_spin,
+            },
+        }
 
     ki_inputs = _build_kcp_inputs(
         code,
@@ -327,13 +353,13 @@ def OrbitalDeltaSCFFilledTask(
     neldw: int | None,
     tot_magnetization: int | None,
     fixed_band: int,
-    spin_label: str,
+    spin_channel: SpinChannel,
     band_index: int,
     alpha_guess: float,
     trial_remote: orm.RemoteData,
-    trial_output_parameters: orm.Dict,
-    trial_lambdas: orm.ArrayData,
-    trial_bare_lambdas: orm.ArrayData,
+    trial_output_parameters: dict,
+    trial_lambdas: np.ndarray,
+    trial_bare_lambdas: np.ndarray,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> OrbitalDeltaSCFOutputs:
@@ -341,14 +367,14 @@ def OrbitalDeltaSCFFilledTask(
 
     Submits a single ``dft_n-1`` kcp.x run (with ``fixed_band=fixed_band``,
     one electron pulled out of that orbital via ``f_cutoff=1e-5``), then
-    evaluates the legacy alpha formula at ``(spin_label, band_index)``
+    evaluates the legacy alpha formula at ``(spin_channel, band_index)``
     against the trial KI's lambda and bare-lambda matrices.
 
     Args:
         fixed_band: 1-indexed kcp.x band index of the orbital to refine.
             Goes into ``&SYSTEM.fixed_band``.
-        spin_label: ``"spin_1"`` / ``"spin_2"`` — which array key on the
-            trial KI's ArrayData outputs to query for the lambda diagonal.
+        spin_channel: which array key on the trial KI's ArrayData outputs
+            to query for the lambda diagonal.
         band_index: 0-indexed numpy index into the lambda matrix
             (``= fixed_band - 1``).
         alpha_guess: the alpha currently assigned to this orbital
@@ -374,7 +400,7 @@ def OrbitalDeltaSCFFilledTask(
         fixed_band=fixed_band,
     )
     if overrides:
-        parameters = recursive_merge(parameters, dict(overrides))
+        parameters = recursive_merge(parameters, overrides)
 
     inputs = _build_kcp_inputs(
         code,
@@ -392,10 +418,10 @@ def OrbitalDeltaSCFFilledTask(
         perturbed_output_parameters=dft_outputs["output_parameters"],
         trial_lambdas=trial_lambdas,
         trial_bare_lambdas=trial_bare_lambdas,
-        spin_label=orm.Str(spin_label),
-        band_index=orm.Int(band_index),
-        alpha_guess=orm.Float(alpha_guess),
-        filled=orm.Bool(True),
+        spin_channel=spin_channel,
+        band_index=band_index,
+        alpha_guess=alpha_guess,
+        filled=True,
     )
 
     return OrbitalDeltaSCFOutputs(
@@ -418,14 +444,14 @@ def OrbitalDeltaSCFEmptyTask(
     neldw: int | None,
     tot_magnetization: int | None,
     fixed_band: int,
-    spin_label: str,
+    spin_channel: SpinChannel,
     band_index: int,
     index_empty_to_save: int,
     alpha_guess: float,
     trial_remote: orm.RemoteData,
-    trial_output_parameters: orm.Dict,
-    trial_lambdas: orm.ArrayData,
-    trial_bare_lambdas: orm.ArrayData,
+    trial_output_parameters: dict,
+    trial_lambdas: np.ndarray,
+    trial_bare_lambdas: np.ndarray,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> OrbitalDeltaSCFOutputs:
@@ -443,7 +469,7 @@ def OrbitalDeltaSCFEmptyTask(
     3. ``dft_n+1`` — SCF DFT (parent = the dummy + ``pz_print``'s
        ``evcfixed_empty.dat`` via ``parent_folder_evcfixed``).
 
-    Then the alpha calcfunction extracts the (spin_label, band_index)
+    Then the alpha calcfunction extracts the (spin_channel, band_index)
     diagonal of the trial KI's lambda matrices, computes ``dE``, and
     returns the new alpha + convergence error.
 
@@ -473,7 +499,7 @@ def OrbitalDeltaSCFEmptyTask(
         index_empty_to_save=index_empty_to_save,
     )
     if dummy_overrides:
-        dummy_parameters = recursive_merge(dummy_parameters, dict(dummy_overrides))
+        dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
     dummy_inputs = _build_kcp_inputs(
         code,
         structure,
@@ -498,19 +524,31 @@ def OrbitalDeltaSCFEmptyTask(
         index_empty_to_save=index_empty_to_save,
     )
     if pz_overrides:
-        pz_parameters = recursive_merge(pz_parameters, dict(pz_overrides))
+        pz_parameters = recursive_merge(pz_parameters, pz_overrides)
     # ``pz_print`` reads orbitals from the trial KI (it operates at the
     # original electron count) and writes ``evcfixed_empty.dat`` for
     # the next step.
     n_filled, n_empty = filled_and_empty_counts(
         nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
     )
-    pz_alphas = orm.Dict(
-        dict={
-            "filled": [alpha_guess] * n_filled,
-            "empty": [alpha_guess] * n_empty,
+    if nspin == 1:
+        pz_alphas: AlphaScreening = {
+            "filled": {SpinChannel.NONE: [alpha_guess] * n_filled},
+            "empty": {SpinChannel.NONE: [alpha_guess] * n_empty},
         }
-    )
+    else:
+        n_filled_per_spin = n_filled // 2
+        n_empty_per_spin = n_empty // 2
+        pz_alphas = {
+            "filled": {
+                SpinChannel.UP: [alpha_guess] * n_filled_per_spin,
+                SpinChannel.DOWN: [alpha_guess] * n_filled_per_spin,
+            },
+            "empty": {
+                SpinChannel.UP: [alpha_guess] * n_empty_per_spin,
+                SpinChannel.DOWN: [alpha_guess] * n_empty_per_spin,
+            },
+        }
     pz_inputs = _build_kcp_inputs(
         code,
         structure,
@@ -536,7 +574,7 @@ def OrbitalDeltaSCFEmptyTask(
         index_empty_to_save=index_empty_to_save,
     )
     if n_plus_1_overrides:
-        n_plus_1_parameters = recursive_merge(n_plus_1_parameters, dict(n_plus_1_overrides))
+        n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
     n_plus_1_inputs = _build_kcp_inputs(
         code,
         structure,
@@ -554,10 +592,10 @@ def OrbitalDeltaSCFEmptyTask(
         perturbed_output_parameters=n_plus_1_outputs["output_parameters"],
         trial_lambdas=trial_lambdas,
         trial_bare_lambdas=trial_bare_lambdas,
-        spin_label=orm.Str(spin_label),
-        band_index=orm.Int(band_index),
-        alpha_guess=orm.Float(alpha_guess),
-        filled=orm.Bool(False),
+        spin_channel=spin_channel,
+        band_index=band_index,
+        alpha_guess=alpha_guess,
+        filled=False,
     )
 
     return OrbitalDeltaSCFOutputs(
@@ -1054,12 +1092,17 @@ def _build_kcp_inputs(
     pseudos: dict[str, UpfData],
     *,
     options: dict[str, Any] | None = None,
-    alphas: orm.Dict | None = None,
+    alphas: AlphaScreening | None = None,
     parent_folder: orm.RemoteData | None = None,
     parent_folder_evcfixed: orm.RemoteData | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``.
+
+    Plain Python data (the ``parameters`` dict, the ``alphas``
+    TypedDict) is handed straight through; aiida-workgraph's
+    serialization adapter wraps each value into the matching AiiDA
+    Node when the underlying CalcJob socket is set.
 
     ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
     that's what shows up in ``verdi process list`` and the koopmans progress
@@ -1075,7 +1118,7 @@ def _build_kcp_inputs(
     inputs: dict[str, Any] = {
         "code": code,
         "structure": structure,
-        "parameters": orm.Dict(dict=parameters),
+        "parameters": parameters,
         "pseudos": pseudos,
     }
     if alphas is not None:

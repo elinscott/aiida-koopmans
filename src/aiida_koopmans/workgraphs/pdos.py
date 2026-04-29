@@ -13,8 +13,10 @@ from aiida_koopmans.workgraphs import Codes
 
 
 class PdosOutputs(TypedDict):
+    """Outputs of a PdosWorkChain run (NSCF + DOS + projwfc)."""
+
     nscf_remote_folder: orm.RemoteData
-    nscf_output_parameters: orm.Dict
+    nscf_output_parameters: dict
     nscf_output_band: orm.BandsData
     dos_output_dos: orm.XyData
     projwfc_projections: NotRequired[orm.ProjectionData]
@@ -53,10 +55,6 @@ def PdosTaskViaBuilder(
         Dict with NSCF, DOS, and PROJWFC outputs.
     """
     overrides = overrides or {}
-
-    # Unwrap TaggedValue from aiida-workgraph to plain string (temporary bugfix)
-    if pseudo_family is not None:
-        pseudo_family = str(pseudo_family)
 
     # Inject pseudo_family into scf and nscf overrides
     if pseudo_family is not None:

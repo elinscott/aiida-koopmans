@@ -1,14 +1,13 @@
-bare_lambdas_spin_1_shape:
+bare_lambdas_shape:
+- 2
 - 10
 - 10
 eigenvalues_has_nan: false
 eigenvalues_shape:
 - 2
 - 10
-lambdas_spin_1_shape:
-- 10
-- 10
-lambdas_spin_2_shape:
+lambdas_shape:
+- 2
 - 10
 - 10
 output_parameters:

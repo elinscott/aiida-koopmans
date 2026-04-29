@@ -12,15 +12,19 @@ from aiida_workgraph.utils import get_dict_from_builder
 
 
 class ScfBandsOutputs(TypedDict):
-    scf_parameters: orm.Dict
+    """Outputs of a PwBandsWorkChain run (SCF + bands)."""
+
+    scf_parameters: dict
     band_structure: orm.BandsData
 
 
 class ScfNscfOutputs(TypedDict):
+    """Outputs of a chained SCF + NSCF PwBaseWorkChain run."""
+
     scf_remote_folder: orm.RemoteData
     nscf_remote_folder: orm.RemoteData
     nscf_retrieved: orm.FolderData
-    nscf_output_parameters: orm.Dict
+    nscf_output_parameters: dict
     nscf_output_band: orm.BandsData
     nscf_output_kpoints: NotRequired[orm.KpointsData]
 
@@ -60,10 +64,6 @@ def PwBandsTaskViaBuilder(
         Dict with scf_parameters and band_structure outputs.
     """
     overrides = overrides or {}
-
-    # Unwrap TaggedValue from aiida-workgraph to plain string (temporary bugfix)
-    if pseudo_family is not None:
-        pseudo_family = str(pseudo_family)
 
     # Inject pseudo_family into both scf and bands overrides
     if pseudo_family is not None:
@@ -131,10 +131,6 @@ def PwScfNscfTask(
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
     overrides = overrides or {}
-
-    # Unwrap TaggedValue from aiida-workgraph to plain string (temporary bugfix)
-    if pseudo_family is not None:
-        pseudo_family = str(pseudo_family)
 
     # Inject pseudo_family as a top-level override for both steps
     scf_overrides = overrides.get("scf", {})

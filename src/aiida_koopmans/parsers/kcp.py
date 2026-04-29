@@ -262,8 +262,21 @@ class KcpParser(Parser):
     # ------------------------------------------------------------------
 
     def _parse_lambdas(self, retrieved_temporary_folder, nspin: int, bare: bool):
-        """Return an ArrayData of lambda matrices or an exit-code sentinel on failure."""
+        """Return an ArrayData of lambda matrices or an exit-code sentinel on failure.
+
+        The lambdas are stacked into a single ``(nspin, n, n)`` ndarray and
+        stored under one key (``"lambdas"``). Single-key ArrayData round-trips
+        cleanly through aiida-pythonjob's default deserializer (which calls
+        ``data.get_array()`` with no name) — pyfunctions consuming this output
+        get a plain ``np.ndarray`` for free. Spin axis order:
+        ``SpinChannel.NONE`` / ``UP`` at 0, ``SpinChannel.DOWN`` at 1
+        (matches ``SpinChannel.index``). Within each spin the matrix is
+        block-diagonal in (filled, empty) — so a global band index runs
+        over all orbitals in kcp.x's natural order.
+        """
         from pathlib import Path
+
+        from aiida_koopmans.types import SpinChannel
 
         cls = self.node.process_class
         ham_dir = (
@@ -273,13 +286,17 @@ class KcpParser(Parser):
             / "K00001"
         )
 
-        nspin_idx = list(range(1, nspin + 1))
-        array = orm.ArrayData()
-        for ispin in nspin_idx:
-            tag = str(ispin) if nspin > 1 else ""
+        # kcp.x writes hamiltonian.xml (no suffix) for nspin=1 and
+        # hamiltonian{1,2}.xml for nspin=2. The Fortran-style 1-based
+        # suffix is ``spin.index + 1`` (``.index`` is 0-based for ndarray use).
+        spins = [SpinChannel.NONE] if nspin == 1 else [SpinChannel.UP, SpinChannel.DOWN]
+
+        per_spin: list[np.ndarray | None] = [None] * nspin
+        for spin in spins:
+            file_tag = "" if spin is SpinChannel.NONE else str(spin.index + 1)
             prefix_token = "hamiltonian0" if bare else "hamiltonian"
-            filled_path = ham_dir / f"{prefix_token}{tag}.xml"
-            empty_path = ham_dir / f"{prefix_token}_emp{tag}.xml"
+            filled_path = ham_dir / f"{prefix_token}{file_tag}.xml"
+            empty_path = ham_dir / f"{prefix_token}_emp{file_tag}.xml"
 
             try:
                 filled_content = filled_path.read_text()
@@ -296,8 +313,10 @@ class KcpParser(Parser):
                 empty = _read_hamiltonian_xml(empty_content)
 
             combined = filled if empty is None else _block_diag(filled, empty)
-            array.set_array(f"spin_{ispin}", combined)
+            per_spin[spin.index] = combined
 
+        array = orm.ArrayData()
+        array.set_array("lambdas", np.stack(per_spin, axis=0))
         return array
 
 

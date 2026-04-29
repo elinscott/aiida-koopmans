@@ -81,6 +81,7 @@ dependencies = [
     { name = "aiida-wannier90" },
     { name = "aiida-wannier90-workflows", extra = ["optimization"] },
     { name = "aiida-workgraph" },
+    { name = "node-graph" },
 ]
 
 [package.optional-dependencies]
@@ -104,6 +105,7 @@ requires-dist = [
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
+    { name = "node-graph", editable = "../node-graph" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
     { name = "sphinx", marker = "extra == 'docs'" },
     { name = "sphinxcontrib-contentui", marker = "extra == 'docs'" },
@@ -1608,8 +1610,7 @@ wheels = [
 
 [[package]]
 name = "node-graph"
-version = "0.6.5"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../node-graph" }
 dependencies = [
     { name = "click" },
     { name = "cloudpickle" },
@@ -1623,10 +1624,30 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/12/fa/f64cb06871fc56c43f34f799b68f84321451e0f821ccc5b9a76a8207d92a/node_graph-0.6.5.tar.gz", hash = "sha256:25114f96e3154aeccac8faf75cde16e8acaf772e0cc34857d446c1145ae30cde", size = 100369, upload-time = "2026-01-26T15:18:44.682Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/5a/fee76af3ad82de6ce8708846bc1c6217792cde04f8acc23991c8dc496731/node_graph-0.6.5-py3-none-any.whl", hash = "sha256:4efe5acd8900f9cf872b90f3bc0afccd63651c3bf7705bd6edfbd55e1dd2c471", size = 117763, upload-time = "2026-01-26T15:18:43.618Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.1" },
+    { name = "cloudpickle" },
+    { name = "graphviz", specifier = ">=0.20" },
+    { name = "nbsphinx", marker = "extra == 'docs'" },
+    { name = "node-graph-widget" },
+    { name = "numpy" },
+    { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=2.2" },
+    { name = "pydantic", specifier = "~=2.6" },
+    { name = "pylint", marker = "extra == 'pre-commit'", specifier = "~=2.17.4" },
+    { name = "pytest", marker = "extra == 'tests'", specifier = "~=7.0" },
+    { name = "pytest-asyncio", marker = "extra == 'tests'" },
+    { name = "pytest-cov", marker = "extra == 'tests'", specifier = "~=2.7,<2.11" },
+    { name = "pyyaml" },
+    { name = "rdflib", specifier = ">=6.0" },
+    { name = "scipy" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = "~=7.2" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
 ]
+provides-extras = ["docs", "pre-commit", "tests"]
 
 [[package]]
 name = "node-graph-widget"

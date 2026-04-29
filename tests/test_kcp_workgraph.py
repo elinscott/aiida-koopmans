@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from aiida_koopmans.types import SpinChannel
 from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
 from aiida_koopmans.workgraphs.kcp import (
     _build_dft_parameters,
@@ -275,10 +276,18 @@ class TestComputeAlphaFromDscf:
 
         trial = orm.Dict(dict={"energy": energy_trial})
         pert = orm.Dict(dict={"energy": energy_perturbed})
+        # Stacked ``(nspin, n, n)`` matching ``KcpParser._parse_lambdas``.
+        # nspin=2 here so ``SpinChannel.UP.index == 0`` selects the up channel.
         lambdas = orm.ArrayData()
-        lambdas.set_array("spin_1", np.array([[lam_a + 0j]], dtype=np.complex128))
+        lambdas.set_array(
+            "lambdas",
+            np.array([[[lam_a + 0j]], [[0j]]], dtype=np.complex128),
+        )
         bare = orm.ArrayData()
-        bare.set_array("spin_1", np.array([[lam_0 + 0j]], dtype=np.complex128))
+        bare.set_array(
+            "lambdas",
+            np.array([[[lam_0 + 0j]], [[0j]]], dtype=np.complex128),
+        )
         return trial, pert, lambdas, bare
 
     def _run(self, **kwargs):
@@ -297,8 +306,6 @@ class TestComputeAlphaFromDscf:
         return wg.tasks.alpha.outputs.alpha.value.value, wg.tasks.alpha.outputs.error.value.value
 
     def test_filled_orbital(self, aiida_profile):
-        from aiida import orm
-
         # dE = E_trial - E_perturbed = -1296.0 - (-1290.0) = -6.0
         # alpha = 0.6 * (-6.0 - (-10.0)) / (-8.0 - (-10.0)) = 0.6 * 4 / 2 = 1.2
         # error = |dE - lambda_a| = |-6.0 - (-8.0)| = 2.0
@@ -310,17 +317,15 @@ class TestComputeAlphaFromDscf:
             perturbed_output_parameters=pert,
             trial_lambdas=lambdas,
             trial_bare_lambdas=bare,
-            spin_label=orm.Str("spin_1"),
-            band_index=orm.Int(0),
-            alpha_guess=orm.Float(0.6),
-            filled=orm.Bool(True),
+            spin_channel=SpinChannel.UP,
+            band_index=0,
+            alpha_guess=0.6,
+            filled=True,
         )
         assert alpha == pytest.approx(1.2)
         assert error == pytest.approx(2.0)
 
     def test_empty_orbital_flips_de_sign(self, aiida_profile):
-        from aiida import orm
-
         # For empty: dE = E_perturbed - E_trial = -1290 - (-1296) = +6.0
         # alpha = 0.6 * (6.0 - (-10.0)) / (-8.0 - (-10.0)) = 0.6 * 16 / 2 = 4.8
         # error = |dE - lambda_a| = |6 - (-8)| = 14
@@ -332,10 +337,10 @@ class TestComputeAlphaFromDscf:
             perturbed_output_parameters=pert,
             trial_lambdas=lambdas,
             trial_bare_lambdas=bare,
-            spin_label=orm.Str("spin_1"),
-            band_index=orm.Int(0),
-            alpha_guess=orm.Float(0.6),
-            filled=orm.Bool(False),
+            spin_channel=SpinChannel.UP,
+            band_index=0,
+            alpha_guess=0.6,
+            filled=False,
         )
         assert alpha == pytest.approx(4.8)
         assert error == pytest.approx(14.0)

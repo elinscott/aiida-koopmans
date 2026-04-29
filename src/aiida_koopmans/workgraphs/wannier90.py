@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, NotRequired
+from typing import Any, NotRequired, TypedDict
 
+import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import (
@@ -22,33 +23,41 @@ from aiida_koopmans.workgraphs import Codes
 
 
 class PwOutputs(TypedDict, total=False):
+    """Outputs of a single PwBaseWorkChain run."""
+
     remote_folder: orm.RemoteData
     remote_stash: orm.RemoteData
     retrieved: orm.FolderData
-    output_parameters: orm.Dict
+    output_parameters: dict
     output_structure: orm.StructureData
     output_band: orm.BandsData
-    output_atomic_occupations: orm.Dict
+    output_atomic_occupations: dict
     output_kpoints: orm.KpointsData
     output_trajectory: orm.TrajectoryData
 
 
 class Wannier90Outputs(TypedDict):
+    """Outputs of a Wannier90BaseWorkChain run."""
+
     remote_folder: orm.RemoteData
     remote_stash: orm.RemoteData
     retrieved: orm.FolderData
-    output_parameters: orm.Dict
+    output_parameters: dict
     interpolated_bands: orm.BandsData
     nnkp_file: orm.SinglefileData
+    # Multi-key ArrayData (one array per disentanglement / spread iteration);
+    # default deserializer can't flatten — leave as orm.ArrayData.
     disentanglement_data: NotRequired[orm.ArrayData]
     spread_data: NotRequired[orm.ArrayData]
 
 
 class ProjwfcOutputs(TypedDict, total=False):
+    """Outputs of a ProjwfcCalculation."""
+
     remote_folder: orm.RemoteData
     remote_stash: orm.RemoteData
     retrieved: orm.FolderData
-    output_parameters: orm.Dict
+    output_parameters: dict
     Dos: orm.XyData
     Ldos: orm.XyData
     Pdos: orm.XyData
@@ -62,6 +71,7 @@ class ProjwfcOutputs(TypedDict, total=False):
 
 class WannierWorkflowOutputs(TypedDict):
     """Output types for Wannier90 workgraph tasks."""
+
     scf: PwOutputs
     nscf: PwOutputs
     wannier90: Wannier90Outputs
@@ -96,7 +106,7 @@ def Wannier90TaskViaBuilder(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
-    projector_rotation: orm.ArrayData | None = None,
+    projector_rotation: np.ndarray | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
 
@@ -137,13 +147,12 @@ def Wannier90TaskViaBuilder(
     Returns:
         Dict with outputs from the Wannier90WorkChain.
     """
-
     builder = Wannier90WorkChain.get_builder_from_protocol(
-        codes={k: v for k, v in codes.items()},
+        codes=codes,
         structure=structure,
         protocol=protocol,
         overrides=overrides or {},
-        pseudo_family=pseudo_family.__wrapped__,
+        pseudo_family=pseudo_family,
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
@@ -151,7 +160,7 @@ def Wannier90TaskViaBuilder(
         frozen_type=frozen_type,
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
-        external_projectors_path=external_projectors_path.__wrapped__,
+        external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
         plot_wannier_functions=plot_wannier_functions,
         retrieve_hamiltonian=retrieve_hamiltonian,
@@ -163,7 +172,7 @@ def Wannier90TaskViaBuilder(
         raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
 
     if kpoint_path is not None:
-        builder.wannier90.wannier90.kpoint_path = orm.Dict(kpoint_path)
+        builder.wannier90.wannier90.kpoint_path = kpoint_path
 
     if bands_kpoints is not None:
         builder.wannier90.wannier90.bands_kpoints = bands_kpoints
@@ -199,7 +208,7 @@ class WannierOptimizeOutputs(TypedDict, total=False):
     wannier90_optimal_up: Wannier90Outputs
     wannier90_optimal_down: Wannier90Outputs
     projwfc: ProjwfcOutputs
-    bands_distance: orm.Float
+    bands_distance: float
 
 
 @task.graph
@@ -234,7 +243,7 @@ def Wannier90OptimizeTaskViaBuilder(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
-    projector_rotation: orm.ArrayData | None = None,
+    projector_rotation: np.ndarray | None = None,
 ) -> WannierOptimizeOutputs:
     """Run Wannier90OptimizeWorkChain using the protocol-based builder pattern.
 
@@ -275,7 +284,7 @@ def Wannier90OptimizeTaskViaBuilder(
         Dict with outputs including optimal Wannier90 results and bands_distance.
     """
     builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
-        codes={k: v for k, v in codes.items()},
+        codes=codes,
         structure=structure,
         reference_bands=reference_bands,
         bands_distance_threshold=bands_distance_threshold,
@@ -284,7 +293,7 @@ def Wannier90OptimizeTaskViaBuilder(
         optimize_max_iterations=optimize_max_iterations,
         protocol=protocol,
         overrides=overrides or {},
-        pseudo_family=pseudo_family.__wrapped__,
+        pseudo_family=pseudo_family,
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
@@ -292,7 +301,7 @@ def Wannier90OptimizeTaskViaBuilder(
         frozen_type=frozen_type,
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
-        external_projectors_path=external_projectors_path.__wrapped__,
+        external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
         plot_wannier_functions=plot_wannier_functions,
         retrieve_hamiltonian=retrieve_hamiltonian,
@@ -305,16 +314,18 @@ def Wannier90OptimizeTaskViaBuilder(
         raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
 
     if kpoint_path is not None:
-        builder.wannier90.wannier90.kpoint_path = orm.Dict(kpoint_path)
+        builder.wannier90.wannier90.kpoint_path = kpoint_path
 
     if optimize_disprojmax_range is not None:
-        builder.optimize_disprojmax_range = orm.List(list=optimize_disprojmax_range)
+        builder.optimize_disprojmax_range = optimize_disprojmax_range
     if optimize_disprojmin_range is not None:
-        builder.optimize_disprojmin_range = orm.List(list=optimize_disprojmin_range)
+        builder.optimize_disprojmin_range = optimize_disprojmin_range
 
-    builder.optimize_mu_shift = orm.Float(optimize_mu_shift)
-    builder.optimize_sigma = orm.Float(optimize_sigma)
-    builder.optimize_mu_reference = orm.Str(optimize_mu_reference.value)
+    builder.optimize_mu_shift = optimize_mu_shift
+    builder.optimize_sigma = optimize_sigma
+    # ``to_aiida_type`` maps ``Enum -> EnumData``, but the port wants ``orm.Str``;
+    # extract ``.value`` so the default serializer wraps a plain str into ``orm.Str``.
+    builder.optimize_mu_reference = optimize_mu_reference.value
 
     if projector_rotation is not None:
         builder.projector_rotation = projector_rotation

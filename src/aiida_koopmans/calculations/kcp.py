@@ -265,6 +265,8 @@ class KcpCalculation(CalcJob):
 
     def _write_alpha_files(self, folder, *, do_orbdep: bool, odd_nkscalfact: bool) -> None:
         """Emit ``file_alpharef[_empty].txt`` when orbital-dependent screening is requested."""
+        from aiida_koopmans.types import AlphaScreening, SpinChannel
+
         alphas_requested = do_orbdep and odd_nkscalfact
         alphas_provided = "alphas" in self.inputs
         if alphas_requested and not alphas_provided:
@@ -279,9 +281,13 @@ class KcpCalculation(CalcJob):
             )
         if not alphas_requested:
             return
-        alphas = self.inputs.alphas.get_dict()
-        self._write_alpha_file(folder, alphas.get("filled", []), self._ALPHAREF_FILE)
-        self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
+        alphas: AlphaScreening = self.inputs.alphas.get_dict()
+        nspin = int(self.inputs.parameters.get_dict().get("SYSTEM", {}).get("nspin", 1))
+        order = [SpinChannel.NONE] if nspin == 1 else [SpinChannel.UP, SpinChannel.DOWN]
+        filled_flat = [a for spin in order for a in alphas["filled"].get(spin, [])]
+        empty_flat = [a for spin in order for a in alphas["empty"].get(spin, [])]
+        self._write_alpha_file(folder, filled_flat, self._ALPHAREF_FILE)
+        self._write_alpha_file(folder, empty_flat, self._ALPHAREF_EMPTY_FILE)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
         """Stage prior-run save directories under the child's read slot.

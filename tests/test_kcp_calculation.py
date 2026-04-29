@@ -237,11 +237,13 @@ def test_kcp_tutorial_1_ozone_ki(
     )
 
     # Matches what KoopmansDSCFTask builds for ``initial_alpha=0.6`` on ozone:
-    # 18 filled orbitals + 2 empty (nbnd=10, nspin=2, nelup=neldw=9).
+    # 9 filled + 1 empty per spin channel (nbnd=10, nspin=2, nelup=neldw=9).
+    from aiida_koopmans.types import SpinChannel
+
     alphas = orm.Dict(
         dict={
-            "filled": [0.6] * 18,
-            "empty": [0.6] * 2,
+            "filled": {SpinChannel.UP: [0.6] * 9, SpinChannel.DOWN: [0.6] * 9},
+            "empty": {SpinChannel.UP: [0.6], SpinChannel.DOWN: [0.6]},
         }
     )
 
