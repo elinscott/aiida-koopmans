@@ -90,6 +90,18 @@ class KcpCalculation(CalcJob):
             ),
         )
         spec.input(
+            "parent_folder_evcfixed",
+            valid_type=RemoteData,
+            required=False,
+            help=(
+                "Remote folder of a ``pz_print`` kcp.x run, for the empty-"
+                "orbital branch of the Delta-SCF screening loop. Only "
+                "``out/<prefix>_<NDW>.save/K00001/evcfixed_empty.dat`` is "
+                "symlinked from this folder; the orbital save directory "
+                "comes from ``parent_folder`` (the ``dft_n+1_dummy`` run)."
+            ),
+        )
+        spec.input(
             "settings",
             valid_type=Dict,
             required=False,
@@ -272,29 +284,47 @@ class KcpCalculation(CalcJob):
         self._write_alpha_file(folder, alphas.get("empty", []), self._ALPHAREF_EMPTY_FILE)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
-        """Stage the parent's save directory under the child's read slot.
+        """Stage prior-run save directories under the child's read slot.
 
-        Every ``KcpCalculation`` reads from ``out/<prefix>_50.save/`` and writes
-        to ``out/<prefix>_60.save/`` (see ``_NDR`` / ``_NDW``). When chained,
-        we symlink the parent's freshly-written ``aiida_60.save/`` into the
-        child's ``aiida_50.save/`` slot — kcp.x then doesn't need to know
-        anything about the parent's identity. Each child gets its own
-        AiiDA scratch directory so there are no naming collisions across
-        siblings.
+        Every ``KcpCalculation`` reads from ``out/<prefix>_50.save/`` and
+        writes to ``out/<prefix>_60.save/`` (see ``_NDR`` / ``_NDW``). When
+        chained, we symlink the primary ``parent_folder``'s freshly-written
+        ``aiida_60.save/`` into the child's ``aiida_50.save/`` slot — kcp.x
+        then doesn't need to know anything about the parent's identity.
 
-        Returns one symlink entry; an empty list when there is no parent
-        (the bootstrap DFT-init step).
+        For the ``dft_n+1`` step of the Delta-SCF empty-orbital branch we
+        also need ``evcfixed_empty.dat`` from a separate ``pz_print``
+        run. Supply that run's ``RemoteData`` as ``parent_folder_evcfixed``
+        and a second symlink is added that drops the file into
+        ``out/<prefix>_50.save/K00001/evcfixed_empty.dat``, layered on top
+        of the primary save. AiiDA scratch already isolates each calc, so
+        no naming collisions arise.
         """
-        if "parent_folder" not in self.inputs:
-            return []
-        parent = self.inputs.parent_folder
-        parent_save = (
-            PurePosixPath(parent.get_remote_path())
-            / self._OUTPUT_SUBFOLDER
-            / f"{self._PREFIX}_{self._NDW}.save"
-        )
+        symlinks: list[tuple[str, str, str]] = []
         target_save = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDR}.save"
-        return [(parent.computer.uuid, str(parent_save), target_save)]
+
+        if "parent_folder" in self.inputs:
+            parent = self.inputs.parent_folder
+            parent_save = (
+                PurePosixPath(parent.get_remote_path())
+                / self._OUTPUT_SUBFOLDER
+                / f"{self._PREFIX}_{self._NDW}.save"
+            )
+            symlinks.append((parent.computer.uuid, str(parent_save), target_save))
+
+        if "parent_folder_evcfixed" in self.inputs:
+            evc_parent = self.inputs.parent_folder_evcfixed
+            evc_source = (
+                PurePosixPath(evc_parent.get_remote_path())
+                / self._OUTPUT_SUBFOLDER
+                / f"{self._PREFIX}_{self._NDW}.save"
+                / "K00001"
+                / "evcfixed_empty.dat"
+            )
+            evc_target = f"{target_save}/K00001/evcfixed_empty.dat"
+            symlinks.append((evc_parent.computer.uuid, str(evc_source), evc_target))
+
+        return symlinks
 
     def _build_retrieve_list(self) -> list[str]:
         """Files persisted in the ``retrieved`` FolderData: stdout, CRASH, user extras."""

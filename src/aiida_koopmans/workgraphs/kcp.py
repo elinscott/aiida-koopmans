@@ -404,6 +404,168 @@ def OrbitalDeltaSCFFilledTask(
     )
 
 
+@task.graph
+def OrbitalDeltaSCFEmptyTask(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudo_family: str,
+    ecutwfc: float,
+    ecutrho: float,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    fixed_band: int,
+    spin_label: str,
+    band_index: int,
+    index_empty_to_save: int,
+    alpha_guess: float,
+    trial_remote: orm.RemoteData,
+    trial_output_parameters: orm.Dict,
+    trial_lambdas: orm.ArrayData,
+    trial_bare_lambdas: orm.ArrayData,
+    overrides: KcpNamelistOverrides | None = None,
+    options: dict[str, Any] | None = None,
+) -> OrbitalDeltaSCFOutputs:
+    """Compute the new alpha for one **empty** orbital via Delta-SCF.
+
+    Three-step kcp.x sub-pipeline (legacy
+    ``02-calculate-screening-via-dscf/01-iteration-1/<orbital>/``):
+
+    1. ``dft_n+1_dummy`` — scratch DFT with the empty orbital populated
+       (``fixed_band`` + ``nelec=N+1``); writes the save layout the
+       subsequent steps consume. Phase A always runs this every
+       iteration; legacy reuses it from iteration 1 onwards (deferred).
+    2. ``pz_print`` — PZ run on the fixed empty orbital (parent =
+       ``trial_remote``) that writes ``evcfixed_empty.dat``.
+    3. ``dft_n+1`` — SCF DFT (parent = the dummy + ``pz_print``'s
+       ``evcfixed_empty.dat`` via ``parent_folder_evcfixed``).
+
+    Then the alpha calcfunction extracts the (spin_label, band_index)
+    diagonal of the trial KI's lambda matrices, computes ``dE``, and
+    returns the new alpha + convergence error.
+
+    ``index_empty_to_save`` is the kcp.x index (1-based, within the
+    empty manifold) used to identify which empty's wavefunction
+    ``dft_n+1_dummy`` and ``pz_print`` save and ``dft_n+1`` reads.
+    For systems with a single empty orbital (e.g. tutorial_1 ozone)
+    this is always ``1``.
+    """
+    pseudos = resolve_pseudo_family(pseudo_family, structure)
+    aperiodic = not any(structure.pbc)
+
+    dummy_overrides = overrides.get("dft_dummy") if overrides else None  # type: ignore[union-attr]
+    pz_overrides = overrides.get("pz_print") if overrides else None  # type: ignore[union-attr]
+    n_plus_1_overrides = overrides.get("dft_n+1") if overrides else None  # type: ignore[union-attr]
+
+    dummy_parameters = _build_dft_n_plus_1_dummy_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec + 1,
+        nelup=(nelup + 1) if nelup is not None else None,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=aperiodic,
+        fixed_band=fixed_band,
+        index_empty_to_save=index_empty_to_save,
+    )
+    if dummy_overrides:
+        dummy_parameters = recursive_merge(dummy_parameters, dict(dummy_overrides))
+    dummy_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        dummy_parameters,
+        pseudos,
+        options=options,
+        name=f"dft_n+1_dummy_band{fixed_band}",
+    )
+    dummy_outputs = KcpBaseTask(**dummy_inputs)
+
+    pz_parameters = _build_pz_print_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=aperiodic,
+        fixed_band=fixed_band,
+        index_empty_to_save=index_empty_to_save,
+    )
+    if pz_overrides:
+        pz_parameters = recursive_merge(pz_parameters, dict(pz_overrides))
+    # ``pz_print`` reads orbitals from the trial KI (it operates at the
+    # original electron count) and writes ``evcfixed_empty.dat`` for
+    # the next step.
+    n_filled, n_empty = filled_and_empty_counts(
+        nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
+    )
+    pz_alphas = orm.Dict(
+        dict={
+            "filled": [alpha_guess] * n_filled,
+            "empty": [alpha_guess] * n_empty,
+        }
+    )
+    pz_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        pz_parameters,
+        pseudos,
+        options=options,
+        alphas=pz_alphas,
+        parent_folder=trial_remote,
+        name=f"pz_print_band{fixed_band}",
+    )
+    pz_outputs = KcpBaseTask(**pz_inputs)
+
+    n_plus_1_parameters = _build_dft_n_plus_1_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec + 1,
+        nelup=(nelup + 1) if nelup is not None else None,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=aperiodic,
+        fixed_band=fixed_band,
+        index_empty_to_save=index_empty_to_save,
+    )
+    if n_plus_1_overrides:
+        n_plus_1_parameters = recursive_merge(n_plus_1_parameters, dict(n_plus_1_overrides))
+    n_plus_1_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        n_plus_1_parameters,
+        pseudos,
+        options=options,
+        parent_folder=dummy_outputs["remote_folder"],
+        parent_folder_evcfixed=pz_outputs["remote_folder"],
+        name=f"dft_n+1_band{fixed_band}",
+    )
+    n_plus_1_outputs = KcpBaseTask(**n_plus_1_inputs)
+
+    result = compute_alpha_from_dscf(
+        trial_output_parameters=trial_output_parameters,
+        perturbed_output_parameters=n_plus_1_outputs["output_parameters"],
+        trial_lambdas=trial_lambdas,
+        trial_bare_lambdas=trial_bare_lambdas,
+        spin_label=orm.Str(spin_label),
+        band_index=orm.Int(band_index),
+        alpha_guess=orm.Float(alpha_guess),
+        filled=orm.Bool(False),
+    )
+
+    return OrbitalDeltaSCFOutputs(
+        alpha=result["alpha"],
+        error=result["error"],
+    )
+
+
 # ----------------------------------------------------------------------
 # MVP scope enforcement
 # ----------------------------------------------------------------------
@@ -894,6 +1056,7 @@ def _build_kcp_inputs(
     options: dict[str, Any] | None = None,
     alphas: orm.Dict | None = None,
     parent_folder: orm.RemoteData | None = None,
+    parent_folder_evcfixed: orm.RemoteData | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``.
@@ -901,6 +1064,13 @@ def _build_kcp_inputs(
     ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
     that's what shows up in ``verdi process list`` and the koopmans progress
     table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
+
+    ``parent_folder_evcfixed`` is the ``RemoteData`` of a ``pz_print``
+    run; only the ``dft_n+1`` step of the empty-orbital Delta-SCF branch
+    needs this. The CalcJob symlinks the file
+    ``out/<prefix>_<NDW>.save/K00001/evcfixed_empty.dat`` from that
+    folder onto its read save (see
+    ``KcpCalculation._build_remote_symlink_list``).
     """
     inputs: dict[str, Any] = {
         "code": code,
@@ -912,6 +1082,8 @@ def _build_kcp_inputs(
         inputs["alphas"] = alphas
     if parent_folder is not None:
         inputs["parent_folder"] = parent_folder
+    if parent_folder_evcfixed is not None:
+        inputs["parent_folder_evcfixed"] = parent_folder_evcfixed
     metadata: dict[str, Any] = {}
     if options:
         metadata["options"] = options
