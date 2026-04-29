@@ -86,11 +86,74 @@ class KoopmansDSCFOverrides(TypedDict, total=False):
     ki: KcpNamelistOverrides
 
 
+class OrbitalDeltaSCFOutputs(TypedDict):
+    """Outputs of one Delta-SCF orbital sub-run.
+
+    ``alpha`` is the new screening parameter for the (spin, band) pair this
+    task targets; ``error`` is ``|dE - lambda_a|``, the convergence
+    indicator used by the iteration loop's stopping criterion.
+    """
+
+    alpha: orm.Float
+    error: orm.Float
+
+
 # ----------------------------------------------------------------------
 # Raw CalcJob as a workgraph task
 # ----------------------------------------------------------------------
 
 KcpBaseTask = task(KcpCalculation)
+
+
+# ----------------------------------------------------------------------
+# Pure-Python alpha computation, wrapped as a calcfunction for provenance.
+# ----------------------------------------------------------------------
+
+
+@task.calcfunction(outputs=["alpha", "error"])
+def compute_alpha_from_dscf(
+    *,
+    trial_output_parameters: orm.Dict,
+    perturbed_output_parameters: orm.Dict,
+    trial_lambdas: orm.ArrayData,
+    trial_bare_lambdas: orm.ArrayData,
+    spin_label: orm.Str,
+    band_index: orm.Int,
+    alpha_guess: orm.Float,
+    filled: orm.Bool,
+) -> dict:
+    """Compute the new alpha for one orbital from its Delta-SCF perturbed run.
+
+    Implements equation 10 of Nguyen et al. (2018) 10.1103/PhysRevX.8.021051,
+    matching legacy ``_koopmans_dscf.py:944``::
+
+        alpha_new = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)
+
+    where:
+
+    - ``dE = E_trial - E_dft_n-1`` for filled orbitals,
+      ``dE = E_dft_n+1 - E_trial`` for empty orbitals;
+    - ``lambda_a`` is the diagonal element of the trial KI's
+      orbital-dependent Hamiltonian at ``(band_index, band_index)``;
+    - ``lambda_0`` is the same diagonal element of the **bare** Hamiltonian.
+
+    Both energies and lambdas are in eV (the parser converts from Hartree),
+    so the units cancel on division. ``error = |dE - lambda_a|`` is the
+    convergence indicator the legacy loop monitors.
+    """
+    trial_e = trial_output_parameters.get_dict()["energy"]
+    perturbed_e = perturbed_output_parameters.get_dict()["energy"]
+    spin = spin_label.value
+    iband = band_index.value
+    lambda_a = float(trial_lambdas.get_array(spin)[iband, iband].real)
+    lambda_0 = float(trial_bare_lambdas.get_array(spin)[iband, iband].real)
+    if filled.value:
+        dE = trial_e - perturbed_e  # noqa: N806 -- dE matches eq. 10 notation
+    else:
+        dE = perturbed_e - trial_e  # noqa: N806
+    alpha_new = alpha_guess.value * (dE - lambda_0) / (lambda_a - lambda_0)
+    error = abs(dE - lambda_a)
+    return {"alpha": orm.Float(alpha_new), "error": orm.Float(error)}
 
 
 # ----------------------------------------------------------------------
@@ -248,6 +311,96 @@ def KoopmansDSCFTask(
         eigenvalues=ki_outputs["output_eigenvalues"],
         lambdas=ki_outputs["output_lambdas"],
         remote_folder=ki_outputs["remote_folder"],
+    )
+
+
+@task.graph
+def OrbitalDeltaSCFFilledTask(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudo_family: str,
+    ecutwfc: float,
+    ecutrho: float,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    fixed_band: int,
+    spin_label: str,
+    band_index: int,
+    alpha_guess: float,
+    trial_remote: orm.RemoteData,
+    trial_output_parameters: orm.Dict,
+    trial_lambdas: orm.ArrayData,
+    trial_bare_lambdas: orm.ArrayData,
+    overrides: KcpNamelistOverrides | None = None,
+    options: dict[str, Any] | None = None,
+) -> OrbitalDeltaSCFOutputs:
+    """Compute the new alpha for one **filled** orbital via Delta-SCF.
+
+    Submits a single ``dft_n-1`` kcp.x run (with ``fixed_band=fixed_band``,
+    one electron pulled out of that orbital via ``f_cutoff=1e-5``), then
+    evaluates the legacy alpha formula at ``(spin_label, band_index)``
+    against the trial KI's lambda and bare-lambda matrices.
+
+    Args:
+        fixed_band: 1-indexed kcp.x band index of the orbital to refine.
+            Goes into ``&SYSTEM.fixed_band``.
+        spin_label: ``"spin_1"`` / ``"spin_2"`` — which array key on the
+            trial KI's ArrayData outputs to query for the lambda diagonal.
+        band_index: 0-indexed numpy index into the lambda matrix
+            (``= fixed_band - 1``).
+        alpha_guess: the alpha currently assigned to this orbital
+            (initial guess on iteration 1; previous-iteration alpha
+            otherwise).
+        trial_remote: ``RemoteData`` of the trial KI calc — sets
+            ``parent_folder`` so kcp.x finds the orbital-dependent save.
+        trial_output_parameters / trial_lambdas / trial_bare_lambdas:
+            outputs of the same trial KI; passed in here rather than
+            re-loaded so the orbital task is provenance-pure.
+    """
+    pseudos = resolve_pseudo_family(pseudo_family, structure)
+
+    parameters = _build_dft_n_minus_1_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=not any(structure.pbc),
+        fixed_band=fixed_band,
+    )
+    if overrides:
+        parameters = recursive_merge(parameters, dict(overrides))
+
+    inputs = _build_kcp_inputs(
+        code,
+        structure,
+        parameters,
+        pseudos,
+        options=options,
+        parent_folder=trial_remote,
+        name=f"dft_n-1_band{fixed_band}",
+    )
+    dft_outputs = KcpBaseTask(**inputs)
+
+    result = compute_alpha_from_dscf(
+        trial_output_parameters=trial_output_parameters,
+        perturbed_output_parameters=dft_outputs["output_parameters"],
+        trial_lambdas=trial_lambdas,
+        trial_bare_lambdas=trial_bare_lambdas,
+        spin_label=orm.Str(spin_label),
+        band_index=orm.Int(band_index),
+        alpha_guess=orm.Float(alpha_guess),
+        filled=orm.Bool(True),
+    )
+
+    return OrbitalDeltaSCFOutputs(
+        alpha=result["alpha"],
+        error=result["error"],
     )
 
 

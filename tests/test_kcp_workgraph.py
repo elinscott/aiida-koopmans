@@ -252,3 +252,90 @@ class TestFilledAndEmptyCounts:
     def test_nspin_two_missing_spin_counts_raises(self):
         with pytest.raises(ValueError, match="required when nspin=2"):
             filled_and_empty_counts(nspin=2, nbnd=10, nelec=18, nelup=None, neldw=None)
+
+
+# ----------------------------------------------------------------------
+# Alpha formula — eq. 10 of Nguyen et al. (2018)
+# ----------------------------------------------------------------------
+
+
+class TestComputeAlphaFromDscf:
+    """Pin the alpha-update formula against known inputs.
+
+    Reference: legacy ``_koopmans_dscf.py:944`` —
+    ``alpha = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)``.
+
+    Both energies and lambdas are in eV (the parser converts from Hartree
+    via ``qe_tools.CONSTANTS``); units cancel on division.
+    """
+
+    def _make_inputs(self, *, energy_trial, energy_perturbed, lam_a, lam_0):
+        import numpy as np
+        from aiida import orm
+
+        trial = orm.Dict(dict={"energy": energy_trial})
+        pert = orm.Dict(dict={"energy": energy_perturbed})
+        lambdas = orm.ArrayData()
+        lambdas.set_array("spin_1", np.array([[lam_a + 0j]], dtype=np.complex128))
+        bare = orm.ArrayData()
+        bare.set_array("spin_1", np.array([[lam_0 + 0j]], dtype=np.complex128))
+        return trial, pert, lambdas, bare
+
+    def _run(self, **kwargs):
+        """Invoke the calcfunction via a one-shot WorkGraph.
+
+        The idiomatic aiida-workgraph way to exercise a single task.
+        Returns ``(alpha, error)`` as plain floats.
+        """
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.kcp import compute_alpha_from_dscf
+
+        wg = WorkGraph("compute_alpha_unit")
+        wg.add_task(compute_alpha_from_dscf, name="alpha", **kwargs)
+        wg.run()
+        return wg.tasks.alpha.outputs.alpha.value.value, wg.tasks.alpha.outputs.error.value.value
+
+    def test_filled_orbital(self, aiida_profile):
+        from aiida import orm
+
+        # dE = E_trial - E_perturbed = -1296.0 - (-1290.0) = -6.0
+        # alpha = 0.6 * (-6.0 - (-10.0)) / (-8.0 - (-10.0)) = 0.6 * 4 / 2 = 1.2
+        # error = |dE - lambda_a| = |-6.0 - (-8.0)| = 2.0
+        trial, pert, lambdas, bare = self._make_inputs(
+            energy_trial=-1296.0, energy_perturbed=-1290.0, lam_a=-8.0, lam_0=-10.0
+        )
+        alpha, error = self._run(
+            trial_output_parameters=trial,
+            perturbed_output_parameters=pert,
+            trial_lambdas=lambdas,
+            trial_bare_lambdas=bare,
+            spin_label=orm.Str("spin_1"),
+            band_index=orm.Int(0),
+            alpha_guess=orm.Float(0.6),
+            filled=orm.Bool(True),
+        )
+        assert alpha == pytest.approx(1.2)
+        assert error == pytest.approx(2.0)
+
+    def test_empty_orbital_flips_de_sign(self, aiida_profile):
+        from aiida import orm
+
+        # For empty: dE = E_perturbed - E_trial = -1290 - (-1296) = +6.0
+        # alpha = 0.6 * (6.0 - (-10.0)) / (-8.0 - (-10.0)) = 0.6 * 16 / 2 = 4.8
+        # error = |dE - lambda_a| = |6 - (-8)| = 14
+        trial, pert, lambdas, bare = self._make_inputs(
+            energy_trial=-1296.0, energy_perturbed=-1290.0, lam_a=-8.0, lam_0=-10.0
+        )
+        alpha, error = self._run(
+            trial_output_parameters=trial,
+            perturbed_output_parameters=pert,
+            trial_lambdas=lambdas,
+            trial_bare_lambdas=bare,
+            spin_label=orm.Str("spin_1"),
+            band_index=orm.Int(0),
+            alpha_guess=orm.Float(0.6),
+            filled=orm.Bool(False),
+        )
+        assert alpha == pytest.approx(4.8)
+        assert error == pytest.approx(14.0)
