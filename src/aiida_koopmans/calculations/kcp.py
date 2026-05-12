@@ -70,15 +70,31 @@ class KcpCalculation(CalcJob):
                 "'NKSIC': {...}, ...}``. Namelist names are case-insensitive."
             ),
         )
-        spec.input(
+        spec.input_namespace(
             "alphas",
-            valid_type=Dict,
             required=False,
             help=(
-                "Orbital-dependent screening parameters. Dict with keys "
-                "``'filled'`` and ``'empty'`` mapping to flat lists of floats. "
-                "Required when the parameters request orbital-dependent screening."
+                "Orbital-dependent screening parameters split into ``filled`` "
+                "and ``empty`` sub-inputs. Each is an ``orm.Dict`` keyed by "
+                "spin channel (``'none'`` for nspin=1, ``'up'`` / ``'down'`` "
+                "for nspin=2) mapping to per-orbital alpha lists. Shape "
+                "matches the :class:`~aiida_koopmans.types.AlphaScreening` "
+                "TypedDict so a workgraph ``@task`` returning that TypedDict "
+                "wires its namespace output straight through. Required when "
+                "the parameters request orbital-dependent screening."
             ),
+        )
+        spec.input(
+            "alphas.filled",
+            valid_type=Dict,
+            required=False,
+            help="Per-spin filled-orbital alpha lists.",
+        )
+        spec.input(
+            "alphas.empty",
+            valid_type=Dict,
+            required=False,
+            help="Per-spin empty-orbital alpha lists.",
         )
         spec.input(
             "parent_folder",
@@ -119,6 +135,16 @@ class KcpCalculation(CalcJob):
         spec.inputs["metadata"]["options"]["input_filename"].default = cls._INPUT_FILE
         spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
         spec.inputs["metadata"]["options"]["withmpi"].default = True
+        # Default targets ``core.direct``-style schedulers. The
+        # ``hyperqueue`` scheduler accepts the same shape via the
+        # ``num_machines`` * ``num_mpiprocs_per_machine`` backward-compat
+        # path (it computes ``num_cpus`` from those when no explicit
+        # ``num_cpus`` is provided; see ``HyperQueueJobResource``). The
+        # HQ worker's CPU pool — set up by ``koopmans install`` — is the
+        # authoritative cap on parallelism; this default just declares
+        # each individual calc as a single-rank job. Callers wanting
+        # multi-rank kcp.x runs should override via
+        # ``metadata.options.resources``.
         spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
 
         spec.output(
@@ -265,10 +291,15 @@ class KcpCalculation(CalcJob):
 
     def _write_alpha_files(self, folder, *, do_orbdep: bool, odd_nkscalfact: bool) -> None:
         """Emit ``file_alpharef[_empty].txt`` when orbital-dependent screening is requested."""
-        from aiida_koopmans.types import AlphaScreening, SpinChannel
+        from aiida_koopmans.types import SpinChannel
 
         alphas_requested = do_orbdep and odd_nkscalfact
-        alphas_provided = "alphas" in self.inputs
+        # ``alphas`` is an input namespace, so ``"alphas" in self.inputs`` is
+        # True even when the caller never wires it — the empty namespace
+        # always exists. Detect actual provision by checking whether either
+        # leaf sub-port (``filled`` / ``empty``) is populated.
+        alphas_ns = self.inputs.get("alphas", None)
+        alphas_provided = alphas_ns is not None and ("filled" in alphas_ns or "empty" in alphas_ns)
         if alphas_requested and not alphas_provided:
             raise ValueError(
                 "Parameters request orbital-dependent screening (do_orbdep=.true., "
@@ -281,11 +312,32 @@ class KcpCalculation(CalcJob):
             )
         if not alphas_requested:
             return
-        alphas: AlphaScreening = self.inputs.alphas.get_dict()
+        # ``alphas`` is a namespace with ``filled`` and ``empty`` Dict
+        # sub-inputs (matching :class:`AlphaScreening`). Each Dict's payload
+        # is keyed by spin channel.
+        filled_per_spin: dict[str, list[float]] = self.inputs.alphas.filled.get_dict()
+        empty_per_spin: dict[str, list[float]] = self.inputs.alphas.empty.get_dict()
         nspin = int(self.inputs.parameters.get_dict().get("SYSTEM", {}).get("nspin", 1))
         order = [SpinChannel.NONE] if nspin == 1 else [SpinChannel.UP, SpinChannel.DOWN]
-        filled_flat = [a for spin in order for a in alphas["filled"].get(spin, [])]
-        empty_flat = [a for spin in order for a in alphas["empty"].get(spin, [])]
+
+        def _flatten(per_spin: dict) -> list[float]:
+            # Closed-shell case: upstream packs the single representative
+            # channel under ``SpinChannel.NONE`` (see
+            # ``aiida_koopmans.workgraphs.kcp.build_filled_iter_source`` and
+            # ``generate_alphas``). When the kcp.x run is ``nspin=2`` we
+            # mirror that one list onto every spin slot before writing the
+            # block-spin ``file_alpharef`` — same convention as legacy
+            # ``koopmans/bands.py:298-301``.
+            if (
+                SpinChannel.NONE in per_spin
+                and SpinChannel.NONE not in order
+                and len(per_spin) == 1
+            ):
+                return list(per_spin[SpinChannel.NONE]) * len(order)
+            return [a for spin in order for a in per_spin.get(spin, [])]
+
+        filled_flat = _flatten(filled_per_spin)
+        empty_flat = _flatten(empty_per_spin)
         self._write_alpha_file(folder, filled_flat, self._ALPHAREF_FILE)
         self._write_alpha_file(folder, empty_flat, self._ALPHAREF_EMPTY_FILE)
 
@@ -319,16 +371,25 @@ class KcpCalculation(CalcJob):
             symlinks.append((parent.computer.uuid, str(parent_save), target_save))
 
         if "parent_folder_evcfixed" in self.inputs:
+            # ``pz_print`` writes per-spin ``evcfixed_empty{ispin}.dat``;
+            # the ``dft_n+1`` step reads them under the *renamed*
+            # ``evc_occupied{ispin}.dat`` (kcp.x's
+            # ``restart_from_wannier_pwscf`` machinery hard-codes that
+            # filename). Two symlinks per call, one per spin — matches
+            # legacy ``_koopmans_dscf.py:776-778``. The KI-DSCF flow is
+            # always nspin=2, so both source files are guaranteed to
+            # exist on the pz_print parent.
             evc_parent = self.inputs.parent_folder_evcfixed
-            evc_source = (
+            evc_save = (
                 PurePosixPath(evc_parent.get_remote_path())
                 / self._OUTPUT_SUBFOLDER
                 / f"{self._PREFIX}_{self._NDW}.save"
                 / "K00001"
-                / "evcfixed_empty.dat"
             )
-            evc_target = f"{target_save}/K00001/evcfixed_empty.dat"
-            symlinks.append((evc_parent.computer.uuid, str(evc_source), evc_target))
+            for ispin in (1, 2):
+                evc_source = evc_save / f"evcfixed_empty{ispin}.dat"
+                evc_target = f"{target_save}/K00001/evc_occupied{ispin}.dat"
+                symlinks.append((evc_parent.computer.uuid, str(evc_source), evc_target))
 
         return symlinks
 

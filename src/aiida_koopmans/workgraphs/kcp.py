@@ -24,20 +24,21 @@ helpers without reshaping the public ``KoopmansDSCFTask`` signature.
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 import numpy as np
 from aiida import orm
 from aiida.plugins import DataFactory
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
-from aiida_workgraph import task
+from aiida_workgraph import Map, dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.types import AlphaScreening, SpinChannel
 from aiida_koopmans.utils import (
-    count_electrons,
+    count_electrons_task,
     filled_and_empty_counts,
-    resolve_pseudo_family,
+    filled_and_empty_counts_task,
+    resolve_pseudo_family_task,
 )
 
 UpfData = DataFactory("pseudo.upf")
@@ -91,10 +92,20 @@ class KcpNamelistOverrides(TypedDict, total=False):
 
 
 class KoopmansDSCFOverrides(TypedDict, total=False):
-    """Per-step overrides for ``KoopmansDSCFTask``."""
+    """Per-step overrides for ``KoopmansDSCFTask``.
+
+    ``ki`` is reused for both the trial KI and the final KI.
+    The four DSCF sub-step keys override individual orbital sub-runs:
+    ``dft_n_minus_1`` for filled orbitals; ``dft_n_plus_1_dummy``,
+    ``pz_print``, ``dft_n_plus_1`` for the empty-orbital triplet.
+    """
 
     dft: KcpNamelistOverrides
     ki: KcpNamelistOverrides
+    dft_n_minus_1: KcpNamelistOverrides
+    dft_n_plus_1_dummy: KcpNamelistOverrides
+    pz_print: KcpNamelistOverrides
+    dft_n_plus_1: KcpNamelistOverrides
 
 
 class OrbitalDeltaSCFOutputs(TypedDict):
@@ -107,6 +118,18 @@ class OrbitalDeltaSCFOutputs(TypedDict):
 
     alpha: float
     error: float
+
+
+class _PerOrbitalAlphaOutputs(TypedDict):
+    """Gathered outputs of the per-orbital scatter, packed into per-spin lists.
+
+    ``alphas`` and ``errors`` share the same per-spin / filled-vs-empty
+    layout (see :class:`AlphaScreening`), making the ``alphas`` field
+    drop-in for the kcp.x ``alphas`` socket on the final KI step.
+    """
+
+    alphas: AlphaScreening
+    errors: AlphaScreening
 
 
 # ----------------------------------------------------------------------
@@ -167,6 +190,235 @@ def compute_alpha_from_dscf(
     return {"alpha": alpha_new, "error": error}
 
 
+@task
+def assemble_alpha_screening(
+    *,
+    filled_alphas: Annotated[dict | None, dynamic(float)] = None,
+    filled_errors: Annotated[dict | None, dynamic(float)] = None,
+    empty_alphas: Annotated[dict | None, dynamic(float)] = None,
+    empty_errors: Annotated[dict | None, dynamic(float)] = None,
+) -> _PerOrbitalAlphaOutputs:
+    """Pack per-orbital scatter outputs into the :class:`AlphaScreening` shape.
+
+    Inputs are flat dicts produced by the scatter helpers, keyed
+    ``f"{spin_tag}_orb_{i}"`` where ``spin_tag`` is the
+    :class:`SpinChannel` value (``"none"`` for closed-shell, or ``"up"``
+    / ``"down"`` for the spin-polarised case) and ``i`` is the 0-indexed
+    variational orbital within the per-channel manifold.
+
+    The packer is purely structural — it pulls the channel set and the
+    per-channel count from the input dict alone, with no knowledge of
+    ``nspin`` or ``spin_polarized``. The closed-shell up→down mirror
+    (when kcp.x needs both spin slots in ``file_alpharef``) lives in
+    :meth:`KcpCalculation._write_alpha_files`, not here.
+
+    Returns a ``{"alphas": AlphaScreening, "errors": AlphaScreening}``
+    pair: the ``alphas`` field plugs straight into the kcp.x ``alphas``
+    socket of the final KI step.
+    """
+    # Map zones with zero iterations may surface their gathered output
+    # as ``None``; treat that as the empty dict.
+    filled_alphas = filled_alphas or {}
+    filled_errors = filled_errors or {}
+    empty_alphas = empty_alphas or {}
+    empty_errors = empty_errors or {}
+
+    def _pack(flat: dict) -> dict[SpinChannel, list[float]]:
+        if not flat:
+            return {}
+        # Discover the channel set from the input keys alone. Two shapes:
+        # * ``"orb_<n>"`` — closed-shell representative channel (NONE).
+        # * ``"<up|down>_orb_<n>"`` — spin-polarised.
+        # Indices are 1-indexed and may be non-contiguous (filled and
+        # empty manifolds share the same numbering — see
+        # :func:`build_filled_iter_source` / :func:`build_empty_iter_source`).
+        # Sort by index so output lists carry orbitals in band order.
+        by_spin: dict[SpinChannel, list[tuple[int, float]]] = {}
+        for key, value in flat.items():
+            tag, _, idx_str = key.rpartition("_")
+            if not tag.endswith("orb"):
+                raise ValueError(f"Unexpected key {key!r}")
+            spin_tag = tag[: -len("orb")].rstrip("_")
+            spin = SpinChannel(spin_tag) if spin_tag else SpinChannel.NONE
+            by_spin.setdefault(spin, []).append((int(idx_str), float(value)))
+        out: dict[SpinChannel, list[float]] = {}
+        for spin, items in by_spin.items():
+            items.sort(key=lambda t: t[0])
+            out[spin] = [v for _, v in items]
+        return out
+
+    filled_packed = _pack(filled_alphas)
+    empty_packed = _pack(empty_alphas)
+    filled_err_packed = _pack(filled_errors)
+    empty_err_packed = _pack(empty_errors)
+
+    alphas: AlphaScreening = {"filled": filled_packed, "empty": empty_packed}
+    errors: AlphaScreening = {"filled": filled_err_packed, "empty": empty_err_packed}
+    return {"alphas": alphas, "errors": errors}
+
+
+# ----------------------------------------------------------------------
+# Uniform alpha generator. Runs as a plain ``@task`` so all per-channel
+# list arithmetic happens inside a process node, never on raw sockets
+# inside a ``@task.graph`` body.
+# ----------------------------------------------------------------------
+
+
+@task
+def generate_alphas(
+    alpha_guess: float,
+    n_filled: int,
+    n_empty: int,
+    spin_polarized: bool = False,
+) -> AlphaScreening:
+    """Build an :class:`AlphaScreening` of uniform ``alpha_guess`` values.
+
+    Used both for the trial-KI uniform alphas and the empty-orbital
+    ``pz_print`` alphas. Mirrors the channel-emission rule of
+    :func:`build_filled_iter_source`:
+
+    * ``spin_polarized=False`` → emit a single representative channel
+      keyed by :attr:`SpinChannel.NONE`. The mirror onto kcp.x's per-spin
+      ``file_alpharef`` happens later in
+      :meth:`KcpCalculation._write_alpha_files`.
+    * ``spin_polarized=True`` → emit both UP and DOWN with identical
+      uniform values.
+
+    ``n_filled`` / ``n_empty`` are totals across both spin channels;
+    halve them once to get the per-channel count.
+    """
+    n_filled_per_channel = n_filled // 2
+    n_empty_per_channel = n_empty // 2
+    if not spin_polarized:
+        return {
+            "filled": {SpinChannel.NONE: [alpha_guess] * n_filled_per_channel},
+            "empty": {SpinChannel.NONE: [alpha_guess] * n_empty_per_channel},
+        }
+    return {
+        "filled": {
+            SpinChannel.UP: [alpha_guess] * n_filled_per_channel,
+            SpinChannel.DOWN: [alpha_guess] * n_filled_per_channel,
+        },
+        "empty": {
+            SpinChannel.UP: [alpha_guess] * n_empty_per_channel,
+            SpinChannel.DOWN: [alpha_guess] * n_empty_per_channel,
+        },
+    }
+
+
+@task
+def build_filled_iter_source(
+    nbnd: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    alpha_guess: float,
+    spin_polarized: bool = False,
+) -> Annotated[dict, dynamic(dict)]:
+    """Materialise the per-orbital iterator for the *filled* Map zone.
+
+    Each emitted item is a ``dict`` carrying the per-orbital parameters
+    the consumer (``OrbitalDeltaSCFFilledTask``) needs: ``fixed_band``
+    (1-indexed kcp.x), ``spin_channel`` (kept as the :class:`SpinChannel`
+    enum), ``band_index`` (0-indexed numpy index into the stacked lambda
+    matrices), and ``alpha_guess`` (uniform initial guess on iter 1).
+
+    Spin handling:
+
+    * ``spin_polarized=False`` (closed shell, the common case): emit a
+      single representative channel keyed by :attr:`SpinChannel.NONE`.
+      Legacy convention is to solve the up-spin orbitals only and copy
+      their alphas onto the down-spin twins (see
+      ``koopmans/bands.py:298-301`` + ``to_solve`` at line 318-320). The
+      mirror onto kcp.x's per-spin ``file_alpharef`` happens later in
+      :meth:`KcpCalculation._write_alpha_files`.
+    * ``spin_polarized=True``: emit both UP and DOWN channels.
+
+    kcp.x always runs with ``nspin=2`` in our KI flow (the dispatcher
+    hardcodes this); the closed-shell halving is a function of
+    ``spin_polarized``, not ``nspin``.
+    """
+    n_filled, _ = filled_and_empty_counts(nspin=2, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw)
+    n_filled_per_channel = n_filled // 2
+    spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
+    out: dict[str, dict] = {}
+    for spin in spin_list:
+        for i in range(n_filled_per_channel):
+            # Orbital indices are **1-indexed** and shared with the empty
+            # manifold (see :func:`build_empty_iter_source`) so they line up
+            # with kcp.x's own band numbering. Closed-shell: bare
+            # ``orb_<n>`` key (no spin tag — only one representative
+            # channel). Spin-polarised: ``<up|down>_orb_<n>``. ``_pack`` in
+            # :func:`assemble_alpha_screening` parses both shapes back to
+            # :class:`SpinChannel`.
+            orb_index = i + 1
+            tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
+            out[f"{tag_prefix}orb_{orb_index}"] = {
+                "fixed_band": orb_index,
+                "spin_channel": spin,
+                "band_index": i,
+                "alpha_guess": alpha_guess,
+            }
+    return out
+
+
+@task
+def build_empty_iter_source(
+    nbnd: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    alpha_guess: float,
+    spin_polarized: bool = False,
+) -> Annotated[dict, dynamic(dict)]:
+    """Materialise the per-orbital iterator for the *empty* Map zone.
+
+    Empty orbitals come *after* the filled manifold within each per-spin
+    block, so ``fixed_band`` and ``band_index`` are offset by
+    ``n_filled_per_channel``. ``index_empty_to_save`` is 1-based within
+    the per-spin empty manifold (kcp.x convention).
+
+    See :func:`build_filled_iter_source` for the spin-channel emission
+    rule (closed-shell emits a single :attr:`SpinChannel.NONE` channel;
+    spin-polarised emits UP + DOWN).
+    """
+    n_filled, n_empty = filled_and_empty_counts(
+        nspin=2, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
+    )
+    n_filled_per_channel = n_filled // 2
+    n_empty_per_channel = n_empty // 2
+    spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
+    out: dict[str, dict] = {}
+    for spin in spin_list:
+        for i in range(n_empty_per_channel):
+            # Empty orbital indices continue the filled-manifold numbering
+            # (1-indexed, no restart at 0) — matches kcp.x's band ordering.
+            # See :func:`build_filled_iter_source` for the spin-tag rule.
+            orb_index = n_filled_per_channel + i + 1
+            tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
+            out[f"{tag_prefix}orb_{orb_index}"] = {
+                "fixed_band": orb_index,
+                "spin_channel": spin,
+                "band_index": orb_index - 1,
+                "index_empty_to_save": i + 1,
+                "alpha_guess": alpha_guess,
+            }
+    return out
+
+
+@task
+def _get_value(data: dict, key: str):
+    """Extract a single field from a Map item dict.
+
+    Map items are dict-valued; AiiDA forbids direct subscripting of
+    sockets, so each field accessed inside a Map zone goes through this
+    one-shot task. See aiida-workgraph
+    ``docs/gallery/advanced/autogen/context_manager.py`` for the
+    canonical pattern.
+    """
+    return data[key]
+
+
 # ----------------------------------------------------------------------
 # Public graphs
 # ----------------------------------------------------------------------
@@ -176,11 +428,14 @@ def compute_alpha_from_dscf(
 def DFTCPTask(
     code: orm.AbstractCode,
     structure: orm.StructureData,
-    pseudo_family: str,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    nelec: int,
     ecutwfc: float,
     ecutrho: float,
     nbnd: int,
     nspin: int = 2,
+    nelup: int | None = None,
+    neldw: int | None = None,
     tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
@@ -191,12 +446,13 @@ def DFTCPTask(
     needs spin symmetrization, they should wrap this task in a higher-level
     graph that runs the symmetrization process — that graph is not yet
     ported.
-    """
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
-    nelec, nelup, neldw = count_electrons(
-        structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
-    )
 
+    ``pseudos`` and the electron counts arrive as sockets resolved
+    upstream by :func:`resolve_pseudo_family_task` and
+    :func:`count_electrons_task` respectively, keeping all
+    QueryBuilder / structure-walking work inside dedicated process
+    nodes (avoids the ``TaggedValue`` proxy hitting SQLAlchemy).
+    """
     parameters = _build_dft_parameters(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
@@ -238,15 +494,22 @@ def KoopmansDSCFTask(
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
     initial_alpha: float = 0.6,
+    spin_polarized: bool = False,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> KoopmansDSCFOutputs:
-    """Koopmans DSCF workflow — DFT init followed by a KI correction.
+    """Koopmans DSCF workflow — DFT init → trial KI → per-orbital DSCF refinement → final KI.
 
-    **MVP scope.** Only the two-step DFT → KI pipeline is run. The Delta SCF
-    alpha-refinement loop is not executed yet; every orbital is assigned
-    ``initial_alpha`` (legacy default 0.6). When the loop is added, this
-    task's signature should not change — only its body.
+    Runs one iteration of alpha refinement: a trial KI computes lambda
+    matrices for the alpha formula, the per-orbital Delta-SCF scatter
+    (one ``dft_n-1`` for each filled orbital and one
+    ``dft_n+1_dummy → pz_print → dft_n+1`` triplet for each empty
+    orbital) refines every alpha, and a final KI re-runs with those
+    refined alphas (restarting from the DFT save, not the trial KI).
+
+    Multi-iteration refinement (``alpha_numsteps > 1``) and
+    spin-symmetrisation (``fix_spin_contamination=True``) are deferred
+    to Phase B; ``_validate_scope`` rejects those paths.
     """
     _validate_scope(
         functional=functional,
@@ -256,15 +519,33 @@ def KoopmansDSCFTask(
         structure=structure,
     )
 
-    mt_correction = not any(structure.pbc)
-
     dft_overrides = overrides.get("dft") if overrides else None
-    ki_overrides = overrides.get("ki") if overrides else None
+
+    # Resolve pseudo family + electron counts once, at runtime, so the
+    # results flow downstream as plain AiiDA-typed sockets instead of
+    # ``TaggedValue`` proxies (the failure mode of the inline plain-Python
+    # call inside a nested ``@task.graph`` body).
+    pseudos = resolve_pseudo_family_task(
+        family_label=pseudo_family,
+        structure=structure,
+    )
+    counts = count_electrons_task(
+        structure=structure,
+        pseudos=pseudos,
+        nspin=nspin,
+        tot_magnetization=tot_magnetization,
+    )
+    nelec = counts["nelec"]
+    nelup = counts["nelup"]
+    neldw = counts["neldw"]
 
     dft = DFTCPTask(
         code=code,
         structure=structure,
-        pseudo_family=pseudo_family,
+        pseudos=pseudos,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
         nbnd=nbnd,
@@ -275,12 +556,10 @@ def KoopmansDSCFTask(
         metadata={"call_link_label": "dft_init"},
     )
 
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
-    nelec, nelup, neldw = count_electrons(
-        structure, pseudos, nspin=nspin, tot_magnetization=tot_magnetization
-    )
-
-    ki_parameters = _build_ki_parameters(
+    return KIDscfRefinementTask(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
         nbnd=nbnd,
@@ -289,54 +568,12 @@ def KoopmansDSCFTask(
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
+        initial_alpha=initial_alpha,
         functional=functional,
-    )
-    if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
-
-    n_filled, n_empty = filled_and_empty_counts(
-        nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
-    )
-    if nspin == 1:
-        alphas: AlphaScreening = {
-            "filled": {SpinChannel.NONE: [initial_alpha] * n_filled},
-            "empty": {SpinChannel.NONE: [initial_alpha] * n_empty},
-        }
-    else:
-        # ``filled_and_empty_counts`` returns totals across spin channels;
-        # halve to get the per-spin lists for closed-shell (Phase A scope —
-        # spin-polarised systems are deferred).
-        n_filled_per_spin = n_filled // 2
-        n_empty_per_spin = n_empty // 2
-        alphas = {
-            "filled": {
-                SpinChannel.UP: [initial_alpha] * n_filled_per_spin,
-                SpinChannel.DOWN: [initial_alpha] * n_filled_per_spin,
-            },
-            "empty": {
-                SpinChannel.UP: [initial_alpha] * n_empty_per_spin,
-                SpinChannel.DOWN: [initial_alpha] * n_empty_per_spin,
-            },
-        }
-
-    ki_inputs = _build_kcp_inputs(
-        code,
-        structure,
-        ki_parameters,
-        pseudos,
+        spin_polarized=spin_polarized,
+        dft_remote=dft["remote_folder"],
+        overrides=overrides,
         options=options,
-        alphas=alphas,
-        parent_folder=dft["remote_folder"],
-        name="ki_final",
-    )
-    ki_outputs = KcpBaseTask(**ki_inputs)
-
-    return KoopmansDSCFOutputs(
-        parameters=ki_outputs["output_parameters"],
-        eigenvalues=ki_outputs["output_eigenvalues"],
-        lambdas=ki_outputs["output_lambdas"],
-        remote_folder=ki_outputs["remote_folder"],
     )
 
 
@@ -344,14 +581,11 @@ def KoopmansDSCFTask(
 def OrbitalDeltaSCFFilledTask(
     code: orm.AbstractCode,
     structure: orm.StructureData,
-    pseudo_family: str,
+    pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
     ecutrho: float,
     nspin: int,
     nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
     fixed_band: int,
     spin_channel: SpinChannel,
     band_index: int,
@@ -360,6 +594,9 @@ def OrbitalDeltaSCFFilledTask(
     trial_output_parameters: dict,
     trial_lambdas: np.ndarray,
     trial_bare_lambdas: np.ndarray,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> OrbitalDeltaSCFOutputs:
@@ -386,8 +623,6 @@ def OrbitalDeltaSCFFilledTask(
             outputs of the same trial KI; passed in here rather than
             re-loaded so the orbital task is provenance-pure.
     """
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
-
     parameters = _build_dft_n_minus_1_parameters(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
@@ -409,7 +644,7 @@ def OrbitalDeltaSCFFilledTask(
         pseudos,
         options=options,
         parent_folder=trial_remote,
-        name=f"dft_n-1_band{fixed_band}",
+        name="dft_n_minus_1",
     )
     dft_outputs = KcpBaseTask(**inputs)
 
@@ -434,24 +669,25 @@ def OrbitalDeltaSCFFilledTask(
 def OrbitalDeltaSCFEmptyTask(
     code: orm.AbstractCode,
     structure: orm.StructureData,
-    pseudo_family: str,
+    pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
     ecutrho: float,
     nbnd: int,
     nspin: int,
     nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
     fixed_band: int,
     spin_channel: SpinChannel,
     band_index: int,
     index_empty_to_save: int,
     alpha_guess: float,
+    pz_alphas: AlphaScreening,
     trial_remote: orm.RemoteData,
     trial_output_parameters: dict,
     trial_lambdas: np.ndarray,
     trial_bare_lambdas: np.ndarray,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> OrbitalDeltaSCFOutputs:
@@ -478,13 +714,16 @@ def OrbitalDeltaSCFEmptyTask(
     ``dft_n+1_dummy`` and ``pz_print`` save and ``dft_n+1`` reads.
     For systems with a single empty orbital (e.g. tutorial_1 ozone)
     this is always ``1``.
+
+    ``pz_alphas`` is built upstream by :func:`generate_alphas` (a
+    uniform :class:`AlphaScreening` of ``alpha_guess`` values) — no
+    socket arithmetic happens inside this graph body.
     """
-    pseudos = resolve_pseudo_family(pseudo_family, structure)
     aperiodic = not any(structure.pbc)
 
     dummy_overrides = overrides.get("dft_dummy") if overrides else None  # type: ignore[union-attr]
     pz_overrides = overrides.get("pz_print") if overrides else None  # type: ignore[union-attr]
-    n_plus_1_overrides = overrides.get("dft_n+1") if overrides else None  # type: ignore[union-attr]
+    n_plus_1_overrides = overrides.get("dft_n_plus_1") if overrides else None  # type: ignore[union-attr]
 
     dummy_parameters = _build_dft_n_plus_1_dummy_parameters(
         ecutwfc=ecutwfc,
@@ -506,7 +745,7 @@ def OrbitalDeltaSCFEmptyTask(
         dummy_parameters,
         pseudos,
         options=options,
-        name=f"dft_n+1_dummy_band{fixed_band}",
+        name="dft_n_plus_1_dummy",
     )
     dummy_outputs = KcpBaseTask(**dummy_inputs)
 
@@ -527,28 +766,8 @@ def OrbitalDeltaSCFEmptyTask(
         pz_parameters = recursive_merge(pz_parameters, pz_overrides)
     # ``pz_print`` reads orbitals from the trial KI (it operates at the
     # original electron count) and writes ``evcfixed_empty.dat`` for
-    # the next step.
-    n_filled, n_empty = filled_and_empty_counts(
-        nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
-    )
-    if nspin == 1:
-        pz_alphas: AlphaScreening = {
-            "filled": {SpinChannel.NONE: [alpha_guess] * n_filled},
-            "empty": {SpinChannel.NONE: [alpha_guess] * n_empty},
-        }
-    else:
-        n_filled_per_spin = n_filled // 2
-        n_empty_per_spin = n_empty // 2
-        pz_alphas = {
-            "filled": {
-                SpinChannel.UP: [alpha_guess] * n_filled_per_spin,
-                SpinChannel.DOWN: [alpha_guess] * n_filled_per_spin,
-            },
-            "empty": {
-                SpinChannel.UP: [alpha_guess] * n_empty_per_spin,
-                SpinChannel.DOWN: [alpha_guess] * n_empty_per_spin,
-            },
-        }
+    # the next step. ``pz_alphas`` is the uniform-``alpha_guess`` payload
+    # already built by ``generate_alphas`` upstream.
     pz_inputs = _build_kcp_inputs(
         code,
         structure,
@@ -557,7 +776,7 @@ def OrbitalDeltaSCFEmptyTask(
         options=options,
         alphas=pz_alphas,
         parent_folder=trial_remote,
-        name=f"pz_print_band{fixed_band}",
+        name="pz_print",
     )
     pz_outputs = KcpBaseTask(**pz_inputs)
 
@@ -583,7 +802,7 @@ def OrbitalDeltaSCFEmptyTask(
         options=options,
         parent_folder=dummy_outputs["remote_folder"],
         parent_folder_evcfixed=pz_outputs["remote_folder"],
-        name=f"dft_n+1_band{fixed_band}",
+        name="dft_n_plus_1",
     )
     n_plus_1_outputs = KcpBaseTask(**n_plus_1_inputs)
 
@@ -601,6 +820,217 @@ def OrbitalDeltaSCFEmptyTask(
     return OrbitalDeltaSCFOutputs(
         alpha=result["alpha"],
         error=result["error"],
+    )
+
+
+# ----------------------------------------------------------------------
+# Single-iteration alpha-refinement: trial KI → per-orbital DSCF → final KI.
+# ----------------------------------------------------------------------
+
+
+@task.graph
+def KIDscfRefinementTask(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    ecutwfc: float,
+    ecutrho: float,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    initial_alpha: float,
+    functional: str,
+    dft_remote: orm.RemoteData,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
+    spin_polarized: bool = False,
+    overrides: KoopmansDSCFOverrides | None = None,
+    options: dict[str, Any] | None = None,
+) -> KoopmansDSCFOutputs:
+    """One iteration of alpha refinement: trial KI → per-orbital DSCF → final KI.
+
+    Both KI passes restart from ``dft_remote`` (the DFT init's
+    ``remote_folder``); this matches the legacy convention that the trial
+    KI's save is *not* used as the parent of the final KI — only its
+    lambda matrices feed the alpha formula.
+
+    All per-orbital fan-out happens through ``Map`` zones over a
+    runtime-generated source dict (see ``build_filled_iter_source`` /
+    ``build_empty_iter_source``); no socket arithmetic is performed
+    inside this body.
+    """
+    mt_correction = not any(structure.pbc)
+
+    ki_overrides = overrides.get("ki") if overrides else None
+    filled_overrides = overrides.get("dft_n_minus_1") if overrides else None
+    empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None
+    if overrides:
+        empty_overrides_dict = {
+            "dft_dummy": overrides.get("dft_n_plus_1_dummy"),
+            "pz_print": overrides.get("pz_print"),
+            "dft_n_plus_1": overrides.get("dft_n_plus_1"),
+        }
+    else:
+        empty_overrides_dict = None
+
+    # ------------------------------------------------------------------
+    # Filled / empty counts as sockets — never derived by socket arithmetic.
+    # ------------------------------------------------------------------
+    counts = filled_and_empty_counts_task(
+        nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
+    )
+    n_filled = counts["n_filled"]
+    n_empty = counts["n_empty"]
+
+    # Uniform-``initial_alpha`` payload for the trial KI (and reused as
+    # the empty-orbital ``pz_print`` alphas). ``generate_alphas`` returns
+    # an :class:`AlphaScreening` TypedDict, so aiida-workgraph exposes
+    # the call as a namespace with ``filled`` / ``empty`` outputs — the
+    # exact shape ``KcpCalculation.alphas`` (also a namespace) accepts,
+    # so the call object itself binds directly (no ``.result``).
+    trial_alphas = generate_alphas(
+        alpha_guess=initial_alpha,
+        n_filled=n_filled,
+        n_empty=n_empty,
+        spin_polarized=spin_polarized,
+    )
+
+    # ------------------------------------------------------------------
+    # Trial KI: uniform initial_alpha, restarts from DFT.
+    # ------------------------------------------------------------------
+    ki_parameters = _build_ki_parameters(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=mt_correction,
+        functional=functional,
+    )
+    if ki_overrides:
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
+
+    trial_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        ki_parameters,
+        pseudos,
+        options=options,
+        alphas=trial_alphas,
+        parent_folder=dft_remote,
+        name="ki_trial",
+    )
+    trial = KcpBaseTask(**trial_inputs)
+
+    # ------------------------------------------------------------------
+    # Per-orbital DSCF refinement via Map zones — one zone per branch
+    # (filled / empty). The source-builder tasks own all per-spin index
+    # arithmetic and emit a complete ``{key: item_payload}`` dict.
+    # ------------------------------------------------------------------
+    filled_source = build_filled_iter_source(
+        nbnd=nbnd,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        alpha_guess=initial_alpha,
+        spin_polarized=spin_polarized,
+    )
+    with Map(filled_source) as filled_zone:
+        filled_item = filled_zone.item.value
+        filled_out = OrbitalDeltaSCFFilledTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nspin=nspin,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            fixed_band=_get_value(data=filled_item, key="fixed_band").result,
+            spin_channel=_get_value(data=filled_item, key="spin_channel").result,
+            band_index=_get_value(data=filled_item, key="band_index").result,
+            alpha_guess=_get_value(data=filled_item, key="alpha_guess").result,
+            trial_remote=trial["remote_folder"],
+            trial_output_parameters=trial["output_parameters"],
+            trial_lambdas=trial["output_lambdas"],
+            trial_bare_lambdas=trial["output_bare_lambdas"],
+            overrides=filled_overrides,
+            options=options,
+        )
+        filled_zone.gather({"alpha": filled_out["alpha"], "error": filled_out["error"]})
+
+    empty_source = build_empty_iter_source(
+        nbnd=nbnd,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        alpha_guess=initial_alpha,
+        spin_polarized=spin_polarized,
+    )
+    with Map(empty_source) as empty_zone:
+        empty_item = empty_zone.item.value
+        empty_out = OrbitalDeltaSCFEmptyTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=nbnd,
+            nspin=nspin,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            fixed_band=_get_value(data=empty_item, key="fixed_band").result,
+            spin_channel=_get_value(data=empty_item, key="spin_channel").result,
+            band_index=_get_value(data=empty_item, key="band_index").result,
+            index_empty_to_save=_get_value(data=empty_item, key="index_empty_to_save").result,
+            alpha_guess=_get_value(data=empty_item, key="alpha_guess").result,
+            pz_alphas=trial_alphas,
+            trial_remote=trial["remote_folder"],
+            trial_output_parameters=trial["output_parameters"],
+            trial_lambdas=trial["output_lambdas"],
+            trial_bare_lambdas=trial["output_bare_lambdas"],
+            overrides=empty_overrides_dict,
+            options=options,
+        )
+        empty_zone.gather({"alpha": empty_out["alpha"], "error": empty_out["error"]})
+
+    gathered = assemble_alpha_screening(
+        filled_alphas=filled_zone.outputs.alpha,
+        filled_errors=filled_zone.outputs.error,
+        empty_alphas=empty_zone.outputs.alpha,
+        empty_errors=empty_zone.outputs.error,
+    )
+
+    # ------------------------------------------------------------------
+    # Final KI: refined alphas, restart from DFT (NOT from trial KI).
+    # ------------------------------------------------------------------
+    final_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        ki_parameters,
+        pseudos,
+        options=options,
+        alphas=gathered["alphas"],
+        parent_folder=dft_remote,
+        name="ki_final",
+    )
+    final = KcpBaseTask(**final_inputs)
+
+    return KoopmansDSCFOutputs(
+        parameters=final["output_parameters"],
+        eigenvalues=final["output_eigenvalues"],
+        lambdas=final["output_lambdas"],
+        bare_lambdas=final["output_bare_lambdas"],
+        remote_folder=final["remote_folder"],
     )
 
 
@@ -632,9 +1062,8 @@ def _validate_scope(
         )
     if alpha_numsteps != 1:
         raise NotImplementedError(
-            f"alpha_numsteps={alpha_numsteps} not yet supported. The MVP uses "
-            "the per-orbital initial_alpha and does not refine it via the Delta SCF "
-            "loop. Pass alpha_numsteps=1 for now."
+            f"alpha_numsteps={alpha_numsteps} not yet supported. "
+            "Multi-iteration alpha refinement is Phase B; only alpha_numsteps=1 supported."
         )
     if fix_spin_contamination:
         raise NotImplementedError(
@@ -1107,6 +1536,15 @@ def _build_kcp_inputs(
     ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
     that's what shows up in ``verdi process list`` and the koopmans progress
     table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
+
+    Inside the per-orbital Map zones, ``name`` is set statically (e.g.
+    ``"dft_n-1"``, ``"pz_print"``, ``"dft_n+1_dummy"``, ``"dft_n+1"``) — the
+    band/spin identity is not interpolated at build time because
+    ``fixed_band`` etc. arrive as sockets. ``aiida-workgraph`` reattaches it
+    at Map-expansion time: ``aiida_workgraph.engine.task_manager.copy_task``
+    prefixes every cloned descendant with the source-dict key, so the
+    runtime label lands as e.g. ``kcp-up_band_2_dft_n-1`` (spin/band from the
+    Map source dict + the static sub-step name).
 
     ``parent_folder_evcfixed`` is the ``RemoteData`` of a ``pz_print``
     run; only the ``dft_n+1`` step of the empty-orbital Delta-SCF branch

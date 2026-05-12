@@ -56,7 +56,7 @@ class TestValidateScope:
             )
 
     def test_alpha_numsteps_greater_than_one_raises(self, ozone_structure):
-        with pytest.raises(NotImplementedError, match="alpha_numsteps="):
+        with pytest.raises(NotImplementedError, match=r"Phase B.*alpha_numsteps=1"):
             _validate_scope(
                 functional="ki",
                 init_orbitals="kohn-sham",
@@ -344,3 +344,253 @@ class TestComputeAlphaFromDscf:
         )
         assert alpha == pytest.approx(4.8)
         assert error == pytest.approx(14.0)
+
+
+# ----------------------------------------------------------------------
+# assemble_alpha_screening — gather scattered orbital outputs
+# ----------------------------------------------------------------------
+
+
+class TestAssembleAlphaScreening:
+    """Pin the gather step: per-spin lists indexed by band order."""
+
+    def _run(self, **kwargs):
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.kcp import assemble_alpha_screening
+
+        wg = WorkGraph("assemble_alpha_unit")
+        wg.add_task(assemble_alpha_screening, name="gather", **kwargs)
+        wg.run()
+        # ``alphas`` and ``errors`` are namespace outputs — each has
+        # ``filled`` / ``empty`` leaf sockets carrying the per-spin dicts
+        # (matching :class:`AlphaScreening`).
+        alphas_ns = wg.tasks.gather.outputs.alphas
+        errors_ns = wg.tasks.gather.outputs.errors
+
+        def _read(ns):
+            payload = {"filled": ns.filled.value, "empty": ns.empty.value}
+            for branch in ("filled", "empty"):
+                if hasattr(payload[branch], "get_dict"):
+                    payload[branch] = payload[branch].get_dict()
+            return payload
+
+        return _read(alphas_ns), _read(errors_ns)
+
+    def test_closed_shell_single_channel(self, aiida_profile):
+        """Closed-shell: bare ``orb_<n>`` keys, packed under :attr:`SpinChannel.NONE`.
+
+        Orbital indices are 1-indexed and continuous across filled +
+        empty manifolds — empty orbs in this fixture start at ``orb_4``.
+        """
+        alphas, errors = self._run(
+            filled_alphas={
+                "orb_1": 0.6,
+                "orb_2": 0.7,
+                "orb_3": 0.8,
+            },
+            filled_errors={
+                "orb_1": 0.1,
+                "orb_2": 0.2,
+                "orb_3": 0.3,
+            },
+            empty_alphas={"orb_4": 0.5, "orb_5": 0.4},
+            empty_errors={"orb_4": 0.05, "orb_5": 0.04},
+        )
+        assert alphas["filled"] == {"none": [0.6, 0.7, 0.8]}
+        assert alphas["empty"] == {"none": [0.5, 0.4]}
+        assert errors["filled"] == {"none": [0.1, 0.2, 0.3]}
+        assert errors["empty"] == {"none": [0.05, 0.04]}
+
+    def test_spin_polarized_two_channels(self, aiida_profile):
+        """Spin-polarised: both UP and DOWN channels packed independently."""
+        alphas, errors = self._run(
+            filled_alphas={
+                "up_orb_1": 0.6,
+                "up_orb_2": 0.7,
+                "down_orb_1": 0.61,
+                "down_orb_2": 0.71,
+            },
+            filled_errors={
+                "up_orb_1": 0.1,
+                "up_orb_2": 0.2,
+                "down_orb_1": 0.11,
+                "down_orb_2": 0.21,
+            },
+            empty_alphas={"up_orb_3": 0.5, "down_orb_3": 0.51},
+            empty_errors={"up_orb_3": 0.05, "down_orb_3": 0.06},
+        )
+        assert alphas["filled"]["up"] == [0.6, 0.7]
+        assert alphas["filled"]["down"] == [0.61, 0.71]
+        assert alphas["empty"]["up"] == [0.5]
+        assert alphas["empty"]["down"] == [0.51]
+        assert errors["filled"]["up"] == [0.1, 0.2]
+        assert errors["empty"]["down"] == [0.06]
+
+    def test_orb_indexed_ordering(self, aiida_profile):
+        # Insertion order intentionally shuffled — band index from key suffix
+        # must drive the output list order.
+        alphas, _ = self._run(
+            filled_alphas={
+                "up_orb_3": 0.8,
+                "up_orb_1": 0.6,
+                "up_orb_2": 0.7,
+                "down_orb_2": 0.71,
+                "down_orb_1": 0.61,
+                "down_orb_3": 0.81,
+            },
+            filled_errors={
+                "up_orb_3": 0.0,
+                "up_orb_1": 0.0,
+                "up_orb_2": 0.0,
+                "down_orb_2": 0.0,
+                "down_orb_1": 0.0,
+                "down_orb_3": 0.0,
+            },
+            empty_alphas={},
+            empty_errors={},
+        )
+        assert alphas["filled"]["up"] == [0.6, 0.7, 0.8]
+        assert alphas["filled"]["down"] == [0.61, 0.71, 0.81]
+
+
+# ----------------------------------------------------------------------
+# KoopmansDSCFTask graph build — structural inspection only.
+# ----------------------------------------------------------------------
+
+
+class TestKoopmansDSCFGraphBuild:
+    """Inspect the task graph wired by ``KoopmansDSCFTask.build`` for ozone.
+
+    Doesn't run anything — verifies fan-out counts so a wiring regression
+    surfaces without needing a real kcp.x install.
+    """
+
+    @pytest.fixture
+    def kcp_code(self, aiida_local_code_factory):
+        return aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
+
+    @pytest.fixture
+    def ozone_pseudo_family(self, ozone_real_pseudos):
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        family, _ = PseudoPotentialFamily.collection.get_or_create(label="test-ozone-family")
+        if family.count() == 0:
+            pseudo = ozone_real_pseudos["O"]
+            if not pseudo.is_stored:
+                pseudo.store()
+            family.add_nodes([pseudo])
+        return family.label
+
+    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFTask
+
+        return KoopmansDSCFTask.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            tot_magnetization=None,
+            functional="ki",
+            init_orbitals="kohn-sham",
+            alpha_numsteps=1,
+            fix_spin_contamination=False,
+            initial_alpha=0.6,
+        )
+
+    def _all_link_labels(self, wg) -> list[str]:
+        """Walk every task (recursing into sub-graphs) and collect call_link_labels."""
+        labels: list[str] = []
+
+        def _walk(tasks):
+            for t in tasks:
+                # Some tasks have a metadata.call_link_label; others have a name.
+                # We collect both for matching flexibility.
+                labels.append(t.name)
+                # Recurse into sub-graph children when present.
+                children = getattr(t, "children", None)
+                if children:
+                    _walk(children)
+
+        _walk(wg.tasks)
+        return labels
+
+    def test_graph_builds_with_expected_subtasks(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+        )
+
+        labels = self._all_link_labels(wg)
+
+        def _has(substr: str) -> bool:
+            return any(substr in label for label in labels)
+
+        # Outer graph hosts the runtime input-resolution tasks
+        # (replacing the inline plain-Python ``resolve_pseudo_family`` /
+        # ``count_electrons`` calls that broke with ``TaggedValue`` proxies)
+        # plus the DFT init + the inner refinement sub-graph node.
+        assert _has("resolve_pseudo_family_task"), labels
+        assert _has("count_electrons_task"), labels
+        assert _has("dft_init"), labels
+        assert _has("KIDscfRefinementTask"), labels
+
+        # Now build the inner refinement sub-graph independently to
+        # verify the Map-zone / source-builder / gather wiring.
+        from aiida import orm
+
+        # Use the sub-graph's build entry directly. We pass plain Python
+        # values for the scalar/structural inputs; ``pseudos`` and
+        # ``dft_remote`` are placeholders the topology check ignores.
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import KIDscfRefinementTask
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        # Unstored placeholder — only the topology of the resulting
+        # WorkGraph is inspected; the value is never dereferenced.
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = KIDscfRefinementTask.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            functional="ki",
+            dft_remote=dummy_remote,
+        )
+        sub_labels = self._all_link_labels(sub_wg)
+
+        def _sub_has(substr: str) -> bool:
+            return any(substr in label for label in sub_labels)
+
+        assert _sub_has("generate_alphas"), sub_labels
+        assert _sub_has("build_filled_iter_source"), sub_labels
+        assert _sub_has("build_empty_iter_source"), sub_labels
+        # Two Map zones (filled + empty branches).
+        assert sum(1 for s in sub_labels if "map_zone" in s.lower()) >= 2, sub_labels
+        # Gather step packing per-orbital sockets back into an
+        # ``AlphaScreening`` shape.
+        assert _sub_has("assemble_alpha_screening"), sub_labels
+        # Trial / final KI runs.
+        assert _sub_has("ki_trial"), sub_labels
+        assert _sub_has("ki_final"), sub_labels
