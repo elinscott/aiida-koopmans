@@ -91,24 +91,22 @@ class TestValidateScope:
 # ----------------------------------------------------------------------
 
 
-_OZONE_KW = {
+_OZONE_BASE: dict = {
     "ecutwfc": 65.0,
     "ecutrho": 260.0,
-    "nbnd": 10,
     "nspin": 2,
     "nelec": 18,
     "nelup": 9,
     "neldw": 9,
     "tot_magnetization": None,
     "mt_correction": False,
+    "ntyp": 1,
 }
-
-_KI_KW = {**_OZONE_KW, "functional": "ki"}
 
 
 class TestBuildDftParameters:
     def test_has_expected_namelists(self):
-        params = _build_dft_parameters(**_OZONE_KW)
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS"}
         assert "NKSIC" not in params
         assert "EE" not in params
@@ -116,14 +114,14 @@ class TestBuildDftParameters:
     def test_dft_control_is_from_scratch(self):
         # ndr/ndw are owned by ``KcpCalculation._inject_owned_keys`` (universal
         # 50/60 across all kcp.x runs). The builder shouldn't set them.
-        params = _build_dft_parameters(**_OZONE_KW)
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["CONTROL"]["restart_mode"] == "from_scratch"
         assert params["CONTROL"]["calculation"] == "cp"
         assert "ndr" not in params["CONTROL"]
         assert "ndw" not in params["CONTROL"]
 
     def test_dft_system_no_orbdep(self):
-        params = _build_dft_parameters(**_OZONE_KW)
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["SYSTEM"]["do_orbdep"] is False
         assert params["SYSTEM"]["nelec"] == 18
         assert params["SYSTEM"]["nelup"] == 9
@@ -133,25 +131,38 @@ class TestBuildDftParameters:
         assert params["SYSTEM"]["ecutrho"] == 260.0
 
     def test_dft_outerloop_enabled(self):
-        params = _build_dft_parameters(**_OZONE_KW)
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["ELECTRONS"]["do_outerloop"] is True
         assert params["ELECTRONS"]["do_outerloop_empty"] is True
 
     def test_conv_thr_scales_with_nelec(self):
-        params = _build_dft_parameters(**_OZONE_KW)
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["ELECTRONS"]["conv_thr"] == pytest.approx(1.8e-8)
 
     def test_nspin_one_skips_spin_keys(self):
-        kw = {**_OZONE_KW, "nspin": 1, "nelup": None, "neldw": None}
-        params = _build_dft_parameters(**kw)
+        base = {**_OZONE_BASE, "nspin": 1, "nelup": None, "neldw": None}
+        params = _build_dft_parameters(base, nbnd=10)
         assert params["SYSTEM"]["nspin"] == 1
         assert "nelup" not in params["SYSTEM"]
         assert "neldw" not in params["SYSTEM"]
 
+    def test_ion_radius_scales_with_ntyp(self):
+        # ``ion_radius(i)`` must be emitted once per species — ozone has
+        # ``ntyp=1`` so we get a single entry, not the legacy hardcoded 1..4.
+        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        assert params["IONS"]["ion_radius(1)"] == 1.0
+        assert "ion_radius(2)" not in params["IONS"]
+        # Three-species cell should emit three entries.
+        params3 = _build_dft_parameters({**_OZONE_BASE, "ntyp": 3}, nbnd=10)
+        assert params3["IONS"]["ion_radius(1)"] == 1.0
+        assert params3["IONS"]["ion_radius(2)"] == 1.0
+        assert params3["IONS"]["ion_radius(3)"] == 1.0
+        assert "ion_radius(4)" not in params3["IONS"]
+
 
 class TestBuildKiParameters:
     def test_has_nksic(self):
-        params = _build_ki_parameters(**_KI_KW)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
         assert "NKSIC" in params
         assert params["NKSIC"]["which_orbdep"] == "nki"
         assert params["NKSIC"]["odd_nkscalfact"] is True
@@ -161,13 +172,13 @@ class TestBuildKiParameters:
     def test_ki_control_is_restart(self):
         # See ``test_dft_control_is_from_scratch``: ndr/ndw live on the
         # CalcJob, not the builder.
-        params = _build_ki_parameters(**_KI_KW)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
         assert params["CONTROL"]["restart_mode"] == "restart"
         assert "ndr" not in params["CONTROL"]
         assert "ndw" not in params["CONTROL"]
 
     def test_ki_enables_orbdep_and_disables_outerloop(self):
-        params = _build_ki_parameters(**_KI_KW)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
         assert params["SYSTEM"]["do_orbdep"] is True
         assert params["ELECTRONS"]["do_outerloop"] is False
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
@@ -175,25 +186,24 @@ class TestBuildKiParameters:
     def test_periodic_omits_ee_namelist(self):
         # Periodic systems (mt_correction=False) emit no &EE block; do_ee=False
         # in &SYSTEM keeps kcp.x from trying to read it.
-        params = _build_ki_parameters(**_KI_KW)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
         assert "EE" not in params
         assert params["SYSTEM"]["do_ee"] is False
 
     def test_aperiodic_emits_tcc(self):
-        kw = {**_KI_KW, "mt_correction": True}
-        params = _build_ki_parameters(**kw)
+        base = {**_OZONE_BASE, "mt_correction": True}
+        params = _build_ki_parameters(base, nbnd=10, functional="ki")
         assert params["EE"]["which_compensation"] == "tcc"
         assert params["SYSTEM"]["do_ee"] is True
 
     def test_ki_disables_innerloop(self):
         # ``do_innerloop`` is True only for PZ; KI / KIPZ run no inner loop.
         # See legacy decision tree in koopmans/workflows/_koopmans_dscf.py:1129-1138.
-        params = _build_ki_parameters(**_KI_KW)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
         assert params["NKSIC"]["do_innerloop"] is False
 
     def test_pz_enables_innerloop(self):
-        kw = {**_KI_KW, "functional": "pz"}
-        params = _build_ki_parameters(**kw)
+        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="pz")
         assert params["NKSIC"]["do_innerloop"] is True
 
 
@@ -482,7 +492,7 @@ class TestKoopmansDSCFGraphBuild:
             family.add_nodes([pseudo])
         return family.label
 
-    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family):
+    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, spin_polarized=False):
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFTask
 
         return KoopmansDSCFTask.build(
@@ -499,6 +509,7 @@ class TestKoopmansDSCFGraphBuild:
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
+            spin_polarized=spin_polarized,
         )
 
     def _all_link_labels(self, wg) -> list[str]:
@@ -594,3 +605,55 @@ class TestKoopmansDSCFGraphBuild:
         # Trial / final KI runs.
         assert _sub_has("ki_trial"), sub_labels
         assert _sub_has("ki_final"), sub_labels
+
+    def test_closed_shell_init_chain_has_four_init_steps(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Closed-shell init expands into a spin-symmetric 3+1 sub-chain.
+
+        Wires the legacy ``restart_with_higher_precision`` flow:
+        nspin=1 → nspin=2 dummy → ConvertSpin1ToSpin2 → nspin=2 restart.
+        Each step gets a distinct ``call_link_label`` so the provenance
+        graph stays readable.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            spin_polarized=False,
+        )
+        labels = self._all_link_labels(wg)
+        for expected in (
+            "dft_init_nspin1",
+            "dft_init_nspin2_dummy",
+            "convert_spin1_to_spin2",
+            "dft_init_nspin2",
+        ):
+            assert any(expected in label for label in labels), (expected, labels)
+
+    def test_spin_polarized_init_is_single_step(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Spin-polarised init: legacy runs no symmetric pre-pass.
+
+        Open-shell systems use independent up/down channels at init —
+        only the single ``dft_init`` step should appear, with none of
+        the closed-shell chain steps.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            spin_polarized=True,
+        )
+        labels = self._all_link_labels(wg)
+        # Plain ``dft_init`` is present.
+        assert any(label == "dft_init" or label.endswith(".dft_init") for label in labels), labels
+        # None of the closed-shell chain steps should appear.
+        for forbidden in (
+            "dft_init_nspin1",
+            "dft_init_nspin2_dummy",
+            "convert_spin1_to_spin2",
+            "dft_init_nspin2",
+        ):
+            assert not any(forbidden in label for label in labels), (forbidden, labels)

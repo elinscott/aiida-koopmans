@@ -40,6 +40,7 @@ from aiida_koopmans.utils import (
     filled_and_empty_counts_task,
     resolve_pseudo_family_task,
 )
+from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 
 UpfData = DataFactory("pseudo.upf")
 
@@ -73,6 +74,29 @@ class KoopmansDSCFOutputs(TypedDict):
     lambdas: np.ndarray
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
+
+
+class KcpBaseInputs(TypedDict):
+    """Cell-, basis-, and electron-count inputs shared by every kcp.x step.
+
+    Each parameter builder takes one ``KcpBaseInputs`` (built once per
+    workgraph from ``structure`` + electron-count outputs) plus its
+    step-specific kwargs. Collapsing this set into a single object
+    removes the 9-kwarg forwarding boilerplate that otherwise repeats
+    at every builder call site. ``nbnd`` is intentionally *not* here —
+    DFT/KI/PZ steps need it but alpha-step (dft_n±1) builders strip it,
+    so it stays a step-level kwarg.
+    """
+
+    ecutwfc: float
+    ecutrho: float
+    nspin: int
+    nelec: int
+    nelup: int | None
+    neldw: int | None
+    tot_magnetization: int | None
+    mt_correction: bool
+    ntyp: int
 
 
 class KcpNamelistOverrides(TypedDict, total=False):
@@ -437,15 +461,33 @@ def DFTCPTask(
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
+    restart_mode: str = "from_scratch",
+    outerloop: bool = True,
+    parent_folder: orm.RemoteData | None = None,
+    name: str = "dft_init",
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> DFTCPOutputs:
-    """Run a kcp.x DFT SCF (``do_orbdep=False``) from scratch.
+    """Run a kcp.x DFT SCF (``do_orbdep=False``).
 
-    No spin symmetrization (``fix_spin_contamination=False``). If the caller
-    needs spin symmetrization, they should wrap this task in a higher-level
-    graph that runs the symmetrization process — that graph is not yet
-    ported.
+    Default behaviour is the standard from-scratch nspin=2 DFT init; the
+    extra keyword-only flags exist to support the closed-shell
+    spin-symmetric 3-step init chain (legacy
+    ``restart_with_higher_precision``): an nspin=1 from-scratch run with
+    outer loop, then an nspin=2 from-scratch *dummy* with the outer loop
+    disabled, then the final nspin=2 restarted run.
+
+    Args:
+        restart_mode: forwarded to ``&CONTROL.restart_mode``. Pair with
+            ``parent_folder`` when restarting.
+        outerloop: when ``False``, disables the outer / empty-manifold
+            outer loops (matches legacy nspin{1,2}_dummy_calculator).
+        parent_folder: ``RemoteData`` whose save tree is symlinked onto
+            the working directory; required for ``restart_mode='restart'``.
+        name: ``call_link_label`` for the underlying kcp.x calc. Defaults
+            to ``"dft_init"`` so the standard single-step path keeps its
+            existing label; chained init callers should override this to
+            disambiguate the three sub-steps.
 
     ``pseudos`` and the electron counts arrive as sockets resolved
     upstream by :func:`resolve_pseudo_family_task` and
@@ -453,22 +495,30 @@ def DFTCPTask(
     QueryBuilder / structure-walking work inside dedicated process
     nodes (avoids the ``TaggedValue`` proxy hitting SQLAlchemy).
     """
-    parameters = _build_dft_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
+    base = _kcp_base_inputs(
+        structure,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
-        mt_correction=not any(structure.pbc),
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
+    parameters = _build_dft_parameters(
+        base, nbnd=nbnd, restart_mode=restart_mode, outerloop=outerloop
     )
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
     inputs = _build_kcp_inputs(
-        code, structure, parameters, pseudos, options=options, name="dft_init"
+        code,
+        structure,
+        parameters,
+        pseudos,
+        options=options,
+        parent_folder=parent_folder,
+        name=name,
     )
     outputs = KcpBaseTask(**inputs)
 
@@ -539,22 +589,107 @@ def KoopmansDSCFTask(
     nelup = counts["nelup"]
     neldw = counts["neldw"]
 
-    dft = DFTCPTask(
-        code=code,
-        structure=structure,
-        pseudos=pseudos,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
-        nspin=nspin,
-        tot_magnetization=tot_magnetization,
-        overrides=dft_overrides,
-        options=options,
-        metadata={"call_link_label": "dft_init"},
-    )
+    if spin_polarized:
+        # Spin-polarised systems are seeded directly from a single
+        # nspin=2 from-scratch run; legacy treats the up/down channels as
+        # independent and does not pre-symmetrise.
+        dft = DFTCPTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=nbnd,
+            nspin=nspin,
+            tot_magnetization=tot_magnetization,
+            overrides=dft_overrides,
+            options=options,
+            metadata={"call_link_label": "dft_init"},
+        )
+    else:
+        # Closed-shell spin-symmetric init chain (legacy
+        # ``restart_with_higher_precision`` in
+        # ``koopmans/workflows/_workflow.py:1602-1670``):
+        #
+        # 1. nspin=1 from scratch — converges the single-channel solution.
+        # 2. nspin=2 from-scratch dummy — lays out the nspin=2 save tree
+        #    skeleton, outer loop disabled so the wavefunction content is
+        #    irrelevant (only the layout matters).
+        # 3. ConvertSpin1ToSpin2 — splices step-1 wavefunctions into the
+        #    step-2 save layout, producing a spin-symmetric save.
+        # 4. nspin=2 restart — final init starting from the symmetrised
+        #    save; this is the ``remote_folder`` consumed by the
+        #    downstream KIDscfRefinementTask.
+        dft_nspin1 = DFTCPTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            nelec=nelec,
+            nelup=None,
+            neldw=None,
+            tot_magnetization=None,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=nbnd,
+            nspin=1,
+            outerloop=True,
+            restart_mode="from_scratch",
+            overrides=dft_overrides,
+            options=options,
+            metadata={"call_link_label": "dft_init_nspin1"},
+        )
+
+        dft_nspin2_dummy = DFTCPTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=nbnd,
+            nspin=2,
+            outerloop=False,
+            restart_mode="from_scratch",
+            overrides=dft_overrides,
+            options=options,
+            metadata={"call_link_label": "dft_init_nspin2_dummy"},
+        )
+
+        # ``convert_spin1_to_spin2`` is a ``@task.calcfunction`` — pure
+        # local file substitution, no external binary, no ``code`` /
+        # ``computer`` metadata needed. Provenance is captured via a
+        # ``CalcFunctionNode``.
+        converted = convert_spin1_to_spin2(
+            spin1_parent_folder=dft_nspin1["remote_folder"],
+            spin2_dummy_parent_folder=dft_nspin2_dummy["remote_folder"],
+            metadata={"call_link_label": "convert_spin1_to_spin2"},
+        )
+
+        dft = DFTCPTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=nbnd,
+            nspin=2,
+            outerloop=True,
+            restart_mode="restart",
+            parent_folder=converted["remote_folder"],
+            overrides=dft_overrides,
+            options=options,
+            metadata={"call_link_label": "dft_init_nspin2"},
+        )
 
     return KIDscfRefinementTask(
         code=code,
@@ -570,6 +705,7 @@ def KoopmansDSCFTask(
         tot_magnetization=tot_magnetization,
         initial_alpha=initial_alpha,
         functional=functional,
+        init_orbitals=init_orbitals,
         spin_polarized=spin_polarized,
         dft_remote=dft["remote_folder"],
         overrides=overrides,
@@ -623,17 +759,17 @@ def OrbitalDeltaSCFFilledTask(
             outputs of the same trial KI; passed in here rather than
             re-loaded so the orbital task is provenance-pure.
     """
-    parameters = _build_dft_n_minus_1_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
+    base = _kcp_base_inputs(
+        structure,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
-        mt_correction=not any(structure.pbc),
-        fixed_band=fixed_band,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
     )
+    parameters = _build_dft_n_minus_1_parameters(base, fixed_band=fixed_band)
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
@@ -719,23 +855,36 @@ def OrbitalDeltaSCFEmptyTask(
     uniform :class:`AlphaScreening` of ``alpha_guess`` values) — no
     socket arithmetic happens inside this graph body.
     """
-    aperiodic = not any(structure.pbc)
-
     dummy_overrides = overrides.get("dft_dummy") if overrides else None  # type: ignore[union-attr]
     pz_overrides = overrides.get("pz_print") if overrides else None  # type: ignore[union-attr]
     n_plus_1_overrides = overrides.get("dft_n_plus_1") if overrides else None  # type: ignore[union-attr]
 
-    dummy_parameters = _build_dft_n_plus_1_dummy_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
+    # Two ``base`` payloads: the N+1 charge state for dummy / n+1 (one
+    # extra electron, conventionally placed on the up channel) and the
+    # original N-charge for pz_print.
+    base_n_plus_1 = _kcp_base_inputs(
+        structure,
         nspin=nspin,
         nelec=nelec + 1,
         nelup=(nelup + 1) if nelup is not None else None,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
-        mt_correction=aperiodic,
-        fixed_band=fixed_band,
-        index_empty_to_save=index_empty_to_save,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
+    base_n = _kcp_base_inputs(
+        structure,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
+
+    dummy_parameters = _build_dft_n_plus_1_dummy_parameters(
+        base_n_plus_1, fixed_band=fixed_band, index_empty_to_save=index_empty_to_save
     )
     if dummy_overrides:
         dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
@@ -750,17 +899,7 @@ def OrbitalDeltaSCFEmptyTask(
     dummy_outputs = KcpBaseTask(**dummy_inputs)
 
     pz_parameters = _build_pz_print_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=aperiodic,
-        fixed_band=fixed_band,
-        index_empty_to_save=index_empty_to_save,
+        base_n, nbnd=nbnd, fixed_band=fixed_band, index_empty_to_save=index_empty_to_save
     )
     if pz_overrides:
         pz_parameters = recursive_merge(pz_parameters, pz_overrides)
@@ -781,16 +920,7 @@ def OrbitalDeltaSCFEmptyTask(
     pz_outputs = KcpBaseTask(**pz_inputs)
 
     n_plus_1_parameters = _build_dft_n_plus_1_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nspin=nspin,
-        nelec=nelec + 1,
-        nelup=(nelup + 1) if nelup is not None else None,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=aperiodic,
-        fixed_band=fixed_band,
-        index_empty_to_save=index_empty_to_save,
+        base_n_plus_1, fixed_band=fixed_band, index_empty_to_save=index_empty_to_save
     )
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
@@ -841,6 +971,7 @@ def KIDscfRefinementTask(
     nelec: int,
     initial_alpha: float,
     functional: str,
+    init_orbitals: str,
     dft_remote: orm.RemoteData,
     nelup: int | None = None,
     neldw: int | None = None,
@@ -851,18 +982,20 @@ def KIDscfRefinementTask(
 ) -> KoopmansDSCFOutputs:
     """One iteration of alpha refinement: trial KI → per-orbital DSCF → final KI.
 
-    Both KI passes restart from ``dft_remote`` (the DFT init's
-    ``remote_folder``); this matches the legacy convention that the trial
-    KI's save is *not* used as the parent of the final KI — only its
-    lambda matrices feed the alpha formula.
+    The trial KI restarts from ``dft_remote`` (the DFT init's
+    ``remote_folder``) with a uniform ``initial_alpha`` guess and converges
+    the variational orbital basis. The final KI then restarts from the
+    *trial KI*'s ``remote_folder`` (legacy ``_koopmans_dscf.py:276+333``)
+    so it inherits those converged ``evc0N.dat`` variational orbitals; only
+    the alphas differ between the two passes. The per-orbital DSCF sub-runs
+    are independently parented on the trial KI (they read its lambdas to
+    compute the alpha update).
 
     All per-orbital fan-out happens through ``Map`` zones over a
     runtime-generated source dict (see ``build_filled_iter_source`` /
     ``build_empty_iter_source``); no socket arithmetic is performed
     inside this body.
     """
-    mt_correction = not any(structure.pbc)
-
     ki_overrides = overrides.get("ki") if overrides else None
     filled_overrides = overrides.get("dft_n_minus_1") if overrides else None
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None
@@ -900,21 +1033,40 @@ def KIDscfRefinementTask(
     # ------------------------------------------------------------------
     # Trial KI: uniform initial_alpha, restarts from DFT.
     # ------------------------------------------------------------------
-    ki_parameters = _build_ki_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
+    base = _kcp_base_inputs(
+        structure,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
         tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-        functional=functional,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
     )
+    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
+    # Force the trial-KI's variational starting guess to match the
+    # canonical DFT KS basis (``evc0N.dat = evcN.dat``) — only valid
+    # when the user picked ``init_orbitals='kohn-sham'``. Without this
+    # the NKSIC inner loop initialises from whatever ``evc0N.dat`` the
+    # parent DFT save happens to contain (a different orbital basis),
+    # so it converges to a rotated KI basis: same total energy,
+    # different canonical eigenvalues, different per-orbital alphas.
+    # Legacy ``_koopmans_dscf.py:519-522`` + variational-orbital map at
+    # ``_koopmans_dscf.py:1340-1347``. Other init_orbitals (pz, mlwfs,
+    # projwfs) have different overlay maps and aren't ported yet —
+    # ``_validate_scope`` blocks those upstream.
+    ks_overlay: dict[str, str] | None = None
+    if init_orbitals == "kohn-sham":
+        nspin_overlay_iter = (1, 2) if nspin == 2 else (1,)
+        # Stems only — the CalcJob appends ``.dat`` at submission time
+        # (AiiDA's attribute store rejects Dict keys containing ``.``).
+        ks_overlay = {
+            **{f"evc{i}": f"evc0{i}" for i in nspin_overlay_iter},
+            **{f"evc_empty{i}": f"evc0_empty{i}" for i in nspin_overlay_iter},
+        }
     trial_inputs = _build_kcp_inputs(
         code,
         structure,
@@ -923,6 +1075,7 @@ def KIDscfRefinementTask(
         options=options,
         alphas=trial_alphas,
         parent_folder=dft_remote,
+        variational_orbital_overlays=ks_overlay,
         name="ki_trial",
     )
     trial = KcpBaseTask(**trial_inputs)
@@ -1011,7 +1164,14 @@ def KIDscfRefinementTask(
     )
 
     # ------------------------------------------------------------------
-    # Final KI: refined alphas, restart from DFT (NOT from trial KI).
+    # Final KI: refined alphas, restart from the *trial KI* save. The
+    # trial pass already converged the variational orbital basis (its
+    # ``evc0N.dat`` files are the inner-loop minimum), and the final KI
+    # picks up from there — legacy ``_koopmans_dscf.py:276+333``
+    # parents the final KI on the trial KI's ``n_electron_restart_dir``
+    # (its ``_60.save``), not on the bare DFT save. Restarting from DFT
+    # would discard the trial's variational rotations and silently
+    # rotate the canonical KI eigenvalues / lambda matrices.
     # ------------------------------------------------------------------
     final_inputs = _build_kcp_inputs(
         code,
@@ -1020,7 +1180,7 @@ def KIDscfRefinementTask(
         pseudos,
         options=options,
         alphas=gathered["alphas"],
-        parent_folder=dft_remote,
+        parent_folder=trial["remote_folder"],
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)
@@ -1084,41 +1244,96 @@ def _validate_scope(
 # ----------------------------------------------------------------------
 
 
-def _build_dft_parameters(
+def _kcp_base_inputs(
+    structure: orm.StructureData,
     *,
-    ecutwfc: float,
-    ecutrho: float,
-    nbnd: int,
     nspin: int,
     nelec: int,
     nelup: int | None,
     neldw: int | None,
     tot_magnetization: int | None,
-    mt_correction: bool,
-) -> dict[str, Any]:
-    """Parameter dict for the DFT initialization step."""
-    conv_thr = 1.0e-9 * nelec
-    system: dict[str, Any] = {
+    ecutwfc: float,
+    ecutrho: float,
+) -> KcpBaseInputs:
+    """Assemble the shared :class:`KcpBaseInputs` payload from a structure.
+
+    ``mt_correction`` and ``ntyp`` are derived from the structure
+    (``not any(structure.pbc)`` and ``len(structure.kinds)``); the rest
+    pass through unchanged. Callers in the workgraph layer build this
+    once per step group and forward it to each ``_build_*`` invocation.
+    """
+    return {
         "ecutwfc": ecutwfc,
         "ecutrho": ecutrho,
-        "nbnd": nbnd,
         "nspin": nspin,
-        "do_ee": mt_correction,
+        "nelec": nelec,
+        "nelup": nelup,
+        "neldw": neldw,
+        "tot_magnetization": tot_magnetization,
+        "mt_correction": not any(structure.pbc),
+        "ntyp": len(structure.kinds),
+    }
+
+
+def _build_dft_parameters(
+    base: KcpBaseInputs,
+    *,
+    nbnd: int,
+    restart_mode: str = "from_scratch",
+    outerloop: bool = True,
+) -> dict[str, Any]:
+    """Parameter dict for the DFT initialization step.
+
+    Args:
+        base: shared cell-/basis-/electron-count inputs.
+        nbnd: total number of bands (filled + empty). Pass ``0`` for
+            alpha-step builders which strip it after composition.
+        restart_mode: value of ``&CONTROL.restart_mode``. ``"from_scratch"``
+            for the standard init; ``"restart"`` when chaining off a
+            previous save (e.g. the final nspin=2 step in the closed-shell
+            spin-symmetric 3-step init).
+        outerloop: when ``False``, set ``do_outerloop=False`` and
+            ``do_outerloop_empty=False`` and drop ``empty_states_maxstep``.
+            Matches the legacy ``nspin1_dummy_calculator`` /
+            ``nspin2_dummy_calculator`` settings used by
+            ``restart_with_higher_precision``.
+    """
+    conv_thr = 1.0e-9 * base["nelec"]
+    system: dict[str, Any] = {
+        "ecutwfc": base["ecutwfc"],
+        "ecutrho": base["ecutrho"],
+        "nbnd": nbnd,
+        "nspin": base["nspin"],
+        "do_ee": base["mt_correction"],
         "do_orbdep": False,
         "fixed_state": False,
         "do_wf_cmplx": True,
-        "nelec": nelec,
+        "nelec": base["nelec"],
     }
-    if nspin == 2:
-        if nelup is not None:
-            system["nelup"] = nelup
-        if neldw is not None:
-            system["neldw"] = neldw
-        if tot_magnetization is not None:
-            system["tot_magnetization"] = tot_magnetization
+    if base["nspin"] == 2:
+        if base["nelup"] is not None:
+            system["nelup"] = base["nelup"]
+        if base["neldw"] is not None:
+            system["neldw"] = base["neldw"]
+        if base["tot_magnetization"] is not None:
+            system["tot_magnetization"] = base["tot_magnetization"]
     # ``ndr`` and ``ndw`` are owned by the CalcJob (see
     # ``KcpCalculation._inject_owned_keys``) — the builders deliberately
     # leave them unset so there's only one source of truth.
+    electrons: dict[str, Any] = {
+        "electron_dynamics": "cg",
+        "passop": 2.0,
+        "ortho_para": 1,
+        "maxiter": 300,
+        "do_outerloop": outerloop,
+        "do_outerloop_empty": outerloop,
+        "conv_thr": conv_thr,
+    }
+    # ``empty_states_maxstep`` is only meaningful when the empty-manifold
+    # outer loop runs; legacy dummy calculators strip it when the loop is
+    # disabled (see ``nspin1_dummy_calculator`` in the legacy code).
+    if outerloop:
+        electrons["empty_states_maxstep"] = 300
     params: dict[str, Any] = {
         "CONTROL": {
             "calculation": "cp",
@@ -1126,55 +1341,29 @@ def _build_dft_parameters(
             "iprint": 1,
             "disk_io": "high",
             "write_hr": False,
-            "restart_mode": "from_scratch",
+            "restart_mode": restart_mode,
         },
         "SYSTEM": system,
-        "ELECTRONS": {
-            "electron_dynamics": "cg",
-            "passop": 2.0,
-            "ortho_para": 1,
-            "maxiter": 300,
-            "empty_states_maxstep": 300,
-            "do_outerloop": True,
-            "do_outerloop_empty": True,
-            "conv_thr": conv_thr,
-        },
+        "ELECTRONS": electrons,
         "IONS": {
             "ion_dynamics": "none",
             "ion_nstepe": 5,
+            **{f"ion_radius({i + 1})": 1.0 for i in range(base["ntyp"])},
         },
     }
-    # kcp.x reads ``&EE`` iff ``do_ee=.true.`` — keep the two consistent.
-    if mt_correction:
+    if base["mt_correction"]:
         params["EE"] = {"which_compensation": "tcc"}
     return params
 
 
 def _build_ki_parameters(
+    base: KcpBaseInputs,
     *,
-    ecutwfc: float,
-    ecutrho: float,
     nbnd: int,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
     functional: str,
 ) -> dict[str, Any]:
     """Parameter dict for the KI correction step. Restarts from the DFT save file."""
-    params = _build_dft_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-    )
+    params = _build_dft_parameters(base, nbnd=nbnd)
     # ``restart_mode`` is the only ``&CONTROL`` key the KI builder owns; ndr/ndw
     # are forced by the CalcJob (see ``_build_dft_parameters`` for context).
     params["CONTROL"]["restart_mode"] = "restart"
@@ -1204,7 +1393,7 @@ def _build_ki_parameters(
         "innerloop_init_n": 3,
         "innerloop_nmax": 100,
         "hartree_only_sic": False,
-        "esic_conv_thr": 1.0e-9 * nelec,
+        "esic_conv_thr": 1.0e-9 * base["nelec"],
         "do_bare_eigs": True,
     }
     return params
@@ -1261,33 +1450,13 @@ def _alpha_step_lite_nksic(
     return nksic
 
 
-def _alpha_step_dft_base(
-    *,
-    ecutwfc: float,
-    ecutrho: float,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
-) -> dict[str, Any]:
+def _alpha_step_dft_base(base: KcpBaseInputs) -> dict[str, Any]:
     """``&CONTROL/SYSTEM/ELECTRONS`` skeleton shared by every DFT-like alpha step.
 
     Built from ``_build_dft_parameters`` then trimmed: ``nbnd`` dropped,
     ``conv_thr`` loosened, empty-manifold knobs removed.
     """
-    params = _build_dft_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=0,  # required by helper signature but stripped below.
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-    )
+    params = _build_dft_parameters(base, nbnd=0)  # nbnd stripped below
     params["SYSTEM"].pop("nbnd", None)
     params["ELECTRONS"].pop("empty_states_maxstep", None)
     params["ELECTRONS"].pop("do_outerloop_empty", None)
@@ -1296,15 +1465,8 @@ def _alpha_step_dft_base(
 
 
 def _build_dft_n_minus_1_parameters(
+    base: KcpBaseInputs,
     *,
-    ecutwfc: float,
-    ecutrho: float,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
     fixed_band: int,
 ) -> dict[str, Any]:
     """``dft_n-1`` step: DFT with one electron removed from ``fixed_band``.
@@ -1312,16 +1474,7 @@ def _build_dft_n_minus_1_parameters(
     Run once per *filled* orbital being screened. Restarts from the
     trial-KI save (provided by the caller via ``parent_folder``).
     """
-    params = _alpha_step_dft_base(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-    )
+    params = _alpha_step_dft_base(base)
     params["CONTROL"]["restart_mode"] = "restart"
     params["SYSTEM"]["fixed_band"] = fixed_band
     params["SYSTEM"]["f_cutoff"] = 1.0e-5
@@ -1332,15 +1485,8 @@ def _build_dft_n_minus_1_parameters(
 
 
 def _build_dft_n_plus_1_dummy_parameters(
+    base: KcpBaseInputs,
     *,
-    ecutwfc: float,
-    ecutrho: float,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
     fixed_band: int,
     index_empty_to_save: int = 1,
 ) -> dict[str, Any]:
@@ -1350,20 +1496,11 @@ def _build_dft_n_plus_1_dummy_parameters(
     orbital. Sets up the save-directory layout that ``pz_print`` and
     ``dft_n+1`` consume on subsequent steps.
 
-    Caller must pass ``nelec`` / ``nelup`` already incremented for the
-    N+1 charge state (legacy convention: spin-up gets the extra
-    electron).
+    Caller must pass a ``base`` already incremented for the N+1 charge
+    state (legacy convention: spin-up gets the extra electron) — i.e.
+    ``nelec += 1`` and ``nelup += 1`` relative to the trial-KI base.
     """
-    params = _alpha_step_dft_base(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-    )
+    params = _alpha_step_dft_base(base)
     params["CONTROL"]["restart_mode"] = "from_scratch"
     params["SYSTEM"]["fixed_band"] = fixed_band
     params["SYSTEM"]["fixed_state"] = False
@@ -1375,15 +1512,8 @@ def _build_dft_n_plus_1_dummy_parameters(
 
 
 def _build_dft_n_plus_1_parameters(
+    base: KcpBaseInputs,
     *,
-    ecutwfc: float,
-    ecutrho: float,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
     fixed_band: int,
     index_empty_to_save: int = 1,
 ) -> dict[str, Any]:
@@ -1393,16 +1523,7 @@ def _build_dft_n_plus_1_parameters(
     ``evcfixed_empty.dat`` (``restart_from_wannier_pwscf=True``). The
     caller is responsible for staging both files into the working dir.
     """
-    params = _alpha_step_dft_base(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-    )
+    params = _alpha_step_dft_base(base)
     params["CONTROL"]["restart_mode"] = "restart"
     params["SYSTEM"]["fixed_band"] = fixed_band
     params["SYSTEM"]["f_cutoff"] = 1.0
@@ -1415,16 +1536,9 @@ def _build_dft_n_plus_1_parameters(
 
 
 def _build_pz_print_parameters(
+    base: KcpBaseInputs,
     *,
-    ecutwfc: float,
-    ecutrho: float,
     nbnd: int,
-    nspin: int,
-    nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
-    mt_correction: bool,
     fixed_band: int,
     index_empty_to_save: int = 1,
 ) -> dict[str, Any]:
@@ -1438,22 +1552,19 @@ def _build_pz_print_parameters(
     Runs at the *original* electron count (not N+1) — same nelec /
     nelup / neldw as trial KI; only ``fixed_band`` differs.
     """
-    params = _build_ki_parameters(
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=nbnd,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        mt_correction=mt_correction,
-        functional="pz",
-    )
+    params = _build_ki_parameters(base, nbnd=nbnd, functional="pz")
     params["SYSTEM"]["fixed_band"] = fixed_band
     params["NKSIC"]["which_orbdep"] = "pz"
     params["NKSIC"]["print_wfc_anion"] = True
     params["NKSIC"]["index_empty_to_save"] = index_empty_to_save
+    # The pz_print step's only job is to write ``evcfixed_empty{ispin}.dat``;
+    # it operates on already-converged orbitals from the trial-KI save and
+    # must NOT run the inner-loop SCF. ``_build_ki_parameters(functional="pz")``
+    # turns it on by default — override here. Legacy reference:
+    # tutorial_1's pz_print.cpi has ``do_innerloop=.false.``. Without this,
+    # kcp.x runs a full PZ inner-CG cycle and pz_print balloons from
+    # ~1 second to ~20 minutes.
+    params["NKSIC"]["do_innerloop"] = False
     return params
 
 
@@ -1524,6 +1635,7 @@ def _build_kcp_inputs(
     alphas: AlphaScreening | None = None,
     parent_folder: orm.RemoteData | None = None,
     parent_folder_evcfixed: orm.RemoteData | None = None,
+    variational_orbital_overlays: dict[str, str] | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``.
@@ -1565,6 +1677,8 @@ def _build_kcp_inputs(
         inputs["parent_folder"] = parent_folder
     if parent_folder_evcfixed is not None:
         inputs["parent_folder_evcfixed"] = parent_folder_evcfixed
+    if variational_orbital_overlays:
+        inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
     metadata: dict[str, Any] = {}
     if options:
         metadata["options"] = options

@@ -118,6 +118,30 @@ class KcpCalculation(CalcJob):
             ),
         )
         spec.input(
+            "variational_orbital_overlays",
+            valid_type=Dict,
+            required=False,
+            help=(
+                "Mapping ``{source_stem: dest_stem}`` of K00001 "
+                "wavefunction overlays to layer on top of ``parent_folder``'s "
+                "save. Stems are ``.dat`` filenames *without* the extension "
+                "(AiiDA's attribute store rejects keys containing ``.``); "
+                "the CalcJob appends ``.dat`` at submission time. Source "
+                "paths resolve against "
+                "``parent_folder/out/<prefix>_<NDW>.save/K00001/``; "
+                "destination paths land in "
+                "``out/<prefix>_<NDR>.save/K00001/`` (this calc's read slot). "
+                "Matching destinations are skipped during the primary "
+                "parent walk so the overlay symlinks are the only entries "
+                "at those paths. Used to force ``evc0N = evcN`` for "
+                "``init_orbitals='kohn-sham'`` (legacy "
+                "``_koopmans_dscf.py:521-522`` + variational-orbital map at "
+                "``_koopmans_dscf.py:1340-1347``) — without this the kcp.x "
+                "inner loop picks up a stale variational guess and converges "
+                "to a different canonical KI basis."
+            ),
+        )
+        spec.input(
             "settings",
             valid_type=Dict,
             required=False,
@@ -346,29 +370,60 @@ class KcpCalculation(CalcJob):
 
         Every ``KcpCalculation`` reads from ``out/<prefix>_50.save/`` and
         writes to ``out/<prefix>_60.save/`` (see ``_NDR`` / ``_NDW``). When
-        chained, we symlink the primary ``parent_folder``'s freshly-written
-        ``aiida_60.save/`` into the child's ``aiida_50.save/`` slot — kcp.x
-        then doesn't need to know anything about the parent's identity.
+        chained, the child's ``aiida_50.save/`` is populated with one
+        symlink per file from the primary ``parent_folder``'s freshly-
+        written ``aiida_60.save/`` tree. Per-file (rather than directory-
+        level) symlinks are essential for the overlay case below: layering
+        a symlink on top of a directory symlink would resolve through to
+        the parent's actual scratch and either fail with ``FileExistsError``
+        or, worse, mutate the parent.
 
         For the ``dft_n+1`` step of the Delta-SCF empty-orbital branch we
-        also need ``evcfixed_empty.dat`` from a separate ``pz_print``
-        run. Supply that run's ``RemoteData`` as ``parent_folder_evcfixed``
-        and a second symlink is added that drops the file into
-        ``out/<prefix>_50.save/K00001/evcfixed_empty.dat``, layered on top
-        of the primary save. AiiDA scratch already isolates each calc, so
-        no naming collisions arise.
+        also need ``evcfixed_empty.dat`` from a separate ``pz_print`` run.
+        Supply that run's ``RemoteData`` as ``parent_folder_evcfixed`` and
+        we (a) skip the corresponding ``evc_occupied{1,2}.dat`` entries
+        from the primary parent's tree and (b) emit overlay symlinks
+        sourcing those two files from the evcfixed parent. AiiDA scratch
+        already isolates each calc, so no naming collisions arise.
+
+        Walking the parent's tree goes through the AiiDA transport
+        (``RemoteData.get_authinfo().get_transport()``), so this is
+        transport-agnostic. kcp ``.save`` directories are shallow
+        (top-level files + a single ``K00001/`` subdir) so the recursion
+        is bounded and the per-submission listdir cost is small.
         """
         symlinks: list[tuple[str, str, str]] = []
         target_save = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDR}.save"
+        parent_save_relpath = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDW}.save"
+
+        # When the evcfixed overlay is present, these two files come from a
+        # *different* parent — exclude them from the primary parent's walk
+        # so the overlay symlinks below are the only entries that land at
+        # those paths.
+        overlay_skip: set[str] = set()
+        if "parent_folder_evcfixed" in self.inputs:
+            overlay_skip |= {f"K00001/evc_occupied{ispin}.dat" for ispin in (1, 2)}
+        # ``variational_orbital_overlays`` also overrides entries from the
+        # primary parent — different *source name* (e.g. ``evc1.dat`` instead
+        # of ``evc01.dat``) at the *same destination*. Skip the destinations
+        # during the walk so the explicit overlay below wins.
+        overlays_map: dict[str, str] = (
+            self.inputs.variational_orbital_overlays.get_dict()
+            if "variational_orbital_overlays" in self.inputs
+            else {}
+        )
+        overlay_skip |= {f"K00001/{dest}.dat" for dest in overlays_map.values()}
 
         if "parent_folder" in self.inputs:
             parent = self.inputs.parent_folder
-            parent_save = (
-                PurePosixPath(parent.get_remote_path())
-                / self._OUTPUT_SUBFOLDER
-                / f"{self._PREFIX}_{self._NDW}.save"
-            )
-            symlinks.append((parent.computer.uuid, str(parent_save), target_save))
+            parent_root = PurePosixPath(parent.get_remote_path())
+            parent_save_abs = parent_root / parent_save_relpath
+            for rel_file in self._walk_remote_files(parent, parent_save_relpath):
+                if rel_file in overlay_skip:
+                    continue
+                abs_source = str(parent_save_abs / rel_file)
+                rel_dest = f"{target_save}/{rel_file}"
+                symlinks.append((parent.computer.uuid, abs_source, rel_dest))
 
         if "parent_folder_evcfixed" in self.inputs:
             # ``pz_print`` writes per-spin ``evcfixed_empty{ispin}.dat``;
@@ -391,7 +446,56 @@ class KcpCalculation(CalcJob):
                 evc_target = f"{target_save}/K00001/evc_occupied{ispin}.dat"
                 symlinks.append((evc_parent.computer.uuid, str(evc_source), evc_target))
 
+        if overlays_map:
+            # Per-spin variational/KS overlays for the trial-KI step:
+            # ``parent_folder`` already supplies the canonical save dir,
+            # but kcp.x's NKSIC inner loop reads its variational starting
+            # guess from ``evc0{ispin}.dat`` / ``evc0_empty{ispin}.dat``.
+            # For ``init_orbitals='kohn-sham'`` we want the variational
+            # guess to *be* the canonical KS basis (legacy
+            # ``_koopmans_dscf.py:1340-1347``), so re-point those four
+            # filenames at the corresponding ``evc{ispin}.dat`` /
+            # ``evc_empty{ispin}.dat`` from the same parent. Without this,
+            # the inner loop minimises from a stale guess and lands on a
+            # rotated KI basis — same total energy, different canonical
+            # eigenvalues, different per-orbital alphas.
+            parent = self.inputs.parent_folder
+            parent_save_abs = PurePosixPath(parent.get_remote_path()) / parent_save_relpath
+            for source_stem, dest_stem in overlays_map.items():
+                source_abs = str(parent_save_abs / "K00001" / f"{source_stem}.dat")
+                dest_rel = f"{target_save}/K00001/{dest_stem}.dat"
+                symlinks.append((parent.computer.uuid, source_abs, dest_rel))
+
         return symlinks
+
+    @staticmethod
+    def _walk_remote_files(remote: RemoteData, relpath: str) -> list[str]:
+        """Recursively enumerate files under ``relpath`` on a ``RemoteData``.
+
+        Returns paths relative to ``relpath``, using forward slashes. Uses
+        the node's AiiDA transport (one open per call), so this works
+        unchanged for ``core.local``, ``core.ssh``, or any other transport
+        plugin. Symlinks pointing at directories are followed via
+        ``transport.isdir`` — that matches what we want here, since the
+        parent's ``.save`` itself may already be a symlinked tree from a
+        further-upstream parent.
+        """
+        out: list[str] = []
+        root = PurePosixPath(remote.get_remote_path())
+        with remote.get_authinfo().get_transport() as transport:
+
+            def _walk(sub: str) -> None:
+                here = str(root / relpath / sub) if sub else str(root / relpath)
+                for name in transport.listdir(here):
+                    child_rel = f"{sub}/{name}" if sub else name
+                    child_full = f"{here}/{name}"
+                    if transport.isdir(child_full):
+                        _walk(child_rel)
+                    else:
+                        out.append(child_rel)
+
+            _walk("")
+        return out
 
     def _build_retrieve_list(self) -> list[str]:
         """Files persisted in the ``retrieved`` FolderData: stdout, CRASH, user extras."""
