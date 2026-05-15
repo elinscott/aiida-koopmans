@@ -1028,13 +1028,20 @@ def OneDSCFIteration(
     nbnd: int,
     nspin: int,
     nelec: int,
-    nelup: int | None,
-    neldw: int | None,
-    tot_magnetization: int | None,
     functional: str,
     spin_polarized: bool,
     current_alphas: AlphaScreening,
     parent_folder: orm.RemoteData,
+    # ``aiida-workgraph``'s ``materialize_graph`` drops ``None``-valued
+    # sockets from the kwargs it re-injects into the Python function, so
+    # every ``int | None`` / ``dict | None`` parameter MUST carry a
+    # ``= None`` default. Otherwise re-invocation raises
+    # ``TypeError: missing 1 required keyword-only argument`` when the
+    # outer ``KIDscfRefinementTask`` forwards a None — even though the
+    # static signature would let the call type-check fine.
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
     variational_orbital_overlays: dict | None = None,
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
