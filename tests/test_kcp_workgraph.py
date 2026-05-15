@@ -607,22 +607,12 @@ class TestKoopmansDSCFGraphBuild:
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
         # build time, so the walker can't reach Map zones / source builders
         # through ``KIDscfRefinementTask`` alone.
-        from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
-
         iter_wg = OneDSCFIteration.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
-            base=_kcp_base_inputs(
-                ozone_structure,
-                nspin=2,
-                nelec=18,
-                nelup=9,
-                neldw=9,
-                tot_magnetization=0,
-                ecutwfc=65.0,
-                ecutrho=260.0,
-            ),
+            ecutwfc=65.0,
+            ecutrho=260.0,
             nbnd=10,
             nspin=2,
             nelec=18,

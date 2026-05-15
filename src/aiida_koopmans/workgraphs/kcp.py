@@ -1024,7 +1024,8 @@ def OneDSCFIteration(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
-    base: KcpBaseInputs,
+    ecutwfc: float,
+    ecutrho: float,
     nbnd: int,
     nspin: int,
     nelec: int,
@@ -1062,7 +1063,26 @@ def OneDSCFIteration(
     is supplied on the first iteration only (the KS-as-variational
     overlay); subsequent iterations inherit the converged ``evc0N.dat``
     from the previous iteration's trial save via the primary parent walk.
+
+    ``base`` is *re-built* inside this body rather than passed across the
+    ``@task.graph`` boundary as a dict socket: ``aiida-workgraph``'s
+    serializer drops ``None``-valued entries from dict sockets in
+    transit, so a closed-shell caller passing
+    ``tot_magnetization=None`` would land here with the key missing and
+    ``_build_dft_parameters`` would ``KeyError``. The scalars come
+    through cleanly (each gets its own socket aligned to its kwarg, and
+    the ``= None`` defaults handle missing-key cases on the inner side).
     """
+    base = _kcp_base_inputs(
+        structure,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
     ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
@@ -1283,7 +1303,8 @@ def KIDscfRefinementTask(
         code=code,
         structure=structure,
         pseudos=pseudos,
-        base=base,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
         nbnd=nbnd,
         nspin=nspin,
         nelec=nelec,
