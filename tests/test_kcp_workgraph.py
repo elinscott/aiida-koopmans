@@ -8,11 +8,14 @@ family available.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from aiida_koopmans.types import SpinChannel
 from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
 from aiida_koopmans.workgraphs.kcp import (
+    KcpBaseInputs,
     _build_dft_parameters,
     _build_ki_parameters,
     _validate_scope,
@@ -91,17 +94,17 @@ class TestValidateScope:
 # ----------------------------------------------------------------------
 
 
-_OZONE_BASE: dict = {
-    "ecutwfc": 65.0,
-    "ecutrho": 260.0,
-    "nspin": 2,
-    "nelec": 18,
-    "nelup": 9,
-    "neldw": 9,
-    "tot_magnetization": None,
-    "mt_correction": False,
-    "ntyp": 1,
-}
+_OZONE_BASE = KcpBaseInputs(
+    ecutwfc=65.0,
+    ecutrho=260.0,
+    nspin=2,
+    nelec=18,
+    ntyp=1,
+    mt_correction=False,
+    nelup=9,
+    neldw=9,
+    tot_magnetization=None,
+)
 
 
 class TestBuildDftParameters:
@@ -140,7 +143,7 @@ class TestBuildDftParameters:
         assert params["ELECTRONS"]["conv_thr"] == pytest.approx(1.8e-8)
 
     def test_nspin_one_skips_spin_keys(self):
-        base = {**_OZONE_BASE, "nspin": 1, "nelup": None, "neldw": None}
+        base = replace(_OZONE_BASE, nspin=1, nelup=None, neldw=None)
         params = _build_dft_parameters(base, nbnd=10)
         assert params["SYSTEM"]["nspin"] == 1
         assert "nelup" not in params["SYSTEM"]
@@ -153,7 +156,7 @@ class TestBuildDftParameters:
         assert params["IONS"]["ion_radius(1)"] == 1.0
         assert "ion_radius(2)" not in params["IONS"]
         # Three-species cell should emit three entries.
-        params3 = _build_dft_parameters({**_OZONE_BASE, "ntyp": 3}, nbnd=10)
+        params3 = _build_dft_parameters(replace(_OZONE_BASE, ntyp=3), nbnd=10)
         assert params3["IONS"]["ion_radius(1)"] == 1.0
         assert params3["IONS"]["ion_radius(2)"] == 1.0
         assert params3["IONS"]["ion_radius(3)"] == 1.0
@@ -191,7 +194,7 @@ class TestBuildKiParameters:
         assert params["SYSTEM"]["do_ee"] is False
 
     def test_aperiodic_emits_tcc(self):
-        base = {**_OZONE_BASE, "mt_correction": True}
+        base = replace(_OZONE_BASE, mt_correction=True)
         params = _build_ki_parameters(base, nbnd=10, functional="ki")
         assert params["EE"]["which_compensation"] == "tcc"
         assert params["SYSTEM"]["do_ee"] is True
@@ -607,18 +610,23 @@ class TestKoopmansDSCFGraphBuild:
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
         # build time, so the walker can't reach Map zones / source builders
         # through ``KIDscfRefinementTask`` alone.
+        from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
+
         iter_wg = OneDSCFIteration.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
-            ecutwfc=65.0,
-            ecutrho=260.0,
+            base=_kcp_base_inputs(
+                ozone_structure,
+                nspin=2,
+                nelec=18,
+                nelup=9,
+                neldw=9,
+                tot_magnetization=0,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+            ),
             nbnd=10,
-            nspin=2,
-            nelec=18,
-            nelup=9,
-            neldw=9,
-            tot_magnetization=0,
             functional="ki",
             spin_polarized=False,
             current_alphas={

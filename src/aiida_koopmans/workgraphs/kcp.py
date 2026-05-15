@@ -24,6 +24,7 @@ helpers without reshaping the public ``KoopmansDSCFTask`` signature.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Annotated, Any, TypedDict
 
 import numpy as np
@@ -76,7 +77,8 @@ class KoopmansDSCFOutputs(TypedDict):
     remote_folder: orm.RemoteData
 
 
-class KcpBaseInputs(TypedDict):
+@dataclass(frozen=True)
+class KcpBaseInputs:
     """Cell-, basis-, and electron-count inputs shared by every kcp.x step.
 
     Each parameter builder takes one ``KcpBaseInputs`` (built once per
@@ -86,17 +88,26 @@ class KcpBaseInputs(TypedDict):
     at every builder call site. ``nbnd`` is intentionally *not* here —
     DFT/KI/PZ steps need it but alpha-step (dft_n±1) builders strip it,
     so it stays a step-level kwarg.
+
+    A frozen ``dataclass`` rather than a ``TypedDict``: aiida-workgraph
+    routes dataclass-typed sockets through ``structured_to_dict`` →
+    ``dataclasses.asdict`` (which preserves ``None`` fields) and
+    reconstructs via ``cls(**value)`` on the receiving side. Plain
+    ``dict`` / ``TypedDict`` sockets, by contrast, silently strip
+    ``None``-valued entries in transit — closed-shell tutorial_1
+    (``tot_magnetization=None``) hit exactly that failure mode before
+    this migration.
     """
 
     ecutwfc: float
     ecutrho: float
     nspin: int
     nelec: int
-    nelup: int | None
-    neldw: int | None
-    tot_magnetization: int | None
-    mt_correction: bool
     ntyp: int
+    mt_correction: bool
+    nelup: int | None = None
+    neldw: int | None = None
+    tot_magnetization: int | None = None
 
 
 class KcpNamelistOverrides(TypedDict, total=False):
@@ -1024,25 +1035,12 @@ def OneDSCFIteration(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
-    ecutwfc: float,
-    ecutrho: float,
+    base: KcpBaseInputs,
     nbnd: int,
-    nspin: int,
-    nelec: int,
     functional: str,
     spin_polarized: bool,
     current_alphas: AlphaScreening,
     parent_folder: orm.RemoteData,
-    # ``aiida-workgraph``'s ``materialize_graph`` drops ``None``-valued
-    # sockets from the kwargs it re-injects into the Python function, so
-    # every ``int | None`` / ``dict | None`` parameter MUST carry a
-    # ``= None`` default. Otherwise re-invocation raises
-    # ``TypeError: missing 1 required keyword-only argument`` when the
-    # outer ``KIDscfRefinementTask`` forwards a None — even though the
-    # static signature would let the call type-check fine.
-    nelup: int | None = None,
-    neldw: int | None = None,
-    tot_magnetization: int | None = None,
     variational_orbital_overlays: dict | None = None,
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
@@ -1064,25 +1062,12 @@ def OneDSCFIteration(
     overlay); subsequent iterations inherit the converged ``evc0N.dat``
     from the previous iteration's trial save via the primary parent walk.
 
-    ``base`` is *re-built* inside this body rather than passed across the
-    ``@task.graph`` boundary as a dict socket: ``aiida-workgraph``'s
-    serializer drops ``None``-valued entries from dict sockets in
-    transit, so a closed-shell caller passing
-    ``tot_magnetization=None`` would land here with the key missing and
-    ``_build_dft_parameters`` would ``KeyError``. The scalars come
-    through cleanly (each gets its own socket aligned to its kwarg, and
-    the ``= None`` defaults handle missing-key cases on the inner side).
+    ``base`` is a frozen ``KcpBaseInputs`` dataclass and crosses this
+    ``@task.graph`` boundary intact (aiida-workgraph routes
+    dataclass-typed sockets through ``dataclasses.asdict`` + ``cls(**)``
+    reconstruction, preserving ``None``-valued fields — unlike plain
+    ``dict`` sockets, which silently strip ``None`` entries in transit).
     """
-    base = _kcp_base_inputs(
-        structure,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-    )
     ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
@@ -1102,9 +1087,9 @@ def OneDSCFIteration(
 
     filled_source = build_filled_iter_source(
         nbnd=nbnd,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
+        nelec=base.nelec,
+        nelup=base.nelup,
+        neldw=base.neldw,
         filled_alphas=current_alphas["filled"],
         spin_polarized=spin_polarized,
     )
@@ -1114,13 +1099,13 @@ def OneDSCFIteration(
             code=code,
             structure=structure,
             pseudos=pseudos,
-            ecutwfc=base["ecutwfc"],
-            ecutrho=base["ecutrho"],
-            nspin=nspin,
-            nelec=nelec,
-            nelup=nelup,
-            neldw=neldw,
-            tot_magnetization=tot_magnetization,
+            ecutwfc=base.ecutwfc,
+            ecutrho=base.ecutrho,
+            nspin=base.nspin,
+            nelec=base.nelec,
+            nelup=base.nelup,
+            neldw=base.neldw,
+            tot_magnetization=base.tot_magnetization,
             fixed_band=_get_value(data=filled_item, key="fixed_band").result,
             spin_channel=_get_value(data=filled_item, key="spin_channel").result,
             band_index=_get_value(data=filled_item, key="band_index").result,
@@ -1136,9 +1121,9 @@ def OneDSCFIteration(
 
     empty_source = build_empty_iter_source(
         nbnd=nbnd,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
+        nelec=base.nelec,
+        nelup=base.nelup,
+        neldw=base.neldw,
         empty_alphas=current_alphas["empty"],
         spin_polarized=spin_polarized,
     )
@@ -1148,14 +1133,14 @@ def OneDSCFIteration(
             code=code,
             structure=structure,
             pseudos=pseudos,
-            ecutwfc=base["ecutwfc"],
-            ecutrho=base["ecutrho"],
+            ecutwfc=base.ecutwfc,
+            ecutrho=base.ecutrho,
             nbnd=nbnd,
-            nspin=nspin,
-            nelec=nelec,
-            nelup=nelup,
-            neldw=neldw,
-            tot_magnetization=tot_magnetization,
+            nspin=base.nspin,
+            nelec=base.nelec,
+            nelup=base.nelup,
+            neldw=base.neldw,
+            tot_magnetization=base.tot_magnetization,
             fixed_band=_get_value(data=empty_item, key="fixed_band").result,
             spin_channel=_get_value(data=empty_item, key="spin_channel").result,
             band_index=_get_value(data=empty_item, key="band_index").result,
@@ -1303,14 +1288,8 @@ def KIDscfRefinementTask(
         code=code,
         structure=structure,
         pseudos=pseudos,
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
+        base=base,
         nbnd=nbnd,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=tot_magnetization,
         functional=functional,
         spin_polarized=spin_polarized,
         current_alphas=initial_alphas,
@@ -1424,17 +1403,17 @@ def _kcp_base_inputs(
     pass through unchanged. Callers in the workgraph layer build this
     once per step group and forward it to each ``_build_*`` invocation.
     """
-    return {
-        "ecutwfc": ecutwfc,
-        "ecutrho": ecutrho,
-        "nspin": nspin,
-        "nelec": nelec,
-        "nelup": nelup,
-        "neldw": neldw,
-        "tot_magnetization": tot_magnetization,
-        "mt_correction": not any(structure.pbc),
-        "ntyp": len(structure.kinds),
-    }
+    return KcpBaseInputs(
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        mt_correction=not any(structure.pbc),
+        ntyp=len(structure.kinds),
+    )
 
 
 def _build_dft_parameters(
@@ -1460,25 +1439,25 @@ def _build_dft_parameters(
             ``nspin2_dummy_calculator`` settings used by
             ``restart_with_higher_precision``.
     """
-    conv_thr = 1.0e-9 * base["nelec"]
+    conv_thr = 1.0e-9 * base.nelec
     system: dict[str, Any] = {
-        "ecutwfc": base["ecutwfc"],
-        "ecutrho": base["ecutrho"],
+        "ecutwfc": base.ecutwfc,
+        "ecutrho": base.ecutrho,
         "nbnd": nbnd,
-        "nspin": base["nspin"],
-        "do_ee": base["mt_correction"],
+        "nspin": base.nspin,
+        "do_ee": base.mt_correction,
         "do_orbdep": False,
         "fixed_state": False,
         "do_wf_cmplx": True,
-        "nelec": base["nelec"],
+        "nelec": base.nelec,
     }
-    if base["nspin"] == 2:
-        if base["nelup"] is not None:
-            system["nelup"] = base["nelup"]
-        if base["neldw"] is not None:
-            system["neldw"] = base["neldw"]
-        if base["tot_magnetization"] is not None:
-            system["tot_magnetization"] = base["tot_magnetization"]
+    if base.nspin == 2:
+        if base.nelup is not None:
+            system["nelup"] = base.nelup
+        if base.neldw is not None:
+            system["neldw"] = base.neldw
+        if base.tot_magnetization is not None:
+            system["tot_magnetization"] = base.tot_magnetization
     # ``ndr`` and ``ndw`` are owned by the CalcJob (see
     # ``KcpCalculation._inject_owned_keys``) — the builders deliberately
     # leave them unset so there's only one source of truth.
@@ -1510,10 +1489,10 @@ def _build_dft_parameters(
         "IONS": {
             "ion_dynamics": "none",
             "ion_nstepe": 5,
-            **{f"ion_radius({i + 1})": 1.0 for i in range(base["ntyp"])},
+            **{f"ion_radius({i + 1})": 1.0 for i in range(base.ntyp)},
         },
     }
-    if base["mt_correction"]:
+    if base.mt_correction:
         params["EE"] = {"which_compensation": "tcc"}
     return params
 
@@ -1555,7 +1534,7 @@ def _build_ki_parameters(
         "innerloop_init_n": 3,
         "innerloop_nmax": 100,
         "hartree_only_sic": False,
-        "esic_conv_thr": 1.0e-9 * base["nelec"],
+        "esic_conv_thr": 1.0e-9 * base.nelec,
         "do_bare_eigs": True,
     }
     return params
