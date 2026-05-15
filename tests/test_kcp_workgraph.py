@@ -587,6 +587,7 @@ class TestKoopmansDSCFGraphBuild:
             tot_magnetization=0,
             initial_alpha=0.6,
             functional="ki",
+            init_orbitals="kohn-sham",
             dft_remote=dummy_remote,
         )
         sub_labels = self._all_link_labels(sub_wg)

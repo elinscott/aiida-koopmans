@@ -336,7 +336,7 @@ def build_filled_iter_source(
     nelec: int,
     nelup: int | None,
     neldw: int | None,
-    alpha_guess: float,
+    filled_alphas: dict,
     spin_polarized: bool = False,
 ) -> Annotated[dict, dynamic(dict)]:
     """Materialise the per-orbital iterator for the *filled* Map zone.
@@ -345,7 +345,15 @@ def build_filled_iter_source(
     the consumer (``OrbitalDeltaSCFFilledTask``) needs: ``fixed_band``
     (1-indexed kcp.x), ``spin_channel`` (kept as the :class:`SpinChannel`
     enum), ``band_index`` (0-indexed numpy index into the stacked lambda
-    matrices), and ``alpha_guess`` (uniform initial guess on iter 1).
+    matrices), and ``alpha_guess`` (per-orbital alpha already in use for
+    that band on the current refinement iteration).
+
+    ``filled_alphas`` is keyed by spin tag ("none" / "up" / "down" —
+    matching :class:`SpinChannel`'s string values, which is what survives
+    the AiiDA serializer round-trip) and maps to per-channel alpha lists.
+    On iteration 1 the caller passes :func:`generate_alphas`'s uniform
+    output; on subsequent iterations the previous iteration's gathered
+    alphas (an :class:`AlphaScreening`'s ``filled`` half).
 
     Spin handling:
 
@@ -367,6 +375,7 @@ def build_filled_iter_source(
     spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     out: dict[str, dict] = {}
     for spin in spin_list:
+        alphas_for_spin = filled_alphas[spin.value]
         for i in range(n_filled_per_channel):
             # Orbital indices are **1-indexed** and shared with the empty
             # manifold (see :func:`build_empty_iter_source`) so they line up
@@ -381,7 +390,7 @@ def build_filled_iter_source(
                 "fixed_band": orb_index,
                 "spin_channel": spin,
                 "band_index": i,
-                "alpha_guess": alpha_guess,
+                "alpha_guess": alphas_for_spin[i],
             }
     return out
 
@@ -392,7 +401,7 @@ def build_empty_iter_source(
     nelec: int,
     nelup: int | None,
     neldw: int | None,
-    alpha_guess: float,
+    empty_alphas: dict,
     spin_polarized: bool = False,
 ) -> Annotated[dict, dynamic(dict)]:
     """Materialise the per-orbital iterator for the *empty* Map zone.
@@ -401,6 +410,11 @@ def build_empty_iter_source(
     block, so ``fixed_band`` and ``band_index`` are offset by
     ``n_filled_per_channel``. ``index_empty_to_save`` is 1-based within
     the per-spin empty manifold (kcp.x convention).
+
+    ``empty_alphas`` follows the same shape as ``filled_alphas`` in
+    :func:`build_filled_iter_source`: keyed by spin tag, mapping to
+    per-channel alpha lists indexed within the empty manifold (so index
+    ``0`` is the first empty orbital, *not* the global band index).
 
     See :func:`build_filled_iter_source` for the spin-channel emission
     rule (closed-shell emits a single :attr:`SpinChannel.NONE` channel;
@@ -414,6 +428,7 @@ def build_empty_iter_source(
     spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     out: dict[str, dict] = {}
     for spin in spin_list:
+        alphas_for_spin = empty_alphas[spin.value]
         for i in range(n_empty_per_channel):
             # Empty orbital indices continue the filled-manifold numbering
             # (1-indexed, no restart at 0) — matches kcp.x's band ordering.
@@ -425,7 +440,7 @@ def build_empty_iter_source(
                 "spin_channel": spin,
                 "band_index": orb_index - 1,
                 "index_empty_to_save": i + 1,
-                "alpha_guess": alpha_guess,
+                "alpha_guess": alphas_for_spin[i],
             }
     return out
 
@@ -1090,7 +1105,7 @@ def KIDscfRefinementTask(
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
-        alpha_guess=initial_alpha,
+        filled_alphas=trial_alphas["filled"],
         spin_polarized=spin_polarized,
     )
     with Map(filled_source) as filled_zone:
@@ -1124,7 +1139,7 @@ def KIDscfRefinementTask(
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
-        alpha_guess=initial_alpha,
+        empty_alphas=trial_alphas["empty"],
         spin_polarized=spin_polarized,
     )
     with Map(empty_source) as empty_zone:
