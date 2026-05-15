@@ -156,6 +156,30 @@ class _PerOrbitalAlphaOutputs(TypedDict):
     errors: AlphaScreening
 
 
+class OneDSCFIterationOutputs(TypedDict):
+    """Outputs of one alpha-refinement iteration (trial KI + per-orbital DSCF).
+
+    Used to thread the next iteration's inputs through the ``While`` loop
+    (alpha refinement) without going through ``wg.ctx``:
+
+    * ``alphas`` — gathered per-orbital screening parameters; becomes the
+      next iteration's trial-KI ``alphas`` input.
+    * ``errors`` — gathered ``|dE - lambda|`` per orbital; retained for
+      diagnostics / convergence reporting.
+    * ``trial_remote`` — the trial KI's ``remote_folder``; becomes the
+      next iteration's ``parent_folder`` (and, after the loop, the final
+      KI's parent).
+    * ``max_error`` — convergence indicator; the loop terminates when
+      this falls below the legacy ``1e-3 eV`` threshold (legacy
+      ``_koopmans_dscf.py:633``).
+    """
+
+    alphas: AlphaScreening
+    errors: AlphaScreening
+    trial_remote: orm.RemoteData
+    max_error: float
+
+
 # ----------------------------------------------------------------------
 # Raw CalcJob as a workgraph task
 # ----------------------------------------------------------------------
@@ -279,6 +303,24 @@ def assemble_alpha_screening(
     alphas: AlphaScreening = {"filled": filled_packed, "empty": empty_packed}
     errors: AlphaScreening = {"filled": filled_err_packed, "empty": empty_err_packed}
     return {"alphas": alphas, "errors": errors}
+
+
+@task
+def max_alpha_error(filled_errors: dict, empty_errors: dict):
+    """Convergence indicator for one DSCF iteration.
+
+    Returns ``max |dE - lambda|`` across every per-orbital error in both
+    branches. The alpha-refinement loop in ``KIDscfRefinementTask`` stops
+    when this falls below ``1e-3 eV`` (legacy threshold from
+    ``_koopmans_dscf.py:633``). ``filled_errors`` / ``empty_errors`` are
+    the per-spin dicts produced by :func:`assemble_alpha_screening` (each
+    keyed by ``SpinChannel`` value mapping to a per-orbital list).
+    """
+    values: list[float] = []
+    for per_spin in (filled_errors, empty_errors):
+        for spin_list in per_spin.values():
+            values.extend(abs(v) for v in spin_list)
+    return max(values) if values else 0.0
 
 
 # ----------------------------------------------------------------------
@@ -969,6 +1011,160 @@ def OrbitalDeltaSCFEmptyTask(
 
 
 # ----------------------------------------------------------------------
+# One DSCF iteration body: trial KI → per-orbital DSCF → assemble alphas.
+# Extracted so the multi-iteration loop in ``KIDscfRefinementTask`` can
+# call it once per pass (a ``While`` zone gates re-entry in the procedural
+# refinement builder).
+# ----------------------------------------------------------------------
+
+
+@task.graph
+def OneDSCFIteration(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    base: KcpBaseInputs,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    nelup: int | None,
+    neldw: int | None,
+    tot_magnetization: int | None,
+    functional: str,
+    spin_polarized: bool,
+    current_alphas: AlphaScreening,
+    parent_folder: orm.RemoteData,
+    variational_orbital_overlays: dict | None = None,
+    ki_overrides: KcpNamelistOverrides | None = None,
+    filled_overrides: KcpNamelistOverrides | None = None,
+    empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
+    options: dict[str, Any] | None = None,
+) -> OneDSCFIterationOutputs:
+    """One iteration of the alpha-refinement loop.
+
+    Runs a trial KI starting from ``current_alphas`` + ``parent_folder``,
+    then a per-orbital Delta-SCF scatter (Map zones over filled / empty
+    branches), then ``assemble_alpha_screening`` to pack the gathered
+    per-orbital alphas back into an :class:`AlphaScreening`. Reports
+    ``max_error`` so the outer ``While`` loop can stop on convergence.
+
+    The trial KI is named ``ki_trial`` (call_link_label) — the ``While``
+    loop appends an iteration suffix at the workgraph layer via the task
+    builder's own auto-disambiguation. ``variational_orbital_overlays``
+    is supplied on the first iteration only (the KS-as-variational
+    overlay); subsequent iterations inherit the converged ``evc0N.dat``
+    from the previous iteration's trial save via the primary parent walk.
+    """
+    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
+    if ki_overrides:
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
+
+    trial_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        ki_parameters,
+        pseudos,
+        options=options,
+        alphas=current_alphas,
+        parent_folder=parent_folder,
+        variational_orbital_overlays=variational_orbital_overlays,
+        name="ki_trial",
+    )
+    trial = KcpBaseTask(**trial_inputs)
+
+    filled_source = build_filled_iter_source(
+        nbnd=nbnd,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        filled_alphas=current_alphas["filled"],
+        spin_polarized=spin_polarized,
+    )
+    with Map(filled_source) as filled_zone:
+        filled_item = filled_zone.item.value
+        filled_out = OrbitalDeltaSCFFilledTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            ecutwfc=base["ecutwfc"],
+            ecutrho=base["ecutrho"],
+            nspin=nspin,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            fixed_band=_get_value(data=filled_item, key="fixed_band").result,
+            spin_channel=_get_value(data=filled_item, key="spin_channel").result,
+            band_index=_get_value(data=filled_item, key="band_index").result,
+            alpha_guess=_get_value(data=filled_item, key="alpha_guess").result,
+            trial_remote=trial["remote_folder"],
+            trial_output_parameters=trial["output_parameters"],
+            trial_lambdas=trial["output_lambdas"],
+            trial_bare_lambdas=trial["output_bare_lambdas"],
+            overrides=filled_overrides,
+            options=options,
+        )
+        filled_zone.gather({"alpha": filled_out["alpha"], "error": filled_out["error"]})
+
+    empty_source = build_empty_iter_source(
+        nbnd=nbnd,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        empty_alphas=current_alphas["empty"],
+        spin_polarized=spin_polarized,
+    )
+    with Map(empty_source) as empty_zone:
+        empty_item = empty_zone.item.value
+        empty_out = OrbitalDeltaSCFEmptyTask(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            ecutwfc=base["ecutwfc"],
+            ecutrho=base["ecutrho"],
+            nbnd=nbnd,
+            nspin=nspin,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+            fixed_band=_get_value(data=empty_item, key="fixed_band").result,
+            spin_channel=_get_value(data=empty_item, key="spin_channel").result,
+            band_index=_get_value(data=empty_item, key="band_index").result,
+            index_empty_to_save=_get_value(data=empty_item, key="index_empty_to_save").result,
+            alpha_guess=_get_value(data=empty_item, key="alpha_guess").result,
+            pz_alphas=current_alphas,
+            trial_remote=trial["remote_folder"],
+            trial_output_parameters=trial["output_parameters"],
+            trial_lambdas=trial["output_lambdas"],
+            trial_bare_lambdas=trial["output_bare_lambdas"],
+            overrides=empty_overrides_dict,
+            options=options,
+        )
+        empty_zone.gather({"alpha": empty_out["alpha"], "error": empty_out["error"]})
+
+    gathered = assemble_alpha_screening(
+        filled_alphas=filled_zone.outputs.alpha,
+        filled_errors=filled_zone.outputs.error,
+        empty_alphas=empty_zone.outputs.alpha,
+        empty_errors=empty_zone.outputs.error,
+    )
+
+    max_err = max_alpha_error(
+        filled_errors=gathered["errors"]["filled"],
+        empty_errors=gathered["errors"]["empty"],
+    )
+
+    return {
+        "alphas": gathered["alphas"],
+        "errors": gathered["errors"],
+        "trial_remote": trial["remote_folder"],
+        "max_error": max_err.result,
+    }
+
+
+# ----------------------------------------------------------------------
 # Single-iteration alpha-refinement: trial KI → per-orbital DSCF → final KI.
 # ----------------------------------------------------------------------
 
@@ -1032,22 +1228,17 @@ def KIDscfRefinementTask(
     n_filled = counts["n_filled"]
     n_empty = counts["n_empty"]
 
-    # Uniform-``initial_alpha`` payload for the trial KI (and reused as
-    # the empty-orbital ``pz_print`` alphas). ``generate_alphas`` returns
-    # an :class:`AlphaScreening` TypedDict, so aiida-workgraph exposes
-    # the call as a namespace with ``filled`` / ``empty`` outputs — the
-    # exact shape ``KcpCalculation.alphas`` (also a namespace) accepts,
-    # so the call object itself binds directly (no ``.result``).
-    trial_alphas = generate_alphas(
+    # Uniform-``initial_alpha`` payload feeds the first iteration's trial
+    # KI (and its empty-orbital ``pz_print``). Subsequent iterations
+    # consume the previous iteration's gathered alphas; that wiring lives
+    # in the ``While`` loop that B.3 will add.
+    initial_alphas = generate_alphas(
         alpha_guess=initial_alpha,
         n_filled=n_filled,
         n_empty=n_empty,
         spin_polarized=spin_polarized,
     )
 
-    # ------------------------------------------------------------------
-    # Trial KI: uniform initial_alpha, restarts from DFT.
-    # ------------------------------------------------------------------
     base = _kcp_base_inputs(
         structure,
         nspin=nspin,
@@ -1058,21 +1249,13 @@ def KIDscfRefinementTask(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
-    if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
-    # Force the trial-KI's variational starting guess to match the
-    # canonical DFT KS basis (``evc0N.dat = evcN.dat``) — only valid
-    # when the user picked ``init_orbitals='kohn-sham'``. Without this
-    # the NKSIC inner loop initialises from whatever ``evc0N.dat`` the
-    # parent DFT save happens to contain (a different orbital basis),
-    # so it converges to a rotated KI basis: same total energy,
-    # different canonical eigenvalues, different per-orbital alphas.
-    # Legacy ``_koopmans_dscf.py:519-522`` + variational-orbital map at
-    # ``_koopmans_dscf.py:1340-1347``. Other init_orbitals (pz, mlwfs,
-    # projwfs) have different overlay maps and aren't ported yet —
-    # ``_validate_scope`` blocks those upstream.
+    # KS overlay applies only on the iteration that consumes ``dft_remote``
+    # directly (the parent DFT save still has the raw ``evc0N.dat`` from
+    # the DFT init, not the trial KI's inner-loop minimum). Once B.3
+    # wraps the loop, only the *first* iteration receives this overlay;
+    # all subsequent iterations parent on the previous trial KI and
+    # inherit its converged ``evc0N.dat`` via the primary parent walk.
     ks_overlay: dict[str, str] | None = None
     if init_orbitals == "kohn-sham":
         nspin_overlay_iter = (1, 2) if nspin == 2 else (1,)
@@ -1082,100 +1265,33 @@ def KIDscfRefinementTask(
             **{f"evc{i}": f"evc0{i}" for i in nspin_overlay_iter},
             **{f"evc_empty{i}": f"evc0_empty{i}" for i in nspin_overlay_iter},
         }
-    trial_inputs = _build_kcp_inputs(
-        code,
-        structure,
-        ki_parameters,
-        pseudos,
-        options=options,
-        alphas=trial_alphas,
+
+    # ------------------------------------------------------------------
+    # Single iteration. B.3 will wrap this call (or rather the underlying
+    # ``OneDSCFIteration`` graph task) inside a ``While`` zone whose
+    # condition reads ``iteration["max_error"] < 1e-3``, with a cap at
+    # ``alpha_numsteps``.
+    # ------------------------------------------------------------------
+    iteration = OneDSCFIteration(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
+        base=base,
+        nbnd=nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        functional=functional,
+        spin_polarized=spin_polarized,
+        current_alphas=initial_alphas,
         parent_folder=dft_remote,
         variational_orbital_overlays=ks_overlay,
-        name="ki_trial",
-    )
-    trial = KcpBaseTask(**trial_inputs)
-
-    # ------------------------------------------------------------------
-    # Per-orbital DSCF refinement via Map zones — one zone per branch
-    # (filled / empty). The source-builder tasks own all per-spin index
-    # arithmetic and emit a complete ``{key: item_payload}`` dict.
-    # ------------------------------------------------------------------
-    filled_source = build_filled_iter_source(
-        nbnd=nbnd,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        filled_alphas=trial_alphas["filled"],
-        spin_polarized=spin_polarized,
-    )
-    with Map(filled_source) as filled_zone:
-        filled_item = filled_zone.item.value
-        filled_out = OrbitalDeltaSCFFilledTask(
-            code=code,
-            structure=structure,
-            pseudos=pseudos,
-            ecutwfc=ecutwfc,
-            ecutrho=ecutrho,
-            nspin=nspin,
-            nelec=nelec,
-            nelup=nelup,
-            neldw=neldw,
-            tot_magnetization=tot_magnetization,
-            fixed_band=_get_value(data=filled_item, key="fixed_band").result,
-            spin_channel=_get_value(data=filled_item, key="spin_channel").result,
-            band_index=_get_value(data=filled_item, key="band_index").result,
-            alpha_guess=_get_value(data=filled_item, key="alpha_guess").result,
-            trial_remote=trial["remote_folder"],
-            trial_output_parameters=trial["output_parameters"],
-            trial_lambdas=trial["output_lambdas"],
-            trial_bare_lambdas=trial["output_bare_lambdas"],
-            overrides=filled_overrides,
-            options=options,
-        )
-        filled_zone.gather({"alpha": filled_out["alpha"], "error": filled_out["error"]})
-
-    empty_source = build_empty_iter_source(
-        nbnd=nbnd,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        empty_alphas=trial_alphas["empty"],
-        spin_polarized=spin_polarized,
-    )
-    with Map(empty_source) as empty_zone:
-        empty_item = empty_zone.item.value
-        empty_out = OrbitalDeltaSCFEmptyTask(
-            code=code,
-            structure=structure,
-            pseudos=pseudos,
-            ecutwfc=ecutwfc,
-            ecutrho=ecutrho,
-            nbnd=nbnd,
-            nspin=nspin,
-            nelec=nelec,
-            nelup=nelup,
-            neldw=neldw,
-            tot_magnetization=tot_magnetization,
-            fixed_band=_get_value(data=empty_item, key="fixed_band").result,
-            spin_channel=_get_value(data=empty_item, key="spin_channel").result,
-            band_index=_get_value(data=empty_item, key="band_index").result,
-            index_empty_to_save=_get_value(data=empty_item, key="index_empty_to_save").result,
-            alpha_guess=_get_value(data=empty_item, key="alpha_guess").result,
-            pz_alphas=trial_alphas,
-            trial_remote=trial["remote_folder"],
-            trial_output_parameters=trial["output_parameters"],
-            trial_lambdas=trial["output_lambdas"],
-            trial_bare_lambdas=trial["output_bare_lambdas"],
-            overrides=empty_overrides_dict,
-            options=options,
-        )
-        empty_zone.gather({"alpha": empty_out["alpha"], "error": empty_out["error"]})
-
-    gathered = assemble_alpha_screening(
-        filled_alphas=filled_zone.outputs.alpha,
-        filled_errors=filled_zone.outputs.error,
-        empty_alphas=empty_zone.outputs.alpha,
-        empty_errors=empty_zone.outputs.error,
+        ki_overrides=ki_overrides,
+        filled_overrides=filled_overrides,
+        empty_overrides_dict=empty_overrides_dict,
+        options=options,
     )
 
     # ------------------------------------------------------------------
@@ -1188,14 +1304,17 @@ def KIDscfRefinementTask(
     # would discard the trial's variational rotations and silently
     # rotate the canonical KI eigenvalues / lambda matrices.
     # ------------------------------------------------------------------
+    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
+    if ki_overrides:
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
     final_inputs = _build_kcp_inputs(
         code,
         structure,
         ki_parameters,
         pseudos,
         options=options,
-        alphas=gathered["alphas"],
-        parent_folder=trial["remote_folder"],
+        alphas=iteration["alphas"],
+        parent_folder=iteration["trial_remote"],
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)

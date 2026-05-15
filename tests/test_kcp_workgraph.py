@@ -561,7 +561,7 @@ class TestKoopmansDSCFGraphBuild:
         # ``dft_remote`` are placeholders the topology check ignores.
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
-        from aiida_koopmans.workgraphs.kcp import KIDscfRefinementTask
+        from aiida_koopmans.workgraphs.kcp import KIDscfRefinementTask, OneDSCFIteration
 
         family = (
             orm.QueryBuilder()
@@ -596,16 +596,68 @@ class TestKoopmansDSCFGraphBuild:
             return any(substr in label for label in sub_labels)
 
         assert _sub_has("generate_alphas"), sub_labels
-        assert _sub_has("build_filled_iter_source"), sub_labels
-        assert _sub_has("build_empty_iter_source"), sub_labels
+        # Per-orbital fan-out lives inside the ``OneDSCFIteration`` sub-graph
+        # extracted by B.2; the refinement task itself only exposes
+        # ``OneDSCFIteration`` + the final KI at its top level.
+        assert _sub_has("OneDSCFIteration"), sub_labels
+        # Final KI runs at the refinement level.
+        assert _sub_has("ki_final"), sub_labels
+
+        # Build ``OneDSCFIteration`` directly to verify its internals —
+        # ``@task.graph`` sub-tasks are opaque from the parent graph at
+        # build time, so the walker can't reach Map zones / source builders
+        # through ``KIDscfRefinementTask`` alone.
+        from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
+
+        iter_wg = OneDSCFIteration.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            base=_kcp_base_inputs(
+                ozone_structure,
+                nspin=2,
+                nelec=18,
+                nelup=9,
+                neldw=9,
+                tot_magnetization=0,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+            ),
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            functional="ki",
+            spin_polarized=False,
+            current_alphas={
+                "filled": {"none": [0.6] * 9},
+                "empty": {"none": [0.6]},
+            },
+            parent_folder=dummy_remote,
+            variational_orbital_overlays=None,
+            ki_overrides=None,
+            filled_overrides=None,
+            empty_overrides_dict=None,
+            options=None,
+        )
+        iter_labels = self._all_link_labels(iter_wg)
+
+        def _iter_has(substr: str) -> bool:
+            return any(substr in label for label in iter_labels)
+
+        assert _iter_has("build_filled_iter_source"), iter_labels
+        assert _iter_has("build_empty_iter_source"), iter_labels
         # Two Map zones (filled + empty branches).
-        assert sum(1 for s in sub_labels if "map_zone" in s.lower()) >= 2, sub_labels
+        assert sum(1 for s in iter_labels if "map_zone" in s.lower()) >= 2, iter_labels
         # Gather step packing per-orbital sockets back into an
         # ``AlphaScreening`` shape.
-        assert _sub_has("assemble_alpha_screening"), sub_labels
-        # Trial / final KI runs.
-        assert _sub_has("ki_trial"), sub_labels
-        assert _sub_has("ki_final"), sub_labels
+        assert _iter_has("assemble_alpha_screening"), iter_labels
+        # Trial KI inside the iteration.
+        assert _iter_has("ki_trial"), iter_labels
+        # Convergence indicator the ``While`` zone will read in B.3.
+        assert _iter_has("max_alpha_error"), iter_labels
 
     def test_closed_shell_init_chain_has_four_init_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
