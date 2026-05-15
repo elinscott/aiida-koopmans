@@ -31,7 +31,6 @@ class TestValidateScope:
         _validate_scope(
             functional="ki",
             init_orbitals="kohn-sham",
-            alpha_numsteps=1,
             fix_spin_contamination=False,
             structure=ozone_structure,
         )
@@ -42,7 +41,6 @@ class TestValidateScope:
             _validate_scope(
                 functional=functional,
                 init_orbitals="kohn-sham",
-                alpha_numsteps=1,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
             )
@@ -53,27 +51,26 @@ class TestValidateScope:
             _validate_scope(
                 functional="ki",
                 init_orbitals=init_orbitals,
-                alpha_numsteps=1,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
             )
 
-    def test_alpha_numsteps_greater_than_one_raises(self, ozone_structure):
-        with pytest.raises(NotImplementedError, match=r"Phase B.*alpha_numsteps=1"):
-            _validate_scope(
-                functional="ki",
-                init_orbitals="kohn-sham",
-                alpha_numsteps=3,
-                fix_spin_contamination=False,
-                structure=ozone_structure,
-            )
+    def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
+        # ``alpha_numsteps`` is range-checked by the koopmans2 Pydantic
+        # input model upstream; the scope guard no longer needs to look
+        # at it. B.3 added the ``While`` zone so any positive count works.
+        _validate_scope(
+            functional="ki",
+            init_orbitals="kohn-sham",
+            fix_spin_contamination=False,
+            structure=ozone_structure,
+        )
 
     def test_spin_contamination_raises(self, ozone_structure):
         with pytest.raises(NotImplementedError, match="fix_spin_contamination"):
             _validate_scope(
                 functional="ki",
                 init_orbitals="kohn-sham",
-                alpha_numsteps=1,
                 fix_spin_contamination=True,
                 structure=ozone_structure,
             )
@@ -83,7 +80,6 @@ class TestValidateScope:
             _validate_scope(
                 functional="ki",
                 init_orbitals="kohn-sham",
-                alpha_numsteps=1,
                 fix_spin_contamination=False,
                 structure=periodic_ozone_structure,
             )

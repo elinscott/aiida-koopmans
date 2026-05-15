@@ -632,7 +632,6 @@ def KoopmansDSCFTask(
     _validate_scope(
         functional=functional,
         init_orbitals=init_orbitals,
-        alpha_numsteps=alpha_numsteps,
         fix_spin_contamination=fix_spin_contamination,
         structure=structure,
     )
@@ -775,6 +774,7 @@ def KoopmansDSCFTask(
         functional=functional,
         init_orbitals=init_orbitals,
         spin_polarized=spin_polarized,
+        alpha_numsteps=alpha_numsteps,
         dft_remote=dft["remote_folder"],
         overrides=overrides,
         options=options,
@@ -1200,25 +1200,35 @@ def KIDscfRefinementTask(
     neldw: int | None = None,
     tot_magnetization: int | None = None,
     spin_polarized: bool = False,
+    alpha_numsteps: int = 1,
+    alpha_conv_thr: float = 1.0e-3,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> KoopmansDSCFOutputs:
-    """One iteration of alpha refinement: trial KI → per-orbital DSCF → final KI.
+    """Multi-iteration alpha refinement: trial KI → per-orbital DSCF → final KI.
 
-    The trial KI restarts from ``dft_remote`` (the DFT init's
-    ``remote_folder``) with a uniform ``initial_alpha`` guess and converges
-    the variational orbital basis. The final KI then restarts from the
-    *trial KI*'s ``remote_folder`` (legacy ``_koopmans_dscf.py:276+333``)
-    so it inherits those converged ``evc0N.dat`` variational orbitals; only
-    the alphas differ between the two passes. The per-orbital DSCF sub-runs
-    are independently parented on the trial KI (they read its lambdas to
-    compute the alpha update).
+    The first iteration's trial KI restarts from ``dft_remote`` (the DFT
+    init's ``remote_folder``) with the uniform ``initial_alpha`` guess and
+    receives the KS-as-variational overlay (for ``init_orbitals='kohn-sham'``).
+    Subsequent iterations restart from the previous iteration's trial KI
+    save and consume the previous iteration's gathered alphas — no overlay
+    needed because the converged ``evc0N.dat`` is already in place.
 
-    All per-orbital fan-out happens through ``Map`` zones over a
-    runtime-generated source dict (see ``build_filled_iter_source`` /
-    ``build_empty_iter_source``); no socket arithmetic is performed
-    inside this body.
+    The iteration count is bounded by ``alpha_numsteps`` and the loop also
+    short-circuits when ``max |dE - lambda| < alpha_conv_thr`` (legacy
+    threshold 1e-3 eV, ``_koopmans_dscf.py:633``).
+
+    The final KI restarts from the *last* iteration's trial KI
+    ``remote_folder`` (legacy ``_koopmans_dscf.py:276+333``) and uses the
+    final gathered alphas; only the alphas differ from the trial pass.
+
+    All per-orbital fan-out happens through ``Map`` zones inside
+    ``OneDSCFIteration`` (see ``build_filled_iter_source`` /
+    ``build_empty_iter_source``); no socket arithmetic in this body.
     """
+    from aiida_workgraph import While
+    from aiida_workgraph.manager import get_current_graph
+
     ki_overrides = overrides.get("ki") if overrides else None
     filled_overrides = overrides.get("dft_n_minus_1") if overrides else None
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None
@@ -1279,12 +1289,31 @@ def KIDscfRefinementTask(
         }
 
     # ------------------------------------------------------------------
-    # Single iteration. B.3 will wrap this call (or rather the underlying
-    # ``OneDSCFIteration`` graph task) inside a ``While`` zone whose
-    # condition reads ``iteration["max_error"] < 1e-3``, with a cap at
-    # ``alpha_numsteps``.
+    # Alpha-refinement loop. Each iteration runs ``OneDSCFIteration`` and
+    # feeds its outputs back into the next iteration via ``wg.ctx``. The
+    # loop terminates on either ``alpha_numsteps`` reached (the cap) or
+    # ``max_error < alpha_conv_thr`` (convergence — legacy threshold
+    # ``1e-3 eV`` from ``_koopmans_dscf.py:633``).
+    #
+    # First iteration's parent is ``dft_remote`` + KS overlay; subsequent
+    # iterations parent on the previous iteration's trial KI save (with
+    # no overlay, since the converged ``evc0N.dat`` is already in place).
+    # The body sets ``overlay`` to ``None`` after the first pass so any
+    # later iterations skip it.
     # ------------------------------------------------------------------
-    iteration = OneDSCFIteration(
+    # ------------------------------------------------------------------
+    # First iteration: unrolled outside the ``While`` zone so the KS
+    # overlay (a build-time Python dict) can be passed directly to
+    # ``OneDSCFIteration`` without round-tripping through ``wg.ctx``.
+    # ``ctx`` auto-promotes Python dicts to namespaces, which can't link
+    # to ``variational_orbital_overlays``' leaf socket; and
+    # ``_build_kcp_inputs`` reads the overlay as a build-time value, so
+    # it can't be a runtime socket anyway. Iterations 2..N go through
+    # the ``While`` zone with the overlay fixed to ``None`` (their parent
+    # is the previous trial KI's save, whose ``evc0N.dat`` already holds
+    # the converged variational basis).
+    # ------------------------------------------------------------------
+    iter_1 = OneDSCFIteration(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -1300,6 +1329,44 @@ def KIDscfRefinementTask(
         empty_overrides_dict=empty_overrides_dict,
         options=options,
     )
+
+    wg = get_current_graph()
+    # ``AlphaScreening`` is a namespace (``filled`` + ``empty``); ``wg.ctx``
+    # stores per-socket, so split the two halves into separate ctx slots
+    # and reassemble at the call site below.
+    wg.ctx.alphas_filled = iter_1["alphas"]["filled"]
+    wg.ctx.alphas_empty = iter_1["alphas"]["empty"]
+    wg.ctx.parent_folder = iter_1["trial_remote"]
+    wg.ctx.max_error = iter_1["max_error"]
+
+    # ``alpha_numsteps - 1`` more iterations max (iter 1 already ran).
+    with While(
+        wg.ctx.max_error >= alpha_conv_thr,
+        max_iterations=max(alpha_numsteps - 1, 0),
+    ):
+        iter_n = OneDSCFIteration(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            base=base,
+            nbnd=nbnd,
+            functional=functional,
+            spin_polarized=spin_polarized,
+            current_alphas={
+                "filled": wg.ctx.alphas_filled,
+                "empty": wg.ctx.alphas_empty,
+            },
+            parent_folder=wg.ctx.parent_folder,
+            variational_orbital_overlays=None,
+            ki_overrides=ki_overrides,
+            filled_overrides=filled_overrides,
+            empty_overrides_dict=empty_overrides_dict,
+            options=options,
+        )
+        wg.ctx.alphas_filled = iter_n["alphas"]["filled"]
+        wg.ctx.alphas_empty = iter_n["alphas"]["empty"]
+        wg.ctx.parent_folder = iter_n["trial_remote"]
+        wg.ctx.max_error = iter_n["max_error"]
 
     # ------------------------------------------------------------------
     # Final KI: refined alphas, restart from the *trial KI* save. The
@@ -1320,8 +1387,11 @@ def KIDscfRefinementTask(
         ki_parameters,
         pseudos,
         options=options,
-        alphas=iteration["alphas"],
-        parent_folder=iteration["trial_remote"],
+        alphas={
+            "filled": wg.ctx.alphas_filled,
+            "empty": wg.ctx.alphas_empty,
+        },
+        parent_folder=wg.ctx.parent_folder,
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)
@@ -1344,7 +1414,6 @@ def _validate_scope(
     *,
     functional: str,
     init_orbitals: str,
-    alpha_numsteps: int,
     fix_spin_contamination: bool,
     structure: orm.StructureData,
 ) -> None:
@@ -1360,11 +1429,6 @@ def _validate_scope(
             f"init_orbitals={init_orbitals!r} not yet ported. Only 'kohn-sham' is "
             "implemented. MLWF / projected-WF initialisation requires a separate "
             "wannierize + fold-to-supercell pipeline."
-        )
-    if alpha_numsteps != 1:
-        raise NotImplementedError(
-            f"alpha_numsteps={alpha_numsteps} not yet supported. "
-            "Multi-iteration alpha refinement is Phase B; only alpha_numsteps=1 supported."
         )
     if fix_spin_contamination:
         raise NotImplementedError(
