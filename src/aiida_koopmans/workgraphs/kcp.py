@@ -1330,43 +1330,71 @@ def KIDscfRefinementTask(
         options=options,
     )
 
-    wg = get_current_graph()
-    # ``AlphaScreening`` is a namespace (``filled`` + ``empty``); ``wg.ctx``
-    # stores per-socket, so split the two halves into separate ctx slots
-    # and reassemble at the call site below.
-    wg.ctx.alphas_filled = iter_1["alphas"]["filled"]
-    wg.ctx.alphas_empty = iter_1["alphas"]["empty"]
-    wg.ctx.parent_folder = iter_1["trial_remote"]
-    wg.ctx.max_error = iter_1["max_error"]
+    # ``last_*`` carry the outputs of the most recently run iteration —
+    # iter_1 if the ``While`` zone runs zero times (``alpha_numsteps == 1``),
+    # otherwise the last loop iteration's outputs read from ``wg.ctx``.
+    # Default to iter_1's direct outputs; the ``While`` branch below
+    # rebinds them to ``wg.ctx`` reads when the loop is actually
+    # constructed.
+    last_alphas_filled = iter_1["alphas"]["filled"]
+    last_alphas_empty = iter_1["alphas"]["empty"]
+    last_parent_folder = iter_1["trial_remote"]
 
-    # ``alpha_numsteps - 1`` more iterations max (iter 1 already ran).
-    with While(
-        wg.ctx.max_error >= alpha_conv_thr,
-        max_iterations=max(alpha_numsteps - 1, 0),
-    ):
-        iter_n = OneDSCFIteration(
-            code=code,
-            structure=structure,
-            pseudos=pseudos,
-            base=base,
-            nbnd=nbnd,
-            functional=functional,
-            spin_polarized=spin_polarized,
-            current_alphas={
-                "filled": wg.ctx.alphas_filled,
-                "empty": wg.ctx.alphas_empty,
-            },
-            parent_folder=wg.ctx.parent_folder,
-            variational_orbital_overlays=None,
-            ki_overrides=ki_overrides,
-            filled_overrides=filled_overrides,
-            empty_overrides_dict=empty_overrides_dict,
-            options=options,
-        )
-        wg.ctx.alphas_filled = iter_n["alphas"]["filled"]
-        wg.ctx.alphas_empty = iter_n["alphas"]["empty"]
-        wg.ctx.parent_folder = iter_n["trial_remote"]
-        wg.ctx.max_error = iter_n["max_error"]
+    # ``alpha_numsteps == 1`` is the tutorial_1 case: skip the ``While``
+    # zone entirely so we don't have to plumb ``wg.ctx`` reads with
+    # explicit ``<<`` waits — ``ctx`` writes don't create dataflow
+    # edges in aiida-workgraph, so an unguarded ``While`` condition
+    # (``op_ge``) and any downstream ``ctx`` reader would fire before
+    # iter_1 has run.
+    if alpha_numsteps > 1:
+        wg = get_current_graph()
+        # ``AlphaScreening`` is a namespace (``filled`` + ``empty``);
+        # ``wg.ctx`` stores per-socket, so split the two halves into
+        # separate ctx slots and reassemble at the call sites.
+        wg.ctx.alphas_filled = iter_1["alphas"]["filled"]
+        wg.ctx.alphas_empty = iter_1["alphas"]["empty"]
+        wg.ctx.parent_folder = iter_1["trial_remote"]
+        wg.ctx.max_error = iter_1["max_error"]
+
+        # ``<< iter_1["max_error"]`` adds iter_1's task to the condition
+        # socket's ``waiting_on`` set — without it the condition's
+        # ``op_ge`` fires before iter_1 has produced a value (``ctx``
+        # assignments don't create dataflow edges).
+        condition = wg.ctx.max_error >= alpha_conv_thr
+        condition << iter_1["max_error"]
+
+        # ``alpha_numsteps - 1`` more iterations max (iter_1 already ran).
+        with While(condition, max_iterations=alpha_numsteps - 1):
+            iter_n = OneDSCFIteration(
+                code=code,
+                structure=structure,
+                pseudos=pseudos,
+                base=base,
+                nbnd=nbnd,
+                functional=functional,
+                spin_polarized=spin_polarized,
+                current_alphas={
+                    "filled": wg.ctx.alphas_filled,
+                    "empty": wg.ctx.alphas_empty,
+                },
+                parent_folder=wg.ctx.parent_folder,
+                variational_orbital_overlays=None,
+                ki_overrides=ki_overrides,
+                filled_overrides=filled_overrides,
+                empty_overrides_dict=empty_overrides_dict,
+                options=options,
+            )
+            wg.ctx.alphas_filled = iter_n["alphas"]["filled"]
+            wg.ctx.alphas_empty = iter_n["alphas"]["empty"]
+            wg.ctx.parent_folder = iter_n["trial_remote"]
+            wg.ctx.max_error = iter_n["max_error"]
+
+        # After the loop, ki_final consumes the last ctx values; the
+        # ``ki_final`` task itself must wait on iter_1 (and on the
+        # while_zone if it ran) so ``ctx`` reads see resolved values.
+        last_alphas_filled = wg.ctx.alphas_filled
+        last_alphas_empty = wg.ctx.alphas_empty
+        last_parent_folder = wg.ctx.parent_folder
 
     # ------------------------------------------------------------------
     # Final KI: refined alphas, restart from the *trial KI* save. The
@@ -1388,10 +1416,10 @@ def KIDscfRefinementTask(
         pseudos,
         options=options,
         alphas={
-            "filled": wg.ctx.alphas_filled,
-            "empty": wg.ctx.alphas_empty,
+            "filled": last_alphas_filled,
+            "empty": last_alphas_empty,
         },
-        parent_folder=wg.ctx.parent_folder,
+        parent_folder=last_parent_folder,
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)
