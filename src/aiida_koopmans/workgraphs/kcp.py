@@ -807,7 +807,81 @@ def KoopmansDSCFWorkflow(
     # inherits the converged variational orbital basis — legacy
     # ``_koopmans_dscf.py:276+333`` parents the final KI on the trial
     # KI's ``n_electron_restart_dir`` (not the bare DFT save).
+    #
+    # Built via a ``KIFinal`` @task.graph wrapper rather than inline
+    # ``KcpBaseTask(...)`` because the parameter-builder arithmetic
+    # (``conv_thr = 1e-9 * nelec``) needs ``nelec`` as a plain int.
+    # Here at the workflow level ``nelec`` is a socket (output of
+    # ``count_electrons_task``); the @task.graph boundary unwraps it.
+    #
+    # ``alphas`` and ``parent_folder`` are wired explicitly from the
+    # ``screening`` outputs at the call site so the provenance graph
+    # shows that the final KI consumes the converged DSCF screening
+    # parameters (rather than hiding that dependency inside ``KIFinal``'s
+    # outputs).
     # ------------------------------------------------------------------
+    ki_final = KIFinal(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        functional=functional,
+        alphas=screening["alphas"],
+        parent_folder=screening["trial_remote"],
+        overrides=overrides.get("ki") if overrides else None,
+        options=options,
+    )
+    return KoopmansDSCFOutputs(
+        parameters=ki_final["parameters"],
+        eigenvalues=ki_final["eigenvalues"],
+        lambdas=ki_final["lambdas"],
+        bare_lambdas=ki_final["bare_lambdas"],
+        remote_folder=ki_final["remote_folder"],
+    )
+
+
+@task.graph
+def KIFinal(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    ecutwfc: float,
+    ecutrho: float,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    functional: str,
+    alphas: AlphaScreening,
+    parent_folder: orm.RemoteData,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
+    overrides: KcpNamelistOverrides | None = None,
+    options: dict[str, Any] | None = None,
+) -> KoopmansDSCFOutputs:
+    """Apply the converged screening parameters via a final KI run.
+
+    Thin wrapper around a single ``KcpCalculation``. Exists as its own
+    ``@task.graph`` so the parameter-builder arithmetic (``conv_thr =
+    1e-9 * nelec`` etc.) runs in a scope where ``nelec`` is a plain
+    int — at the outer ``KoopmansDSCFWorkflow`` level ``nelec`` is a
+    socket (output of ``count_electrons_task``) and the resulting
+    socket-valued parameters dict can't be serialised into the
+    ``KcpCalculation``'s attributes.
+
+    The wrapper's ``call_link_label`` and the inner CalcJob's
+    ``ki_final`` are both prettified to ``"KI Final"`` in the progress
+    table — the suppression rule in ``add_process_rows`` then collapses
+    the wrapper-and-child pair into a single row.
+    """
     base = _kcp_base_inputs(
         structure,
         nspin=nspin,
@@ -818,25 +892,20 @@ def KoopmansDSCFWorkflow(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    ki_overrides = overrides.get("ki") if overrides else None
     ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
-    if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
+    if overrides:
+        ki_parameters = recursive_merge(ki_parameters, overrides)
     final_inputs = _build_kcp_inputs(
         code,
         structure,
         ki_parameters,
         pseudos,
         options=options,
-        alphas={
-            "filled": screening["alphas"]["filled"],
-            "empty": screening["alphas"]["empty"],
-        },
-        parent_folder=screening["trial_remote"],
+        alphas=alphas,
+        parent_folder=parent_folder,
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)
-
     return KoopmansDSCFOutputs(
         parameters=final["output_parameters"],
         eigenvalues=final["output_eigenvalues"],

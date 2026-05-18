@@ -553,7 +553,10 @@ class TestKoopmansDSCFGraphBuild:
         assert _has("count_electrons_task"), labels
         assert _has("dft_init"), labels
         assert _has("ComputeScreeningParameters"), labels
-        assert _has("ki_final"), labels
+        # Final KI is wrapped in a thin ``KIFinal`` @task.graph so its
+        # parameter-builder arithmetic runs in a scope where ``nelec``
+        # is a plain int (not a socket from ``count_electrons_task``).
+        assert _has("KIFinal"), labels
 
         # Now build the inner refinement sub-graph independently to
         # verify the Map-zone / source-builder / gather wiring.
