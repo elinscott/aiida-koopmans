@@ -191,6 +191,26 @@ class ScreeningIterationOutputs(TypedDict):
     max_error: float
 
 
+class ScreeningParametersOutputs(TypedDict):
+    """Outputs of ``ComputeScreeningParameters``: the converged screening alpha's.
+
+    Semantically distinct from :class:`KoopmansDSCFOutputs` — the latter
+    is the *application* of the alpha's (the final KI calculation), the
+    former is what's needed to *run* that application.
+
+    * ``alphas`` — the per-orbital screening parameters from the last
+      alpha-refinement iteration, in the shape :class:`AlphaScreening`
+      that ``KcpCalculation`` accepts at its ``alphas`` input.
+    * ``trial_remote`` — the last iteration's trial-KI ``remote_folder``;
+      becomes the final KI's ``parent_folder`` (legacy convention,
+      ``_koopmans_dscf.py:276+333``), so the final KI inherits the
+      converged variational orbital basis.
+    """
+
+    alphas: AlphaScreening
+    trial_remote: orm.RemoteData
+
+
 # ----------------------------------------------------------------------
 # Raw CalcJob as a workgraph task
 # ----------------------------------------------------------------------
@@ -758,7 +778,7 @@ def KoopmansDSCFWorkflow(
             metadata={"call_link_label": "dft_init_nspin2"},
         )
 
-    return ComputeScreeningParameters(
+    screening = ComputeScreeningParameters(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -778,6 +798,51 @@ def KoopmansDSCFWorkflow(
         dft_remote=dft["remote_folder"],
         overrides=overrides,
         options=options,
+    )
+
+    # ------------------------------------------------------------------
+    # Final KI: applies the converged screening parameters to produce
+    # the Koopmans-corrected spectrum. Restarts from the *last
+    # iteration's* trial KI save (``screening["trial_remote"]``) so it
+    # inherits the converged variational orbital basis — legacy
+    # ``_koopmans_dscf.py:276+333`` parents the final KI on the trial
+    # KI's ``n_electron_restart_dir`` (not the bare DFT save).
+    # ------------------------------------------------------------------
+    base = _kcp_base_inputs(
+        structure,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
+    ki_overrides = overrides.get("ki") if overrides else None
+    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
+    if ki_overrides:
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
+    final_inputs = _build_kcp_inputs(
+        code,
+        structure,
+        ki_parameters,
+        pseudos,
+        options=options,
+        alphas={
+            "filled": screening["alphas"]["filled"],
+            "empty": screening["alphas"]["empty"],
+        },
+        parent_folder=screening["trial_remote"],
+        name="ki_final",
+    )
+    final = KcpBaseTask(**final_inputs)
+
+    return KoopmansDSCFOutputs(
+        parameters=final["output_parameters"],
+        eigenvalues=final["output_eigenvalues"],
+        lambdas=final["output_lambdas"],
+        bare_lambdas=final["output_bare_lambdas"],
+        remote_folder=final["remote_folder"],
     )
 
 
@@ -1204,8 +1269,15 @@ def ComputeScreeningParameters(
     alpha_conv_thr: float = 1.0e-3,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
-) -> KoopmansDSCFOutputs:
-    """Multi-iteration alpha refinement: trial KI → per-orbital DSCF → final KI.
+) -> ScreeningParametersOutputs:
+    """Multi-iteration alpha refinement: trial KI → per-orbital DSCF.
+
+    Computes the per-orbital screening parameters by running one or
+    more DSCF iterations. The *final* KI calculation (which applies
+    those parameters to produce a single converged Koopmans-corrected
+    spectrum) lives in :func:`KoopmansDSCFWorkflow`, one level up —
+    that's the application of the screening parameters, not part of
+    computing them.
 
     The first iteration's trial KI restarts from ``dft_remote`` (the DFT
     init's ``remote_folder``) with the uniform ``initial_alpha`` guess and
@@ -1339,13 +1411,6 @@ def ComputeScreeningParameters(
     last_alphas_filled = iter_1["alphas"]["filled"]
     last_alphas_empty = iter_1["alphas"]["empty"]
     last_parent_folder = iter_1["trial_remote"]
-    # Collect the iterations that ``ki_final`` (and any other downstream
-    # ``wg.ctx`` reader) must wait on — ctx writes don't create dataflow
-    # edges, so the engine would otherwise schedule them in parallel
-    # with iter_1 / iter_n. With ``alpha_numsteps == 1`` the ``last_*``
-    # bindings above are direct socket reads, so the implicit edges are
-    # already there and this list stays empty.
-    ctx_waits: list = []
 
     # ``alpha_numsteps == 1`` is the tutorial_1 case: skip the ``While``
     # zone entirely so we don't have to plumb ``wg.ctx`` reads with
@@ -1396,58 +1461,27 @@ def ComputeScreeningParameters(
             wg.ctx.parent_folder = iter_n["trial_remote"]
             wg.ctx.max_error = iter_n["max_error"]
 
-        # After the loop, ki_final consumes the last ctx values via
-        # ``wg.ctx`` reads — which carry no dataflow edge. Force the
-        # final KI to wait on both iter_1 (always runs) and iter_n
-        # (the While body's task, possibly executed multiple times).
-        # ``iter_n`` is still in scope here even after the ``with``
-        # block exits — Python closure rule.
-        last_alphas_filled = wg.ctx.alphas_filled
-        last_alphas_empty = wg.ctx.alphas_empty
-        last_parent_folder = wg.ctx.parent_folder
-        ctx_waits = [iter_1["max_error"], iter_n["max_error"]]
+        # After the loop, rebind ``last_*`` to ``iter_n`` directly
+        # (still in scope after the ``with`` block via Python closure
+        # rule). Reading from ``iter_n`` rather than ``wg.ctx`` gives
+        # the @task.graph's outputs a *real* dataflow edge back to the
+        # task that produced them — so the downstream final KI in
+        # ``KoopmansDSCFWorkflow`` naturally waits on the screening loop
+        # without any explicit ``<<`` plumbing.
+        last_alphas_filled = iter_n["alphas"]["filled"]
+        last_alphas_empty = iter_n["alphas"]["empty"]
+        last_parent_folder = iter_n["trial_remote"]
 
-    # ------------------------------------------------------------------
-    # Final KI: refined alphas, restart from the *trial KI* save. The
-    # trial pass already converged the variational orbital basis (its
-    # ``evc0N.dat`` files are the inner-loop minimum), and the final KI
-    # picks up from there — legacy ``_koopmans_dscf.py:276+333``
-    # parents the final KI on the trial KI's ``n_electron_restart_dir``
-    # (its ``_60.save``), not on the bare DFT save. Restarting from DFT
-    # would discard the trial's variational rotations and silently
-    # rotate the canonical KI eigenvalues / lambda matrices.
-    # ------------------------------------------------------------------
-    ki_parameters = _build_ki_parameters(base, nbnd=nbnd, functional=functional)
-    if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
-    final_inputs = _build_kcp_inputs(
-        code,
-        structure,
-        ki_parameters,
-        pseudos,
-        options=options,
-        alphas={
+    # The final KI (application of the converged screening parameters)
+    # lives in ``KoopmansDSCFWorkflow``; here we just return the screening
+    # parameters and the parent save the final KI should restart from.
+    return {
+        "alphas": {
             "filled": last_alphas_filled,
             "empty": last_alphas_empty,
         },
-        parent_folder=last_parent_folder,
-        name="ki_final",
-    )
-    final = KcpBaseTask(**final_inputs)
-    # Force ``ki_final`` to wait on the producers of every ``wg.ctx``
-    # slot it consumes. Empty when the ``While`` zone wasn't built
-    # (``alpha_numsteps == 1``) — there the ``last_*`` bindings are
-    # direct socket reads and the implicit dataflow edges suffice.
-    for wait_source in ctx_waits:
-        final << wait_source
-
-    return KoopmansDSCFOutputs(
-        parameters=final["output_parameters"],
-        eigenvalues=final["output_eigenvalues"],
-        lambdas=final["output_lambdas"],
-        bare_lambdas=final["output_bare_lambdas"],
-        remote_folder=final["remote_folder"],
-    )
+        "trial_remote": last_parent_folder,
+    }
 
 
 # ----------------------------------------------------------------------

@@ -545,11 +545,15 @@ class TestKoopmansDSCFGraphBuild:
         # Outer graph hosts the runtime input-resolution tasks
         # (replacing the inline plain-Python ``resolve_pseudo_family`` /
         # ``count_electrons`` calls that broke with ``TaggedValue`` proxies)
-        # plus the DFT init + the inner refinement sub-graph node.
+        # plus the DFT init + the screening-parameters sub-graph + the
+        # final KI (which applies the converged screening parameters
+        # and therefore lives at the workflow level, not inside the
+        # screening sub-graph).
         assert _has("resolve_pseudo_family_task"), labels
         assert _has("count_electrons_task"), labels
         assert _has("dft_init"), labels
         assert _has("ComputeScreeningParameters"), labels
+        assert _has("ki_final"), labels
 
         # Now build the inner refinement sub-graph independently to
         # verify the Map-zone / source-builder / gather wiring.
@@ -596,11 +600,11 @@ class TestKoopmansDSCFGraphBuild:
 
         assert _sub_has("generate_alphas"), sub_labels
         # Per-orbital fan-out lives inside the ``ScreeningIteration`` sub-graph
-        # extracted by B.2; the refinement task itself only exposes
-        # ``ScreeningIteration`` + the final KI at its top level.
+        # extracted by B.2. ``ki_final`` no longer lives here — it's at the
+        # workflow level (it's the application of the screening parameters,
+        # not part of computing them).
         assert _sub_has("ScreeningIteration"), sub_labels
-        # Final KI runs at the refinement level.
-        assert _sub_has("ki_final"), sub_labels
+        assert not _sub_has("ki_final"), sub_labels
 
         # Build ``ScreeningIteration`` directly to verify its internals —
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
