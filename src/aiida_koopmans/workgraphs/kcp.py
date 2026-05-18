@@ -1339,6 +1339,13 @@ def KIDscfRefinementTask(
     last_alphas_filled = iter_1["alphas"]["filled"]
     last_alphas_empty = iter_1["alphas"]["empty"]
     last_parent_folder = iter_1["trial_remote"]
+    # Collect the iterations that ``ki_final`` (and any other downstream
+    # ``wg.ctx`` reader) must wait on — ctx writes don't create dataflow
+    # edges, so the engine would otherwise schedule them in parallel
+    # with iter_1 / iter_n. With ``alpha_numsteps == 1`` the ``last_*``
+    # bindings above are direct socket reads, so the implicit edges are
+    # already there and this list stays empty.
+    ctx_waits: list = []
 
     # ``alpha_numsteps == 1`` is the tutorial_1 case: skip the ``While``
     # zone entirely so we don't have to plumb ``wg.ctx`` reads with
@@ -1389,12 +1396,16 @@ def KIDscfRefinementTask(
             wg.ctx.parent_folder = iter_n["trial_remote"]
             wg.ctx.max_error = iter_n["max_error"]
 
-        # After the loop, ki_final consumes the last ctx values; the
-        # ``ki_final`` task itself must wait on iter_1 (and on the
-        # while_zone if it ran) so ``ctx`` reads see resolved values.
+        # After the loop, ki_final consumes the last ctx values via
+        # ``wg.ctx`` reads — which carry no dataflow edge. Force the
+        # final KI to wait on both iter_1 (always runs) and iter_n
+        # (the While body's task, possibly executed multiple times).
+        # ``iter_n`` is still in scope here even after the ``with``
+        # block exits — Python closure rule.
         last_alphas_filled = wg.ctx.alphas_filled
         last_alphas_empty = wg.ctx.alphas_empty
         last_parent_folder = wg.ctx.parent_folder
+        ctx_waits = [iter_1["max_error"], iter_n["max_error"]]
 
     # ------------------------------------------------------------------
     # Final KI: refined alphas, restart from the *trial KI* save. The
@@ -1423,6 +1434,12 @@ def KIDscfRefinementTask(
         name="ki_final",
     )
     final = KcpBaseTask(**final_inputs)
+    # Force ``ki_final`` to wait on the producers of every ``wg.ctx``
+    # slot it consumes. Empty when the ``While`` zone wasn't built
+    # (``alpha_numsteps == 1``) — there the ``last_*`` bindings are
+    # direct socket reads and the implicit dataflow edges suffice.
+    for wait_source in ctx_waits:
+        final << wait_source
 
     return KoopmansDSCFOutputs(
         parameters=final["output_parameters"],
