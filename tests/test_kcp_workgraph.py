@@ -653,6 +653,109 @@ class TestKoopmansDSCFGraphBuild:
         # Convergence indicator the ``While`` zone will read in B.3.
         assert _iter_has("max_alpha_error"), iter_labels
 
+    def test_multi_iteration_builds_while_zone(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``alpha_numsteps > 1`` wraps iterations 2..N in a ``While`` zone.
+
+        For ``alpha_numsteps = 1`` the dispatcher unrolls a single
+        ``ScreeningIteration`` outside the loop; for >1 it adds an
+        ``aiida-workgraph`` ``While`` zone whose body reads ctx slots
+        populated by iter 1 (with explicit ``<<`` waits) and runs
+        ``alpha_numsteps - 1`` more iterations. This test pins that
+        the ``while_zone`` task is actually present in the built
+        graph — a regression here would silently fall back to
+        single-iteration behaviour.
+        """
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import ComputeScreeningParameters
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = ComputeScreeningParameters.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            functional="ki",
+            init_orbitals="kohn-sham",
+            alpha_numsteps=2,
+            dft_remote=dummy_remote,
+        )
+        labels = self._all_link_labels(sub_wg)
+
+        # Exactly one ``while_zone`` should be present (the outer
+        # ``alpha_numsteps == 1`` branch builds none).
+        n_while = sum(1 for s in labels if "while_zone" in s.lower())
+        assert n_while == 1, (n_while, labels)
+        # Both the unrolled iter_1 and the in-loop iter_n should exist
+        # as separate ``ScreeningIteration`` task instances.
+        assert sum(1 for s in labels if s == "ScreeningIteration") >= 1, labels
+        # The ``op_ge`` (the ``>=`` comparison task synthesised for the
+        # While condition) confirms ``condition << iter_1["max_error"]``
+        # wired up.
+        assert any("op_ge" in s for s in labels), labels
+
+    def test_single_iteration_omits_while_zone(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``alpha_numsteps == 1`` skips the ``While`` zone entirely.
+
+        The dispatcher gates ``While`` construction on
+        ``alpha_numsteps > 1`` so the ``op_ge`` condition doesn't fire
+        before iter_1 has produced ``max_error`` (``wg.ctx`` writes
+        don't create dataflow edges in aiida-workgraph).
+        """
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import ComputeScreeningParameters
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = ComputeScreeningParameters.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            functional="ki",
+            init_orbitals="kohn-sham",
+            alpha_numsteps=1,
+            dft_remote=dummy_remote,
+        )
+        labels = self._all_link_labels(sub_wg)
+        assert not any("while_zone" in s.lower() for s in labels), labels
+
     def test_closed_shell_init_chain_has_four_init_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
