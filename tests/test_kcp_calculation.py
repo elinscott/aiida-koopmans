@@ -193,7 +193,7 @@ def test_kcp_tutorial_1_ozone_ki(
 ):
     """Pin the kcp.x input file rendered for the KI-correction step of tutorial_1 (ozone).
 
-    Builds the exact ``KcpCalculation`` inputs that ``KoopmansDSCFTask`` would
+    Builds the exact ``KcpCalculation`` inputs that ``KoopmansDSCFWorkflow`` would
     hand to the KI step for the ozone / KI-DSCF tutorial — ecutwfc=65,
     ecutrho=260, nbnd=10, nspin=2, ``do_orbdep=True``, restart from ndw=50 to
     ndw=60 — and snapshot the rendered ``aiida.cpi``.
@@ -205,47 +205,65 @@ def test_kcp_tutorial_1_ozone_ki(
     from aiida import orm
     from aiida.common import LinkType, datastructures
 
-    from aiida_koopmans.workgraphs.kcp import _build_ki_parameters
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_ki_parameters
 
     # Code (dummy bash executable — the test never submits anything).
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
 
-    # Need a RemoteData to stand in for the DFT-step parent_folder.
+    # Need a RemoteData to stand in for the DFT-step parent_folder. Its
+    # ``out/aiida_60.save/`` tree must exist on disk because
+    # ``_build_remote_symlink_list`` walks it eagerly to emit per-file
+    # symlinks (replacing the old directory-level symlink that didn't
+    # need the source to exist at build time).
     parent_calc = orm.CalcJobNode(computer=fixture_localhost, process_type="")
     parent_calc.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
     parent_calc.store()
+    parent_root = tmp_path_factory.mktemp("kcp-parent")
+    parent_save = parent_root / "out" / "aiida_60.save" / "K00001"
+    parent_save.mkdir(parents=True, exist_ok=True)
+    # A handful of files so the walker has something to symlink.
+    for name in (
+        "charge-density.dat",
+        "data-file-schema.xml",
+        "K00001/evc1.dat",
+        "K00001/evc2.dat",
+    ):
+        path = parent_root / "out" / "aiida_60.save" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
     remote = orm.RemoteData(
         computer=fixture_localhost,
-        remote_path=tmp_path_factory.mktemp("kcp-parent").as_posix(),
+        remote_path=parent_root.as_posix(),
     )
     remote.base.links.add_incoming(
         parent_calc, link_type=LinkType.CREATE, link_label="remote_folder"
     )
     remote.store()
 
-    ki_params = _build_ki_parameters(
+    base = KcpBaseInputs(
         ecutwfc=65.0,
         ecutrho=260.0,
-        nbnd=10,
         nspin=2,
         nelec=18,
+        ntyp=len(ozone_structure.kinds),
+        mt_correction=not any(ozone_structure.pbc),
         nelup=9,
         neldw=9,
         tot_magnetization=None,
-        mt_correction=not any(ozone_structure.pbc),
-        functional="ki",
     )
+    ki_params = _build_ki_parameters(base, nbnd=10, functional="ki")
 
-    # Matches what KoopmansDSCFTask builds for ``initial_alpha=0.6`` on ozone:
+    # Matches what KoopmansDSCFWorkflow builds for ``initial_alpha=0.6`` on ozone:
     # 9 filled + 1 empty per spin channel (nbnd=10, nspin=2, nelup=neldw=9).
     from aiida_koopmans.types import SpinChannel
 
-    alphas = orm.Dict(
-        dict={
-            "filled": {SpinChannel.UP: [0.6] * 9, SpinChannel.DOWN: [0.6] * 9},
-            "empty": {SpinChannel.UP: [0.6], SpinChannel.DOWN: [0.6]},
-        }
-    )
+    # ``alphas`` is an input_namespace with ``filled`` / ``empty`` Dict
+    # sub-inputs (each keyed by ``SpinChannel`` value string). See
+    # ``KcpCalculation.spec()``.
+    alphas = {
+        "filled": orm.Dict(dict={SpinChannel.UP: [0.6] * 9, SpinChannel.DOWN: [0.6] * 9}),
+        "empty": orm.Dict(dict={SpinChannel.UP: [0.6], SpinChannel.DOWN: [0.6]}),
+    }
 
     inputs = {
         "code": code,

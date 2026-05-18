@@ -39,6 +39,7 @@
 &IONS
   ion_dynamics = 'none'
   ion_nstepe = 5
+  ion_radius(1) =   1.0000000000d+00
 /
 &EE
   which_compensation = 'tcc'

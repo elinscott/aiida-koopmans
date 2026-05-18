@@ -8,7 +8,7 @@ KI + DSCF + kohn-sham init, molecular / non-periodic, alpha_numsteps=1) is
 implemented. All other branches of the legacy ``KoopmansDSCFWorkflow`` raise
 ``NotImplementedError`` at build time with a clear message.
 
-The MVP ``KoopmansDSCFTask`` executes **two** kcp.x calls:
+The MVP ``KoopmansDSCFWorkflow`` executes **two** kcp.x calls:
 
 1. DFT initialization (``do_orbdep=False``, nspin=2, from scratch)
 2. KI final (``do_orbdep=True``, ``which_orbdep='nki'``, restart from step 1,
@@ -19,7 +19,7 @@ including spin-symmetrization (7), a trial KI pass (1), a Delta SCF loop to
 compute the alphas (12), and a final KI (1). Porting the Delta SCF alpha loop
 and spin-symmetrization is deferred to later phases — the code below is
 structured so those extensions can slot in as additional ``@task.graph``
-helpers without reshaping the public ``KoopmansDSCFTask`` signature.
+helpers without reshaping the public ``KoopmansDSCFWorkflow`` signature.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ class KcpNamelistOverrides(TypedDict, total=False):
 
 
 class KoopmansDSCFOverrides(TypedDict, total=False):
-    """Per-step overrides for ``KoopmansDSCFTask``.
+    """Per-step overrides for ``KoopmansDSCFWorkflow``.
 
     ``ki`` is reused for both the trial KI and the final KI.
     The four DSCF sub-step keys override individual orbital sub-runs:
@@ -167,7 +167,7 @@ class _PerOrbitalAlphaOutputs(TypedDict):
     errors: AlphaScreening
 
 
-class OneDSCFIterationOutputs(TypedDict):
+class ScreeningIterationOutputs(TypedDict):
     """Outputs of one alpha-refinement iteration (trial KI + per-orbital DSCF).
 
     Used to thread the next iteration's inputs through the ``While`` loop
@@ -321,7 +321,7 @@ def max_alpha_error(filled_errors: dict, empty_errors: dict):
     """Convergence indicator for one DSCF iteration.
 
     Returns ``max |dE - lambda|`` across every per-orbital error in both
-    branches. The alpha-refinement loop in ``KIDscfRefinementTask`` stops
+    branches. The alpha-refinement loop in ``ComputeScreeningParameters`` stops
     when this falls below ``1e-3 eV`` (legacy threshold from
     ``_koopmans_dscf.py:633``). ``filled_errors`` / ``empty_errors`` are
     the per-spin dicts produced by :func:`assemble_alpha_screening` (each
@@ -395,7 +395,7 @@ def build_filled_iter_source(
     """Materialise the per-orbital iterator for the *filled* Map zone.
 
     Each emitted item is a ``dict`` carrying the per-orbital parameters
-    the consumer (``OrbitalDeltaSCFFilledTask``) needs: ``fixed_band``
+    the consumer (``FilledOrbitalScreening``) needs: ``fixed_band``
     (1-indexed kcp.x), ``spin_channel`` (kept as the :class:`SpinChannel`
     enum), ``band_index`` (0-indexed numpy index into the stacked lambda
     matrices), and ``alpha_guess`` (per-orbital alpha already in use for
@@ -517,7 +517,7 @@ def _get_value(data: dict, key: str):
 
 
 @task.graph
-def DFTCPTask(
+def DFTInitialization(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -598,7 +598,7 @@ def DFTCPTask(
 
 
 @task.graph
-def KoopmansDSCFTask(
+def KoopmansDSCFWorkflow(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str,
@@ -660,7 +660,7 @@ def KoopmansDSCFTask(
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run; legacy treats the up/down channels as
         # independent and does not pre-symmetrise.
-        dft = DFTCPTask(
+        dft = DFTInitialization(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -689,8 +689,8 @@ def KoopmansDSCFTask(
         #    step-2 save layout, producing a spin-symmetric save.
         # 4. nspin=2 restart — final init starting from the symmetrised
         #    save; this is the ``remote_folder`` consumed by the
-        #    downstream KIDscfRefinementTask.
-        dft_nspin1 = DFTCPTask(
+        #    downstream ComputeScreeningParameters.
+        dft_nspin1 = DFTInitialization(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -709,7 +709,7 @@ def KoopmansDSCFTask(
             metadata={"call_link_label": "dft_init_nspin1"},
         )
 
-        dft_nspin2_dummy = DFTCPTask(
+        dft_nspin2_dummy = DFTInitialization(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -738,7 +738,7 @@ def KoopmansDSCFTask(
             metadata={"call_link_label": "convert_spin1_to_spin2"},
         )
 
-        dft = DFTCPTask(
+        dft = DFTInitialization(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -758,7 +758,7 @@ def KoopmansDSCFTask(
             metadata={"call_link_label": "dft_init_nspin2"},
         )
 
-    return KIDscfRefinementTask(
+    return ComputeScreeningParameters(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -782,7 +782,7 @@ def KoopmansDSCFTask(
 
 
 @task.graph
-def OrbitalDeltaSCFFilledTask(
+def FilledOrbitalScreening(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -870,7 +870,7 @@ def OrbitalDeltaSCFFilledTask(
 
 
 @task.graph
-def OrbitalDeltaSCFEmptyTask(
+def EmptyOrbitalScreening(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -1023,14 +1023,14 @@ def OrbitalDeltaSCFEmptyTask(
 
 # ----------------------------------------------------------------------
 # One DSCF iteration body: trial KI → per-orbital DSCF → assemble alphas.
-# Extracted so the multi-iteration loop in ``KIDscfRefinementTask`` can
+# Extracted so the multi-iteration loop in ``ComputeScreeningParameters`` can
 # call it once per pass (a ``While`` zone gates re-entry in the procedural
 # refinement builder).
 # ----------------------------------------------------------------------
 
 
 @task.graph
-def OneDSCFIteration(
+def ScreeningIteration(
     *,
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -1046,7 +1046,7 @@ def OneDSCFIteration(
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
     options: dict[str, Any] | None = None,
-) -> OneDSCFIterationOutputs:
+) -> ScreeningIterationOutputs:
     """One iteration of the alpha-refinement loop.
 
     Runs a trial KI starting from ``current_alphas`` + ``parent_folder``,
@@ -1095,7 +1095,7 @@ def OneDSCFIteration(
     )
     with Map(filled_source) as filled_zone:
         filled_item = filled_zone.item.value
-        filled_out = OrbitalDeltaSCFFilledTask(
+        filled_out = FilledOrbitalScreening(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -1129,7 +1129,7 @@ def OneDSCFIteration(
     )
     with Map(empty_source) as empty_zone:
         empty_item = empty_zone.item.value
-        empty_out = OrbitalDeltaSCFEmptyTask(
+        empty_out = EmptyOrbitalScreening(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -1182,7 +1182,7 @@ def OneDSCFIteration(
 
 
 @task.graph
-def KIDscfRefinementTask(
+def ComputeScreeningParameters(
     *,
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -1223,7 +1223,7 @@ def KIDscfRefinementTask(
     final gathered alphas; only the alphas differ from the trial pass.
 
     All per-orbital fan-out happens through ``Map`` zones inside
-    ``OneDSCFIteration`` (see ``build_filled_iter_source`` /
+    ``ScreeningIteration`` (see ``build_filled_iter_source`` /
     ``build_empty_iter_source``); no socket arithmetic in this body.
     """
     from aiida_workgraph import While
@@ -1289,7 +1289,7 @@ def KIDscfRefinementTask(
         }
 
     # ------------------------------------------------------------------
-    # Alpha-refinement loop. Each iteration runs ``OneDSCFIteration`` and
+    # Alpha-refinement loop. Each iteration runs ``ScreeningIteration`` and
     # feeds its outputs back into the next iteration via ``wg.ctx``. The
     # loop terminates on either ``alpha_numsteps`` reached (the cap) or
     # ``max_error < alpha_conv_thr`` (convergence — legacy threshold
@@ -1304,7 +1304,7 @@ def KIDscfRefinementTask(
     # ------------------------------------------------------------------
     # First iteration: unrolled outside the ``While`` zone so the KS
     # overlay (a build-time Python dict) can be passed directly to
-    # ``OneDSCFIteration`` without round-tripping through ``wg.ctx``.
+    # ``ScreeningIteration`` without round-tripping through ``wg.ctx``.
     # ``ctx`` auto-promotes Python dicts to namespaces, which can't link
     # to ``variational_orbital_overlays``' leaf socket; and
     # ``_build_kcp_inputs`` reads the overlay as a build-time value, so
@@ -1313,7 +1313,7 @@ def KIDscfRefinementTask(
     # is the previous trial KI's save, whose ``evc0N.dat`` already holds
     # the converged variational basis).
     # ------------------------------------------------------------------
-    iter_1 = OneDSCFIteration(
+    iter_1 = ScreeningIteration(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -1372,7 +1372,7 @@ def KIDscfRefinementTask(
 
         # ``alpha_numsteps - 1`` more iterations max (iter_1 already ran).
         with While(condition, max_iterations=alpha_numsteps - 1):
-            iter_n = OneDSCFIteration(
+            iter_n = ScreeningIteration(
                 code=code,
                 structure=structure,
                 pseudos=pseudos,

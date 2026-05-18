@@ -464,12 +464,12 @@ class TestAssembleAlphaScreening:
 
 
 # ----------------------------------------------------------------------
-# KoopmansDSCFTask graph build — structural inspection only.
+# KoopmansDSCFWorkflow graph build — structural inspection only.
 # ----------------------------------------------------------------------
 
 
 class TestKoopmansDSCFGraphBuild:
-    """Inspect the task graph wired by ``KoopmansDSCFTask.build`` for ozone.
+    """Inspect the task graph wired by ``KoopmansDSCFWorkflow.build`` for ozone.
 
     Doesn't run anything — verifies fan-out counts so a wiring regression
     surfaces without needing a real kcp.x install.
@@ -492,9 +492,9 @@ class TestKoopmansDSCFGraphBuild:
         return family.label
 
     def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, spin_polarized=False):
-        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFTask
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
-        return KoopmansDSCFTask.build(
+        return KoopmansDSCFWorkflow.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudo_family=ozone_pseudo_family,
@@ -549,7 +549,7 @@ class TestKoopmansDSCFGraphBuild:
         assert _has("resolve_pseudo_family_task"), labels
         assert _has("count_electrons_task"), labels
         assert _has("dft_init"), labels
-        assert _has("KIDscfRefinementTask"), labels
+        assert _has("ComputeScreeningParameters"), labels
 
         # Now build the inner refinement sub-graph independently to
         # verify the Map-zone / source-builder / gather wiring.
@@ -560,7 +560,7 @@ class TestKoopmansDSCFGraphBuild:
         # ``dft_remote`` are placeholders the topology check ignores.
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
-        from aiida_koopmans.workgraphs.kcp import KIDscfRefinementTask, OneDSCFIteration
+        from aiida_koopmans.workgraphs.kcp import ComputeScreeningParameters, ScreeningIteration
 
         family = (
             orm.QueryBuilder()
@@ -572,7 +572,7 @@ class TestKoopmansDSCFGraphBuild:
         # WorkGraph is inspected; the value is never dereferenced.
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
-        sub_wg = KIDscfRefinementTask.build(
+        sub_wg = ComputeScreeningParameters.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
@@ -595,20 +595,20 @@ class TestKoopmansDSCFGraphBuild:
             return any(substr in label for label in sub_labels)
 
         assert _sub_has("generate_alphas"), sub_labels
-        # Per-orbital fan-out lives inside the ``OneDSCFIteration`` sub-graph
+        # Per-orbital fan-out lives inside the ``ScreeningIteration`` sub-graph
         # extracted by B.2; the refinement task itself only exposes
-        # ``OneDSCFIteration`` + the final KI at its top level.
-        assert _sub_has("OneDSCFIteration"), sub_labels
+        # ``ScreeningIteration`` + the final KI at its top level.
+        assert _sub_has("ScreeningIteration"), sub_labels
         # Final KI runs at the refinement level.
         assert _sub_has("ki_final"), sub_labels
 
-        # Build ``OneDSCFIteration`` directly to verify its internals —
+        # Build ``ScreeningIteration`` directly to verify its internals —
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
         # build time, so the walker can't reach Map zones / source builders
-        # through ``KIDscfRefinementTask`` alone.
+        # through ``ComputeScreeningParameters`` alone.
         from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
 
-        iter_wg = OneDSCFIteration.build(
+        iter_wg = ScreeningIteration.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
