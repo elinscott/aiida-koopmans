@@ -207,6 +207,92 @@ class TestBuildKiParameters:
 
 
 # ----------------------------------------------------------------------
+# Legacy spin-channel swap helpers
+# ----------------------------------------------------------------------
+
+
+class TestSwapKcpFrame:
+    """Pure-function checks on ``_swap_kcp_frame``.
+
+    Mirrors the legacy ``_swap_spin_channels`` from
+    ``koopmans/src/koopmans/calculators/_koopmans_cp.py:159-205``: swap
+    nelup<->neldw, negate tot_magnetization (if set), and shift
+    fixed_band by the per-spin band block size depending on which
+    block it currently points into.
+    """
+
+    def test_swaps_electron_counts_and_shifts_fixed_band_from_up_block(self):
+        from aiida_koopmans.workgraphs.kcp import _swap_kcp_frame
+
+        # Post-addition violating case: nelup=9, neldw=10. fixed_band=4
+        # is in the UP block (<= nbup=15) so it shifts up by nbdw=15
+        # to land in the (post-swap) DOWN block.
+        base = replace(_OZONE_BASE, nelup=9, neldw=10, tot_magnetization=None)
+        swapped, new_fb = _swap_kcp_frame(base, fixed_band=4, nbup=15, nbdw=15)
+        assert (swapped.nelup, swapped.neldw) == (10, 9)
+        assert swapped.tot_magnetization is None
+        assert new_fb == 4 + 15
+
+    def test_shifts_fixed_band_from_down_block(self):
+        from aiida_koopmans.workgraphs.kcp import _swap_kcp_frame
+
+        # fixed_band=20 is in the DOWN block (> nbup=15) so it shifts
+        # down by nbup=15 to land in the (post-swap) UP block.
+        base = replace(_OZONE_BASE, nelup=9, neldw=10, tot_magnetization=None)
+        swapped, new_fb = _swap_kcp_frame(base, fixed_band=20, nbup=15, nbdw=15)
+        assert new_fb == 20 - 15
+        # electron counts still swap regardless of which block fixed_band came from
+        assert (swapped.nelup, swapped.neldw) == (10, 9)
+
+    def test_ferromagnetic_negates_tot_magnetization(self):
+        from aiida_koopmans.workgraphs.kcp import _swap_kcp_frame
+
+        base = replace(_OZONE_BASE, nelup=8, neldw=12, tot_magnetization=4)
+        swapped, _ = _swap_kcp_frame(base, fixed_band=5, nbup=12, nbdw=12)
+        assert (swapped.nelup, swapped.neldw) == (12, 8)
+        assert swapped.tot_magnetization == -4
+
+    def test_none_tot_magnetization_is_preserved(self):
+        from aiida_koopmans.workgraphs.kcp import _swap_kcp_frame
+
+        # No AttributeError / TypeError when tot_magnetization is None.
+        base = replace(_OZONE_BASE, nelup=9, neldw=10, tot_magnetization=None)
+        swapped, _ = _swap_kcp_frame(base, fixed_band=4, nbup=15, nbdw=15)
+        assert swapped.tot_magnetization is None
+
+    def test_does_not_mutate_input_base(self):
+        from aiida_koopmans.workgraphs.kcp import _swap_kcp_frame
+
+        base = replace(_OZONE_BASE, nelup=9, neldw=10, tot_magnetization=2)
+        _swap_kcp_frame(base, fixed_band=4, nbup=15, nbdw=15)
+        # KcpBaseInputs is frozen but check the original values survived.
+        assert (base.nelup, base.neldw, base.tot_magnetization) == (9, 10, 2)
+
+
+class TestSpinSwapSaveOverlay:
+    """``_spin_swap_save_overlay`` produces the swap-mapping for save files."""
+
+    def test_nspin_two_returns_six_bidirectional_pairs(self):
+        from aiida_koopmans.workgraphs.kcp import _spin_swap_save_overlay
+
+        overlay = _spin_swap_save_overlay(nspin=2)
+        # Six entries, all bidirectional.
+        assert overlay == {
+            "evc01": "evc02",
+            "evc02": "evc01",
+            "evc_empty1": "evc_empty2",
+            "evc_empty2": "evc_empty1",
+            "evc0_empty1": "evc0_empty2",
+            "evc0_empty2": "evc0_empty1",
+        }
+
+    def test_nspin_one_returns_empty(self):
+        from aiida_koopmans.workgraphs.kcp import _spin_swap_save_overlay
+
+        assert _spin_swap_save_overlay(nspin=1) == {}
+
+
+# ----------------------------------------------------------------------
 # Utility helpers (aiida_koopmans/utils.py)
 # ----------------------------------------------------------------------
 
@@ -763,6 +849,71 @@ class TestKoopmansDSCFGraphBuild:
         labels = self._all_link_labels(sub_wg)
         assert not any("while_zone" in s.lower() for s in labels), labels
 
+    def test_spin_polarized_screening_emits_both_channels(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``spin_polarized=True`` doubles the per-orbital fan-out.
+
+        Builds ``ScreeningIteration`` directly so the per-spin Map-zone
+        keys are visible. With ``spin_polarized=True`` the source
+        builders emit ``up_orb_N`` *and* ``down_orb_N`` keys (rather
+        than a single representative ``orb_N``); each orbital becomes
+        its own per-spin sub-graph, so we expect to see both prefixes
+        in the link labels.
+        """
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import ScreeningIteration, _kcp_base_inputs
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        iter_wg = ScreeningIteration.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            base=_kcp_base_inputs(
+                ozone_structure,
+                nspin=2,
+                nelec=18,
+                nelup=9,
+                neldw=9,
+                tot_magnetization=None,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+            ),
+            nbnd=10,
+            functional="ki",
+            spin_polarized=True,
+            current_alphas={
+                "filled": {"up": [0.6] * 9, "down": [0.6] * 9},
+                "empty": {"up": [0.6], "down": [0.6]},
+            },
+            parent_folder=dummy_remote,
+            variational_orbital_overlays=None,
+            ki_overrides=None,
+            filled_overrides=None,
+            empty_overrides_dict=None,
+            options=None,
+        )
+        labels = self._all_link_labels(iter_wg)
+        # The per-orbital ``up_orb_<n>`` / ``down_orb_<n>`` keys are
+        # expanded at *runtime* by the Map zone (the source builder's
+        # output dict drives the fan-out), so at build time we can only
+        # confirm the build succeeded and the Map zones are wired in.
+        # Runtime parity (up == down alphas for closed-shell ozone)
+        # lives in the end-to-end manual smoke test, not here.
+        assert any("map_zone" in s.lower() for s in labels), labels
+        assert any("ki_trial" in s for s in labels), labels
+        assert any("build_filled_iter_source" in s for s in labels), labels
+        assert any("build_empty_iter_source" in s for s in labels), labels
+
     def test_closed_shell_init_chain_has_four_init_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
@@ -787,6 +938,87 @@ class TestKoopmansDSCFGraphBuild:
             "dft_init_nspin2",
         ):
             assert any(expected in label for label in labels), (expected, labels)
+
+    @staticmethod
+    def _run_build_empty_iter_source(*, nelup, neldw, tot_magnetization=None, nbnd=10):
+        """Call ``build_empty_iter_source`` and return its per-orbital dict.
+
+        Bypasses the ``@task`` wrapper (via ``_callable``) for direct
+        Python-level unit testing on spin-polarised ozone-shaped input.
+        """
+        from aiida_koopmans.workgraphs.kcp import (
+            KcpBaseInputs,
+            build_empty_iter_source,
+        )
+
+        base = KcpBaseInputs(
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nspin=2,
+            nelec=nelup + neldw,
+            ntyp=1,
+            mt_correction=True,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=tot_magnetization,
+        )
+        n_filled = (nelup + neldw) // 2 * 2  # 18 for closed-shell-effective ozone
+        n_empty_per_channel = nbnd - n_filled // 2
+        # ``_callable`` is the raw Python function under the ``@task`` decorator
+        # (the decorator returns a ``TaskHandle`` at runtime; type checkers
+        # see only the underlying ``FunctionType``).
+        return build_empty_iter_source._callable(  # type: ignore[attr-defined]
+            base=base,
+            nbnd=nbnd,
+            empty_alphas={"up": [0.6] * n_empty_per_channel, "down": [0.6] * n_empty_per_channel},
+            spin_polarized=True,
+        )
+
+    def test_empty_iter_source_swaps_when_post_addition_violates_constraint(self):
+        """DOWN-channel empty + closed-shell-effective counts: swap is needed.
+
+        nelup=9, neldw=9 + DOWN channel -> post-addition (9, 10) violates
+        ``nupdwn(1) >= nupdwn(2)``: kcp.x would refuse. The down orbital's
+        per-orbital dict must carry the spin-swap overlay payload.
+        """
+        source = self._run_build_empty_iter_source(nelup=9, neldw=9)
+        down_orb = source["down_orb_10"]
+        assert down_orb["overlay"] == {
+            "evc01": "evc02",
+            "evc02": "evc01",
+            "evc_empty1": "evc_empty2",
+            "evc_empty2": "evc_empty1",
+            "evc0_empty1": "evc0_empty2",
+            "evc0_empty2": "evc0_empty1",
+        }
+        # In the swapped frame nelup>=neldw (the constraint kcp.x checks).
+        sys = down_orb["dummy_parameters"]["SYSTEM"]
+        assert sys["nelup"] >= sys["neldw"]
+
+    def test_empty_iter_source_no_swap_when_up_channel(self):
+        """UP-channel empty + closed-shell-effective counts: no swap.
+
+        nelup=9, neldw=9 + UP channel -> post-addition (10, 9) satisfies
+        ``nupdwn(1) >= nupdwn(2)`` -- overlay should be empty.
+        """
+        source = self._run_build_empty_iter_source(nelup=9, neldw=9)
+        up_orb = source["up_orb_10"]
+        assert up_orb["overlay"] == {}
+
+    def test_empty_iter_source_no_swap_when_ferromag_post_counts_ok(self):
+        """Ferromagnetic case: nelup=12, neldw=8 + DOWN -> (12, 9), no swap.
+
+        The post-addition counts still satisfy the kcp.x constraint, so
+        the swap branch should not fire even though the empty orbital is
+        in the DOWN channel.
+        """
+        # nelup=12, neldw=8 means nbnd must be at least 12; bump it.
+        source = self._run_build_empty_iter_source(nelup=12, neldw=8, tot_magnetization=4, nbnd=14)
+        # Look for any DOWN orbital and check its overlay is empty.
+        down_keys = [k for k in source if k.startswith("down_orb_")]
+        assert down_keys, sorted(source)
+        for k in down_keys:
+            assert source[k]["overlay"] == {}, (k, source[k]["overlay"])
 
     def test_spin_polarized_init_is_single_step(
         self, ozone_structure, kcp_code, ozone_pseudo_family
