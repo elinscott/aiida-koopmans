@@ -1062,14 +1062,27 @@ def EmptyOrbitalScreening(
     n_plus_1_overrides = overrides.get("dft_n_plus_1") if overrides else None  # type: ignore[union-attr]
 
     # Two ``base`` payloads: the N+1 charge state for dummy / n+1 (one
-    # extra electron, conventionally placed on the up channel) and the
-    # original N-charge for pz_print.
+    # extra electron) and the original N-charge for pz_print.
+    #
+    # For ``spin_polarized=True``, the extra electron goes into the
+    # spin channel of the empty orbital we're screening — an empty
+    # orbital in the DOWN manifold means ``neldw += 1``; up / closed-
+    # shell means ``nelup += 1``. Matches legacy
+    # ``_koopmans_dscf.py:1075-1080`` (``add_to_spin_up = band.spin == 0``).
+    # For closed-shell systems (``SpinChannel.NONE``, ``spin.index == 0``)
+    # this reduces to the previous up-only behaviour.
+    if spin_channel is SpinChannel.DOWN:
+        nelup_np1 = nelup
+        neldw_np1 = (neldw + 1) if neldw is not None else None
+    else:
+        nelup_np1 = (nelup + 1) if nelup is not None else None
+        neldw_np1 = neldw
     base_n_plus_1 = _kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec + 1,
-        nelup=(nelup + 1) if nelup is not None else None,
-        neldw=neldw,
+        nelup=nelup_np1,
+        neldw=neldw_np1,
         tot_magnetization=tot_magnetization,
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
