@@ -449,6 +449,20 @@ class TestComputeAlphaFromDscf:
 class TestAssembleAlphaScreening:
     """Pin the gather step: per-spin lists indexed by band order."""
 
+    @staticmethod
+    def _trivial_orbitals(*, nelup: int, neldw: int, nbnd: int, spin_polarized: bool):
+        """Build a no-grouping ``list[VariationalOrbital]``: every orbital is its own rep."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            enumerate_variational_orbitals,
+        )
+
+        return enumerate_variational_orbitals(
+            nelup=nelup,
+            neldw=neldw,
+            nbnd=nbnd,
+            spin_polarized=spin_polarized,
+        )
+
     def _run(self, **kwargs):
         from aiida_workgraph import WorkGraph
 
@@ -479,6 +493,7 @@ class TestAssembleAlphaScreening:
         empty manifolds — empty orbs in this fixture start at ``orb_4``.
         """
         alphas, errors = self._run(
+            orbitals=self._trivial_orbitals(nelup=3, neldw=3, nbnd=5, spin_polarized=False),
             filled_alphas={
                 "orb_1": 0.6,
                 "orb_2": 0.7,
@@ -500,6 +515,7 @@ class TestAssembleAlphaScreening:
     def test_spin_polarized_two_channels(self, aiida_profile):
         """Spin-polarised: both UP and DOWN channels packed independently."""
         alphas, errors = self._run(
+            orbitals=self._trivial_orbitals(nelup=2, neldw=2, nbnd=3, spin_polarized=True),
             filled_alphas={
                 "up_orb_1": 0.6,
                 "up_orb_2": 0.7,
@@ -523,9 +539,10 @@ class TestAssembleAlphaScreening:
         assert errors["empty"]["down"] == [0.06]
 
     def test_orb_indexed_ordering(self, aiida_profile):
-        # Insertion order intentionally shuffled — band index from key suffix
-        # must drive the output list order.
+        # Insertion order intentionally shuffled — band index from
+        # ``VariationalOrbitalId.index`` must drive the output list order.
         alphas, _ = self._run(
+            orbitals=self._trivial_orbitals(nelup=3, neldw=3, nbnd=3, spin_polarized=True),
             filled_alphas={
                 "up_orb_3": 0.8,
                 "up_orb_1": 0.6,
@@ -962,17 +979,24 @@ class TestKoopmansDSCFGraphBuild:
             neldw=neldw,
             tot_magnetization=tot_magnetization,
         )
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            enumerate_variational_orbitals,
+        )
+
+        orbitals = enumerate_variational_orbitals(
+            nelup=nelup, neldw=neldw, nbnd=nbnd, spin_polarized=True
+        )
         # ``_callable`` is the raw Python function under the ``@task`` decorator
         # (the decorator returns a ``TaskHandle`` at runtime; type checkers
         # see only the underlying ``FunctionType``).
         return build_empty_iter_source._callable(  # type: ignore[attr-defined]
             base=base,
             nbnd=nbnd,
+            orbitals=orbitals,
             empty_alphas={
                 "up": [0.6] * max(0, nbnd - nelup),
                 "down": [0.6] * max(0, nbnd - neldw),
             },
-            spin_polarized=True,
         )
 
     def test_empty_iter_source_swaps_when_post_addition_violates_constraint(self):
@@ -1086,12 +1110,16 @@ class TestKoopmansDSCFGraphBuild:
         which choice was made.
         """
         from aiida_koopmans.workgraphs.kcp import build_filled_iter_source
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            enumerate_variational_orbitals,
+        )
 
+        orbitals = enumerate_variational_orbitals(nelup=7, neldw=5, nbnd=8, spin_polarized=True)
         source = build_filled_iter_source._callable(  # type: ignore[attr-defined]
             nelup=7,
             neldw=5,
+            orbitals=orbitals,
             filled_alphas={"up": [0.6] * 7, "down": [0.6] * 5},
-            spin_polarized=True,
         )
         up_keys = sorted(k for k in source if k.startswith("up_orb_"))
         down_keys = sorted(k for k in source if k.startswith("down_orb_"))

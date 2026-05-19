@@ -34,12 +34,22 @@ from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import Map, dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.types import AlphaScreening, SpinChannel
+from aiida_koopmans.types import (
+    AlphaScreening,
+    SpinChannel,
+    VariationalOrbital,
+    map_key_for,
+)
 from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
+from aiida_koopmans.workgraphs.variational_orbitals import (
+    assign_orbital_groups,
+    expand_alphas_by_group,
+    extract_self_hartree_from_kcp,
+)
 
 UpfData = DataFactory("pseudo.upf")
 
@@ -270,24 +280,25 @@ def compute_alpha_from_dscf(
 @task
 def assemble_alpha_screening(
     *,
-    filled_alphas: Annotated[dict | None, dynamic(float)] = None,
-    filled_errors: Annotated[dict | None, dynamic(float)] = None,
-    empty_alphas: Annotated[dict | None, dynamic(float)] = None,
-    empty_errors: Annotated[dict | None, dynamic(float)] = None,
+    orbitals: list[VariationalOrbital],
+    filled_alphas: dict | None = None,
+    filled_errors: dict | None = None,
+    empty_alphas: dict | None = None,
+    empty_errors: dict | None = None,
 ) -> _PerOrbitalAlphaOutputs:
     """Pack per-orbital scatter outputs into the :class:`AlphaScreening` shape.
 
-    Inputs are flat dicts produced by the scatter helpers, keyed
-    ``f"{spin_tag}_orb_{i}"`` where ``spin_tag`` is the
-    :class:`SpinChannel` value (``"none"`` for closed-shell, or ``"up"``
-    / ``"down"`` for the spin-polarised case) and ``i`` is the 0-indexed
-    variational orbital within the per-channel manifold.
+    Inputs are flat dicts keyed by :func:`map_key_for` strings — the
+    same labels the Map zone gather emits — paired with a
+    ``list[VariationalOrbital]`` from :func:`assign_orbital_groups`
+    that carries each orbital's structured fields (``spin`` /
+    ``index`` / ``filled``). The packer looks up each input value by
+    ``map_key_for`` and groups by spin using the structured fields
+    directly — no string parsing.
 
-    The packer is purely structural — it pulls the channel set and the
-    per-channel count from the input dict alone, with no knowledge of
-    ``nspin`` or ``spin_polarized``. The closed-shell up→down mirror
-    (when kcp.x needs both spin slots in ``file_alpharef``) lives in
-    :meth:`KcpCalculation._write_alpha_files`, not here.
+    The closed-shell up→down mirror (when kcp.x needs both spin slots
+    in ``file_alpharef``) lives in :meth:`KcpCalculation._write_alpha_files`,
+    not here.
 
     Returns a ``{"alphas": AlphaScreening, "errors": AlphaScreening}``
     pair: the ``alphas`` field plugs straight into the kcp.x ``alphas``
@@ -300,34 +311,29 @@ def assemble_alpha_screening(
     empty_alphas = empty_alphas or {}
     empty_errors = empty_errors or {}
 
-    def _pack(flat: dict) -> dict[SpinChannel, list[float]]:
-        if not flat:
-            return {}
-        # Discover the channel set from the input keys alone. Two shapes:
-        # * ``"orb_<n>"`` — closed-shell representative channel (NONE).
-        # * ``"<up|down>_orb_<n>"`` — spin-polarised.
-        # Indices are 1-indexed and may be non-contiguous (filled and
-        # empty manifolds share the same numbering — see
-        # :func:`build_filled_iter_source` / :func:`build_empty_iter_source`).
-        # Sort by index so output lists carry orbitals in band order.
+    def _pack(flat: dict, *, filled: bool) -> dict[SpinChannel, list[float]]:
         by_spin: dict[SpinChannel, list[tuple[int, float]]] = {}
-        for key, value in flat.items():
-            tag, _, idx_str = key.rpartition("_")
-            if not tag.endswith("orb"):
-                raise ValueError(f"Unexpected key {key!r}")
-            spin_tag = tag[: -len("orb")].rstrip("_")
-            spin = SpinChannel(spin_tag) if spin_tag else SpinChannel.NONE
-            by_spin.setdefault(spin, []).append((int(idx_str), float(value)))
+        for o in orbitals:
+            if o["filled"] != filled:
+                continue
+            key = map_key_for(o)
+            if key not in flat:
+                continue
+            # ``spin`` round-trips through AiiDA storage as plain ``str``;
+            # normalise back to the enum so per-spin dicts are keyed
+            # uniformly.
+            spin = SpinChannel(o["spin"])
+            by_spin.setdefault(spin, []).append((o["index"], float(flat[key])))
         out: dict[SpinChannel, list[float]] = {}
         for spin, items in by_spin.items():
             items.sort(key=lambda t: t[0])
             out[spin] = [v for _, v in items]
         return out
 
-    filled_packed = _pack(filled_alphas)
-    empty_packed = _pack(empty_alphas)
-    filled_err_packed = _pack(filled_errors)
-    empty_err_packed = _pack(empty_errors)
+    filled_packed = _pack(filled_alphas, filled=True)
+    empty_packed = _pack(empty_alphas, filled=False)
+    filled_err_packed = _pack(filled_errors, filled=True)
+    empty_err_packed = _pack(empty_errors, filled=False)
 
     alphas: AlphaScreening = {"filled": filled_packed, "empty": empty_packed}
     errors: AlphaScreening = {"filled": filled_err_packed, "empty": empty_err_packed}
@@ -407,73 +413,63 @@ def generate_alphas(
 def build_filled_iter_source(
     nelup: int | None,
     neldw: int | None,
+    orbitals: list[VariationalOrbital],
     filled_alphas: dict,
-    spin_polarized: bool = False,
 ) -> Annotated[dict, dynamic(dict)]:
     """Materialise the per-orbital iterator for the *filled* Map zone.
 
-    Each emitted item is a ``dict`` carrying the per-orbital parameters
-    the consumer (``FilledOrbitalScreening``) needs: ``fixed_band``
-    (1-indexed kcp.x), ``spin_channel`` (kept as the :class:`SpinChannel`
-    enum), ``band_index`` (0-indexed numpy index into the stacked lambda
-    matrices), and ``alpha_guess`` (per-orbital alpha already in use for
-    that band on the current refinement iteration).
+    Emits one entry per **representative** filled orbital
+    (``o["representative"] is True``); non-representative orbitals
+    inherit their group's alpha after the Map gather, via
+    :func:`expand_alphas_by_group`. When grouping is disabled
+    (:func:`assign_orbital_groups` short-circuit on ``tol is None``)
+    every orbital is its own representative and the Map fan-out is
+    unchanged.
 
-    ``filled_alphas`` is keyed by spin tag ("none" / "up" / "down" —
-    matching :class:`SpinChannel`'s string values, which is what survives
-    the AiiDA serializer round-trip) and maps to per-channel alpha lists.
+    Each emitted item is a ``dict`` carrying the per-orbital
+    parameters the consumer (``FilledOrbitalScreening``) needs:
+    ``orbital`` (the :class:`VariationalOrbital` TypedDict, carrying
+    spin / per-spin index / filled / group_id / representative),
+    ``fixed_band`` (1-indexed kcp.x band position), ``band_index``
+    (0-indexed numpy index into the trial-KI lambda matrix), and
+    ``alpha_guess`` (per-orbital alpha in use this refinement
+    iteration). ``spin_channel`` is forwarded as a convenience
+    (= ``orbital["spin"]``); kept for the existing
+    ``_get_value(... "spin_channel")`` consumer at the call site.
+
+    ``filled_alphas`` is keyed by spin tag (matching
+    :class:`SpinChannel`'s string values — what survives AiiDA's
+    serializer round-trip) and maps to per-channel alpha lists.
     On iteration 1 the caller passes :func:`generate_alphas`'s uniform
     output; on subsequent iterations the previous iteration's gathered
-    alphas (an :class:`AlphaScreening`'s ``filled`` half).
+    alphas.
 
-    Spin handling:
-
-    * ``spin_polarized=False`` (closed shell, the common case): emit a
-      single representative channel keyed by :attr:`SpinChannel.NONE`.
-      Legacy convention is to solve the up-spin orbitals only and copy
-      their alphas onto the down-spin twins (see
-      ``koopmans/bands.py:298-301`` + ``to_solve`` at line 318-320). The
-      mirror onto kcp.x's per-spin ``file_alpharef`` happens later in
-      :meth:`KcpCalculation._write_alpha_files`.
-    * ``spin_polarized=True``: emit both UP and DOWN channels.
-
-    kcp.x always runs with ``nspin=2`` in our KI flow (the dispatcher
-    hardcodes this); the closed-shell halving is a function of
-    ``spin_polarized``, not ``nspin``.
+    kcp.x always runs with ``nspin=2`` in our KI flow; closed-shell
+    (``spin_polarized=False``) is signalled inside the ``orbitals``
+    list by emitting a single :attr:`SpinChannel.NONE` channel.
     """
     if nelup is None or neldw is None:
         raise ValueError("nelup and neldw are required (kcp.x runs at nspin=2)")
-    spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     out: dict[str, dict] = {}
-    for spin in spin_list:
-        # Per-spin filled count: for genuinely open-shell systems
-        # ``nelup != neldw``. ``SpinChannel.NONE`` (the closed-shell
-        # representative emitted when ``spin_polarized=False``) reuses
-        # ``nelup`` (== ``neldw`` == ``nelec/2`` by closed-shell symmetry).
-        n_filled_this_spin = nelup if spin is not SpinChannel.DOWN else neldw
+    for o in orbitals:
+        if not o["representative"] or not o["filled"]:
+            continue
+        spin = SpinChannel(o["spin"])
+        index = o["index"]
         alphas_for_spin = filled_alphas[spin.value]
-        for i in range(n_filled_this_spin):
-            # Orbital indices are **1-indexed** and shared with the empty
-            # manifold (see :func:`build_empty_iter_source`) so they line up
-            # with kcp.x's own band numbering. Closed-shell: bare
-            # ``orb_<n>`` key (no spin tag — only one representative
-            # channel). Spin-polarised: ``<up|down>_orb_<n>``. ``_pack`` in
-            # :func:`assemble_alpha_screening` parses both shapes back to
-            # :class:`SpinChannel`.
-            orb_index = i + 1
-            tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
-            # kcp.x ``fixed_band`` indexing for spin-polarised systems
-            # interleaves the filled blocks before the empty ones —
-            # DOWN-channel bands are shifted by ``nelup`` (not by the
-            # symmetric halved count, which is wrong when nelup != neldw).
-            # See legacy ``_koopmans_dscf.py:759-760``.
-            fixed_band = orb_index + nelup if spin is SpinChannel.DOWN else orb_index
-            out[f"{tag_prefix}orb_{orb_index}"] = {
-                "fixed_band": fixed_band,
-                "spin_channel": spin,
-                "band_index": i,
-                "alpha_guess": alphas_for_spin[i],
-            }
+        # kcp.x ``fixed_band`` indexing for spin-polarised systems
+        # interleaves the filled blocks before the empty ones —
+        # DOWN-channel bands are shifted by ``nelup`` (not by the
+        # symmetric halved count, which is wrong when nelup != neldw).
+        # See legacy ``_koopmans_dscf.py:759-760``.
+        fixed_band = index + nelup if spin is SpinChannel.DOWN else index
+        out[map_key_for(o)] = {
+            "orbital": o,
+            "fixed_band": fixed_band,
+            "spin_channel": spin,
+            "band_index": index - 1,
+            "alpha_guess": alphas_for_spin[index - 1],
+        }
     return out
 
 
@@ -481,8 +477,8 @@ def build_filled_iter_source(
 def build_empty_iter_source(
     base: KcpBaseInputs,
     nbnd: int,
+    orbitals: list[VariationalOrbital],
     empty_alphas: dict,
-    spin_polarized: bool = False,
 ) -> Annotated[dict, dynamic(dict)]:
     """Materialise the per-orbital iterator for the *empty* Map zone.
 
@@ -519,121 +515,112 @@ def build_empty_iter_source(
     """
     if base.nelup is None or base.neldw is None:
         raise ValueError("nelup and neldw are required (kcp.x runs at nspin=2)")
-    spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     overlay_swap = _spin_swap_save_overlay(nspin=2)
     n_empty_up = max(0, nbnd - base.nelup)
+    max_n_filled = max(base.nelup, base.neldw)
     out: dict[str, dict] = {}
-    for spin in spin_list:
-        # Per-spin filled / empty counts: for genuinely open-shell
-        # systems ``nelup != neldw`` and the per-spin empty manifolds
-        # can have different sizes (e.g. O2 with ``nelup=7, neldw=5,
-        # nbnd=8`` has 1 UP empty and 3 DOWN empties). The previous
-        # symmetric ``n_empty // 2`` halving worked only because
-        # closed-shell-in-spin-polarised ozone happened to have equal
-        # per-spin empty counts.
+    for o in orbitals:
+        if not o["representative"] or o["filled"]:
+            continue
+        spin = SpinChannel(o["spin"])
+        orb_index = o["index"]
         n_filled_this_spin = base.neldw if spin is SpinChannel.DOWN else base.nelup
-        n_empty_this_spin = max(0, nbnd - n_filled_this_spin)
+
+        # ``fixed_band`` is **clamped to the per-spin LUMO position**
+        # (legacy ``_koopmans_dscf.py:758`` —
+        # ``min(band.index, n_filled+1)``). kcp.x interprets
+        # ``fixed_band`` as the slot where the constrained orbital
+        # lands after re-ordering, not as the band's pre-screening
+        # index — and that slot is always the LUMO of the relevant
+        # spin manifold. The actual orbital we're constraining is
+        # selected by ``index_empty_to_save`` (which pz_print writes
+        # into ``evcfixed_empty.dat``). Passing the un-clamped per-spin
+        # position here causes kcp.x's internal ordering to drift on
+        # the second CG iter — manifests as ``corrupted double-linked
+        # list`` heap corruption on higher empties of an open-shell
+        # DOWN channel (e.g. O2's 2nd DOWN π* empty).
+        fixed_band_per_spin = n_filled_this_spin + 1
+        fixed_band = (
+            fixed_band_per_spin + base.nelup if spin is SpinChannel.DOWN else fixed_band_per_spin
+        )
+
+        # ``index_empty_to_save`` is a *global* 1-indexed counter
+        # across the full empty manifold (UP empties first, then
+        # DOWN). Legacy ``_koopmans_dscf.py:697-699`` shifts DOWN's
+        # per-spin index by ``n_empty_up``. ``i`` here is the 0-indexed
+        # position within this spin's empty manifold (= ``orb_index
+        # - n_filled_this_spin - 1``).
+        i = orb_index - n_filled_this_spin - 1
+        if spin is SpinChannel.DOWN:
+            index_empty_to_save = i + 1 + n_empty_up
+        else:
+            index_empty_to_save = i + 1
+
+        # Spin-aware extra electron: legacy puts it in the channel
+        # of the orbital being screened. ``SpinChannel.NONE``
+        # (closed-shell input) defaults to UP.
+        if spin is SpinChannel.DOWN:
+            nelup_np1 = base.nelup
+            neldw_np1 = base.neldw + 1
+        else:
+            nelup_np1 = base.nelup + 1
+            neldw_np1 = base.neldw
+
+        # kcp.x requires nupdwn(1) >= nupdwn(2). Swap when violated.
+        # Ferromag with room (nelup=12, neldw=8 + DOWN: post-add
+        # (12, 9)) satisfies the constraint without a swap.
+        base_n_plus_1 = replace(base, nelec=base.nelec + 1, nelup=nelup_np1, neldw=neldw_np1)
+        base_n = base
+        fb = fixed_band
+        overlay: dict[str, str] = {}
+        if nelup_np1 is not None and neldw_np1 is not None and nelup_np1 < neldw_np1:
+            base_n_plus_1, fb = _swap_kcp_frame(base_n_plus_1, fixed_band=fb, nbup=nbnd, nbdw=nbnd)
+            base_n, _ = _swap_kcp_frame(base_n, fixed_band=fixed_band, nbup=nbnd, nbdw=nbnd)
+            overlay = overlay_swap
+
+        dummy_p = _build_dft_n_plus_1_dummy_parameters(
+            base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
+        )
+        pz_p = _build_pz_print_parameters(
+            base_n, nbnd=nbnd, fixed_band=fb, index_empty_to_save=index_empty_to_save
+        )
+        n_plus_1_p = _build_dft_n_plus_1_parameters(
+            base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
+        )
+
+        # ``band_index`` indexes into the trial-KI lambda matrix
+        # (shape ``(nspin, n, n)``). The parser
+        # (``parsers/kcp.py:_parse_lambdas``) block-diag stacks the
+        # filled and empty Hamiltonians; kcp.x sizes both blocks to
+        # the per-spin **max** (``max(nelup, neldw)`` for filled),
+        # zero-padding the spin with fewer real bands. So the i-th
+        # empty of *this* spin lives at row/col ``max_n_filled + i``,
+        # not at the per-spin physical position. Closed-shell symmetric
+        # systems happened to agree (``max == per-spin``) — bites
+        # only open-shell.
+        band_index = max_n_filled + i
         alphas_for_spin = empty_alphas[spin.value]
-        for i in range(n_empty_this_spin):
-            # ``orb_index`` is the per-spin 1-indexed band position
-            # (continuing past the per-spin filled manifold). Used in
-            # the Map-zone key for human-readable provenance.
-            orb_index = n_filled_this_spin + i + 1
-            tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
-
-            # ``fixed_band`` is **clamped to the per-spin LUMO
-            # position** (legacy ``_koopmans_dscf.py:758`` —
-            # ``min(band.index, n_filled+1)``). kcp.x interprets
-            # ``fixed_band`` as the slot where the constrained orbital
-            # lands after re-ordering, not as the band's pre-screening
-            # index — and that slot is always the LUMO of the relevant
-            # spin manifold. The actual orbital we're constraining is
-            # selected by ``index_empty_to_save`` (which pz_print
-            # writes into ``evcfixed_empty.dat``). Passing the
-            # un-clamped per-spin position here causes kcp.x's internal
-            # ordering to drift on the second CG iter — manifests as
-            # ``corrupted double-linked list`` heap corruption on
-            # higher empties of an open-shell DOWN channel (e.g. O2's
-            # 2nd DOWN π* empty).
-            fixed_band_per_spin = n_filled_this_spin + 1
-            fixed_band = (
-                fixed_band_per_spin + base.nelup
-                if spin is SpinChannel.DOWN
-                else fixed_band_per_spin
-            )
-
-            # ``index_empty_to_save`` is a *global* 1-indexed counter
-            # across the full empty manifold (UP empties first, then
-            # DOWN). Legacy ``_koopmans_dscf.py:697-699`` shifts DOWN's
-            # per-spin index by ``n_empty_up``.
-            if spin is SpinChannel.DOWN:
-                index_empty_to_save = i + 1 + n_empty_up
-            else:
-                index_empty_to_save = i + 1
-
-            # Spin-aware extra electron: legacy puts it in the channel
-            # of the orbital being screened. ``SpinChannel.NONE``
-            # (closed-shell input) defaults to UP.
-            if spin is SpinChannel.DOWN:
-                nelup_np1 = base.nelup
-                neldw_np1 = base.neldw + 1
-            else:
-                nelup_np1 = base.nelup + 1
-                neldw_np1 = base.neldw
-
-            # kcp.x requires nupdwn(1) >= nupdwn(2). Swap when violated.
-            # Ferromag with room (nelup=12, neldw=8 + DOWN: post-add
-            # (12, 9)) satisfies the constraint without a swap.
-            base_n_plus_1 = replace(base, nelec=base.nelec + 1, nelup=nelup_np1, neldw=neldw_np1)
-            base_n = base
-            fb = fixed_band
-            overlay: dict[str, str] = {}
-            if nelup_np1 is not None and neldw_np1 is not None and nelup_np1 < neldw_np1:
-                base_n_plus_1, fb = _swap_kcp_frame(
-                    base_n_plus_1, fixed_band=fb, nbup=nbnd, nbdw=nbnd
-                )
-                base_n, _ = _swap_kcp_frame(base_n, fixed_band=fixed_band, nbup=nbnd, nbdw=nbnd)
-                overlay = overlay_swap
-
-            dummy_p = _build_dft_n_plus_1_dummy_parameters(
-                base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
-            )
-            pz_p = _build_pz_print_parameters(
-                base_n, nbnd=nbnd, fixed_band=fb, index_empty_to_save=index_empty_to_save
-            )
-            n_plus_1_p = _build_dft_n_plus_1_parameters(
-                base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
-            )
-
-            # ``band_index`` indexes into the trial-KI lambda matrix
-            # (shape ``(nspin, n, n)``). The parser
-            # (``parsers/kcp.py:_parse_lambdas``) block-diag stacks the
-            # filled and empty Hamiltonians; kcp.x sizes both blocks to
-            # the per-spin **max** (``max(nelup, neldw)`` for filled,
-            # ``max(n_emp_up, n_emp_dw)`` for empty), zero-padding the
-            # spin with fewer real bands. So the i-th empty of *this*
-            # spin lives at row/col ``max(nelup, neldw) + i``, not at
-            # the per-spin physical position. Closed-shell symmetric
-            # systems happened to agree (``max == per-spin``) — bites
-            # only open-shell.
-            band_index = max(base.nelup, base.neldw) + i
-            out[f"{tag_prefix}orb_{orb_index}"] = {
-                # Physical labels (used by ``compute_alpha_from_dscf``
-                # to index trial-KI lambda matrices computed pre-swap).
-                "spin_channel": spin,
-                "band_index": band_index,
-                "alpha_guess": alphas_for_spin[i],
-                # Fully-baked kcp.x parameter dicts in the (possibly
-                # swapped) kcp frame; ``EmptyOrbitalScreening`` merges
-                # in per-step overrides on top.
-                "dummy_parameters": dummy_p,
-                "pz_parameters": pz_p,
-                "n_plus_1_parameters": n_plus_1_p,
-                # Save-file overlay for ``pz_print`` (whose parent is
-                # the trial KI's physical-frame save). Empty when no
-                # swap is needed.
-                "overlay": overlay,
-            }
+        out[map_key_for(o)] = {
+            # Structured identity travels with the per-orbital data so
+            # downstream consumers don't have to re-derive spin /
+            # index / filled from the Map key string.
+            "orbital": o,
+            # Physical labels (used by ``compute_alpha_from_dscf`` to
+            # index trial-KI lambda matrices computed pre-swap).
+            "spin_channel": spin,
+            "band_index": band_index,
+            "alpha_guess": alphas_for_spin[i],
+            # Fully-baked kcp.x parameter dicts in the (possibly
+            # swapped) kcp frame; ``EmptyOrbitalScreening`` merges in
+            # per-step overrides on top.
+            "dummy_parameters": dummy_p,
+            "pz_parameters": pz_p,
+            "n_plus_1_parameters": n_plus_1_p,
+            # Save-file overlay for ``pz_print`` (whose parent is the
+            # trial KI's physical-frame save). Empty when no swap is
+            # needed.
+            "overlay": overlay,
+        }
     return out
 
 
@@ -777,6 +764,7 @@ def KoopmansDSCFWorkflow(
     fix_spin_contamination: bool = False,
     initial_alpha: float = 0.6,
     spin_polarized: bool = False,
+    orbital_groups_self_hartree_tol: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> KoopmansDSCFOutputs:
@@ -939,6 +927,7 @@ def KoopmansDSCFWorkflow(
         init_orbitals=init_orbitals,
         spin_polarized=spin_polarized,
         alpha_numsteps=alpha_numsteps,
+        self_hartree_tol=orbital_groups_self_hartree_tol,
         dft_remote=dft["remote_folder"],
         overrides=overrides,
         options=options,
@@ -1292,6 +1281,7 @@ def ScreeningIteration(
     spin_polarized: bool,
     current_alphas: AlphaScreening,
     parent_folder: orm.RemoteData,
+    self_hartree_tol: float | None = None,
     variational_orbital_overlays: dict | None = None,
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
@@ -1336,11 +1326,28 @@ def ScreeningIteration(
     )
     trial = KcpBaseTask(**trial_inputs)
 
+    # Cluster variational orbitals by trial-KI self-Hartree so each
+    # group only screens one representative; non-representative members
+    # inherit the alpha after the Map gather (see
+    # :func:`expand_alphas_by_group`). With ``self_hartree_tol=None``
+    # (the default) the task short-circuits to one-orbital-per-group
+    # — every orbital is its own representative, so the Map fan-out
+    # is unchanged.
+    metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
+    orbitals = assign_orbital_groups(
+        metric=metric.result,
+        nelup=base.nelup,
+        neldw=base.neldw,
+        nbnd=nbnd,
+        spin_polarized=spin_polarized,
+        tol=self_hartree_tol,
+    )
+
     filled_source = build_filled_iter_source(
         nelup=base.nelup,
         neldw=base.neldw,
+        orbitals=orbitals.result,
         filled_alphas=current_alphas["filled"],
-        spin_polarized=spin_polarized,
     )
     with Map(filled_source) as filled_zone:
         filled_item = filled_zone.item.value
@@ -1371,8 +1378,8 @@ def ScreeningIteration(
     empty_source = build_empty_iter_source(
         base=base,
         nbnd=nbnd,
+        orbitals=orbitals.result,
         empty_alphas=current_alphas["empty"],
-        spin_polarized=spin_polarized,
     )
     with Map(empty_source) as empty_zone:
         empty_item = empty_zone.item.value
@@ -1403,11 +1410,24 @@ def ScreeningIteration(
         )
         empty_zone.gather({"alpha": empty_out["alpha"], "error": empty_out["error"]})
 
+    # Broadcast each representative's alpha onto every member of its
+    # group, then pack the per-orbital flat dicts into the per-spin
+    # ``AlphaScreening`` shape kcp.x consumes. When grouping was
+    # disabled (``self_hartree_tol=None``), ``expand_alphas_by_group``
+    # is the identity modulo the filled/empty split.
+    expanded = expand_alphas_by_group(
+        filled_rep_alphas=filled_zone.outputs.alpha,
+        filled_rep_errors=filled_zone.outputs.error,
+        empty_rep_alphas=empty_zone.outputs.alpha,
+        empty_rep_errors=empty_zone.outputs.error,
+        orbitals=orbitals.result,
+    )
     gathered = assemble_alpha_screening(
-        filled_alphas=filled_zone.outputs.alpha,
-        filled_errors=filled_zone.outputs.error,
-        empty_alphas=empty_zone.outputs.alpha,
-        empty_errors=empty_zone.outputs.error,
+        orbitals=orbitals.result,
+        filled_alphas=expanded["filled_alphas"],
+        filled_errors=expanded["filled_errors"],
+        empty_alphas=expanded["empty_alphas"],
+        empty_errors=expanded["empty_errors"],
     )
 
     max_err = max_alpha_error(
@@ -1449,6 +1469,7 @@ def ComputeScreeningParameters(
     spin_polarized: bool = False,
     alpha_numsteps: int = 1,
     alpha_conv_thr: float = 1.0e-3,
+    self_hartree_tol: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> ScreeningParametersOutputs:
@@ -1572,6 +1593,7 @@ def ComputeScreeningParameters(
         spin_polarized=spin_polarized,
         current_alphas=initial_alphas,
         parent_folder=dft_remote,
+        self_hartree_tol=self_hartree_tol,
         variational_orbital_overlays=ks_overlay,
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
@@ -1627,6 +1649,7 @@ def ComputeScreeningParameters(
                     "empty": wg.ctx.alphas_empty,
                 },
                 parent_folder=wg.ctx.parent_folder,
+                self_hartree_tol=self_hartree_tol,
                 variational_orbital_overlays=None,
                 ki_overrides=ki_overrides,
                 filled_overrides=filled_overrides,
