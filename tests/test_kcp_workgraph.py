@@ -962,15 +962,16 @@ class TestKoopmansDSCFGraphBuild:
             neldw=neldw,
             tot_magnetization=tot_magnetization,
         )
-        n_filled = (nelup + neldw) // 2 * 2  # 18 for closed-shell-effective ozone
-        n_empty_per_channel = nbnd - n_filled // 2
         # ``_callable`` is the raw Python function under the ``@task`` decorator
         # (the decorator returns a ``TaskHandle`` at runtime; type checkers
         # see only the underlying ``FunctionType``).
         return build_empty_iter_source._callable(  # type: ignore[attr-defined]
             base=base,
             nbnd=nbnd,
-            empty_alphas={"up": [0.6] * n_empty_per_channel, "down": [0.6] * n_empty_per_channel},
+            empty_alphas={
+                "up": [0.6] * max(0, nbnd - nelup),
+                "down": [0.6] * max(0, nbnd - neldw),
+            },
             spin_polarized=True,
         )
 
@@ -1019,6 +1020,129 @@ class TestKoopmansDSCFGraphBuild:
         assert down_keys, sorted(source)
         for k in down_keys:
             assert source[k]["overlay"] == {}, (k, source[k]["overlay"])
+
+    def test_empty_iter_source_open_shell_o2_layout(self):
+        """O2-shaped open-shell input exercises the per-spin asymmetric path.
+
+        ``nelup=7, neldw=5, nbnd=8`` (O2 triplet with SG15 6e pseudo):
+        UP has 1 empty, DOWN has 3 empties. Symmetric ``n_empty // 2``
+        halving would have wrongly emitted 2 per spin. Also verifies the
+        legacy LUMO-clamp on ``fixed_band``, the global ``index_empty_to_save``
+        counter, and the ``band_index`` offset by ``max(nelup, neldw)``
+        (where the trial-KI lambda matrix's empty block starts).
+        """
+        source = self._run_build_empty_iter_source(nelup=7, neldw=5, tot_magnetization=2, nbnd=8)
+        up_keys = sorted(k for k in source if k.startswith("up_orb_"))
+        down_keys = sorted(k for k in source if k.startswith("down_orb_"))
+
+        # Asymmetric per-spin empty manifolds.
+        assert up_keys == ["up_orb_8"], up_keys
+        assert down_keys == ["down_orb_6", "down_orb_7", "down_orb_8"], down_keys
+
+        # All DOWN empties get ``fixed_band`` clamped to the per-spin
+        # LUMO position (= ``neldw + 1 + nelup`` = 13). kcp.x reorders
+        # the constrained orbital into that slot regardless of which
+        # empty we're actually screening; the orbital identity is
+        # selected by the wavefunction pz_print writes per
+        # ``index_empty_to_save``.
+        for k in down_keys:
+            sys = source[k]["dummy_parameters"]["SYSTEM"]
+            assert sys["fixed_band"] == 13, (k, sys["fixed_band"])
+        # UP empty's LUMO clamp = nelup + 1 = 8.
+        assert source["up_orb_8"]["dummy_parameters"]["SYSTEM"]["fixed_band"] == 8
+
+        # ``index_empty_to_save`` is the global counter across spins —
+        # legacy ``_koopmans_dscf.py:697-699`` puts UP empties first
+        # then DOWN. UP empty -> 1; DOWN empties -> 2, 3, 4.
+        assert source["up_orb_8"]["dummy_parameters"]["NKSIC"]["index_empty_to_save"] == 1
+        for k, expected in (("down_orb_6", 2), ("down_orb_7", 3), ("down_orb_8", 4)):
+            got = source[k]["dummy_parameters"]["NKSIC"]["index_empty_to_save"]
+            assert got == expected, (k, got, expected)
+
+        # ``band_index`` for empties uses ``max(nelup, neldw) + i`` —
+        # the offset where the trial-KI lambda matrix's empty block
+        # starts (parser block-diag stack of ``filled_ham`` (sized
+        # max_n_filled) and ``empty_ham``). Not the per-spin physical
+        # position, which would land in the filled-block padding zone
+        # for the spin with fewer filled.
+        assert source["up_orb_8"]["band_index"] == 7  # max(7,5) + 0
+        assert source["down_orb_6"]["band_index"] == 7  # max(7,5) + 0
+        assert source["down_orb_7"]["band_index"] == 8  # max(7,5) + 1
+        assert source["down_orb_8"]["band_index"] == 9  # max(7,5) + 2
+
+        # Open-shell with nelup > neldw + adding to DOWN: post-add
+        # (7, 6) still satisfies nupdwn(1) >= nupdwn(2), no swap.
+        for k in up_keys + down_keys:
+            assert source[k]["overlay"] == {}, (k, source[k]["overlay"])
+
+    def test_filled_iter_source_open_shell_o2_layout(self):
+        """O2-shaped filled iterator: 7 UP + 5 DOWN, DOWN bands shifted by nelup.
+
+        For genuinely open-shell systems ``nelup != neldw``, legacy
+        ``_koopmans_dscf.py:759-760`` shifts DOWN-channel
+        ``fixed_band`` by ``nelup`` (not by a symmetric halved count).
+        Closed-shell symmetric input previously hid this — closed-shell
+        ozone has ``nelup == neldw`` so the shift agreed regardless of
+        which choice was made.
+        """
+        from aiida_koopmans.workgraphs.kcp import build_filled_iter_source
+
+        source = build_filled_iter_source._callable(  # type: ignore[attr-defined]
+            nelup=7,
+            neldw=5,
+            filled_alphas={"up": [0.6] * 7, "down": [0.6] * 5},
+            spin_polarized=True,
+        )
+        up_keys = sorted(k for k in source if k.startswith("up_orb_"))
+        down_keys = sorted(k for k in source if k.startswith("down_orb_"))
+
+        # Asymmetric per-spin filled manifolds (7 vs 5).
+        assert up_keys == [f"up_orb_{i}" for i in range(1, 8)], up_keys
+        assert down_keys == [f"down_orb_{i}" for i in range(1, 6)], down_keys
+
+        # UP filled fixed_band = per-spin index (1..7); DOWN filled
+        # fixed_band = per-spin index + nelup (8..12).
+        for i in range(1, 8):
+            assert source[f"up_orb_{i}"]["fixed_band"] == i
+        for i in range(1, 6):
+            assert source[f"down_orb_{i}"]["fixed_band"] == i + 7  # + nelup
+
+        # ``band_index`` for filled uses the per-spin physical
+        # position (the filled block fills from row 0; only the
+        # filled-block padding above ``n_filled_this_spin`` is zero).
+        for i in range(1, 8):
+            assert source[f"up_orb_{i}"]["band_index"] == i - 1
+        for i in range(1, 6):
+            assert source[f"down_orb_{i}"]["band_index"] == i - 1
+
+    def test_generate_alphas_open_shell_per_spin_sizes(self):
+        """``generate_alphas`` returns asymmetric per-spin lists for nelup != neldw.
+
+        Closed-shell symmetric halving (``n_filled // 2``) was hiding
+        the bug — for O2 (7+5 = 12 electrons, nbnd=8) we want UP=7
+        filled / 1 empty and DOWN=5 filled / 3 empty, *not* 6 / 2
+        per spin from halving.
+        """
+        from aiida_koopmans.workgraphs.kcp import generate_alphas
+
+        alphas = generate_alphas._callable(  # type: ignore[attr-defined]
+            alpha_guess=0.6,
+            nbnd=8,
+            nelup=7,
+            neldw=5,
+            spin_polarized=True,
+        )
+        assert len(alphas["filled"][SpinChannel.UP]) == 7
+        assert len(alphas["filled"][SpinChannel.DOWN]) == 5
+        assert len(alphas["empty"][SpinChannel.UP]) == 1  # nbnd - nelup
+        assert len(alphas["empty"][SpinChannel.DOWN]) == 3  # nbnd - neldw
+        # Closed-shell representative path: single ``none`` channel.
+        closed = generate_alphas._callable(  # type: ignore[attr-defined]
+            alpha_guess=0.6, nbnd=10, nelup=9, neldw=9, spin_polarized=False
+        )
+        assert set(closed["filled"]) == {SpinChannel.NONE}
+        assert len(closed["filled"][SpinChannel.NONE]) == 9
+        assert len(closed["empty"][SpinChannel.NONE]) == 1
 
     def test_spin_polarized_init_is_single_step(
         self, ozone_structure, kcp_code, ozone_pseudo_family

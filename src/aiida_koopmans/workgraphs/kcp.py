@@ -37,8 +37,6 @@ from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.types import AlphaScreening, SpinChannel
 from aiida_koopmans.utils import (
     count_electrons_task,
-    filled_and_empty_counts,
-    filled_and_empty_counts_task,
     resolve_pseudo_family_task,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -364,8 +362,9 @@ def max_alpha_error(filled_errors: dict, empty_errors: dict):
 @task
 def generate_alphas(
     alpha_guess: float,
-    n_filled: int,
-    n_empty: int,
+    nbnd: int,
+    nelup: int,
+    neldw: int,
     spin_polarized: bool = False,
 ) -> AlphaScreening:
     """Build an :class:`AlphaScreening` of uniform ``alpha_guess`` values.
@@ -378,35 +377,34 @@ def generate_alphas(
       keyed by :attr:`SpinChannel.NONE`. The mirror onto kcp.x's per-spin
       ``file_alpharef`` happens later in
       :meth:`KcpCalculation._write_alpha_files`.
-    * ``spin_polarized=True`` → emit both UP and DOWN with identical
-      uniform values.
-
-    ``n_filled`` / ``n_empty`` are totals across both spin channels;
-    halve them once to get the per-channel count.
+    * ``spin_polarized=True`` → emit both UP and DOWN at their actual
+      per-spin sizes (open-shell systems with ``nelup != neldw`` have
+      different per-spin empty-manifold sizes — e.g. O2 with
+      ``nelup=7, neldw=5, nbnd=8`` has 1 UP empty and 3 DOWN empties).
     """
-    n_filled_per_channel = n_filled // 2
-    n_empty_per_channel = n_empty // 2
+    n_empty_up = max(0, nbnd - nelup)
+    n_empty_dw = max(0, nbnd - neldw)
     if not spin_polarized:
+        # Closed-shell: nelup == neldw == nelec/2, so picking either
+        # arm as the representative works.
         return {
-            "filled": {SpinChannel.NONE: [alpha_guess] * n_filled_per_channel},
-            "empty": {SpinChannel.NONE: [alpha_guess] * n_empty_per_channel},
+            "filled": {SpinChannel.NONE: [alpha_guess] * nelup},
+            "empty": {SpinChannel.NONE: [alpha_guess] * n_empty_up},
         }
     return {
         "filled": {
-            SpinChannel.UP: [alpha_guess] * n_filled_per_channel,
-            SpinChannel.DOWN: [alpha_guess] * n_filled_per_channel,
+            SpinChannel.UP: [alpha_guess] * nelup,
+            SpinChannel.DOWN: [alpha_guess] * neldw,
         },
         "empty": {
-            SpinChannel.UP: [alpha_guess] * n_empty_per_channel,
-            SpinChannel.DOWN: [alpha_guess] * n_empty_per_channel,
+            SpinChannel.UP: [alpha_guess] * n_empty_up,
+            SpinChannel.DOWN: [alpha_guess] * n_empty_dw,
         },
     }
 
 
 @task
 def build_filled_iter_source(
-    nbnd: int,
-    nelec: int,
     nelup: int | None,
     neldw: int | None,
     filled_alphas: dict,
@@ -443,13 +441,18 @@ def build_filled_iter_source(
     hardcodes this); the closed-shell halving is a function of
     ``spin_polarized``, not ``nspin``.
     """
-    n_filled, _ = filled_and_empty_counts(nspin=2, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw)
-    n_filled_per_channel = n_filled // 2
+    if nelup is None or neldw is None:
+        raise ValueError("nelup and neldw are required (kcp.x runs at nspin=2)")
     spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     out: dict[str, dict] = {}
     for spin in spin_list:
+        # Per-spin filled count: for genuinely open-shell systems
+        # ``nelup != neldw``. ``SpinChannel.NONE`` (the closed-shell
+        # representative emitted when ``spin_polarized=False``) reuses
+        # ``nelup`` (== ``neldw`` == ``nelec/2`` by closed-shell symmetry).
+        n_filled_this_spin = nelup if spin is not SpinChannel.DOWN else neldw
         alphas_for_spin = filled_alphas[spin.value]
-        for i in range(n_filled_per_channel):
+        for i in range(n_filled_this_spin):
             # Orbital indices are **1-indexed** and shared with the empty
             # manifold (see :func:`build_empty_iter_source`) so they line up
             # with kcp.x's own band numbering. Closed-shell: bare
@@ -461,13 +464,10 @@ def build_filled_iter_source(
             tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
             # kcp.x ``fixed_band`` indexing for spin-polarised systems
             # interleaves the filled blocks before the empty ones —
-            # DOWN-channel bands are shifted by ``n_filled_up`` (see
-            # legacy ``_koopmans_dscf.py:759-760`` and the equivalent
-            # shift in :func:`build_empty_iter_source`).
-            if spin is SpinChannel.DOWN:
-                fixed_band = orb_index + n_filled_per_channel
-            else:
-                fixed_band = orb_index
+            # DOWN-channel bands are shifted by ``nelup`` (not by the
+            # symmetric halved count, which is wrong when nelup != neldw).
+            # See legacy ``_koopmans_dscf.py:759-760``.
+            fixed_band = orb_index + nelup if spin is SpinChannel.DOWN else orb_index
             out[f"{tag_prefix}orb_{orb_index}"] = {
                 "fixed_band": fixed_band,
                 "spin_channel": spin,
@@ -517,41 +517,68 @@ def build_empty_iter_source(
     rule (closed-shell emits a single :attr:`SpinChannel.NONE` channel;
     spin-polarised emits UP + DOWN).
     """
-    n_filled, n_empty = filled_and_empty_counts(
-        nspin=2, nbnd=nbnd, nelec=base.nelec, nelup=base.nelup, neldw=base.neldw
-    )
-    n_filled_per_channel = n_filled // 2
-    n_empty_per_channel = n_empty // 2
+    if base.nelup is None or base.neldw is None:
+        raise ValueError("nelup and neldw are required (kcp.x runs at nspin=2)")
     spin_list = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
     overlay_swap = _spin_swap_save_overlay(nspin=2)
+    n_empty_up = max(0, nbnd - base.nelup)
     out: dict[str, dict] = {}
     for spin in spin_list:
+        # Per-spin filled / empty counts: for genuinely open-shell
+        # systems ``nelup != neldw`` and the per-spin empty manifolds
+        # can have different sizes (e.g. O2 with ``nelup=7, neldw=5,
+        # nbnd=8`` has 1 UP empty and 3 DOWN empties). The previous
+        # symmetric ``n_empty // 2`` halving worked only because
+        # closed-shell-in-spin-polarised ozone happened to have equal
+        # per-spin empty counts.
+        n_filled_this_spin = base.neldw if spin is SpinChannel.DOWN else base.nelup
+        n_empty_this_spin = max(0, nbnd - n_filled_this_spin)
         alphas_for_spin = empty_alphas[spin.value]
-        for i in range(n_empty_per_channel):
-            # 1-indexed kcp.x band order; empties continue the filled
-            # numbering without restart. See :func:`build_filled_iter_source`.
-            orb_index = n_filled_per_channel + i + 1
+        for i in range(n_empty_this_spin):
+            # ``orb_index`` is the per-spin 1-indexed band position
+            # (continuing past the per-spin filled manifold). Used in
+            # the Map-zone key for human-readable provenance.
+            orb_index = n_filled_this_spin + i + 1
             tag_prefix = "" if spin is SpinChannel.NONE else f"{spin.value}_"
 
-            # kcp.x ``fixed_band`` indexing for spin-polarised systems:
-            # legacy ``_koopmans_dscf.py:758-760`` shifts DOWN-channel
-            # bands by ``n_filled_up`` so DOWN's LUMO sits at
-            # ``n_filled_up + n_filled_dw + 1`` (kcp.x's band order
-            # interleaves the filled blocks before the empty ones).
-            # Closed-shell / UP needs no shift.
+            # ``fixed_band`` is **clamped to the per-spin LUMO
+            # position** (legacy ``_koopmans_dscf.py:758`` —
+            # ``min(band.index, n_filled+1)``). kcp.x interprets
+            # ``fixed_band`` as the slot where the constrained orbital
+            # lands after re-ordering, not as the band's pre-screening
+            # index — and that slot is always the LUMO of the relevant
+            # spin manifold. The actual orbital we're constraining is
+            # selected by ``index_empty_to_save`` (which pz_print
+            # writes into ``evcfixed_empty.dat``). Passing the
+            # un-clamped per-spin position here causes kcp.x's internal
+            # ordering to drift on the second CG iter — manifests as
+            # ``corrupted double-linked list`` heap corruption on
+            # higher empties of an open-shell DOWN channel (e.g. O2's
+            # 2nd DOWN π* empty).
+            fixed_band_per_spin = n_filled_this_spin + 1
+            fixed_band = (
+                fixed_band_per_spin + base.nelup
+                if spin is SpinChannel.DOWN
+                else fixed_band_per_spin
+            )
+
+            # ``index_empty_to_save`` is a *global* 1-indexed counter
+            # across the full empty manifold (UP empties first, then
+            # DOWN). Legacy ``_koopmans_dscf.py:697-699`` shifts DOWN's
+            # per-spin index by ``n_empty_up``.
             if spin is SpinChannel.DOWN:
-                fixed_band = orb_index + n_filled_per_channel
+                index_empty_to_save = i + 1 + n_empty_up
             else:
-                fixed_band = orb_index
+                index_empty_to_save = i + 1
 
             # Spin-aware extra electron: legacy puts it in the channel
             # of the orbital being screened. ``SpinChannel.NONE``
             # (closed-shell input) defaults to UP.
             if spin is SpinChannel.DOWN:
                 nelup_np1 = base.nelup
-                neldw_np1 = (base.neldw + 1) if base.neldw is not None else None
+                neldw_np1 = base.neldw + 1
             else:
-                nelup_np1 = (base.nelup + 1) if base.nelup is not None else None
+                nelup_np1 = base.nelup + 1
                 neldw_np1 = base.neldw
 
             # kcp.x requires nupdwn(1) >= nupdwn(2). Swap when violated.
@@ -569,20 +596,32 @@ def build_empty_iter_source(
                 overlay = overlay_swap
 
             dummy_p = _build_dft_n_plus_1_dummy_parameters(
-                base_n_plus_1, fixed_band=fb, index_empty_to_save=i + 1
+                base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
             )
             pz_p = _build_pz_print_parameters(
-                base_n, nbnd=nbnd, fixed_band=fb, index_empty_to_save=i + 1
+                base_n, nbnd=nbnd, fixed_band=fb, index_empty_to_save=index_empty_to_save
             )
             n_plus_1_p = _build_dft_n_plus_1_parameters(
-                base_n_plus_1, fixed_band=fb, index_empty_to_save=i + 1
+                base_n_plus_1, fixed_band=fb, index_empty_to_save=index_empty_to_save
             )
 
+            # ``band_index`` indexes into the trial-KI lambda matrix
+            # (shape ``(nspin, n, n)``). The parser
+            # (``parsers/kcp.py:_parse_lambdas``) block-diag stacks the
+            # filled and empty Hamiltonians; kcp.x sizes both blocks to
+            # the per-spin **max** (``max(nelup, neldw)`` for filled,
+            # ``max(n_emp_up, n_emp_dw)`` for empty), zero-padding the
+            # spin with fewer real bands. So the i-th empty of *this*
+            # spin lives at row/col ``max(nelup, neldw) + i``, not at
+            # the per-spin physical position. Closed-shell symmetric
+            # systems happened to agree (``max == per-spin``) — bites
+            # only open-shell.
+            band_index = max(base.nelup, base.neldw) + i
             out[f"{tag_prefix}orb_{orb_index}"] = {
                 # Physical labels (used by ``compute_alpha_from_dscf``
                 # to index trial-KI lambda matrices computed pre-swap).
                 "spin_channel": spin,
-                "band_index": orb_index - 1,
+                "band_index": band_index,
                 "alpha_guess": alphas_for_spin[i],
                 # Fully-baked kcp.x parameter dicts in the (possibly
                 # swapped) kcp frame; ``EmptyOrbitalScreening`` merges
@@ -1298,8 +1337,6 @@ def ScreeningIteration(
     trial = KcpBaseTask(**trial_inputs)
 
     filled_source = build_filled_iter_source(
-        nbnd=nbnd,
-        nelec=base.nelec,
         nelup=base.nelup,
         neldw=base.neldw,
         filled_alphas=current_alphas["filled"],
@@ -1461,20 +1498,15 @@ def ComputeScreeningParameters(
     # ------------------------------------------------------------------
     # Filled / empty counts as sockets — never derived by socket arithmetic.
     # ------------------------------------------------------------------
-    counts = filled_and_empty_counts_task(
-        nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw
-    )
-    n_filled = counts["n_filled"]
-    n_empty = counts["n_empty"]
-
     # Uniform-``initial_alpha`` payload feeds the first iteration's trial
     # KI (and its empty-orbital ``pz_print``). Subsequent iterations
     # consume the previous iteration's gathered alphas; that wiring lives
     # in the ``While`` loop that B.3 will add.
     initial_alphas = generate_alphas(
         alpha_guess=initial_alpha,
-        n_filled=n_filled,
-        n_empty=n_empty,
+        nbnd=nbnd,
+        nelup=nelup,
+        neldw=neldw,
         spin_polarized=spin_polarized,
     )
 
