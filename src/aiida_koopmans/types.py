@@ -10,6 +10,71 @@ from enum import Enum
 from typing import TypedDict
 
 
+class Correction(str, Enum):
+    """The Koopmans correction (functional) the workflow applies.
+
+    Canonical definition for the whole project: the user-facing
+    ``koopmans2`` package re-exports this rather than defining its
+    own copy, so the dispatcher can pass an enum value across the
+    package boundary without a string round-trip.
+
+    Members:
+
+    * ``KI``: Koopmans-Integral correction (the default).
+    * ``KIPZ``: Koopmans-Integral with Perdew-Zunger self-interaction
+      correction on the variational orbitals — different sub-step
+      parameters; see ``aiida_koopmans/workgraphs/kcp.py``.
+    * ``PKIPZ``: perturbative KIPZ (trial KI, KIPZ correction applied
+      post-hoc). Deferred — accepted at the type level but not yet
+      wired through the dispatcher.
+    * ``PZ``: plain Perdew-Zunger orbital-dependent functional —
+      strictly not a "Koopmans correction" but routed through the
+      same orbital-dependent screening machinery
+      (:func:`aiida_koopmans.workgraphs.kcp._build_orbdep_parameters`),
+      e.g. the empty-orbital ``pz_print`` sub-step of a KI workflow.
+    * ``NONE``: no Koopmans correction (plain DFT only).
+    * ``ALL``: run KI / KIPZ / PKIPZ together (user-facing workflow
+      control).
+
+    String-valued (``str`` subclass) so AiiDA / JSON round-trips
+    preserve the value: a deserialised ``"ki"`` compares equal to
+    ``Correction.KI``.
+    """
+
+    KI = "ki"
+    KIPZ = "kipz"
+    PKIPZ = "pkipz"
+    PZ = "pz"
+    NONE = "none"
+    ALL = "all"
+
+
+class VariationalOrbitalType(str, Enum):
+    """Initial variational orbitals to use for the trial KI / KIPZ run.
+
+    Canonical definition: ``koopmans2.input_file.workflow`` re-exports
+    this so user-facing inputs and the AiiDA dispatcher both reference
+    the same enum.
+
+    * ``PZ``: PZ-initialised variational orbitals (legacy default for
+      ``init_orbitals``).
+    * ``KOHN_SHAM``: KS orbitals from the DFT init reused as
+      variational (the MVP path; produces a KS-as-variational overlay
+      so the trial KI's ``evc0N.dat`` is the DFT ``evcN.dat``).
+    * ``MLWFS``: maximally-localised Wannier functions
+      (Wannier90-based; deferred).
+    * ``PROJWFS``: projected Wannier functions (deferred).
+
+    String-valued so AiiDA / JSON round-trips preserve the value
+    (``"kohn-sham"`` compares equal to ``VariationalOrbitalType.KOHN_SHAM``).
+    """
+
+    PZ = "pz"
+    KOHN_SHAM = "kohn-sham"
+    MLWFS = "mlwfs"
+    PROJWFS = "projwfs"
+
+
 class SpinChannel(str, Enum):
     """Spin channel index used as a dict key in per-spin data structures.
 

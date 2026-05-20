@@ -16,6 +16,7 @@ import io
 import pytest
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
+from aiida_koopmans.types import Correction
 
 # ----------------------------------------------------------------------
 # _normalize_parameters
@@ -205,7 +206,7 @@ def test_kcp_tutorial_1_ozone_ki(
     from aiida import orm
     from aiida.common import LinkType, datastructures
 
-    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_ki_parameters
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_orbdep_parameters
 
     # Code (dummy bash executable — the test never submits anything).
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
@@ -251,7 +252,7 @@ def test_kcp_tutorial_1_ozone_ki(
         neldw=9,
         tot_magnetization=None,
     )
-    ki_params = _build_ki_parameters(base, nbnd=10, functional="ki")
+    ki_params = _build_orbdep_parameters(base, nbnd=10, correction=Correction.KI)
 
     # Matches what KoopmansDSCFWorkflow builds for ``initial_alpha=0.6`` on ozone:
     # 9 filled + 1 empty per spin channel (nbnd=10, nspin=2, nelup=neldw=9).

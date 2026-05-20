@@ -12,12 +12,15 @@ from dataclasses import replace
 
 import pytest
 
-from aiida_koopmans.types import SpinChannel
+from aiida_koopmans.types import Correction, SpinChannel, VariationalOrbitalType
 from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
 from aiida_koopmans.workgraphs.kcp import (
     KcpBaseInputs,
     _build_dft_parameters,
-    _build_ki_parameters,
+    _build_n_minus_1_parameters,
+    _build_n_plus_1_parameters,
+    _build_orbdep_parameters,
+    _build_print_parameters,
     _validate_scope,
 )
 
@@ -29,18 +32,26 @@ from aiida_koopmans.workgraphs.kcp import (
 class TestValidateScope:
     def test_supported_baseline_passes(self, ozone_structure):
         _validate_scope(
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             fix_spin_contamination=False,
             structure=ozone_structure,
         )
 
-    @pytest.mark.parametrize("functional", ["kipz", "pkipz", "dft", ""])
-    def test_non_ki_functional_raises(self, ozone_structure, functional):
-        with pytest.raises(NotImplementedError, match="functional="):
+    def test_supported_kipz_passes(self, ozone_structure):
+        _validate_scope(
+            correction=Correction.KIPZ,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            fix_spin_contamination=False,
+            structure=ozone_structure,
+        )
+
+    @pytest.mark.parametrize("correction", [Correction.PKIPZ, Correction.NONE, Correction.ALL])
+    def test_unsupported_correction_raises(self, ozone_structure, correction):
+        with pytest.raises(NotImplementedError, match="correction="):
             _validate_scope(
-                functional=functional,
-                init_orbitals="kohn-sham",
+                correction=correction,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
             )
@@ -49,7 +60,7 @@ class TestValidateScope:
     def test_non_kohn_sham_init_raises(self, ozone_structure, init_orbitals):
         with pytest.raises(NotImplementedError, match="init_orbitals="):
             _validate_scope(
-                functional="ki",
+                correction=Correction.KI,
                 init_orbitals=init_orbitals,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
@@ -60,8 +71,8 @@ class TestValidateScope:
         # input model upstream; the scope guard no longer needs to look
         # at it. B.3 added the ``While`` zone so any positive count works.
         _validate_scope(
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             fix_spin_contamination=False,
             structure=ozone_structure,
         )
@@ -69,8 +80,8 @@ class TestValidateScope:
     def test_spin_contamination_raises(self, ozone_structure):
         with pytest.raises(NotImplementedError, match="fix_spin_contamination"):
             _validate_scope(
-                functional="ki",
-                init_orbitals="kohn-sham",
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
                 fix_spin_contamination=True,
                 structure=ozone_structure,
             )
@@ -78,8 +89,8 @@ class TestValidateScope:
     def test_periodic_structure_raises(self, periodic_ozone_structure):
         with pytest.raises(NotImplementedError, match="Periodic systems"):
             _validate_scope(
-                functional="ki",
-                init_orbitals="kohn-sham",
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
                 fix_spin_contamination=False,
                 structure=periodic_ozone_structure,
             )
@@ -161,7 +172,7 @@ class TestBuildDftParameters:
 
 class TestBuildKiParameters:
     def test_has_nksic(self):
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert "NKSIC" in params
         assert params["NKSIC"]["which_orbdep"] == "nki"
         assert params["NKSIC"]["odd_nkscalfact"] is True
@@ -171,13 +182,13 @@ class TestBuildKiParameters:
     def test_ki_control_is_restart(self):
         # See ``test_dft_control_is_from_scratch``: ndr/ndw live on the
         # CalcJob, not the builder.
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert params["CONTROL"]["restart_mode"] == "restart"
         assert "ndr" not in params["CONTROL"]
         assert "ndw" not in params["CONTROL"]
 
     def test_ki_enables_orbdep_and_disables_outerloop(self):
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert params["SYSTEM"]["do_orbdep"] is True
         assert params["ELECTRONS"]["do_outerloop"] is False
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
@@ -185,25 +196,134 @@ class TestBuildKiParameters:
     def test_periodic_omits_ee_namelist(self):
         # Periodic systems (mt_correction=False) emit no &EE block; do_ee=False
         # in &SYSTEM keeps kcp.x from trying to read it.
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert "EE" not in params
         assert params["SYSTEM"]["do_ee"] is False
 
     def test_aperiodic_emits_tcc(self):
         base = replace(_OZONE_BASE, mt_correction=True)
-        params = _build_ki_parameters(base, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(base, nbnd=10, correction=Correction.KI)
         assert params["EE"]["which_compensation"] == "tcc"
         assert params["SYSTEM"]["do_ee"] is True
 
     def test_ki_disables_innerloop(self):
         # ``do_innerloop`` is True only for PZ; KI / KIPZ run no inner loop.
         # See legacy decision tree in koopmans/workflows/_koopmans_dscf.py:1129-1138.
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="ki")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert params["NKSIC"]["do_innerloop"] is False
 
     def test_pz_enables_innerloop(self):
-        params = _build_ki_parameters(_OZONE_BASE, nbnd=10, functional="pz")
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.PZ)
         assert params["NKSIC"]["do_innerloop"] is True
+
+
+class TestBuildKipzOrbdepParameters:
+    """KIPZ-specific behaviour of the trial-step parameter builder.
+
+    KIPZ piggy-backs on the same ODD machinery as KI but flips
+    ``which_orbdep`` to ``nkipz`` and turns the inner CG loop on for
+    the first molecular trial (legacy ``_koopmans_dscf.py:450-452``).
+    """
+
+    def test_kipz_which_orbdep_is_nkipz(self):
+        params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KIPZ)
+        assert params["NKSIC"]["which_orbdep"] == "nkipz"
+
+    def test_kipz_first_iter_molecular_enables_innerloop(self):
+        # Molecular = mt_correction=True; the fixture _OZONE_BASE is
+        # mt_correction=False (periodic-ish), so make a molecular variant.
+        base = replace(_OZONE_BASE, mt_correction=True)
+        params = _build_orbdep_parameters(
+            base, nbnd=10, correction=Correction.KIPZ, is_first_iteration=True
+        )
+        assert params["NKSIC"]["do_innerloop"] is True
+
+    def test_kipz_later_iter_molecular_disables_innerloop(self):
+        base = replace(_OZONE_BASE, mt_correction=True)
+        params = _build_orbdep_parameters(
+            base, nbnd=10, correction=Correction.KIPZ, is_first_iteration=False
+        )
+        assert params["NKSIC"]["do_innerloop"] is False
+
+    def test_kipz_periodic_first_iter_disables_innerloop(self):
+        # Periodic systems (mt_correction=False): no inner loop even on iter 1.
+        params = _build_orbdep_parameters(
+            _OZONE_BASE, nbnd=10, correction=Correction.KIPZ, is_first_iteration=True
+        )
+        assert params["NKSIC"]["do_innerloop"] is False
+
+
+class TestBuildNMinus1Parameters:
+    """``_build_n_minus_1_parameters`` — filled-orbital alpha step."""
+
+    def test_ki_is_plain_dft(self):
+        params = _build_n_minus_1_parameters(_OZONE_BASE, fixed_band=5, correction=Correction.KI)
+        # KI runs plain DFT here — no orbital-dependent screening.
+        assert params["SYSTEM"]["do_orbdep"] is False
+        assert "which_orbdep" not in params["NKSIC"]
+
+    def test_kipz_enables_orbdep_with_nkipz(self):
+        params = _build_n_minus_1_parameters(_OZONE_BASE, fixed_band=5, correction=Correction.KIPZ)
+        # KIPZ's n-1 step is alpha-dependent: do_orbdep=True + which_orbdep='nkipz'.
+        # See legacy _koopmans_dscf.py:1059-1064 + the tripwire comment in
+        # KoopmansDSCFWorkflow.
+        assert params["SYSTEM"]["do_orbdep"] is True
+        assert params["NKSIC"]["which_orbdep"] == "nkipz"
+        assert params["NKSIC"]["do_bare_eigs"] is True
+
+    def test_shared_keys_for_both_corrections(self):
+        # The non-functional-specific bits of n-1 (fixed_band, fixed_state,
+        # restart_mode, conv_thr loosening) should be identical.
+        ki = _build_n_minus_1_parameters(_OZONE_BASE, fixed_band=5, correction=Correction.KI)
+        kipz = _build_n_minus_1_parameters(_OZONE_BASE, fixed_band=5, correction=Correction.KIPZ)
+        for ns in ("CONTROL", "SYSTEM", "ELECTRONS"):
+            for key in {"restart_mode", "fixed_band", "fixed_state", "f_cutoff"} & set(
+                ki[ns].keys()
+            ):
+                assert ki[ns][key] == kipz[ns][key], (ns, key)
+
+
+class TestBuildNPlus1Parameters:
+    """``_build_n_plus_1_parameters`` — empty-orbital alpha step."""
+
+    def test_ki_is_plain_dft(self):
+        params = _build_n_plus_1_parameters(_OZONE_BASE, fixed_band=6, correction=Correction.KI)
+        assert params["SYSTEM"]["do_orbdep"] is False
+        assert "which_orbdep" not in params["NKSIC"]
+
+    def test_kipz_enables_orbdep_with_nkipz(self):
+        params = _build_n_plus_1_parameters(_OZONE_BASE, fixed_band=6, correction=Correction.KIPZ)
+        assert params["SYSTEM"]["do_orbdep"] is True
+        assert params["NKSIC"]["which_orbdep"] == "nkipz"
+
+
+class TestBuildPrintParameters:
+    """``_build_print_parameters`` — print step writes evcfixed_empty.dat."""
+
+    def test_ki_uses_pz_orbdep(self):
+        # KI's print step uses PZ-flavour orbdep (legacy ``pz_print``).
+        params = _build_print_parameters(
+            _OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KI
+        )
+        assert params["NKSIC"]["which_orbdep"] == "pz"
+        assert params["NKSIC"]["print_wfc_anion"] is True
+
+    def test_kipz_uses_nkipz_orbdep(self):
+        params = _build_print_parameters(
+            _OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KIPZ
+        )
+        assert params["NKSIC"]["which_orbdep"] == "nkipz"
+        assert params["NKSIC"]["print_wfc_anion"] is True
+
+    def test_print_step_disables_innerloop(self):
+        # The print step operates on already-converged orbitals and must
+        # not re-run the inner CG cycle (legacy tutorial_1 pz_print.cpi).
+        ki = _build_print_parameters(_OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KI)
+        kipz = _build_print_parameters(
+            _OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KIPZ
+        )
+        assert ki["NKSIC"]["do_innerloop"] is False
+        assert kipz["NKSIC"]["do_innerloop"] is False
 
 
 # ----------------------------------------------------------------------
@@ -606,8 +726,8 @@ class TestKoopmansDSCFGraphBuild:
             nbnd=10,
             nspin=2,
             tot_magnetization=None,
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
@@ -695,8 +815,8 @@ class TestKoopmansDSCFGraphBuild:
             neldw=9,
             tot_magnetization=0,
             initial_alpha=0.6,
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             dft_remote=dummy_remote,
         )
         sub_labels = self._all_link_labels(sub_wg)
@@ -733,7 +853,7 @@ class TestKoopmansDSCFGraphBuild:
                 ecutrho=260.0,
             ),
             nbnd=10,
-            functional="ki",
+            correction=Correction.KI,
             spin_polarized=False,
             current_alphas={
                 "filled": {"none": [0.6] * 9},
@@ -803,8 +923,8 @@ class TestKoopmansDSCFGraphBuild:
             neldw=9,
             tot_magnetization=0,
             initial_alpha=0.6,
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             alpha_numsteps=2,
             dft_remote=dummy_remote,
         )
@@ -858,8 +978,8 @@ class TestKoopmansDSCFGraphBuild:
             neldw=9,
             tot_magnetization=0,
             initial_alpha=0.6,
-            functional="ki",
-            init_orbitals="kohn-sham",
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             alpha_numsteps=1,
             dft_remote=dummy_remote,
         )
@@ -906,7 +1026,7 @@ class TestKoopmansDSCFGraphBuild:
                 ecutrho=260.0,
             ),
             nbnd=10,
-            functional="ki",
+            correction=Correction.KI,
             spin_polarized=True,
             current_alphas={
                 "filled": {"up": [0.6] * 9, "down": [0.6] * 9},

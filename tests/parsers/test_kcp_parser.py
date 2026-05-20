@@ -18,7 +18,8 @@ from __future__ import annotations
 import numpy as np
 from aiida import orm
 
-from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_ki_parameters
+from aiida_koopmans.types import Correction
+from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_orbdep_parameters
 
 
 def test_kcp_parser_tutorial_1_ozone_ki(
@@ -48,7 +49,7 @@ def test_kcp_parser_tutorial_1_ozone_ki(
         neldw=9,
         tot_magnetization=None,
     )
-    ki_params = _build_ki_parameters(base, nbnd=10, functional="ki")
+    ki_params = _build_orbdep_parameters(base, nbnd=10, correction=Correction.KI)
     parameters = orm.Dict(dict=ki_params)
 
     from aiida_koopmans.types import SpinChannel
