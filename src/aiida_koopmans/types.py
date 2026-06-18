@@ -7,7 +7,9 @@ CalcJob, parser, and tests can all import a single canonical definition.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TypedDict
+from typing import NotRequired, TypedDict
+
+from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 
 class Correction(str, Enum):
@@ -176,3 +178,204 @@ class AlphaScreening(TypedDict):
 
     filled: dict[SpinChannel, list[float]]
     empty: dict[SpinChannel, list[float]]
+
+
+class OrbitalDict(TypedDict):
+    """A single resolved Wannier orbital as a plain dict.
+
+    A typed *view* over the dict that AiiDA already produces via
+    ``Orbital.get_orbital_dict()`` for the ``core.realhydrogen`` orbital
+    type (the one ``aiida-wannier90``'s ``OrbitalData`` stores). It is not
+    a new schema: :func:`orbital_data_to_dicts` /
+    :func:`dicts_to_orbital_data` round-trip it losslessly against
+    ``OrbitalData``.
+
+    Defined as a :class:`TypedDict` so a ``list[OrbitalDict]`` is plain
+    primitives all the way down (``position`` etc. are floats / ints /
+    ``None`` / lists) and therefore survives ``aiida-workgraph``'s storage
+    path (``orm.List`` -> ``clean_value``) without being wrapped in an
+    ``OrbitalData`` node per orbital. Convert to ``OrbitalData`` only at
+    the ``Wannier90WorkChain`` input boundary.
+
+    The keys mirror ``aiida.tools.data.orbital.realhydrogen``'s fields
+    exactly; ``test_projection_blocks`` asserts parity so an upstream
+    schema change is caught rather than silently drifting.
+    """
+
+    _orbital_type: str
+    position: list[float]
+    angular_momentum: int
+    magnetic_number: int
+    radial_nodes: int
+    kind_name: str
+    spin: int
+    x_orientation: list[float] | None
+    z_orientation: list[float] | None
+    spin_orientation: list[float] | None
+    diffusivity: float | None
+
+
+class _ProjectionBlockBase(TypedDict):
+    """Band-bookkeeping shared by every projection block (any source).
+
+    Ports the per-block bookkeeping of legacy
+    ``projections.ProjectionBlock`` that is independent of *how* the
+    Wannier functions are obtained: the block's label, spin, the counts
+    (``num_wann`` is the common denominator across all projection
+    sources), and which bands it covers. ``projection_type`` is the
+    discriminator (a real :class:`WannierProjectionType`, registered for
+    AiiDA serialization via the ``aiida.data`` entry points).
+    """
+
+    label: str
+    spin: SpinChannel
+    num_wann: int
+    num_bands: int
+    include_bands: list[int]
+    exclude_bands: NotRequired[str | None]
+    projection_type: WannierProjectionType
+
+
+class ExplicitProjectionBlock(_ProjectionBlockBase):
+    """A block whose Wannier functions come from explicit projections.
+
+    ``projection_type`` is ``WannierProjectionType.ANALYTIC``. ``projections``
+    is *required* (it is the resolved ``list[OrbitalDict]``), so its presence
+    is what distinguishes this arm of the :data:`ProjectionBlock` union from
+    :class:`AutomaticProjectionBlock` at type-check time -- ``num_wann ==
+    len(projections)``.
+    """
+
+    projections: list[OrbitalDict]
+
+
+class AutomaticProjectionBlock(_ProjectionBlockBase):
+    """A block whose Wannier functions are found automatically.
+
+    For ``projection_type`` in ``{SCDM, ATOMIC_PROJECTORS_QE,
+    ATOMIC_PROJECTORS_EXTERNAL, RANDOM}`` there are no explicit projection
+    orbitals -- the block is defined by ``num_wann`` (plus the frozen /
+    disentanglement windows carried elsewhere). It deliberately has no
+    ``projections`` key, so ``"projections" in block`` narrows the
+    :data:`ProjectionBlock` union to the explicit arm.
+    """
+
+
+# Two genuinely different shapes rather than one TypedDict with an optional
+# ``projections`` field: the union makes "analytic-but-no-projections" (and
+# "automatic-but-has-projections") unrepresentable at type-check time. There is
+# no runtime / serialization difference -- both arms are plain dicts with
+# primitive leaves -- so Map-zone storage is unaffected; the union is purely a
+# static guarantee. Narrow with ``"projections" in block``.
+ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
+
+
+class MergeGroup(TypedDict):
+    """A set of :class:`ProjectionBlock` instances merged into one kcp.x manifold.
+
+    Ports the value side of legacy ``ProjectionBlocks.to_merge``: blocks
+    that share a filling (occupied vs empty) and spin are merged together
+    (their per-block ``evcw`` wavefunctions are concatenated by
+    ``merge_evc.x``) into a single ``evc_occupied`` / ``evc0_empty`` file
+    that seeds the supercell kcp.x run.
+
+    * ``filled``: ``True`` for the occupied manifold, ``False`` for empty.
+    * ``spin``: the shared spin channel (``SpinChannel.NONE`` for nspin=1).
+    * ``blocks``: the member blocks, in band order.
+    """
+
+    filled: bool
+    spin: SpinChannel
+    blocks: list[ProjectionBlock]
+
+
+def block_w90_kwargs(block: ProjectionBlock) -> dict:
+    """Return the Wannier90 input keywords for a single block.
+
+    Mirrors legacy ``ProjectionBlock.w90_kwargs``: the per-block
+    ``num_wann`` / ``num_bands`` / ``exclude_bands`` (and ``spin`` when
+    the block is spin-resolved) that distinguish one block's Wannier90
+    cycle from another's. ``projections`` is included only for an
+    :class:`ExplicitProjectionBlock`; automatic blocks rely on
+    ``projection_type`` instead. ``exclude_bands`` is omitted when the
+    block excludes nothing.
+    """
+    kwargs: dict = {
+        "num_wann": block["num_wann"],
+        "num_bands": block["num_bands"],
+    }
+    exclude = block.get("exclude_bands")
+    if exclude is not None:
+        kwargs["exclude_bands"] = exclude
+    if block["spin"] != SpinChannel.NONE:
+        kwargs["spin"] = SpinChannel(block["spin"]).value
+    if "projections" in block:
+        kwargs["projections"] = block["projections"]
+    return kwargs
+
+
+def group_blocks_to_merge(
+    blocks: list[ProjectionBlock],
+    num_occ_bands: dict[SpinChannel, int],
+) -> list[MergeGroup]:
+    """Group blocks into occupied / empty manifolds per spin.
+
+    Ports legacy ``ProjectionBlocks.to_merge``. A block is *occupied* when
+    all of its ``include_bands`` lie at or below that spin channel's
+    occupied-band count, and *empty* when they all lie above it; a block
+    that straddles the boundary is an error (the projections must be split
+    so each block is purely occupied or purely empty).
+
+    ``num_occ_bands`` maps each spin channel to its number of occupied
+    bands. For ``nspin == 1`` use the single key ``SpinChannel.NONE``.
+
+    Returns one :class:`MergeGroup` per ``(filled, spin)`` that has
+    members, preserving the order in which blocks are first encountered so
+    the downstream ``merge_evc.x`` concatenation is deterministic.
+    """
+    groups: list[MergeGroup] = []
+    index: dict[tuple[bool, SpinChannel], MergeGroup] = {}
+    for block in blocks:
+        spin = SpinChannel(block["spin"])
+        if spin not in num_occ_bands:
+            raise KeyError(
+                f"`num_occ_bands` has no entry for spin {spin!r}; provide one "
+                f"occupied-band count per spin channel (use SpinChannel.NONE "
+                f"for nspin==1)."
+            )
+        n_occ = num_occ_bands[spin]
+        include = block["include_bands"]
+        if max(include) <= n_occ:
+            filled = True
+        elif min(include) > n_occ:
+            filled = False
+        else:
+            raise ValueError(
+                f"Block {block['label']!r} spans both the occupied and empty "
+                f"manifolds (include_bands={include}, n_occ={n_occ}). Split the "
+                f"projections so each block is purely occupied or purely empty."
+            )
+        key = (filled, spin)
+        group = index.get(key)
+        if group is None:
+            group = MergeGroup(filled=filled, spin=spin, blocks=[])
+            index[key] = group
+            groups.append(group)
+        group["blocks"].append(block)
+    return groups
+
+
+def merge_dest_filename(filled: bool, spin_index: int) -> str:
+    """kcp.x-side filename for a merged manifold wavefunction.
+
+    Ports legacy ``_folding._construct_dest_filename``: the supercell
+    kcp.x run reads its initial variational orbitals from
+    ``evc_occupied{n}.dat`` (occupied manifold) or ``evc0_empty{n}.dat``
+    (empty manifold), where ``n`` is the 1-based kcp.x spin index
+    (1 = up / unpolarized, 2 = down).
+    """
+    if spin_index not in (1, 2):
+        raise ValueError(f"spin_index must be 1 or 2, got {spin_index!r}")
+    if filled:
+        return f"evc_occupied{spin_index}.dat"
+    return f"evc0_empty{spin_index}.dat"
