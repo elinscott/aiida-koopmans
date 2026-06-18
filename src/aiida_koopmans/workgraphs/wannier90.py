@@ -21,19 +21,12 @@ from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.workgraphs import Codes
 
+# ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
+# lives in ``pw.py`` next to the other pw output types. Re-exported here so
+# existing ``from ...wannier90 import PwOutputs`` call sites keep working.
+from aiida_koopmans.workgraphs.pw import PwOutputs
 
-class PwOutputs(TypedDict, total=False):
-    """Outputs of a single PwBaseWorkChain run."""
-
-    remote_folder: orm.RemoteData
-    remote_stash: orm.RemoteData
-    retrieved: orm.FolderData
-    output_parameters: dict
-    output_structure: orm.StructureData
-    output_band: orm.BandsData
-    output_atomic_occupations: dict
-    output_kpoints: orm.KpointsData
-    output_trajectory: orm.TrajectoryData
+__all__ = ["PwOutputs"]
 
 
 class Wannier90Outputs(TypedDict):

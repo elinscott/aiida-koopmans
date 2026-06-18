@@ -11,6 +11,20 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 
+class PwOutputs(TypedDict, total=False):
+    """Outputs of a single PwBaseWorkChain run."""
+
+    remote_folder: orm.RemoteData
+    remote_stash: orm.RemoteData
+    retrieved: orm.FolderData
+    output_parameters: dict
+    output_structure: orm.StructureData
+    output_band: orm.BandsData
+    output_atomic_occupations: dict
+    output_kpoints: orm.KpointsData
+    output_trajectory: orm.TrajectoryData
+
+
 class ScfBandsOutputs(TypedDict):
     """Outputs of a PwBandsWorkChain run (SCF + bands)."""
 

@@ -1,0 +1,193 @@
+"""Construction-level unit tests for the block-by-block Wannierize workgraph.
+
+These build the ``BlockWannierizeTask`` graph (no daemon, no real codes
+execution) and introspect its task list. The per-block fan-out happens in a
+``Map`` zone that only expands at *runtime*, so the build-time graph shows one
+``BlockWannierize`` template plus one ``scf_nscf`` task; the per-block keying
+is asserted directly against the ``Map`` source builder
+(``blocks_to_map_source``), which produces one entry per block label.
+"""
+
+from __future__ import annotations
+
+import pytest
+from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+from aiida_koopmans.workgraphs.block_wannierize import (
+    BlockWannierizeTask,
+    blocks_to_map_source,
+)
+
+# ----------------------------------------------------------------------
+# Fixtures: codes, structures, block shapes
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture
+def wannier_codes(aiida_localhost):
+    """Return the ``Codes`` dict of stand-in InstalledCode nodes.
+
+    The codes never execute (these are construction-only tests); they exist
+    only so the ``Codes`` input namespace is populated with real
+    ``AbstractCode`` nodes, which the builder / namespace validators require.
+    """
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    def _code(label: str, entry_point: str):
+        try:
+            return InstalledCode.collection.get(label=label)
+        except NotExistent:
+            return InstalledCode(
+                label=label,
+                computer=aiida_localhost,
+                filepath_executable="/bin/true",
+                default_calc_job_plugin=entry_point,
+            ).store()
+
+    return {
+        "pw": _code("bw-pw", "quantumespresso.pw"),
+        "wannier90": _code("bw-w90", "wannier90.wannier90"),
+        "pw2wannier90": _code("bw-p2w", "quantumespresso.pw2wannier90"),
+        "projwfc": _code("bw-pjw", "quantumespresso.projwfc"),
+    }
+
+
+@pytest.fixture
+def silicon_structure(aiida_profile):
+    """Return a 2-atom periodic silicon ``StructureData``."""
+    from aiida.orm import StructureData
+
+    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
+    struct = StructureData(cell=cell, pbc=True)
+    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
+    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
+    return struct
+
+
+@pytest.fixture
+def zno_structure(aiida_profile):
+    """Return a 4-atom periodic wurtzite-ish ZnO ``StructureData``."""
+    from aiida.orm import StructureData
+
+    cell = [[3.25, 0.0, 0.0], [-1.625, 2.814, 0.0], [0.0, 0.0, 5.2]]
+    struct = StructureData(cell=cell, pbc=True)
+    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Zn", name="Zn")
+    struct.append_atom(position=(1.625, 0.938, 2.6), symbols="Zn", name="Zn")
+    struct.append_atom(position=(0.0, 0.0, 1.95), symbols="O", name="O")
+    struct.append_atom(position=(1.625, 0.938, 4.55), symbols="O", name="O")
+    return struct
+
+
+@pytest.fixture
+def kmesh(aiida_profile):
+    """Return a coarse explicit k-mesh shared by nscf and every block."""
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints_mesh([2, 2, 2])
+    return kpts
+
+
+def _explicit_block(label: str, include: range) -> ExplicitProjectionBlock:
+    """Build a minimal nspin=1 explicit (ANALYTIC) block over ``include`` bands."""
+    n = len(include)
+    return ExplicitProjectionBlock(
+        label=label,
+        spin=SpinChannel.NONE,
+        num_wann=n,
+        num_bands=n,
+        include_bands=list(include),
+        projection_type=WannierProjectionType.ANALYTIC,
+        projections=[],
+    )
+
+
+def _silicon_blocks() -> list[ExplicitProjectionBlock]:
+    """tutorial_2 silicon shape: 1 occupied block + 1 empty block, nspin=1."""
+    return [
+        _explicit_block("block_1", range(1, 5)),  # 4 occupied
+        _explicit_block("block_2", range(5, 9)),  # 4 empty
+    ]
+
+
+def _zno_blocks() -> list[ExplicitProjectionBlock]:
+    """ZnO shape: 4 occupied blocks + 1 empty block, nspin=1."""
+    return [
+        _explicit_block("block_1", range(1, 6)),  # Zn 3d-ish
+        _explicit_block("block_2", range(6, 9)),
+        _explicit_block("block_3", range(9, 13)),
+        _explicit_block("block_4", range(13, 17)),
+        _explicit_block("block_5", range(17, 21)),  # empty
+    ]
+
+
+# ----------------------------------------------------------------------
+# Map-source keying: one entry per block, keyed by label
+# ----------------------------------------------------------------------
+
+
+class TestBlocksToMapSource:
+    def test_silicon_keys_are_block_labels(self):
+        source = blocks_to_map_source._callable(_silicon_blocks())
+        assert list(source) == ["block_1", "block_2"]
+
+    def test_zno_keys_are_block_labels(self):
+        source = blocks_to_map_source._callable(_zno_blocks())
+        assert list(source) == ["block_1", "block_2", "block_3", "block_4", "block_5"]
+
+    def test_value_is_the_block_dict(self):
+        blocks = _silicon_blocks()
+        source = blocks_to_map_source._callable(blocks)
+        assert source["block_1"] == blocks[0]
+        assert source["block_2"] == blocks[1]
+
+
+# ----------------------------------------------------------------------
+# Graph construction: shared scf+nscf once, Map fan-out present
+# ----------------------------------------------------------------------
+
+
+def _build(codes, structure, blocks, kpoints):
+    return BlockWannierizeTask.build(
+        codes=codes,
+        structure=structure,
+        blocks=blocks,
+        kpoints=kpoints,
+        pseudo_family="SSSP/1.3/PBE/efficiency",
+    )
+
+
+class TestBlockWannierizeGraphBuild:
+    def test_silicon_graph_builds(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        names = [t.name for t in wg.tasks]
+
+        # Shared scf+nscf appears exactly once.
+        assert names.count("scf_nscf") == 1
+        # The per-block Wannierize template lives inside a single Map zone;
+        # at build time it appears once (it expands per-block at runtime).
+        assert names.count("map_zone") == 1
+        assert names.count("BlockWannierize") == 1
+        # The Map source builder (fans out over blocks) is present once.
+        assert names.count("blocks_to_map_source") == 1
+
+    def test_zno_graph_builds(self, wannier_codes, zno_structure, kmesh):
+        wg = _build(wannier_codes, zno_structure, _zno_blocks(), kmesh)
+        names = [t.name for t in wg.tasks]
+
+        assert names.count("scf_nscf") == 1
+        assert names.count("map_zone") == 1
+        assert names.count("BlockWannierize") == 1
+        assert names.count("blocks_to_map_source") == 1
+
+    @pytest.mark.parametrize(
+        "blocks_factory,n_blocks",
+        [(_silicon_blocks, 2), (_zno_blocks, 5)],
+    )
+    def test_one_map_entry_per_block(self, blocks_factory, n_blocks):
+        # Construction-level proxy for "one wannier sub-task per block": the
+        # Map source emits exactly one iteration item per block.
+        source = blocks_to_map_source._callable(blocks_factory())
+        assert len(source) == n_blocks
