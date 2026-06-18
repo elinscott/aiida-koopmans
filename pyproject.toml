@@ -57,9 +57,13 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 
 [project.entry-points."aiida.calculations"]
 "koopmans.kcp" = "aiida_koopmans.calculations.kcp:KcpCalculation"
+"koopmans.wann2kcp" = "aiida_koopmans.calculations.wann2kcp:Wann2kcpCalculation"
+"koopmans.merge_evc" = "aiida_koopmans.calculations.merge_evc:MergeEvcCalculation"
 
 [project.entry-points."aiida.parsers"]
 "koopmans.kcp" = "aiida_koopmans.parsers.kcp:KcpParser"
+"koopmans.wann2kcp" = "aiida_koopmans.parsers.wann2kcp:Wann2kcpParser"
+"koopmans.merge_evc" = "aiida_koopmans.parsers.merge_evc:MergeEvcParser"
 
 [tool.pytest.ini_options]
 # Configuration for [pytest](https://docs.pytest.org)
