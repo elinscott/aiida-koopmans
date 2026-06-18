@@ -6,10 +6,13 @@ block (occupied / empty manifold, per spin) is Wannierised in its own
 ``Wannier90WorkChain`` that *skips* scf and nscf and reads the shared nscf
 scratch directly.
 
-The fan-out over blocks uses an ``aiida-workgraph`` ``Map`` zone keyed by
-each block's stable ``label`` (e.g. ``"block_1"`` / ``"block_1_spin_up"``),
-mirroring the per-orbital Map pattern in
-``aiida_koopmans/workgraphs/kcp.py``.
+The fan-out over blocks is the documented dynamic scatter-gather: a native
+``for`` loop over ``blocks`` inside this ``@task.graph`` body (whose
+deferred execution makes ``blocks`` concrete, so each block is iterated and
+subscripted inline). No ``Map`` zone, no ``.value`` accessor, no unpack
+``@task``. Results are collected into a dict keyed by each block's stable
+``label`` (e.g. ``"block_1"`` / ``"block_1_spin_up"``) and returned as a
+dynamic output namespace.
 
 Per-block file staging that the later fold-to-supercell step (B2) consumes:
 
@@ -23,17 +26,21 @@ Per-block file staging that the later fold-to-supercell step (B2) consumes:
   emitted by the wannier90 post-processing (``-pp``) run.
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 from aiida_wannier90_workflows.workflows import Wannier90WorkChain
-from aiida_workgraph import Map, dynamic, task
+from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
+# NOTE: deliberately no ``from __future__ import annotations``. The dynamic
+# output namespace (``Annotated[dict, dynamic(BlockWannierOutputs)]``) must
+# resolve to a real object at runtime so the engine can build the per-block
+# output links; PEP 563 stringised annotations break that with
+# "name 'Annotated' is not defined". (Python 3.10+ ``X | Y`` / ``dict[...]``
+# work without the future import anyway.)
 from aiida_koopmans.types import ProjectionBlock, block_w90_kwargs
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.pw import PwOutputs, PwScfNscfTask
@@ -67,6 +74,17 @@ class BlockWannierizeOutputs(TypedDict):
       ``nscf["remote_folder"]`` (the nscf scratch every block was built on).
     * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
       a :class:`BlockWannierOutputs`.
+
+    TODO(B2 / fold-to-supercell): a ``TypedDict`` used as a ``@task.graph``
+    *return* annotation does NOT build a consumable namespace output in
+    aiida-workgraph 0.8.1 -- the ``blocks`` dynamic field becomes an opaque
+    ``workgraph.dict`` that a downstream namespace consumer cannot link to
+    ("Namespace item type mismatch: ... dict -> ... namespace"). When B2
+    consumes ``blocks`` as a namespace, switch this return to an explicit
+    ``-> Annotated[dict, namespace(nscf=..., blocks=dynamic(namespace(...)))]``
+    (``dynamic(TypedDict)`` as a *field* is fine; only TypedDict-as-return
+    breaks). Verified + tracked in ``~/code/aiida-workgraph-wishlist``
+    (``test_typeddict_return_annotation_is_consumable``).
     """
 
     nscf: PwOutputs
@@ -74,33 +92,6 @@ class BlockWannierizeOutputs(TypedDict):
 
 
 Wannier90Task = task(Wannier90WorkChain)
-
-
-@task
-def blocks_to_map_source(
-    blocks: list[ProjectionBlock],
-) -> Annotated[dict, dynamic(dict)]:
-    """Materialise the per-block iterator dict for the ``Map`` zone.
-
-    ``aiida-workgraph``'s ``Map`` zone iterates over a dict and uses the
-    key as the iteration handle / sub-task link label, so keys must be
-    strings -- here each block's stable ``label``. Each value is the block
-    dict itself (a plain-primitive :class:`ProjectionBlock`, so it survives
-    AiiDA storage). Building the dict inside a real ``@task`` keeps the
-    list-to-dict transform off the raw socket inside the graph body.
-    """
-    return {block["label"]: block for block in blocks}
-
-
-@task(outputs=["block", "projection_type"])
-def unpack_block_item(item: dict) -> dict:
-    """Explode one ``Map`` item into named output sockets.
-
-    Returns the block dict and its ``projection_type`` (a real
-    :class:`WannierProjectionType`) separately so the per-block graph can
-    consume them without subscripting a socket inside the Map zone.
-    """
-    return {"block": item, "projection_type": item["projection_type"]}
 
 
 @task.graph
@@ -222,8 +213,13 @@ def BlockWannierizeTask(
     A single :func:`PwScfNscfTask` runs scf + nscf once; every projection
     block is then Wannierised in its own ``Wannier90WorkChain`` that skips
     scf / nscf and reads the shared nscf scratch
-    (``nscf["remote_folder"]``). The per-block fan-out is an
-    ``aiida-workgraph`` ``Map`` zone keyed by each block's ``label``.
+    (``nscf["remote_folder"]``). The per-block fan-out is the documented
+    dynamic scatter-gather: a native ``for`` loop over ``blocks`` inside
+    this ``@task.graph`` body. The body is deferred, so ``blocks`` is a
+    concrete value -- we iterate it and subscript each block inline (no
+    ``Map`` zone, no ``.value``, no unpack ``@task``). The per-block
+    outputs are collected into a dict keyed by block label and returned as
+    the ``blocks`` dynamic namespace.
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
@@ -267,16 +263,19 @@ def BlockWannierizeTask(
 
     wannier_overrides = overrides.get("wannier90")
 
-    # --- per-block Wannierisation via a Map zone keyed by block label ---
-    block_source = blocks_to_map_source(blocks=blocks)
-    with Map(block_source) as block_zone:
-        item = block_zone.item.value
-        unpacked = unpack_block_item(item=item)
-        block_out = BlockWannierize(
+    # --- per-block Wannierisation: native for-loop fan-out ---
+    # ``blocks`` is concrete in this deferred body, so we iterate it and
+    # subscript each block inline. Each iteration adds an independent
+    # ``BlockWannierize`` (they share only the read-only nscf scratch, so
+    # they run in parallel). Collect the per-block outputs into a dict keyed
+    # by block label -> the ``blocks`` dynamic output namespace.
+    block_outputs: dict[str, BlockWannierOutputs] = {}
+    for block in blocks:
+        block_outputs[block["label"]] = BlockWannierize(
             codes=codes,
             structure=structure,
-            block=unpacked["block"],
-            projection_type=unpacked["projection_type"],
+            block=block,
+            projection_type=block["projection_type"],
             nscf_remote_folder=nscf_remote_folder,
             kpoints=kpoints,
             pseudo_family=pseudo_family,
@@ -285,15 +284,8 @@ def BlockWannierizeTask(
             electronic_type=electronic_type,
             spin_type=spin_type,
         )
-        block_zone.gather(
-            {
-                "hr_retrieved": block_out["hr_retrieved"],
-                "remote_folder": block_out["remote_folder"],
-                "nnkp_file": block_out["nnkp_file"],
-            }
-        )
 
     return BlockWannierizeOutputs(
         nscf=PwOutputs(remote_folder=nscf_remote_folder),
-        blocks=block_zone.outputs,
+        blocks=block_outputs,
     )

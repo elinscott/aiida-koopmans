@@ -1,23 +1,17 @@
 """Construction-level unit tests for the block-by-block Wannierize workgraph.
 
 These build the ``BlockWannierizeTask`` graph (no daemon, no real codes
-execution) and introspect its task list. The per-block fan-out happens in a
-``Map`` zone that only expands at *runtime*, so the build-time graph shows one
-``BlockWannierize`` template plus one ``scf_nscf`` task; the per-block keying
-is asserted directly against the ``Map`` source builder
-(``blocks_to_map_source``), which produces one entry per block label.
+execution) and introspect its task list. The per-block fan-out is a native
+``for`` loop in the (top-level) graph body, which runs at build time over the
+concrete ``blocks`` list -- so the built graph shows one ``BlockWannierize``
+per block plus a single shared ``scf_nscf`` task.
 """
-
-from __future__ import annotations
 
 import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
-from aiida_koopmans.workgraphs.block_wannierize import (
-    BlockWannierizeTask,
-    blocks_to_map_source,
-)
+from aiida_koopmans.workgraphs.block_wannierize import BlockWannierizeTask
 
 # ----------------------------------------------------------------------
 # Fixtures: codes, structures, block shapes
@@ -124,28 +118,7 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
 
 
 # ----------------------------------------------------------------------
-# Map-source keying: one entry per block, keyed by label
-# ----------------------------------------------------------------------
-
-
-class TestBlocksToMapSource:
-    def test_silicon_keys_are_block_labels(self):
-        source = blocks_to_map_source._callable(_silicon_blocks())
-        assert list(source) == ["block_1", "block_2"]
-
-    def test_zno_keys_are_block_labels(self):
-        source = blocks_to_map_source._callable(_zno_blocks())
-        assert list(source) == ["block_1", "block_2", "block_3", "block_4", "block_5"]
-
-    def test_value_is_the_block_dict(self):
-        blocks = _silicon_blocks()
-        source = blocks_to_map_source._callable(blocks)
-        assert source["block_1"] == blocks[0]
-        assert source["block_2"] == blocks[1]
-
-
-# ----------------------------------------------------------------------
-# Graph construction: shared scf+nscf once, Map fan-out present
+# Graph construction: shared scf+nscf once, one BlockWannierize per block
 # ----------------------------------------------------------------------
 
 
@@ -160,34 +133,23 @@ def _build(codes, structure, blocks, kpoints):
 
 
 class TestBlockWannierizeGraphBuild:
-    def test_silicon_graph_builds(self, wannier_codes, silicon_structure, kmesh):
-        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+    @pytest.mark.parametrize(
+        "structure_fixture,blocks_factory,n_blocks",
+        [("silicon_structure", _silicon_blocks, 2), ("zno_structure", _zno_blocks, 5)],
+    )
+    def test_graph_builds_one_block_per_block(
+        self, request, wannier_codes, kmesh, structure_fixture, blocks_factory, n_blocks
+    ):
+        structure = request.getfixturevalue(structure_fixture)
+        wg = _build(wannier_codes, structure, blocks_factory(), kmesh)
         names = [t.name for t in wg.tasks]
 
         # Shared scf+nscf appears exactly once.
         assert names.count("scf_nscf") == 1
-        # The per-block Wannierize template lives inside a single Map zone;
-        # at build time it appears once (it expands per-block at runtime).
-        assert names.count("map_zone") == 1
-        assert names.count("BlockWannierize") == 1
-        # The Map source builder (fans out over blocks) is present once.
-        assert names.count("blocks_to_map_source") == 1
-
-    def test_zno_graph_builds(self, wannier_codes, zno_structure, kmesh):
-        wg = _build(wannier_codes, zno_structure, _zno_blocks(), kmesh)
-        names = [t.name for t in wg.tasks]
-
-        assert names.count("scf_nscf") == 1
-        assert names.count("map_zone") == 1
-        assert names.count("BlockWannierize") == 1
-        assert names.count("blocks_to_map_source") == 1
-
-    @pytest.mark.parametrize(
-        "blocks_factory,n_blocks",
-        [(_silicon_blocks, 2), (_zno_blocks, 5)],
-    )
-    def test_one_map_entry_per_block(self, blocks_factory, n_blocks):
-        # Construction-level proxy for "one wannier sub-task per block": the
-        # Map source emits exactly one iteration item per block.
-        source = blocks_to_map_source._callable(blocks_factory())
-        assert len(source) == n_blocks
+        # The native for-loop unrolls at build time over the concrete blocks
+        # list: one independent BlockWannierize per block (aiida-workgraph
+        # auto-suffixes the repeats: BlockWannierize, BlockWannierize1, ...).
+        # No Map zone.
+        n_block_tasks = sum(1 for name in names if name.startswith("BlockWannierize"))
+        assert n_block_tasks == n_blocks
+        assert names.count("map_zone") == 0
