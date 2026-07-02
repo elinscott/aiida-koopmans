@@ -637,7 +637,7 @@ def build_empty_iter_source(
 
 
 @task
-def _get_value(data: dict, key: str):
+def get_value(data: dict, key: str):
     """Extract a single field from a Map item dict.
 
     Map items are dict-valued; AiiDA forbids direct subscripting of
@@ -1389,10 +1389,10 @@ def ScreeningIteration(
             nelup=base.nelup,
             neldw=base.neldw,
             tot_magnetization=base.tot_magnetization,
-            fixed_band=_get_value(data=filled_item, key="fixed_band").result,
-            spin_channel=_get_value(data=filled_item, key="spin_channel").result,
-            band_index=_get_value(data=filled_item, key="band_index").result,
-            alpha_guess=_get_value(data=filled_item, key="alpha_guess").result,
+            fixed_band=get_value(data=filled_item, key="fixed_band").result,
+            spin_channel=get_value(data=filled_item, key="spin_channel").result,
+            band_index=get_value(data=filled_item, key="band_index").result,
+            alpha_guess=get_value(data=filled_item, key="alpha_guess").result,
             trial_remote=trial["remote_folder"],
             trial_output_parameters=trial["output_parameters"],
             trial_lambdas=trial["output_lambdas"],
