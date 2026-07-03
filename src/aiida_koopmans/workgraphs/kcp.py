@@ -77,14 +77,36 @@ class DFTCPOutputs(TypedDict):
     remote_folder: orm.RemoteData
 
 
-class KoopmansDSCFOutputs(TypedDict):
-    """Outputs of the KI correction step (the final result of a KI-DSCF workflow)."""
+class KIFinalOutputs(TypedDict):
+    """Outputs of the final KI run (the application of the converged alphas)."""
 
     parameters: dict
     eigenvalues: np.ndarray
     lambdas: np.ndarray
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
+
+
+class KoopmansDSCFOutputs(TypedDict):
+    """Outputs of a full KI-DSCF workflow.
+
+    :class:`KIFinalOutputs` plus ``alphas`` — the converged per-orbital
+    screening parameters the final KI consumed (in the
+    :class:`~aiida_koopmans.types.AlphaScreening` shape). Exposed at the
+    workflow level so consumers (e.g. the ML trajectory workflow's
+    training targets) read them directly instead of walking provenance.
+    A separate ``TypedDict`` from :class:`KIFinalOutputs` because
+    ``alphas`` is an *input* of the final KI — :func:`KIFinal` cannot
+    echo a graph input as an output, so the field is wired at the outer
+    workflow level from the screening step's outputs.
+    """
+
+    parameters: dict
+    eigenvalues: np.ndarray
+    lambdas: np.ndarray
+    bare_lambdas: np.ndarray
+    remote_folder: orm.RemoteData
+    alphas: AlphaScreening
 
 
 @dataclass(frozen=True)
@@ -953,6 +975,7 @@ def KoopmansDSCFWorkflow(
         lambdas=ki_final["lambdas"],
         bare_lambdas=ki_final["bare_lambdas"],
         remote_folder=ki_final["remote_folder"],
+        alphas=screening["alphas"],
     )
 
 
@@ -975,7 +998,7 @@ def KIFinal(
     tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
-) -> KoopmansDSCFOutputs:
+) -> KIFinalOutputs:
     """Apply the converged screening parameters via a final KI run.
 
     Thin wrapper around a single ``KcpCalculation``. Exists as its own
@@ -1015,7 +1038,7 @@ def KIFinal(
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
     )
     final = KcpBaseTask(**final_inputs)
-    return KoopmansDSCFOutputs(
+    return KIFinalOutputs(
         parameters=final["output_parameters"],
         eigenvalues=final["output_eigenvalues"],
         lambdas=final["output_lambdas"],

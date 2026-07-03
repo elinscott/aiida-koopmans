@@ -2,8 +2,7 @@
 
 Graph-construction tests mirror ``test_kcp_workgraph.py``: nothing is
 executed against a real kcp.x — the fan-out topology is inspected at build
-time. The provenance-walking ``extract_final_alphas`` calcfunction is
-exercised at runtime against a hand-rolled CalcJobNode → RemoteData chain.
+time.
 """
 
 from __future__ import annotations
@@ -37,48 +36,6 @@ class TestExtractSnapshotDataset:
     def test_missing_orbital_data_raises(self):
         with pytest.raises(ValueError, match="No self-Hartree data"):
             self._call({"energy": -1.0}, {"filled": {"none": [0.6]}, "empty": {}})
-
-
-# ----------------------------------------------------------------------
-# extract_final_alphas — runtime provenance walk
-# ----------------------------------------------------------------------
-
-
-class TestExtractFinalAlphas:
-    @staticmethod
-    def _fake_final_ki(localhost, *, with_alphas=True):
-        """Store a CalcJobNode with ``alphas.filled``/``alphas.empty`` inputs and its RemoteData."""
-        from aiida import orm
-        from aiida.common.links import LinkType
-
-        calc = orm.CalcJobNode(computer=localhost)
-        calc.set_process_type("aiida.calculations:koopmans.kcp")
-        if with_alphas:
-            filled = orm.Dict(dict={"none": [0.6, 0.7]}).store()
-            empty = orm.Dict(dict={"none": [0.5]}).store()
-            calc.base.links.add_incoming(filled, LinkType.INPUT_CALC, "alphas__filled")
-            calc.base.links.add_incoming(empty, LinkType.INPUT_CALC, "alphas__empty")
-        calc.store()
-
-        remote = orm.RemoteData(remote_path="/fake/path", computer=localhost)
-        remote.base.links.add_incoming(calc, LinkType.CREATE, "remote_folder")
-        remote.store()
-        calc.seal()
-        return remote
-
-    def test_recovers_alphas_from_creator_inputs(self, aiida_profile, aiida_localhost):
-        from aiida_workgraph import WorkGraph
-
-        from aiida_koopmans.workgraphs.ml import extract_final_alphas
-
-        remote = self._fake_final_ki(aiida_localhost)
-
-        wg = WorkGraph("extract_final_alphas_unit")
-        wg.add_task(extract_final_alphas, name="extract", remote_folder=remote)
-        wg.run()
-
-        result = wg.tasks.extract.outputs.result.value.get_dict()
-        assert result == {"filled": {"none": [0.6, 0.7]}, "empty": {"none": [0.5]}}
 
 
 # ----------------------------------------------------------------------
@@ -154,9 +111,8 @@ class TestTrajectoryGraphBuild:
         # One DSCF sub-graph per snapshot (call_link_label carries the key).
         assert any("dscf_snapshot_1" in n for n in names), names
         assert any("dscf_snapshot_2" in n for n in names), names
-        # Per-snapshot alpha recovery + dataset extraction.
-        assert any("alphas_snapshot_1" in n for n in names), names
-        assert any("alphas_snapshot_2" in n for n in names), names
+        # Per-snapshot dataset extraction (alphas come straight off the
+        # DSCF outputs — no provenance-walk task anymore).
         assert sum(1 for n in names if "extract_snapshot_dataset" in n) == 2, names
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names

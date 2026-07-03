@@ -22,10 +22,9 @@ Scope notes (MVP):
   skip the Delta-SCF refinement) is blocked on the frozen
   ``KoopmansDSCFWorkflow`` interface, which accepts only a scalar
   ``initial_alpha``.
-* **Alphas**: the frozen ``KoopmansDSCFOutputs`` does not expose the
-  converged screening parameters, so :func:`extract_final_alphas` recovers
-  them from provenance — the final KI ``remote_folder``'s creator CalcJob
-  received them as its ``alphas.filled`` / ``alphas.empty`` inputs.
+* **Alphas**: read directly from ``KoopmansDSCFOutputs["alphas"]`` — the
+  converged screening parameters the final KI consumed, exposed at the
+  DSCF workflow level.
 * ``train_on_the_fly`` has no analogue here: snapshots run concurrently,
   so the model is fitted once on the gathered data (matching legacy
   ``train_on_the_fly=False`` behaviour).
@@ -39,7 +38,7 @@ from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans import ml_helpers
-from aiida_koopmans.types import Correction, VariationalOrbitalType
+from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
@@ -83,38 +82,8 @@ class TrajectoryOutputs(TypedDict):
     evaluation: dict
 
 
-@task.calcfunction
-def extract_final_alphas(remote_folder: orm.RemoteData) -> orm.Dict:
-    """Recover the screening parameters the final KI ran with.
-
-    The frozen :class:`KoopmansDSCFOutputs` interface does not expose the
-    converged alphas, but its ``remote_folder`` was created by the final KI
-    ``KcpCalculation``, which consumed them as ``alphas.filled`` /
-    ``alphas.empty`` ``Dict`` inputs — walk one provenance step back and
-    repackage them. A calcfunction (not a plain ``@task``) so the returned
-    ``Dict`` is linked to the ``RemoteData`` in provenance.
-    """
-    creator = remote_folder.creator
-    if creator is None:
-        raise ValueError(
-            f"RemoteData<{remote_folder.pk}> has no creator CalcJob; "
-            "cannot recover the screening parameters"
-        )
-    if "alphas" not in creator.inputs:
-        raise ValueError(
-            f"{creator.process_label}<{creator.pk}> (creator of RemoteData<{remote_folder.pk}>) "
-            "has no `alphas` input namespace; expected the final KI kcp.x calculation"
-        )
-    return orm.Dict(
-        dict={
-            "filled": creator.inputs.alphas.filled.get_dict(),
-            "empty": creator.inputs.alphas.empty.get_dict(),
-        }
-    )
-
-
 @task
-def extract_snapshot_dataset(parameters: dict, alphas: dict) -> dict:
+def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> dict:
     """Pair one snapshot's self-Hartree descriptors with its screening parameters.
 
     ``parameters`` is the final KI's parsed output (its
@@ -280,16 +249,13 @@ def TrajectoryWorkflow(
             lambdas=dscf["lambdas"],
             bare_lambdas=dscf["bare_lambdas"],
             remote_folder=dscf["remote_folder"],
+            alphas=dscf["alphas"],
         )
 
         if ml_mode != "none":
-            alphas = extract_final_alphas(
-                remote_folder=dscf["remote_folder"],
-                metadata={"call_link_label": f"alphas_{label}"},
-            )
             dataset = extract_snapshot_dataset(
                 parameters=dscf["parameters"],
-                alphas=alphas.result,
+                alphas=dscf["alphas"],
             )
             datasets[label] = dataset.result
 
