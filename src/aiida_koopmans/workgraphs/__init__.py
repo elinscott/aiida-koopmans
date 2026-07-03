@@ -16,3 +16,4 @@ class Codes(TypedDict, total=False):
     projwfc: orm.AbstractCode
     dos: orm.AbstractCode
     kcp: orm.AbstractCode
+    kcw: orm.AbstractCode
