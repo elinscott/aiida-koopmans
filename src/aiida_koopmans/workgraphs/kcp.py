@@ -31,7 +31,7 @@ import numpy as np
 from aiida import orm
 from aiida.plugins import DataFactory
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
-from aiida_workgraph import Map, dynamic, task
+from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.types import (
@@ -166,7 +166,7 @@ class OrbitalDeltaSCFOutputs(TypedDict):
 
 
 class _PerOrbitalAlphaOutputs(TypedDict):
-    """Gathered outputs of the per-orbital scatter, packed into per-spin lists.
+    """Gathered outputs of the per-orbital fan-out, packed into per-spin lists.
 
     ``alphas`` and ``errors`` share the same per-spin / filled-vs-empty
     layout (see :class:`AlphaScreening`), making the ``alphas`` field
@@ -180,8 +180,8 @@ class _PerOrbitalAlphaOutputs(TypedDict):
 class ScreeningIterationOutputs(TypedDict):
     """Outputs of one alpha-refinement iteration (trial KI + per-orbital DSCF).
 
-    Used to thread the next iteration's inputs through the ``While`` loop
-    (alpha refinement) without going through ``wg.ctx``:
+    Used to thread the next iteration's inputs through the recursive
+    :func:`AlphaRefinementLoop`:
 
     * ``alphas`` — gathered per-orbital screening parameters; becomes the
       next iteration's trial-KI ``alphas`` input.
@@ -288,10 +288,10 @@ def assemble_alpha_screening(
     empty_alphas: dict | None = None,
     empty_errors: dict | None = None,
 ) -> _PerOrbitalAlphaOutputs:
-    """Pack per-orbital scatter outputs into the :class:`AlphaScreening` shape.
+    """Pack per-orbital fan-out outputs into the :class:`AlphaScreening` shape.
 
     Inputs are flat dicts keyed by :func:`map_key_for` strings — the
-    same labels the Map zone gather emits — paired with a
+    same labels the per-orbital for-loop gather uses — paired with a
     ``list[VariationalOrbital]`` from :func:`assign_orbital_groups`
     that carries each orbital's structured fields (``spin`` /
     ``index`` / ``filled``). The packer looks up each input value by
@@ -306,8 +306,8 @@ def assemble_alpha_screening(
     pair: the ``alphas`` field plugs straight into the kcp.x ``alphas``
     socket of the final KI step.
     """
-    # Map zones with zero iterations may surface their gathered output
-    # as ``None``; treat that as the empty dict.
+    # A branch with zero orbitals passes no gather dict (``None``);
+    # treat that as the empty dict.
     filled_alphas = filled_alphas or {}
     filled_errors = filled_errors or {}
     empty_alphas = empty_alphas or {}
@@ -411,21 +411,25 @@ def generate_alphas(
     }
 
 
-@task
 def build_filled_iter_source(
     nelup: int | None,
     neldw: int | None,
     orbitals: list[VariationalOrbital],
     filled_alphas: dict,
-) -> Annotated[dict, dynamic(dict)]:
-    """Materialise the per-orbital iterator for the *filled* Map zone.
+) -> dict[str, dict]:
+    """Materialise the per-orbital items for the *filled* fan-out loop.
+
+    A plain function (not a ``@task``): it runs inside the deferred body
+    of :func:`PerOrbitalScreening`, where ``orbitals`` and
+    ``filled_alphas`` are already concrete values, and its return dict
+    is iterated by a native ``for`` loop.
 
     Emits one entry per **representative** filled orbital
     (``o["representative"] is True``); non-representative orbitals
-    inherit their group's alpha after the Map gather, via
+    inherit their group's alpha after the gather, via
     :func:`expand_alphas_by_group`. When grouping is disabled
     (:func:`assign_orbital_groups` short-circuit on ``tol is None``)
-    every orbital is its own representative and the Map fan-out is
+    every orbital is its own representative and the fan-out is
     unchanged.
 
     Each emitted item is a ``dict`` carrying the per-orbital
@@ -433,11 +437,10 @@ def build_filled_iter_source(
     ``orbital`` (the :class:`VariationalOrbital` TypedDict, carrying
     spin / per-spin index / filled / group_id / representative),
     ``fixed_band`` (1-indexed kcp.x band position), ``band_index``
-    (0-indexed numpy index into the trial-KI lambda matrix), and
+    (0-indexed numpy index into the trial-KI lambda matrix),
     ``alpha_guess`` (per-orbital alpha in use this refinement
-    iteration). ``spin_channel`` is forwarded as a convenience
-    (= ``orbital["spin"]``); kept for the existing
-    ``_get_value(... "spin_channel")`` consumer at the call site.
+    iteration), and ``spin_channel`` (= ``orbital["spin"]``,
+    normalised to the enum).
 
     ``filled_alphas`` is keyed by spin tag (matching
     :class:`SpinChannel`'s string values — what survives AiiDA's
@@ -464,7 +467,7 @@ def build_filled_iter_source(
         # DOWN-channel bands are shifted by ``nelup`` (not by the
         # symmetric halved count, which is wrong when nelup != neldw).
         # See legacy ``_koopmans_dscf.py:759-760``.
-        fixed_band = index + nelup if spin is SpinChannel.DOWN else index
+        fixed_band = index + nelup if spin == SpinChannel.DOWN else index
         out[map_key_for(o)] = {
             "orbital": o,
             "fixed_band": fixed_band,
@@ -475,15 +478,19 @@ def build_filled_iter_source(
     return out
 
 
-@task
 def build_empty_iter_source(
     base: KcpBaseInputs,
     nbnd: int,
     orbitals: list[VariationalOrbital],
     empty_alphas: dict,
     correction: Correction = Correction.KI,
-) -> Annotated[dict, dynamic(dict)]:
-    """Materialise the per-orbital iterator for the *empty* Map zone.
+) -> dict[str, dict]:
+    """Materialise the per-orbital items for the *empty* fan-out loop.
+
+    A plain function (not a ``@task``): it runs inside the deferred body
+    of :func:`PerOrbitalScreening`, where ``orbitals`` / ``base`` /
+    ``empty_alphas`` are already concrete values, so the spin-aware
+    branching below evaluates on real ints and enums.
 
     Empty orbitals come *after* the filled manifold within each per-spin
     block, so ``fixed_band`` and ``band_index`` are offset by
@@ -501,16 +508,12 @@ def build_empty_iter_source(
     three-step pipeline. Spin-aware electron addition and the kcp-frame
     spin-swap decision (legacy ``_swap_spin_channels``,
     ``koopmans/src/koopmans/calculators/_koopmans_cp.py:159-205``)
-    happen here because this builder is a real ``@task`` — values like
-    ``spin_channel`` / ``base.nelup`` / ``base.neldw`` arrive as
-    concrete ints, so Python branching evaluates correctly. The same
-    logic inside the graph body would compare unresolved sockets
-    (TaskSocket vs SpinChannel enum) and silently fall through,
-    producing kcp.x inputs that violate ``nupdwn(1) >= nupdwn(2)`` on
-    the DOWN-channel empty orbital. ``spin_channel`` and ``band_index``
-    are emitted in the **physical** frame because they index the trial
-    KI's lambda matrices in :func:`compute_alpha_from_dscf` (which were
-    computed before any swap).
+    happen here so a wrong branch can't silently produce kcp.x inputs
+    that violate ``nupdwn(1) >= nupdwn(2)`` on the DOWN-channel empty
+    orbital. ``spin_channel`` and ``band_index`` are emitted in the
+    **physical** frame because they index the trial KI's lambda
+    matrices in :func:`compute_alpha_from_dscf` (which were computed
+    before any swap).
 
     See :func:`build_filled_iter_source` for the spin-channel emission
     rule (closed-shell emits a single :attr:`SpinChannel.NONE` channel;
@@ -527,7 +530,7 @@ def build_empty_iter_source(
             continue
         spin = SpinChannel(o["spin"])
         orb_index = o["index"]
-        n_filled_this_spin = base.neldw if spin is SpinChannel.DOWN else base.nelup
+        n_filled_this_spin = base.neldw if spin == SpinChannel.DOWN else base.nelup
 
         # ``fixed_band`` is **clamped to the per-spin LUMO position**
         # (legacy ``_koopmans_dscf.py:758`` —
@@ -544,7 +547,7 @@ def build_empty_iter_source(
         # DOWN channel (e.g. O2's 2nd DOWN π* empty).
         fixed_band_per_spin = n_filled_this_spin + 1
         fixed_band = (
-            fixed_band_per_spin + base.nelup if spin is SpinChannel.DOWN else fixed_band_per_spin
+            fixed_band_per_spin + base.nelup if spin == SpinChannel.DOWN else fixed_band_per_spin
         )
 
         # ``index_empty_to_save`` is a *global* 1-indexed counter
@@ -554,7 +557,7 @@ def build_empty_iter_source(
         # position within this spin's empty manifold (= ``orb_index
         # - n_filled_this_spin - 1``).
         i = orb_index - n_filled_this_spin - 1
-        if spin is SpinChannel.DOWN:
+        if spin == SpinChannel.DOWN:
             index_empty_to_save = i + 1 + n_empty_up
         else:
             index_empty_to_save = i + 1
@@ -562,7 +565,7 @@ def build_empty_iter_source(
         # Spin-aware extra electron: legacy puts it in the channel
         # of the orbital being screened. ``SpinChannel.NONE``
         # (closed-shell input) defaults to UP.
-        if spin is SpinChannel.DOWN:
+        if spin == SpinChannel.DOWN:
             nelup_np1 = base.nelup
             neldw_np1 = base.neldw + 1
         else:
@@ -634,44 +637,6 @@ def build_empty_iter_source(
             "overlay": overlay,
         }
     return out
-
-
-@task
-def get_value(data: dict, key: str):
-    """Extract a single field from a Map item dict.
-
-    Map items are dict-valued; AiiDA forbids direct subscripting of
-    sockets, so each field accessed inside a Map zone goes through this
-    one-shot task. See aiida-workgraph
-    ``docs/gallery/advanced/autogen/context_manager.py`` for the
-    canonical pattern.
-    """
-    return data[key]
-
-
-_EMPTY_ITEM_FIELDS = (
-    "spin_channel",
-    "band_index",
-    "alpha_guess",
-    "dummy_parameters",
-    "pz_parameters",
-    "n_plus_1_parameters",
-    "overlay",
-)
-
-
-@task(outputs=list(_EMPTY_ITEM_FIELDS))
-def unpack_empty_item(item: dict) -> dict:
-    """Explode one empty-orbital Map item into named output sockets.
-
-    Replaces the per-field ``_get_value`` chain at the
-    ``ScreeningIteration`` call site (one process node per Map
-    iteration instead of one per field). The fields are listed in
-    :data:`_EMPTY_ITEM_FIELDS`; the task's output sockets share the
-    same names so the call site reads as
-    ``unpacked["fixed_band"]``, etc.
-    """
-    return {k: item[k] for k in _EMPTY_ITEM_FIELDS}
 
 
 # ----------------------------------------------------------------------
@@ -782,16 +747,15 @@ def KoopmansDSCFWorkflow(
 ) -> KoopmansDSCFOutputs:
     """Koopmans DSCF workflow — DFT init → trial KI → per-orbital DSCF refinement → final KI.
 
-    Runs one iteration of alpha refinement: a trial KI computes lambda
-    matrices for the alpha formula, the per-orbital Delta-SCF scatter
-    (one ``dft_n-1`` for each filled orbital and one
-    ``dft_n+1_dummy → pz_print → dft_n+1`` triplet for each empty
-    orbital) refines every alpha, and a final KI re-runs with those
-    refined alphas (restarting from the DFT save, not the trial KI).
+    Runs up to ``alpha_numsteps`` iterations of alpha refinement: each
+    iteration's trial KI computes lambda matrices for the alpha formula
+    and the per-orbital Delta-SCF fan-out (one ``dft_n-1`` for each
+    filled orbital and one ``dft_n+1_dummy → pz_print → dft_n+1``
+    triplet for each empty orbital) refines every alpha; a final KI
+    then re-runs with the converged alphas.
 
-    Multi-iteration refinement (``alpha_numsteps > 1``) and
-    spin-symmetrisation (``fix_spin_contamination=True``) are deferred
-    to Phase B; ``_validate_scope`` rejects those paths.
+    Spin-symmetrisation (``fix_spin_contamination=True``) is still
+    deferred; ``_validate_scope`` rejects that path.
     """
     _validate_scope(
         correction=correction,
@@ -1279,10 +1243,150 @@ def EmptyOrbitalScreening(
 
 
 # ----------------------------------------------------------------------
+# Per-orbital DSCF fan-out. A separate ``@task.graph`` (rather than inline in
+# ``ScreeningIteration``) because the fan-out cardinality depends on
+# ``orbitals`` — a *runtime* output of ``assign_orbital_groups`` (it reads the
+# trial KI's self-Hartree metric). Inside this deferred body ``orbitals`` is
+# concrete, so the scatter is a native ``for`` loop and the gather a plain
+# dict of per-orbital output sockets (the documented dynamic scatter-gather
+# pattern; see ``block_wannierize.py`` for the same shape).
+# ----------------------------------------------------------------------
+
+
+@task.graph
+def PerOrbitalScreening(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    base: KcpBaseInputs,
+    nbnd: int,
+    correction: Correction,
+    orbitals: list[VariationalOrbital],
+    current_alphas: AlphaScreening,
+    trial_remote: orm.RemoteData,
+    trial_output_parameters: dict,
+    trial_lambdas: np.ndarray,
+    trial_bare_lambdas: np.ndarray,
+    filled_overrides: KcpNamelistOverrides | None = None,
+    empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
+    options: dict[str, Any] | None = None,
+) -> _PerOrbitalAlphaOutputs:
+    """Refine every representative orbital's alpha via per-orbital Delta-SCF.
+
+    Scatters one :func:`FilledOrbitalScreening` per representative filled
+    orbital and one :func:`EmptyOrbitalScreening` per representative empty
+    orbital (native ``for`` loops over the item dicts built by
+    :func:`build_filled_iter_source` / :func:`build_empty_iter_source`,
+    which run inline here on the concrete ``orbitals`` list). The
+    per-orbital sub-graphs share only the read-only trial-KI scratch, so
+    they run in parallel. Each sub-graph's ``call_link_label`` is
+    ``screen_<map_key>`` (e.g. ``screen_orb_3`` / ``screen_up_orb_10``).
+
+    The gathered ``{map_key: alpha/error}`` socket dicts feed
+    :func:`expand_alphas_by_group` (broadcast representative results onto
+    group members) and :func:`assemble_alpha_screening` (pack into the
+    per-spin :class:`AlphaScreening` shape kcp.x consumes).
+    """
+    filled_items = build_filled_iter_source(
+        nelup=base.nelup,
+        neldw=base.neldw,
+        orbitals=orbitals,
+        filled_alphas=current_alphas["filled"],
+    )
+    filled_alphas: dict[str, Any] = {}
+    filled_errors: dict[str, Any] = {}
+    for key, item in filled_items.items():
+        filled_out = FilledOrbitalScreening(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            ecutwfc=base.ecutwfc,
+            ecutrho=base.ecutrho,
+            nspin=base.nspin,
+            nelec=base.nelec,
+            nelup=base.nelup,
+            neldw=base.neldw,
+            tot_magnetization=base.tot_magnetization,
+            fixed_band=item["fixed_band"],
+            spin_channel=item["spin_channel"],
+            band_index=item["band_index"],
+            alpha_guess=item["alpha_guess"],
+            trial_remote=trial_remote,
+            trial_output_parameters=trial_output_parameters,
+            trial_lambdas=trial_lambdas,
+            trial_bare_lambdas=trial_bare_lambdas,
+            overrides=filled_overrides,
+            options=options,
+            correction=correction,
+            metadata={"call_link_label": f"screen_{key}"},
+        )
+        filled_alphas[key] = filled_out["alpha"]
+        filled_errors[key] = filled_out["error"]
+
+    empty_items = build_empty_iter_source(
+        base=base,
+        nbnd=nbnd,
+        orbitals=orbitals,
+        empty_alphas=current_alphas["empty"],
+        correction=correction,
+    )
+    empty_alphas: dict[str, Any] = {}
+    empty_errors: dict[str, Any] = {}
+    for key, item in empty_items.items():
+        empty_out = EmptyOrbitalScreening(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            dummy_parameters=item["dummy_parameters"],
+            pz_parameters=item["pz_parameters"],
+            n_plus_1_parameters=item["n_plus_1_parameters"],
+            overlay=item["overlay"],
+            spin_channel=item["spin_channel"],
+            band_index=item["band_index"],
+            alpha_guess=item["alpha_guess"],
+            pz_alphas=current_alphas,
+            trial_remote=trial_remote,
+            trial_output_parameters=trial_output_parameters,
+            trial_lambdas=trial_lambdas,
+            trial_bare_lambdas=trial_bare_lambdas,
+            overrides=empty_overrides_dict,
+            options=options,
+            correction=correction,
+            metadata={"call_link_label": f"screen_{key}"},
+        )
+        empty_alphas[key] = empty_out["alpha"]
+        empty_errors[key] = empty_out["error"]
+
+    # Broadcast each representative's alpha onto every member of its
+    # group, then pack the per-orbital flat dicts into the per-spin
+    # ``AlphaScreening`` shape kcp.x consumes. When grouping was
+    # disabled (``self_hartree_tol=None``), ``expand_alphas_by_group``
+    # is the identity modulo the filled/empty split.
+    expanded = expand_alphas_by_group(
+        filled_rep_alphas=filled_alphas or None,
+        filled_rep_errors=filled_errors or None,
+        empty_rep_alphas=empty_alphas or None,
+        empty_rep_errors=empty_errors or None,
+        orbitals=orbitals,
+    )
+    gathered = assemble_alpha_screening(
+        orbitals=orbitals,
+        filled_alphas=expanded["filled_alphas"],
+        filled_errors=expanded["filled_errors"],
+        empty_alphas=expanded["empty_alphas"],
+        empty_errors=expanded["empty_errors"],
+    )
+    return _PerOrbitalAlphaOutputs(
+        alphas=gathered["alphas"],
+        errors=gathered["errors"],
+    )
+
+
+# ----------------------------------------------------------------------
 # One DSCF iteration body: trial KI → per-orbital DSCF → assemble alphas.
-# Extracted so the multi-iteration loop in ``ComputeScreeningParameters`` can
-# call it once per pass (a ``While`` zone gates re-entry in the procedural
-# refinement builder).
+# Extracted so the recursive ``AlphaRefinementLoop`` in
+# ``ComputeScreeningParameters`` can call it once per pass.
 # ----------------------------------------------------------------------
 
 
@@ -1309,11 +1413,12 @@ def ScreeningIteration(
     """One iteration of the alpha-refinement loop.
 
     Runs a trial KI / KIPZ starting from ``current_alphas`` +
-    ``parent_folder``, then a per-orbital Delta-SCF scatter (Map zones
-    over filled / empty branches), then ``assemble_alpha_screening``
-    to pack the gathered per-orbital alphas back into an
-    :class:`AlphaScreening`. Reports ``max_error`` so the outer
-    ``While`` loop can stop on convergence.
+    ``parent_folder``, then the per-orbital Delta-SCF fan-out
+    (:func:`PerOrbitalScreening` — a nested ``@task.graph`` because the
+    fan-out cardinality depends on ``assign_orbital_groups``' runtime
+    output), which packs the gathered per-orbital alphas back into an
+    :class:`AlphaScreening`. Reports ``max_error`` so the recursive
+    :func:`AlphaRefinementLoop` can stop on convergence.
 
     ``is_first_iteration`` is forwarded to the trial-step builder so
     KIPZ's molecular first trial can run its inner-loop CG once
@@ -1322,8 +1427,7 @@ def ScreeningIteration(
     basis, so the inner loop is unnecessary.
 
     The trial step is named ``ki_trial`` / ``kipz_trial`` per
-    ``correction``; the While loop appends iteration suffixes at the
-    workgraph layer. ``variational_orbital_overlays`` is supplied on
+    ``correction``. ``variational_orbital_overlays`` is supplied on
     the first iteration only (the KS-as-variational overlay);
     subsequent iterations inherit the converged ``evc0N.dat`` from
     the previous iteration's trial save via the primary parent walk.
@@ -1355,11 +1459,11 @@ def ScreeningIteration(
 
     # Cluster variational orbitals by trial-KI self-Hartree so each
     # group only screens one representative; non-representative members
-    # inherit the alpha after the Map gather (see
+    # inherit the alpha after the gather (see
     # :func:`expand_alphas_by_group`). With ``self_hartree_tol=None``
     # (the default) the task short-circuits to one-orbital-per-group
-    # — every orbital is its own representative, so the Map fan-out
-    # is unchanged.
+    # — every orbital is its own representative, so the fan-out is
+    # unchanged.
     metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
     orbitals = assign_orbital_groups(
         metric=metric.result,
@@ -1370,111 +1474,142 @@ def ScreeningIteration(
         tol=self_hartree_tol,
     )
 
-    filled_source = build_filled_iter_source(
-        nelup=base.nelup,
-        neldw=base.neldw,
-        orbitals=orbitals.result,
-        filled_alphas=current_alphas["filled"],
-    )
-    with Map(filled_source) as filled_zone:
-        filled_item = filled_zone.item.value
-        filled_out = FilledOrbitalScreening(
-            code=code,
-            structure=structure,
-            pseudos=pseudos,
-            ecutwfc=base.ecutwfc,
-            ecutrho=base.ecutrho,
-            nspin=base.nspin,
-            nelec=base.nelec,
-            nelup=base.nelup,
-            neldw=base.neldw,
-            tot_magnetization=base.tot_magnetization,
-            fixed_band=get_value(data=filled_item, key="fixed_band").result,
-            spin_channel=get_value(data=filled_item, key="spin_channel").result,
-            band_index=get_value(data=filled_item, key="band_index").result,
-            alpha_guess=get_value(data=filled_item, key="alpha_guess").result,
-            trial_remote=trial["remote_folder"],
-            trial_output_parameters=trial["output_parameters"],
-            trial_lambdas=trial["output_lambdas"],
-            trial_bare_lambdas=trial["output_bare_lambdas"],
-            overrides=filled_overrides,
-            options=options,
-            correction=correction,
-        )
-        filled_zone.gather({"alpha": filled_out["alpha"], "error": filled_out["error"]})
-
-    empty_source = build_empty_iter_source(
+    # Per-orbital Delta-SCF fan-out. Nested ``@task.graph`` so its body
+    # runs once ``orbitals`` (a runtime output of ``assign_orbital_groups``)
+    # is concrete — the scatter is then a native ``for`` loop, the gather
+    # a plain dict of per-orbital sockets.
+    per_orbital = PerOrbitalScreening(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
         base=base,
         nbnd=nbnd,
-        orbitals=orbitals.result,
-        empty_alphas=current_alphas["empty"],
         correction=correction,
-    )
-    with Map(empty_source) as empty_zone:
-        empty_item = empty_zone.item.value
-        # ``build_empty_iter_source`` (a real ``@task``) pre-bakes the
-        # three kcp.x parameter dicts and the spin-swap overlay for
-        # each orbital — the swap decision happens there where values
-        # are resolved. ``unpack_empty_item`` cracks the Map item into
-        # named output sockets in a single process node.
-        u = unpack_empty_item(item=empty_item)
-        empty_out = EmptyOrbitalScreening(
-            code=code,
-            structure=structure,
-            pseudos=pseudos,
-            dummy_parameters=u["dummy_parameters"],
-            pz_parameters=u["pz_parameters"],
-            n_plus_1_parameters=u["n_plus_1_parameters"],
-            overlay=u["overlay"],
-            spin_channel=u["spin_channel"],
-            band_index=u["band_index"],
-            alpha_guess=u["alpha_guess"],
-            pz_alphas=current_alphas,
-            trial_remote=trial["remote_folder"],
-            trial_output_parameters=trial["output_parameters"],
-            trial_lambdas=trial["output_lambdas"],
-            trial_bare_lambdas=trial["output_bare_lambdas"],
-            overrides=empty_overrides_dict,
-            options=options,
-            correction=correction,
-        )
-        empty_zone.gather({"alpha": empty_out["alpha"], "error": empty_out["error"]})
-
-    # Broadcast each representative's alpha onto every member of its
-    # group, then pack the per-orbital flat dicts into the per-spin
-    # ``AlphaScreening`` shape kcp.x consumes. When grouping was
-    # disabled (``self_hartree_tol=None``), ``expand_alphas_by_group``
-    # is the identity modulo the filled/empty split.
-    expanded = expand_alphas_by_group(
-        filled_rep_alphas=filled_zone.outputs.alpha,
-        filled_rep_errors=filled_zone.outputs.error,
-        empty_rep_alphas=empty_zone.outputs.alpha,
-        empty_rep_errors=empty_zone.outputs.error,
         orbitals=orbitals.result,
-    )
-    gathered = assemble_alpha_screening(
-        orbitals=orbitals.result,
-        filled_alphas=expanded["filled_alphas"],
-        filled_errors=expanded["filled_errors"],
-        empty_alphas=expanded["empty_alphas"],
-        empty_errors=expanded["empty_errors"],
+        current_alphas=current_alphas,
+        trial_remote=trial["remote_folder"],
+        trial_output_parameters=trial["output_parameters"],
+        trial_lambdas=trial["output_lambdas"],
+        trial_bare_lambdas=trial["output_bare_lambdas"],
+        filled_overrides=filled_overrides,
+        empty_overrides_dict=empty_overrides_dict,
+        options=options,
+        metadata={"call_link_label": "per_orbital_screening"},
     )
 
     max_err = max_alpha_error(
-        filled_errors=gathered["errors"]["filled"],
-        empty_errors=gathered["errors"]["empty"],
+        filled_errors=per_orbital["errors"]["filled"],
+        empty_errors=per_orbital["errors"]["empty"],
     )
 
     return {
-        "alphas": gathered["alphas"],
-        "errors": gathered["errors"],
+        "alphas": per_orbital["alphas"],
+        "errors": per_orbital["errors"],
         "trial_remote": trial["remote_folder"],
         "max_error": max_err.result,
     }
 
 
 # ----------------------------------------------------------------------
-# Single-iteration alpha-refinement: trial KI → per-orbital DSCF → final KI.
+# Alpha-refinement recursion. Replaces the former ``While`` zone: each call
+# receives the *previous* iteration's outputs as concrete inputs, so the
+# stop decision (converged, or iteration budget exhausted) is a plain
+# Python branch in the deferred body. Non-terminal calls run one more
+# ``ScreeningIteration`` and recurse on its outputs.
+# ----------------------------------------------------------------------
+
+
+@task.graph
+def AlphaRefinementLoop(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    base: KcpBaseInputs,
+    nbnd: int,
+    correction: Correction,
+    spin_polarized: bool,
+    prev_alphas: AlphaScreening,
+    prev_trial_remote: orm.RemoteData,
+    prev_max_error: float,
+    remaining_steps: int,
+    alpha_conv_thr: float,
+    self_hartree_tol: float | None = None,
+    ki_overrides: KcpNamelistOverrides | None = None,
+    filled_overrides: KcpNamelistOverrides | None = None,
+    empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
+    options: dict[str, Any] | None = None,
+) -> ScreeningParametersOutputs:
+    """Recursive alpha-refinement: iterate until converged or out of budget.
+
+    Terminates (returning the previous iteration's ``alphas`` +
+    ``trial_remote`` unchanged) when either the previous iteration's
+    ``max |dE - lambda|`` fell below ``alpha_conv_thr`` (legacy
+    threshold ``1e-3 eV``, ``_koopmans_dscf.py:633``) or
+    ``remaining_steps`` hit zero (the ``alpha_numsteps`` cap; the first
+    iteration is unrolled in :func:`ComputeScreeningParameters`, so the
+    initial budget is ``alpha_numsteps - 1``).
+
+    Otherwise runs one more :func:`ScreeningIteration` — parented on the
+    previous trial KI's save, with no variational-orbital overlay (the
+    converged ``evc0N.dat`` is already in place) and
+    ``is_first_iteration=False`` (KIPZ's inner-loop CG ran on iteration
+    1 only) — and recurses on its outputs with a decremented budget.
+    """
+    if remaining_steps <= 0 or prev_max_error < alpha_conv_thr:
+        return ScreeningParametersOutputs(
+            alphas=prev_alphas,
+            trial_remote=prev_trial_remote,
+        )
+
+    iteration = ScreeningIteration(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
+        base=base,
+        nbnd=nbnd,
+        correction=correction,
+        spin_polarized=spin_polarized,
+        current_alphas=prev_alphas,
+        parent_folder=prev_trial_remote,
+        is_first_iteration=False,
+        self_hartree_tol=self_hartree_tol,
+        variational_orbital_overlays=None,
+        ki_overrides=ki_overrides,
+        filled_overrides=filled_overrides,
+        empty_overrides_dict=empty_overrides_dict,
+        options=options,
+        metadata={"call_link_label": "screening_iteration"},
+    )
+
+    remainder = AlphaRefinementLoop(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
+        base=base,
+        nbnd=nbnd,
+        correction=correction,
+        spin_polarized=spin_polarized,
+        prev_alphas=iteration["alphas"],
+        prev_trial_remote=iteration["trial_remote"],
+        prev_max_error=iteration["max_error"],
+        remaining_steps=remaining_steps - 1,
+        alpha_conv_thr=alpha_conv_thr,
+        self_hartree_tol=self_hartree_tol,
+        ki_overrides=ki_overrides,
+        filled_overrides=filled_overrides,
+        empty_overrides_dict=empty_overrides_dict,
+        options=options,
+        metadata={"call_link_label": "alpha_refinement_loop"},
+    )
+    return ScreeningParametersOutputs(
+        alphas=remainder["alphas"],
+        trial_remote=remainder["trial_remote"],
+    )
+
+
+# ----------------------------------------------------------------------
+# Alpha-refinement driver: unrolled first iteration + recursive refinement.
 # ----------------------------------------------------------------------
 
 
@@ -1527,13 +1662,10 @@ def ComputeScreeningParameters(
     ``remote_folder`` (legacy ``_koopmans_dscf.py:276+333``) and uses the
     final gathered alphas; only the alphas differ from the trial pass.
 
-    All per-orbital fan-out happens through ``Map`` zones inside
-    ``ScreeningIteration`` (see ``build_filled_iter_source`` /
-    ``build_empty_iter_source``); no socket arithmetic in this body.
+    All per-orbital fan-out happens inside ``ScreeningIteration`` (via
+    the nested ``PerOrbitalScreening`` graph); iterations 2..N run
+    through the recursive :func:`AlphaRefinementLoop`.
     """
-    from aiida_workgraph import While
-    from aiida_workgraph.manager import get_current_graph
-
     ki_overrides = overrides.get("ki") if overrides else None
     filled_overrides = overrides.get("dft_n_minus_1") if overrides else None
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None
@@ -1546,13 +1678,10 @@ def ComputeScreeningParameters(
     else:
         empty_overrides_dict = None
 
-    # ------------------------------------------------------------------
-    # Filled / empty counts as sockets — never derived by socket arithmetic.
-    # ------------------------------------------------------------------
     # Uniform-``initial_alpha`` payload feeds the first iteration's trial
     # KI (and its empty-orbital ``pz_print``). Subsequent iterations
-    # consume the previous iteration's gathered alphas; that wiring lives
-    # in the ``While`` loop that B.3 will add.
+    # consume the previous iteration's gathered alphas via the recursive
+    # ``AlphaRefinementLoop`` below.
     initial_alphas = generate_alphas(
         alpha_guess=initial_alpha,
         nbnd=nbnd,
@@ -1574,10 +1703,10 @@ def ComputeScreeningParameters(
 
     # KS overlay applies only on the iteration that consumes ``dft_remote``
     # directly (the parent DFT save still has the raw ``evc0N.dat`` from
-    # the DFT init, not the trial KI's inner-loop minimum). Once B.3
-    # wraps the loop, only the *first* iteration receives this overlay;
-    # all subsequent iterations parent on the previous trial KI and
-    # inherit its converged ``evc0N.dat`` via the primary parent walk.
+    # the DFT init, not the trial KI's inner-loop minimum) — i.e. the
+    # unrolled first iteration below. All subsequent iterations parent on
+    # the previous trial KI and inherit its converged ``evc0N.dat`` via
+    # the primary parent walk.
     ks_overlay: dict[str, str] | None = None
     if init_orbitals == VariationalOrbitalType.KOHN_SHAM:
         nspin_overlay_iter = (1, 2) if nspin == 2 else (1,)
@@ -1589,17 +1718,13 @@ def ComputeScreeningParameters(
         }
 
     # ------------------------------------------------------------------
-    # Alpha-refinement loop. Each iteration runs ``ScreeningIteration`` and
-    # feeds its outputs back into the next iteration via ``wg.ctx``. The
-    # loop terminates on either ``alpha_numsteps`` reached (the cap) or
-    # ``max_error < alpha_conv_thr`` (convergence — legacy threshold
-    # ``1e-3 eV`` from ``_koopmans_dscf.py:633``).
-    #
-    # First iteration's parent is ``dft_remote`` + KS overlay; subsequent
-    # iterations parent on the previous iteration's trial KI save (with
-    # no overlay, since the converged ``evc0N.dat`` is already in place).
-    # The body sets ``overlay`` to ``None`` after the first pass so any
-    # later iterations skip it.
+    # Alpha-refinement. The first iteration is unrolled here (it differs
+    # from the rest: parent is ``dft_remote``, it carries the KS overlay,
+    # and ``is_first_iteration=True`` drives KIPZ's one-off inner-loop CG
+    # pass). Iterations 2..N run through the recursive
+    # ``AlphaRefinementLoop``, which receives the previous iteration's
+    # outputs as concrete inputs and stops on convergence
+    # (``max_error < alpha_conv_thr``) or budget exhaustion.
     #
     # TRIPWIRE -- KIPZ caching: under ``Correction.KIPZ`` the n+/-1 DFT
     # alpha-step calculations are alpha-dependent (legacy
@@ -1609,18 +1734,6 @@ def ComputeScreeningParameters(
     # future refactor that caches alpha-step calcs keyed off "DFT inputs
     # are alpha-independent" must opt out for KIPZ. Stay in sync with
     # ``_add_kipz_orbdep``.
-    # ------------------------------------------------------------------
-    # ------------------------------------------------------------------
-    # First iteration: unrolled outside the ``While`` zone so the KS
-    # overlay (a build-time Python dict) can be passed directly to
-    # ``ScreeningIteration`` without round-tripping through ``wg.ctx``.
-    # ``ctx`` auto-promotes Python dicts to namespaces, which can't link
-    # to ``variational_orbital_overlays``' leaf socket; and
-    # ``_build_kcp_inputs`` reads the overlay as a build-time value, so
-    # it can't be a runtime socket anyway. Iterations 2..N go through
-    # the ``While`` zone with the overlay fixed to ``None`` (their parent
-    # is the previous trial KI's save, whose ``evc0N.dat`` already holds
-    # the converged variational basis).
     # ------------------------------------------------------------------
     iter_1 = ScreeningIteration(
         code=code,
@@ -1635,8 +1748,9 @@ def ComputeScreeningParameters(
         # First trial: KIPZ on a molecular system needs an inner-loop CG
         # pass to converge the variational orbitals starting from KS-init.
         # Subsequent iterations restart from the previous trial's already-
-        # converged variational basis; see the ``is_first_iteration=False``
-        # below and ``_build_orbdep_parameters``'s ``do_innerloop`` decision.
+        # converged variational basis; see ``is_first_iteration=False``
+        # inside ``AlphaRefinementLoop`` and ``_build_orbdep_parameters``'s
+        # ``do_innerloop`` decision.
         is_first_iteration=True,
         self_hartree_tol=self_hartree_tol,
         variational_orbital_overlays=ks_overlay,
@@ -1646,90 +1760,43 @@ def ComputeScreeningParameters(
         options=options,
     )
 
-    # ``last_*`` carry the outputs of the most recently run iteration —
-    # iter_1 if the ``While`` zone runs zero times (``alpha_numsteps == 1``),
-    # otherwise the last loop iteration's outputs read from ``wg.ctx``.
-    # Default to iter_1's direct outputs; the ``While`` branch below
-    # rebinds them to ``wg.ctx`` reads when the loop is actually
-    # constructed.
-    last_alphas_filled = iter_1["alphas"]["filled"]
-    last_alphas_empty = iter_1["alphas"]["empty"]
-    last_parent_folder = iter_1["trial_remote"]
+    # ``alpha_numsteps == 1`` (the tutorial_1 case) needs no refinement
+    # beyond iter_1 — skip the recursion node entirely so the graph
+    # matches the single-iteration shape exactly.
+    if alpha_numsteps <= 1:
+        return {
+            "alphas": iter_1["alphas"],
+            "trial_remote": iter_1["trial_remote"],
+        }
 
-    # ``alpha_numsteps == 1`` is the tutorial_1 case: skip the ``While``
-    # zone entirely so we don't have to plumb ``wg.ctx`` reads with
-    # explicit ``<<`` waits — ``ctx`` writes don't create dataflow
-    # edges in aiida-workgraph, so an unguarded ``While`` condition
-    # (``op_ge``) and any downstream ``ctx`` reader would fire before
-    # iter_1 has run.
-    if alpha_numsteps > 1:
-        wg = get_current_graph()
-        # ``AlphaScreening`` is a namespace (``filled`` + ``empty``);
-        # ``wg.ctx`` stores per-socket, so split the two halves into
-        # separate ctx slots and reassemble at the call sites.
-        wg.ctx.alphas_filled = iter_1["alphas"]["filled"]
-        wg.ctx.alphas_empty = iter_1["alphas"]["empty"]
-        wg.ctx.parent_folder = iter_1["trial_remote"]
-        wg.ctx.max_error = iter_1["max_error"]
-
-        # ``<< iter_1["max_error"]`` adds iter_1's task to the condition
-        # socket's ``waiting_on`` set — without it the condition's
-        # ``op_ge`` fires before iter_1 has produced a value (``ctx``
-        # assignments don't create dataflow edges).
-        condition = wg.ctx.max_error >= alpha_conv_thr
-        condition << iter_1["max_error"]
-
-        # ``alpha_numsteps - 1`` more iterations max (iter_1 already ran).
-        with While(condition, max_iterations=alpha_numsteps - 1):
-            iter_n = ScreeningIteration(
-                code=code,
-                structure=structure,
-                pseudos=pseudos,
-                base=base,
-                nbnd=nbnd,
-                correction=correction,
-                spin_polarized=spin_polarized,
-                current_alphas={
-                    "filled": wg.ctx.alphas_filled,
-                    "empty": wg.ctx.alphas_empty,
-                },
-                parent_folder=wg.ctx.parent_folder,
-                # Not the first iteration — KIPZ trial restarts from the
-                # previous trial's converged variational basis, so the
-                # inner-loop CG pass it ran in iter_1 is unnecessary now.
-                is_first_iteration=False,
-                self_hartree_tol=self_hartree_tol,
-                variational_orbital_overlays=None,
-                ki_overrides=ki_overrides,
-                filled_overrides=filled_overrides,
-                empty_overrides_dict=empty_overrides_dict,
-                options=options,
-            )
-            wg.ctx.alphas_filled = iter_n["alphas"]["filled"]
-            wg.ctx.alphas_empty = iter_n["alphas"]["empty"]
-            wg.ctx.parent_folder = iter_n["trial_remote"]
-            wg.ctx.max_error = iter_n["max_error"]
-
-        # After the loop, rebind ``last_*`` to ``iter_n`` directly
-        # (still in scope after the ``with`` block via Python closure
-        # rule). Reading from ``iter_n`` rather than ``wg.ctx`` gives
-        # the @task.graph's outputs a *real* dataflow edge back to the
-        # task that produced them — so the downstream final KI in
-        # ``KoopmansDSCFWorkflow`` naturally waits on the screening loop
-        # without any explicit ``<<`` plumbing.
-        last_alphas_filled = iter_n["alphas"]["filled"]
-        last_alphas_empty = iter_n["alphas"]["empty"]
-        last_parent_folder = iter_n["trial_remote"]
+    refinement = AlphaRefinementLoop(
+        code=code,
+        structure=structure,
+        pseudos=pseudos,
+        base=base,
+        nbnd=nbnd,
+        correction=correction,
+        spin_polarized=spin_polarized,
+        prev_alphas=iter_1["alphas"],
+        prev_trial_remote=iter_1["trial_remote"],
+        prev_max_error=iter_1["max_error"],
+        # iter_1 already ran, so the recursion budget is one less.
+        remaining_steps=alpha_numsteps - 1,
+        alpha_conv_thr=alpha_conv_thr,
+        self_hartree_tol=self_hartree_tol,
+        ki_overrides=ki_overrides,
+        filled_overrides=filled_overrides,
+        empty_overrides_dict=empty_overrides_dict,
+        options=options,
+        metadata={"call_link_label": "alpha_refinement_loop"},
+    )
 
     # The final KI (application of the converged screening parameters)
     # lives in ``KoopmansDSCFWorkflow``; here we just return the screening
     # parameters and the parent save the final KI should restart from.
     return {
-        "alphas": {
-            "filled": last_alphas_filled,
-            "empty": last_alphas_empty,
-        },
-        "trial_remote": last_parent_folder,
+        "alphas": refinement["alphas"],
+        "trial_remote": refinement["trial_remote"],
     }
 
 
@@ -2124,7 +2191,7 @@ def _add_kipz_orbdep(params: dict) -> None:
     that KIPZ's DFT-step results are alpha-*dependent* and **must** be
     re-run on every alpha iteration. The current AiiDA port already
     re-runs every iteration (no caching layer); the deferred
-    optimisation #7 (alpha-independent calc reuse) must be gated on
+    optimisation #4 (alpha-independent calc reuse) must be gated on
     ``functional != 'kipz'`` when it lands.
     """
     params["SYSTEM"]["do_orbdep"] = True
@@ -2251,52 +2318,32 @@ def _build_print_parameters(
 
 
 # ----------------------------------------------------------------------
-# Phase A scope notes — what's intentionally deferred:
+# Scope notes — what's intentionally deferred:
 # ----------------------------------------------------------------------
 #
-# This first slice of the alpha-refinement loop targets the simplest valid
-# input: ``functional='ki'``, single iteration, non-spin-polarised,
-# kohn-sham init orbitals, no orbital grouping. Specifically deferred:
+# Landed since the Phase-A MVP: multi-iteration refinement with early
+# exit (recursive ``AlphaRefinementLoop``), orbital grouping
+# (``self_hartree_tol`` → ``assign_orbital_groups``), spin-polarised
+# systems, and KIPZ. Still deferred:
 #
-# 1. **Multi-iteration with early exit.** Legacy runs up to
-#    ``alpha_numsteps`` iterations and exits early when every band's
-#    ``|Delta E - λ|`` falls below ``alpha_conv_thr``. Phase A runs exactly
-#    one iteration. Phase B will wrap the iteration body in an
-#    aiida-workgraph iteration primitive with a convergence predicate.
+# 1. **pKIPZ.** Perturbative post-processing pass on top of a KI trial;
+#    ``_validate_scope`` rejects it.
 #
-# 2. **Orbital grouping.** Legacy auto-groups orbitals by self-Hartree
-#    and spread tolerances and only refines one representative per
-#    group (``self.bands.assign_groups`` in ``_koopmans_dscf.py``).
-#    Phase A refines every band individually — correct but wasteful
-#    for systems with degeneracies (e.g. p-orbitals on cubic
-#    substrates).
-#
-# 3. **Spin-polarised systems** (``spin_polarized=True``). Legacy
-#    treats every (spin, index) pair as a unique group. Phase A
-#    assumes ``nspin=2`` closed-shell — both channels share one set
-#    of alpha values. Adding the spin-polarised branch needs per-spin
-#    iteration and per-(spin, band) ``fixed_band`` indexing.
-#
-# 4. **KIPZ / pKIPZ.** The PZ-style sub-prefixes (``kipz_n-1``,
-#    ``kipz_print``, ``kipz_n+1``) replace the DFT sub-prefixes for
-#    the KIPZ functional. Mostly mechanical — the existing scope
-#    guard in ``_validate_scope`` still rejects anything other than
-#    KI.
-#
-# 5. **Makov-Payne correction** to Delta E (``mp_correction``,
+# 2. **Makov-Payne correction** to Delta E (``mp_correction``,
 #    ``eps_inf``). Legacy applies a per-orbital correction term when
-#    the system is charged-periodic. Phase A omits it — the
-#    structure scope guard already rejects periodic systems.
+#    the system is charged-periodic. Omitted — the structure scope
+#    guard already rejects periodic systems.
 #
-# 6. **Mixing across iterations** (``alpha_mixing``). Without a
-#    loop there's nothing to mix; relevant only once Phase B lands.
+# 3. **Mixing across iterations** (``alpha_mixing``).
 #
-# 7. **alpha-independent calc reuse** across iterations. Legacy caches
+# 4. **alpha-independent calc reuse** across iterations. Legacy caches
 #    the ``dft_n-1`` results for filled orbitals because they don't
-#    depend on alpha (``_koopmans_dscf.py:806-815``). One-iteration
-#    Phase A doesn't need this.
+#    depend on alpha (``_koopmans_dscf.py:806-815``). Every iteration
+#    currently re-runs them. NOTE: any future caching must opt out for
+#    KIPZ, whose alpha steps are alpha-*dependent* — see the TRIPWIRE
+#    comment in ``ComputeScreeningParameters``.
 #
-# 8. **ML predict shortcut** (``self.ml.predict``). Legacy can
+# 5. **ML predict shortcut** (``self.ml.predict``). Legacy can
 #    short-circuit the loop using a pre-trained ML model. Out of
 #    scope.
 # ----------------------------------------------------------------------
@@ -2331,14 +2378,12 @@ def _build_kcp_inputs(
     that's what shows up in ``verdi process list`` and the koopmans progress
     table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
 
-    Inside the per-orbital Map zones, ``name`` is set statically (e.g.
-    ``"dft_n-1"``, ``"pz_print"``, ``"dft_n+1_dummy"``, ``"dft_n+1"``) — the
-    band/spin identity is not interpolated at build time because
-    ``fixed_band`` etc. arrive as sockets. ``aiida-workgraph`` reattaches it
-    at Map-expansion time: ``aiida_workgraph.engine.task_manager.copy_task``
-    prefixes every cloned descendant with the source-dict key, so the
-    runtime label lands as e.g. ``kcp-up_band_2_dft_n-1`` (spin/band from the
-    Map source dict + the static sub-step name).
+    Inside the per-orbital screening sub-graphs, ``name`` is set statically
+    (e.g. ``"dft_n_minus_1"``, ``"pz_print"``, ``"dft_n_plus_1_dummy"``,
+    ``"dft_n_plus_1"``); the band/spin identity lives on the *wrapping*
+    sub-graph's ``call_link_label`` instead (``screen_<map_key>``, set by
+    the ``PerOrbitalScreening`` fan-out loop), so provenance reads as e.g.
+    ``screen_up_orb_2 -> dft_n_minus_1``.
 
     ``parent_folder_evcfixed`` is the ``RemoteData`` of a ``pz_print``
     run; only the ``dft_n+1`` step of the empty-orbital Delta-SCF branch

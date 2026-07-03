@@ -19,7 +19,7 @@ Identity-of-orbital flows through this module as
 that is a plain ``dict`` at runtime so ``list[VariationalOrbital]``
 survives ``aiida-workgraph``'s storage path. The string form
 (``f"up_orb_5"`` etc.) is only ever produced via :func:`map_key_for`
-at the ``Map`` zone boundary; it is never parsed back.
+at the per-orbital fan-out boundary; it is never parsed back.
 """
 
 from __future__ import annotations
@@ -37,10 +37,10 @@ if TYPE_CHECKING:
 class ExpandedAlphas(TypedDict):
     """Per-orbital alpha + error dicts after broadcasting from representatives.
 
-    Keys are :func:`map_key_for` strings — the same labels the Map
-    zone gather uses. Returned as leaf ``dict`` sockets (not Map-zone
-    namespaces) because :func:`assemble_alpha_screening` takes leaf
-    dicts: the gather's namespace shape is fully consumed *inside*
+    Keys are :func:`map_key_for` strings — the same labels the
+    per-orbital fan-out gather uses. Returned as leaf ``dict`` sockets
+    because :func:`assemble_alpha_screening` takes leaf dicts: the
+    gather's namespace shape is fully consumed *inside*
     :func:`expand_alphas_by_group`, which packs the broadcast results
     into a flat per-orbital dict ready for the per-spin packing step.
     """
@@ -59,9 +59,9 @@ class ExpandedAlphas(TypedDict):
 def enumerate_variational_orbitals(
     *, nelup: int, neldw: int, nbnd: int, spin_polarized: bool
 ) -> list[VariationalOrbital]:
-    """Return every variational orbital the Map sources cover, in canonical order.
+    """Return every variational orbital the fan-out covers, in canonical order.
 
-    Order matches the Map-zone iteration order: UP filled (1..nelup),
+    Order matches the per-orbital iteration order: UP filled (1..nelup),
     UP empty (nelup+1..nbnd), DOWN filled (1..neldw), DOWN empty
     (neldw+1..nbnd) for ``spin_polarized=True``. Closed-shell
     (``spin_polarized=False``) emits a single representative channel
@@ -299,7 +299,7 @@ def expand_alphas_by_group(
     """Broadcast per-representative alphas onto every group member.
 
     The four ``*_rep_*`` inputs are the flat ``{map_key: float}`` dicts
-    gathered out of the per-orbital Map zones — they only carry
+    gathered out of the per-orbital fan-out loops — they only carry
     entries for the representative orbitals that actually ran a DSCF
     screening. ``orbitals`` is the full ``list[VariationalOrbital]``
     from :func:`assign_orbital_groups` (every orbital with its
@@ -317,7 +317,7 @@ def expand_alphas_by_group(
     # Build {group_id: (alpha, error)} lookup from the representative
     # gather dicts. Filled and empty representatives live in different
     # input dicts because the legacy DSCF wiring scatters them to
-    # separate Map zones; merging by group id is unambiguous because
+    # separate fan-out loops; merging by group id is unambiguous because
     # subset partitioning keeps filled and empty in distinct groups.
     rep_by_group: dict[int, tuple[float, float]] = {}
     for o in orbitals:
@@ -329,9 +329,9 @@ def expand_alphas_by_group(
         else:
             alphas, errors = empty_rep_alphas or {}, empty_rep_errors or {}
         if key not in alphas:
-            # Representative didn't run (e.g. Map zone short-circuited
-            # on an upstream failure). Leave the group un-broadcast;
-            # downstream NaN propagation surfaces it.
+            # Representative didn't run (e.g. its screening sub-graph
+            # short-circuited on an upstream failure). Leave the group
+            # un-broadcast; downstream NaN propagation surfaces it.
             continue
         rep_by_group[o["group_id"]] = (
             float(alphas[key]),

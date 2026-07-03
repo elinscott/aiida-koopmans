@@ -69,7 +69,8 @@ class TestValidateScope:
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
         # ``alpha_numsteps`` is range-checked by the koopmans2 Pydantic
         # input model upstream; the scope guard no longer needs to look
-        # at it. B.3 added the ``While`` zone so any positive count works.
+        # at it. The recursive ``AlphaRefinementLoop`` handles any
+        # positive count.
         _validate_scope(
             correction=Correction.KI,
             init_orbitals=VariationalOrbitalType.KOHN_SHAM,
@@ -834,7 +835,7 @@ class TestKoopmansDSCFGraphBuild:
 
         # Build ``ScreeningIteration`` directly to verify its internals —
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
-        # build time, so the walker can't reach Map zones / source builders
+        # build time, so the walker can't reach the fan-out sub-graph
         # through ``ComputeScreeningParameters`` alone.
         from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
 
@@ -871,31 +872,129 @@ class TestKoopmansDSCFGraphBuild:
         def _iter_has(substr: str) -> bool:
             return any(substr in label for label in iter_labels)
 
-        assert _iter_has("build_filled_iter_source"), iter_labels
-        assert _iter_has("build_empty_iter_source"), iter_labels
-        # Two Map zones (filled + empty branches).
-        assert sum(1 for s in iter_labels if "map_zone" in s.lower()) >= 2, iter_labels
-        # Gather step packing per-orbital sockets back into an
-        # ``AlphaScreening`` shape.
-        assert _iter_has("assemble_alpha_screening"), iter_labels
         # Trial KI inside the iteration.
         assert _iter_has("ki_trial"), iter_labels
-        # Convergence indicator the ``While`` zone will read in B.3.
+        # Grouping decision feeding the fan-out.
+        assert _iter_has("assign_orbital_groups"), iter_labels
+        # The per-orbital fan-out is a nested ``@task.graph`` (its body
+        # is deferred until ``assign_orbital_groups``' output resolves,
+        # so the scatter itself is invisible at build time — see
+        # ``test_per_orbital_screening_fanout_counts`` for the expanded
+        # shape).
+        assert _iter_has("per_orbital_screening"), iter_labels
+        # No Map zones remain.
+        assert not any("map_zone" in s.lower() for s in iter_labels), iter_labels
+        # Convergence indicator the recursive ``AlphaRefinementLoop`` reads.
         assert _iter_has("max_alpha_error"), iter_labels
 
-    def test_multi_iteration_builds_while_zone(
+    def _build_per_orbital_wg(
+        self,
+        *,
+        ozone_structure,
+        kcp_code,
+        ozone_pseudo_family,
+        spin_polarized,
+    ):
+        """Build ``PerOrbitalScreening`` with concrete orbitals.
+
+        With concrete inputs the deferred body executes at build time,
+        so the native for-loop fan-out is fully visible in the resulting
+        WorkGraph — one ``screen_<map_key>`` sub-graph per orbital.
+        """
+        import numpy as np
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import PerOrbitalScreening, _kcp_base_inputs
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            enumerate_variational_orbitals,
+        )
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        orbitals = enumerate_variational_orbitals(
+            nelup=9, neldw=9, nbnd=10, spin_polarized=spin_polarized
+        )
+        if spin_polarized:
+            current_alphas = {
+                "filled": {"up": [0.6] * 9, "down": [0.6] * 9},
+                "empty": {"up": [0.6], "down": [0.6]},
+            }
+        else:
+            current_alphas = {
+                "filled": {"none": [0.6] * 9},
+                "empty": {"none": [0.6]},
+            }
+
+        return PerOrbitalScreening.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            base=_kcp_base_inputs(
+                ozone_structure,
+                nspin=2,
+                nelec=18,
+                nelup=9,
+                neldw=9,
+                tot_magnetization=None,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+            ),
+            nbnd=10,
+            correction=Correction.KI,
+            orbitals=orbitals,
+            current_alphas=current_alphas,
+            trial_remote=dummy_remote,
+            trial_output_parameters={"energy": -100.0},
+            trial_lambdas=np.zeros((2, 10, 10)),
+            trial_bare_lambdas=np.zeros((2, 10, 10)),
+        )
+
+    def test_per_orbital_screening_fanout_counts(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        """``alpha_numsteps > 1`` wraps iterations 2..N in a ``While`` zone.
+        """Closed-shell ozone: 9 filled + 1 empty screening sub-graphs.
+
+        The for-loop fan-out is build-visible when ``orbitals`` is
+        concrete — a wiring regression (wrong count, wrong labels)
+        surfaces here without running anything.
+        """
+        wg = self._build_per_orbital_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            spin_polarized=False,
+        )
+        labels = self._all_link_labels(wg)
+        screen_labels = {s for s in labels if s.startswith("screen_")}
+        assert screen_labels == {f"screen_orb_{i}" for i in range(1, 11)}, sorted(screen_labels)
+        # Gather steps packing per-orbital sockets back into an
+        # ``AlphaScreening`` shape.
+        assert any("expand_alphas_by_group" in s for s in labels), labels
+        assert any("assemble_alpha_screening" in s for s in labels), labels
+        # No Map zones remain.
+        assert not any("map_zone" in s.lower() for s in labels), labels
+
+    def test_multi_iteration_builds_refinement_loop(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``alpha_numsteps > 1`` chains a recursive ``AlphaRefinementLoop``.
 
         For ``alpha_numsteps = 1`` the dispatcher unrolls a single
-        ``ScreeningIteration`` outside the loop; for >1 it adds an
-        ``aiida-workgraph`` ``While`` zone whose body reads ctx slots
-        populated by iter 1 (with explicit ``<<`` waits) and runs
-        ``alpha_numsteps - 1`` more iterations. This test pins that
-        the ``while_zone`` task is actually present in the built
-        graph — a regression here would silently fall back to
-        single-iteration behaviour.
+        ``ScreeningIteration`` and skips the loop entirely; for >1 it
+        adds one ``alpha_refinement_loop`` graph task consuming
+        iter 1's outputs (each recursion level decides
+        converged-vs-continue on the *previous* iteration's
+        ``max_error`` inside its deferred body). This test pins that
+        the loop task is actually present in the built graph — a
+        regression here would silently fall back to single-iteration
+        behaviour.
         """
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
@@ -930,27 +1029,24 @@ class TestKoopmansDSCFGraphBuild:
         )
         labels = self._all_link_labels(sub_wg)
 
-        # Exactly one ``while_zone`` should be present (the outer
-        # ``alpha_numsteps == 1`` branch builds none).
-        n_while = sum(1 for s in labels if "while_zone" in s.lower())
-        assert n_while == 1, (n_while, labels)
-        # Both the unrolled iter_1 and the in-loop iter_n should exist
-        # as separate ``ScreeningIteration`` task instances.
+        # Exactly one refinement-loop task should be present (further
+        # recursion levels are created at runtime, one per iteration).
+        n_loop = sum(1 for s in labels if "alpha_refinement_loop" in s)
+        assert n_loop == 1, (n_loop, labels)
+        # The unrolled iter_1 exists as a ``ScreeningIteration`` task.
         assert sum(1 for s in labels if s == "ScreeningIteration") >= 1, labels
-        # The ``op_ge`` (the ``>=`` comparison task synthesised for the
-        # While condition) confirms ``condition << iter_1["max_error"]``
-        # wired up.
-        assert any("op_ge" in s for s in labels), labels
+        # No While zone / synthesised comparison task remains.
+        assert not any("while_zone" in s.lower() for s in labels), labels
+        assert not any("op_ge" in s for s in labels), labels
 
-    def test_single_iteration_omits_while_zone(
+    def test_single_iteration_omits_refinement_loop(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        """``alpha_numsteps == 1`` skips the ``While`` zone entirely.
+        """``alpha_numsteps == 1`` skips the refinement loop entirely.
 
-        The dispatcher gates ``While`` construction on
-        ``alpha_numsteps > 1`` so the ``op_ge`` condition doesn't fire
-        before iter_1 has produced ``max_error`` (``wg.ctx`` writes
-        don't create dataflow edges in aiida-workgraph).
+        The dispatcher gates ``AlphaRefinementLoop`` construction on
+        ``alpha_numsteps > 1`` so the single-iteration graph carries no
+        superfluous recursion node.
         """
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
@@ -984,6 +1080,7 @@ class TestKoopmansDSCFGraphBuild:
             dft_remote=dummy_remote,
         )
         labels = self._all_link_labels(sub_wg)
+        assert not any("alpha_refinement_loop" in s for s in labels), labels
         assert not any("while_zone" in s.lower() for s in labels), labels
 
     def test_spin_polarized_screening_emits_both_channels(
@@ -991,65 +1088,24 @@ class TestKoopmansDSCFGraphBuild:
     ):
         """``spin_polarized=True`` doubles the per-orbital fan-out.
 
-        Builds ``ScreeningIteration`` directly so the per-spin Map-zone
-        keys are visible. With ``spin_polarized=True`` the source
-        builders emit ``up_orb_N`` *and* ``down_orb_N`` keys (rather
-        than a single representative ``orb_N``); each orbital becomes
-        its own per-spin sub-graph, so we expect to see both prefixes
-        in the link labels.
+        Builds ``PerOrbitalScreening`` directly with concrete
+        spin-polarised orbitals: the for-loop fan-out emits
+        ``screen_up_orb_N`` *and* ``screen_down_orb_N`` sub-graphs
+        (rather than a single representative ``screen_orb_N`` per
+        orbital), all visible at build time.
         """
-        from aiida import orm
-        from aiida_pseudo.groups.family import PseudoPotentialFamily
-
-        from aiida_koopmans.workgraphs.kcp import ScreeningIteration, _kcp_base_inputs
-
-        family = (
-            orm.QueryBuilder()
-            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
-            .one()[0]
-        )
-        pseudos = family.get_pseudos(structure=ozone_structure)
-        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
-
-        iter_wg = ScreeningIteration.build(
-            code=kcp_code,
-            structure=ozone_structure,
-            pseudos=pseudos,
-            base=_kcp_base_inputs(
-                ozone_structure,
-                nspin=2,
-                nelec=18,
-                nelup=9,
-                neldw=9,
-                tot_magnetization=None,
-                ecutwfc=65.0,
-                ecutrho=260.0,
-            ),
-            nbnd=10,
-            correction=Correction.KI,
+        wg = self._build_per_orbital_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
             spin_polarized=True,
-            current_alphas={
-                "filled": {"up": [0.6] * 9, "down": [0.6] * 9},
-                "empty": {"up": [0.6], "down": [0.6]},
-            },
-            parent_folder=dummy_remote,
-            variational_orbital_overlays=None,
-            ki_overrides=None,
-            filled_overrides=None,
-            empty_overrides_dict=None,
-            options=None,
         )
-        labels = self._all_link_labels(iter_wg)
-        # The per-orbital ``up_orb_<n>`` / ``down_orb_<n>`` keys are
-        # expanded at *runtime* by the Map zone (the source builder's
-        # output dict drives the fan-out), so at build time we can only
-        # confirm the build succeeded and the Map zones are wired in.
-        # Runtime parity (up == down alphas for closed-shell ozone)
-        # lives in the end-to-end manual smoke test, not here.
-        assert any("map_zone" in s.lower() for s in labels), labels
-        assert any("ki_trial" in s for s in labels), labels
-        assert any("build_filled_iter_source" in s for s in labels), labels
-        assert any("build_empty_iter_source" in s for s in labels), labels
+        labels = self._all_link_labels(wg)
+        screen_labels = {s for s in labels if s.startswith("screen_")}
+        expected = {f"screen_up_orb_{i}" for i in range(1, 11)} | {
+            f"screen_down_orb_{i}" for i in range(1, 11)
+        }
+        assert screen_labels == expected, sorted(screen_labels)
 
     def test_closed_shell_init_chain_has_four_init_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
@@ -1080,8 +1136,9 @@ class TestKoopmansDSCFGraphBuild:
     def _run_build_empty_iter_source(*, nelup, neldw, tot_magnetization=None, nbnd=10):
         """Call ``build_empty_iter_source`` and return its per-orbital dict.
 
-        Bypasses the ``@task`` wrapper (via ``_callable``) for direct
-        Python-level unit testing on spin-polarised ozone-shaped input.
+        A plain function since the for-loop fan-out refactor (it runs
+        inline inside ``PerOrbitalScreening``'s deferred body), so it is
+        unit-testable directly on spin-polarised ozone-shaped input.
         """
         from aiida_koopmans.workgraphs.kcp import (
             KcpBaseInputs,
@@ -1106,10 +1163,7 @@ class TestKoopmansDSCFGraphBuild:
         orbitals = enumerate_variational_orbitals(
             nelup=nelup, neldw=neldw, nbnd=nbnd, spin_polarized=True
         )
-        # ``_callable`` is the raw Python function under the ``@task`` decorator
-        # (the decorator returns a ``TaskHandle`` at runtime; type checkers
-        # see only the underlying ``FunctionType``).
-        return build_empty_iter_source._callable(  # type: ignore[attr-defined]
+        return build_empty_iter_source(
             base=base,
             nbnd=nbnd,
             orbitals=orbitals,
@@ -1235,7 +1289,7 @@ class TestKoopmansDSCFGraphBuild:
         )
 
         orbitals = enumerate_variational_orbitals(nelup=7, neldw=5, nbnd=8, spin_polarized=True)
-        source = build_filled_iter_source._callable(  # type: ignore[attr-defined]
+        source = build_filled_iter_source(
             nelup=7,
             neldw=5,
             orbitals=orbitals,
