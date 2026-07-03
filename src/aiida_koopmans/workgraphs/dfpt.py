@@ -17,17 +17,22 @@ Two graphs are exposed:
   :func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierize` per
   manifold (occupied / empty), then :func:`KoopmansDFPTTask`.
 
-MVP scope (deliberate deviations from legacy, all spin-unpolarized,
-single-manifold):
+Spin handling: kcw.x requires an nspin=2 parent scratch even for
+closed-shell systems because the DFPT perturbations are spin-dependent, so
+:func:`SinglepointDFPT` forces ``nspin = 2`` + ``tot_magnetization = 0`` on
+the PW runs and ``spin_component = 'up'`` on pw2wannier90 (legacy
+``force_nspin2``; ``_wannierize.py:531-532``). The kcw chain itself then
+runs once on the up channel (``CONTROL.spin_component = 1``).
+
+MVP scope (deliberate deviations from legacy, all spin-unpolarized /
+closed-shell, single-manifold):
 
 * One occupied block + at most one empty block. Legacy merges multiple
   occupied sub-blocks (u / hr / centres merge steps) before kcw.x; that
   machinery is not ported yet, so multi-block inputs must be rejected
   upstream.
-* nspin=1 throughout. Legacy forces ``nspin=2`` on the PW runs
-  (``force_nspin2=True``); upstream QE's own KCW examples run nspin=1 and
-  kcw.x supports it (``CONTROL.spin_component`` defaults to 1), so the MVP
-  follows upstream. Spin-polarized DFPT needs the per-spin fan-out anyway.
+* No spin-polarized systems: that needs the per-spin wann2kc/screen/ham
+  fan-out (legacy ``spin_components`` loop), not just the nspin=2 scratch.
 * No per-orbital screening fan-out (legacy ``i_orb`` grouping): one screen
   calculation solves all orbitals, which is legacy's own behaviour when no
   orbital grouping applies.
@@ -330,7 +335,10 @@ def KoopmansDFPTTask(
     Args:
         codes: code instances; only ``codes["kcw"]`` is used.
         nscf_remote_folder: scratch of the pw.x **nscf** run the Wannier
-            functions were built on (kcw.x re-reads its wavefunctions).
+            functions were built on (kcw.x re-reads its wavefunctions). Must
+            be an ``nspin = 2`` run even for closed-shell systems -- the DFPT
+            perturbations are spin-dependent; the kcw chain reads the up
+            channel (``CONTROL.spin_component = 1``).
         occ_retrieved: the occupied-manifold wannier90 ``retrieved`` folder
             (must hold ``aiida_u.mat`` / ``aiida_hr.dat`` /
             ``aiida_centres.xyz``).
@@ -458,30 +466,42 @@ def SinglepointDFPT(
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
-    One shared scf + nscf (:func:`PwScfNscfTask`, with ``nosym`` / ``noinv``
-    forced on the nscf so kcw.x sees the full k-point set), one
-    :func:`BlockWannierize` per manifold with ``write_u_matrices`` /
-    ``write_xyz`` forced on (kcw.x consumes those files), then
-    :func:`KoopmansDFPTTask`.
+    One shared scf + nscf (:func:`PwScfNscfTask`, forced to ``nspin = 2`` /
+    ``tot_magnetization = 0`` because kcw.x's spin-dependent DFPT
+    perturbations need a two-channel scratch, with ``nosym`` / ``noinv`` on
+    the nscf so kcw.x sees the full k-point set), one :func:`BlockWannierize`
+    per manifold with ``write_u_matrices`` / ``write_xyz`` forced on and
+    pw2wannier90 pinned to ``spin_component = 'up'``, then
+    :func:`KoopmansDFPTTask` on the up channel.
 
     ``overrides`` namespaces: ``"scf"`` / ``"nscf"`` feed the shared PW
-    steps, ``"wannier90"`` feeds both per-manifold wannier builders.
+    steps, ``"wannier90"`` feeds both per-manifold wannier builders (its
+    ``"pw2wannier90"`` sub-namespace reaches the pw2wannier90 step).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
     overrides = overrides or {}
 
-    # kcw.x (and pw2wannier90) need the complete Monkhorst-Pack set: no
-    # symmetry reduction on the nscf (legacy sets nosym/noinv on the
-    # wannierize nscf; see tutorial_3 nscf.pwi).
-    nscf_defaults: dict[str, Any] = {
-        "pw": {"parameters": {"SYSTEM": {"nosym": True, "noinv": True}}},
+    # kcw.x requires an nspin=2 scratch even for closed-shell systems (the
+    # DFPT perturbations are spin-dependent): force nspin=2 with zero total
+    # magnetization on both PW runs (legacy force_nspin2; the tutorial_3
+    # scf/nscf.pwi both carry nspin=2 + tot_magnetization=0). The nscf
+    # additionally needs the complete Monkhorst-Pack set: no symmetry
+    # reduction (legacy sets nosym/noinv on the wannierize nscf).
+    spin_defaults: dict[str, Any] = {
+        "pw": {"parameters": {"SYSTEM": {"nspin": 2, "tot_magnetization": 0}}},
     }
+    nscf_defaults: dict[str, Any] = recursive_merge(
+        spin_defaults,
+        {"pw": {"parameters": {"SYSTEM": {"nosym": True, "noinv": True}}}},
+    )
+    # Forced keys merge *on top of* caller overrides: legacy force_nspin2
+    # overwrites any user-supplied nspin, and a user nspin=1 would silently
+    # break kcw.x.
     scf_nscf_overrides: dict[str, Any] = {
-        "nscf": recursive_merge(nscf_defaults, overrides.get("nscf", {})),
+        "scf": recursive_merge(overrides.get("scf", {}), spin_defaults),
+        "nscf": recursive_merge(overrides.get("nscf", {}), nscf_defaults),
     }
-    if "scf" in overrides:
-        scf_nscf_overrides["scf"] = overrides["scf"]
 
     scf_nscf = PwScfNscfTask(
         code=codes["pw"],
@@ -494,13 +514,20 @@ def SinglepointDFPT(
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
     # kcw.x reads the U matrices and Wannier centres from files the wannier90
-    # runs only write on request.
+    # runs only write on request. With the nspin=2 scratch, pw2wannier90 must
+    # pick the up channel explicitly (legacy _wannierize.py:531-532); the
+    # wannier90 input itself carries no spin key for a closed-shell system.
     w90_defaults: dict[str, Any] = {
         "wannier90": {
             "wannier90": {"parameters": {"write_u_matrices": True, "write_xyz": True}},
         },
+        "pw2wannier90": {
+            "pw2wannier90": {"parameters": {"INPUTPP": {"spin_component": "up"}}},
+        },
     }
-    wannier_overrides = recursive_merge(w90_defaults, overrides.get("wannier90", {}))
+    # Same precedence as above: the staging files and the up-channel pin are
+    # requirements of the kcw chain, not defaults a caller may disable.
+    wannier_overrides = recursive_merge(overrides.get("wannier90", {}), w90_defaults)
 
     occ = BlockWannierize(
         codes=codes,

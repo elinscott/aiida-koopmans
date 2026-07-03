@@ -222,6 +222,29 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_emp" in names
         assert "dfpt" in names
 
+        # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
+        # DFPT perturbations are spin-dependent): both PW runs are forced to
+        # nspin=2 / tot_magnetization=0, and the nscf drops symmetry.
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        nscf_system = pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]
+        assert scf_system["nspin"] == 2
+        assert scf_system["tot_magnetization"] == 0
+        assert nscf_system["nspin"] == 2
+        assert nscf_system["tot_magnetization"] == 0
+        assert nscf_system["nosym"] is True
+        assert nscf_system["noinv"] is True
+
+        # pw2wannier90 must read the up channel of the nspin=2 scratch, and
+        # the wannier90 runs must write the files kcw.x consumes.
+        for wannierize in ("wannierize_occ", "wannierize_emp"):
+            w90_overrides = wg.tasks[wannierize].inputs["overrides"].value
+            inputpp = w90_overrides["pw2wannier90"]["pw2wannier90"]["parameters"]["INPUTPP"]
+            assert inputpp["spin_component"] == "up"
+            w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+            assert w90_params["write_u_matrices"] is True
+            assert w90_params["write_xyz"] is True
+
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPT.build(
             codes=dfpt_codes,
@@ -235,6 +258,20 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_occ" in names
         assert "wannierize_emp" not in names
         assert "dfpt" in names
+
+    def test_user_overrides_cannot_disable_nspin2(self, dfpt_codes, silicon_structure, kmesh):
+        """The nspin=2 forcing is physics, so it wins over caller overrides."""
+        wg = SinglepointDFPT.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            occ_block=_block("occ", range(1, 5)),
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"nspin": 1}}}}},
+        )
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        assert pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nspin"] == 2
 
 
 # ----------------------------------------------------------------------

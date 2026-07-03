@@ -218,6 +218,8 @@ class TestPrepareForSubmission:
         assert "prefix = 'aiida'" in content
         assert "outdir = './out/'" in content
         assert "&WANNIER" in content
+        # The DFPT chain runs on the up channel of an nspin=2 parent scratch.
+        assert "spin_component = 1" in content
 
         # Every parent out/ file is symlinked at its own relative path.
         dests = sorted(dest for _, _, dest in calc_info.remote_symlink_list)
