@@ -59,20 +59,17 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 "koopmans.kcp" = "aiida_koopmans.calculations.kcp:KcpCalculation"
 "koopmans.wann2kcp" = "aiida_koopmans.calculations.wann2kcp:Wann2kcpCalculation"
 "koopmans.merge_evc" = "aiida_koopmans.calculations.merge_evc:MergeEvcCalculation"
-# Reserved for the DFPT port (kcw.x, one CalcJob per control.calculation mode);
-# uncomment as each lands in aiida_koopmans.calculations.kcw:
-# "koopmans.kcw_wann2kc" = "aiida_koopmans.calculations.kcw:Wann2kcCalculation"
-# "koopmans.kcw_screen" = "aiida_koopmans.calculations.kcw:KcwScreenCalculation"
-# "koopmans.kcw_ham" = "aiida_koopmans.calculations.kcw:KcwHamCalculation"
+"koopmans.kcw_wann2kc" = "aiida_koopmans.calculations.kcw:Wann2kcCalculation"
+"koopmans.kcw_screen" = "aiida_koopmans.calculations.kcw:KcwScreenCalculation"
+"koopmans.kcw_ham" = "aiida_koopmans.calculations.kcw:KcwHamCalculation"
 
 [project.entry-points."aiida.parsers"]
 "koopmans.kcp" = "aiida_koopmans.parsers.kcp:KcpParser"
 "koopmans.wann2kcp" = "aiida_koopmans.parsers.wann2kcp:Wann2kcpParser"
 "koopmans.merge_evc" = "aiida_koopmans.parsers.merge_evc:MergeEvcParser"
-# Reserved for the DFPT port; uncomment alongside the matching CalcJobs:
-# "koopmans.kcw_wann2kc" = "aiida_koopmans.parsers.kcw:Wann2kcParser"
-# "koopmans.kcw_screen" = "aiida_koopmans.parsers.kcw:KcwScreenParser"
-# "koopmans.kcw_ham" = "aiida_koopmans.parsers.kcw:KcwHamParser"
+"koopmans.kcw_wann2kc" = "aiida_koopmans.parsers.kcw:Wann2kcParser"
+"koopmans.kcw_screen" = "aiida_koopmans.parsers.kcw:KcwScreenParser"
+"koopmans.kcw_ham" = "aiida_koopmans.parsers.kcw:KcwHamParser"
 
 [tool.pytest.ini_options]
 # Configuration for [pytest](https://docs.pytest.org)
