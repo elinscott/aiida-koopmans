@@ -26,6 +26,8 @@ Per-block file staging that the later fold-to-supercell step (B2) consumes:
   emitted by the wannier90 post-processing (``-pp``) run.
 """
 
+from __future__ import annotations
+
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
@@ -35,12 +37,6 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-# NOTE: deliberately no ``from __future__ import annotations``. The dynamic
-# output namespace (``Annotated[dict, dynamic(BlockWannierOutputs)]``) must
-# resolve to a real object at runtime so the engine can build the per-block
-# output links; PEP 563 stringised annotations break that with
-# "name 'Annotated' is not defined". (Python 3.10+ ``X | Y`` / ``dict[...]``
-# work without the future import anyway.)
 from aiida_koopmans.types import ProjectionBlock, block_w90_kwargs
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.pw import PwOutputs, PwScfNscfTask
@@ -73,18 +69,8 @@ class BlockWannierizeOutputs(TypedDict):
     * ``nscf`` -- the shared nscf :class:`PwOutputs` so B2 can read
       ``nscf["remote_folder"]`` (the nscf scratch every block was built on).
     * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
-      a :class:`BlockWannierOutputs`.
-
-    TODO(B2 / fold-to-supercell): a ``TypedDict`` used as a ``@task.graph``
-    *return* annotation does NOT build a consumable namespace output in
-    aiida-workgraph 0.8.1 -- the ``blocks`` dynamic field becomes an opaque
-    ``workgraph.dict`` that a downstream namespace consumer cannot link to
-    ("Namespace item type mismatch: ... dict -> ... namespace"). When B2
-    consumes ``blocks`` as a namespace, switch this return to an explicit
-    ``-> Annotated[dict, namespace(nscf=..., blocks=dynamic(namespace(...)))]``
-    (``dynamic(TypedDict)`` as a *field* is fine; only TypedDict-as-return
-    breaks). Verified + tracked in ``~/code/aiida-workgraph-wishlist``
-    (``test_typeddict_return_annotation_is_consumable``).
+      a :class:`BlockWannierOutputs`, consumable downstream (B2) as a
+      namespace.
     """
 
     nscf: PwOutputs
@@ -133,10 +119,7 @@ def BlockWannierize(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
-        # ``pseudo_family`` arrives as an ``aiida-workgraph`` TaggedValue
-        # proxy; unwrap to a plain ``str`` so the upstream pseudo loader
-        # (which does identity / membership checks) sees a real string.
-        pseudo_family=str(pseudo_family) if pseudo_family is not None else None,
+        pseudo_family=pseudo_family,
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
