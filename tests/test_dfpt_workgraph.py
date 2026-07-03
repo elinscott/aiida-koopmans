@@ -235,3 +235,114 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_occ" in names
         assert "wannierize_emp" not in names
         assert "dfpt" in names
+
+
+# ----------------------------------------------------------------------
+# derive_dfpt_manifolds / normalize_alpha_guess (pure helpers)
+# ----------------------------------------------------------------------
+
+
+class _FakeQuantumNumbers:
+    def __init__(self, l_value, m_r=None):
+        self.angular = type("A", (), {"value": l_value})()
+        self.m_r = m_r
+
+    def __str__(self):
+        return f"l={self.angular.value}"
+
+
+class _FakeProjection:
+    def __init__(self, site, l_value, m_r=None):
+        self.site = site
+        self.ang_mtm = _FakeQuantumNumbers(l_value, m_r)
+
+
+class TestDeriveDfptManifolds:
+    def test_silicon_like_split(self, silicon_structure):
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # Occupied block: 2 Si atoms x (l=1 -> 3 orbitals) + 2 x (m_r-restricted
+        # l=0 -> 1 orbital) = 8 Wannier functions; nelec=16 makes them all filled.
+        occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 0, m_r=[1])]
+        emp = [_FakeProjection("Si", 0)]
+        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=[occ, emp],
+            nelec=16,
+            nbnd=12,
+        )
+        assert occ_block["num_wann"] == 8
+        assert occ_block["num_bands"] == 8
+        assert occ_block["exclude_bands"] == "9-12"
+        assert occ_block["projections"] == ["Si:l=1", "Si:l=0"]
+        assert emp_block is not None
+        assert emp_block["num_wann"] == 2
+        assert emp_block["num_bands"] == 4
+        assert emp_block["exclude_bands"] == "1-8"
+        assert has_disentangle is True
+        assert n_orbitals == 10
+
+    def test_hybrid_multiplicity_and_no_empty(self, silicon_structure):
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
+        occ = [_FakeProjection("Si", -3)]
+        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=[occ],
+            nelec=16,
+            nbnd=None,
+        )
+        assert occ_block["num_wann"] == 8
+        assert occ_block["exclude_bands"] is None
+        assert emp_block is None
+        assert has_disentangle is False
+        assert n_orbitals == 8
+
+    def test_straddling_block_raises(self, silicon_structure):
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        with pytest.raises(ValueError, match="straddles"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[[_FakeProjection("Si", -3)]],  # 8 wann
+                nelec=12,  # nocc = 6: block spans bands 1-8
+                nbnd=8,
+            )
+
+    def test_multi_occupied_blocks_raise(self, silicon_structure):
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        blocks = [[_FakeProjection("Si", 0)], [_FakeProjection("Si", 0)]]  # 2 + 2 occ
+        with pytest.raises(NotImplementedError, match="merge machinery"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure, projection_blocks=blocks, nelec=8, nbnd=4
+            )
+
+    def test_odd_electron_count_raises(self, silicon_structure):
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        with pytest.raises(NotImplementedError, match="Odd electron count"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[[_FakeProjection("Si", 0)]],
+                nelec=7,
+                nbnd=None,
+            )
+
+
+class TestNormalizeAlphaGuess:
+    def test_uniform_float(self):
+        from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
+
+        assert normalize_alpha_guess(0.3, 4) == [0.3, 0.3, 0.3, 0.3]
+
+    def test_flat_list(self):
+        from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
+
+        assert normalize_alpha_guess([0.1, 0.2], 2) == [0.1, 0.2]
+
+    def test_nested_per_spin_list_takes_first_channel(self):
+        from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
+
+        assert normalize_alpha_guess([[0.1, 0.2]], 2) == [0.1, 0.2]

@@ -48,7 +48,7 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
-from aiida_koopmans.types import ProjectionBlock
+from aiida_koopmans.types import ExplicitProjectionBlock, ProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import BlockWannierize
 from aiida_koopmans.workgraphs.pw import PwScfNscfTask
@@ -69,6 +69,172 @@ _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 Wann2kcTask = task(Wann2kcCalculation)
 KcwScreenTask = task(KcwScreenCalculation)
 KcwHamTask = task(KcwHamCalculation)
+
+
+def _projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
+    """Count the Wannier functions of one projection: site multiplicity x (2l+1).
+
+    ``projection`` is duck-typed on the ``wannier90_input`` ``Projection``
+    model (``.site`` element label, ``.ang_mtm`` quantum numbers).
+    """
+    if projection.site is None:
+        raise NotImplementedError(
+            "Only element-labelled projection sites are supported for DFPT "
+            "(fractional/cartesian sites are not yet wired)."
+        )
+    n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
+    if n_sites == 0:
+        raise ValueError(
+            f"Projection site '{projection.site}' does not match any atom in the structure."
+        )
+    quantum_numbers = projection.ang_mtm
+    if quantum_numbers.m_r is not None:
+        multiplicity = len(quantum_numbers.m_r)
+    else:
+        l_value = quantum_numbers.angular.value
+        # Hybrids are encoded with negative l: sp=-1 (2 orbitals), sp2=-2 (3),
+        # sp3=-3 (4), sp3d=-4 (5), sp3d2=-5 (6).
+        multiplicity = 2 * l_value + 1 if l_value >= 0 else 1 - l_value
+    return n_sites * multiplicity
+
+
+def _split_manifolds(
+    blocks_with_counts: list[tuple[Any, int]], nocc: int
+) -> tuple[list[tuple[Any, int]], list[tuple[Any, int]]]:
+    """Split (block, num_wann) pairs at the occupied/empty boundary."""
+    occupied: list[tuple[Any, int]] = []
+    empty: list[tuple[Any, int]] = []
+    cursor = 0
+    for block, num_wann in blocks_with_counts:
+        if cursor + num_wann <= nocc:
+            occupied.append((block, num_wann))
+        elif cursor >= nocc:
+            empty.append((block, num_wann))
+        else:
+            raise ValueError(
+                f"A projection block (bands {cursor + 1}-{cursor + num_wann}) straddles "
+                f"the occupied/empty boundary at band {nocc}."
+            )
+        cursor += num_wann
+    return occupied, empty
+
+
+def derive_dfpt_manifolds(
+    structure: orm.StructureData,
+    projection_blocks: list,
+    nelec: int,
+    nbnd: int | None,
+) -> tuple[ProjectionBlock, ProjectionBlock | None, bool, int]:
+    """Turn user projection blocks into the occupied/empty DFPT manifolds.
+
+    Ports the manifold bookkeeping of legacy ``KoopmansDFPTWorkflow.__init__``
+    (nocc from the electron count, nemp from the projections, disentanglement
+    when the empty manifold has more bands than Wannier functions) for the
+    MVP scope: spin-unpolarized, exactly one occupied block, at most one
+    empty block.
+
+    Args:
+        structure: the periodic structure (for per-site projection counting).
+        projection_blocks: list of projection blocks, each a list of
+            ``wannier90_input`` ``Projection``-like objects.
+        nelec: total electron count (from the pseudopotential valences).
+        nbnd: number of bands of the nscf, or None to default to nocc.
+
+    Returns:
+        ``(occ_block, emp_block, has_disentangle, n_orbitals)`` where the
+        blocks are :class:`ExplicitProjectionBlock` (``emp_block`` may be
+        None) and ``n_orbitals = num_wann_occ + num_wann_emp``.
+    """
+    from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+    if nelec % 2:
+        raise NotImplementedError(
+            f"Odd electron count ({nelec}) requires spin polarization, which is not "
+            "yet supported for DFPT screening."
+        )
+    nocc = nelec // 2
+    nbnd = nocc if nbnd is None else int(nbnd)
+
+    if not projection_blocks:
+        raise NotImplementedError(
+            "DFPT screening requires explicit Wannier90 projections in "
+            "``calculator_parameters.w90.projections``."
+        )
+
+    blocks_with_counts = [
+        (block, sum(_projection_num_wann(structure, p) for p in block))
+        for block in projection_blocks
+    ]
+    occupied, empty = _split_manifolds(blocks_with_counts, nocc)
+
+    if len(occupied) != 1 or len(empty) > 1:
+        raise NotImplementedError(
+            f"DFPT screening currently supports exactly one occupied projection block "
+            f"and at most one empty block (got {len(occupied)} occupied / {len(empty)} "
+            "empty). Multi-block manifolds need the u/hr/centres merge machinery, "
+            "which is not yet ported."
+        )
+    num_wann_occ = occupied[0][1]
+    if num_wann_occ != nocc:
+        raise ValueError(
+            f"The occupied projection block spans {num_wann_occ} Wannier functions but "
+            f"the system has {nocc} occupied bands."
+        )
+
+    def _projection_strings(block: list) -> list[str]:
+        # Wannier90-format projection lines; aiida-wannier90 writes orm.List
+        # entries verbatim into the .win projections block.
+        return [f"{p.site}:{p.ang_mtm}" for p in block]
+
+    occ_block = ExplicitProjectionBlock(
+        label="occ",
+        spin=SpinChannel.NONE,
+        num_wann=num_wann_occ,
+        num_bands=num_wann_occ,
+        include_bands=list(range(1, nocc + 1)),
+        exclude_bands=f"{nocc + 1}-{nbnd}" if nbnd > nocc else None,
+        projection_type=WannierProjectionType.ANALYTIC,
+        projections=_projection_strings(occupied[0][0]),
+    )
+
+    emp_block = None
+    has_disentangle = False
+    num_wann_emp = 0
+    if empty:
+        num_wann_emp = empty[0][1]
+        num_bands_emp = nbnd - nocc
+        if num_bands_emp < num_wann_emp:
+            raise ValueError(
+                f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
+                f"projection block requires {num_wann_emp} Wannier functions."
+            )
+        has_disentangle = num_bands_emp != num_wann_emp
+        emp_block = ExplicitProjectionBlock(
+            label="emp",
+            spin=SpinChannel.NONE,
+            num_wann=num_wann_emp,
+            num_bands=num_bands_emp,
+            include_bands=list(range(nocc + 1, nbnd + 1)),
+            exclude_bands=f"1-{nocc}",
+            projection_type=WannierProjectionType.ANALYTIC,
+            projections=_projection_strings(empty[0][0]),
+        )
+
+    return occ_block, emp_block, has_disentangle, num_wann_occ + num_wann_emp
+
+
+def normalize_alpha_guess(raw_guess: float | list, n_orbitals: int) -> list[float]:
+    """Flatten a user ``alpha_guess`` into one alpha per orbital.
+
+    Accepts the three shapes the input file allows: a single float (uniform
+    guess), a flat list, or the legacy nested per-spin list (spin channel 0
+    is taken; the MVP is spin-unpolarized).
+    """
+    if isinstance(raw_guess, float):
+        return [raw_guess] * n_orbitals
+    if raw_guess and isinstance(raw_guess[0], list):
+        return [float(a) for a in raw_guess[0]]
+    return [float(a) for a in raw_guess]
 
 
 @task
@@ -157,7 +323,7 @@ def KoopmansDFPTTask(
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
     has_disentangle: bool = False,
-    l_vcut: bool = True,
+    l_vcut: bool | None = None,
 ) -> KoopmansDFPTOutputs:
     """Run the kcw.x chain off provided wannierization outputs.
 
@@ -180,8 +346,10 @@ def KoopmansDFPTTask(
             straight to ham (legacy ``calculate_alpha = False``).
         has_disentangle: whether the empty manifold was disentangled
             (``num_bands != num_wann``).
-        l_vcut: Gygi-Baldereschi long-range cutoff (legacy ``gb_correction``).
+        l_vcut: Gygi-Baldereschi long-range cutoff (legacy ``gb_correction``);
+            None means the periodic-system default (on).
     """
+    l_vcut = True if l_vcut is None else bool(l_vcut)
     control = {
         "kcw_iverbosity": 1,
         "kcw_at_ks": False,
@@ -286,7 +454,7 @@ def SinglepointDFPT(
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
     has_disentangle: bool = False,
-    l_vcut: bool = True,
+    l_vcut: bool | None = None,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
