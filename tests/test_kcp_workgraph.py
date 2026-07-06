@@ -56,15 +56,48 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
-    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs", "pz"])
-    def test_non_kohn_sham_init_raises(self, ozone_structure, init_orbitals):
+    def test_pz_init_raises(self, ozone_structure):
         with pytest.raises(NotImplementedError, match="init_orbitals="):
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals="pz",
+                fix_spin_contamination=False,
+                structure=ozone_structure,
+            )
+
+    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
+    def test_wannier_init_on_molecule_raises(self, ozone_structure, init_orbitals):
+        with pytest.raises(ValueError, match="periodic structure"):
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=init_orbitals,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
             )
+
+    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
+    def test_wannier_init_missing_inputs_raises(self, periodic_ozone_structure, init_orbitals):
+        with pytest.raises(ValueError, match=r"\['blocks', 'kgrid'\]"):
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals=init_orbitals,
+                fix_spin_contamination=False,
+                structure=periodic_ozone_structure,
+                kpoints=object(),
+                codes=object(),
+            )
+
+    def test_wannier_init_with_all_inputs_passes(self, periodic_ozone_structure):
+        _validate_scope(
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            fix_spin_contamination=False,
+            structure=periodic_ozone_structure,
+            blocks=[object()],
+            kgrid=[2, 2, 2],
+            kpoints=object(),
+            codes=object(),
+        )
 
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
         # ``alpha_numsteps`` is range-checked by the koopmans2 Pydantic
@@ -87,8 +120,8 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
-    def test_periodic_structure_raises(self, periodic_ozone_structure):
-        with pytest.raises(NotImplementedError, match="Periodic systems"):
+    def test_periodic_kohn_sham_raises(self, periodic_ozone_structure):
+        with pytest.raises(NotImplementedError, match="periodic structure"):
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=VariationalOrbitalType.KOHN_SHAM,
