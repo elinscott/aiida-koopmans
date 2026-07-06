@@ -348,3 +348,91 @@ def test_full_ozone_input_rendering_has_expected_sections(ozone_structure, ozone
     assert "7.0869000000" in content
     assert "8.1738000000" in content
     assert "6.0000000000" in content
+
+
+def test_read_wavefunctions_symlinks_and_parent_walk_skip(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    fixture_localhost,
+    aiida_local_code_factory,
+    ozone_structure,
+    ozone_real_pseudos,
+    tmp_path_factory,
+):
+    """Stage external evc files into the read save via ``read_wavefunctions``.
+
+    The MLWF-init ``dft_init`` staging: folded ``evc_occupied{n}.dat`` /
+    ``evc0_empty{n}.dat`` files from merge_evc.x remotes are symlinked into
+    the read ``K00001``, and any same-named entry in the primary parent's
+    save is skipped so the external link is authoritative.
+    """
+    from aiida import orm
+    from aiida.common import LinkType
+
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_dft_parameters
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
+
+    def _remote(dirname: str, filenames: list[str]) -> orm.RemoteData:
+        creator = orm.CalcJobNode(computer=fixture_localhost, process_type="")
+        creator.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
+        creator.store()
+        root = tmp_path_factory.mktemp(dirname)
+        for name in filenames:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("")
+        remote = orm.RemoteData(computer=fixture_localhost, remote_path=root.as_posix())
+        remote.base.links.add_incoming(
+            creator, link_type=LinkType.CREATE, link_label="remote_folder"
+        )
+        return remote.store()
+
+    # The dft_dummy parent carries a stale evc_occupied1.dat that must lose
+    # to the external merge output.
+    parent = _remote(
+        "kcp-dummy-parent",
+        [
+            "out/aiida_60.save/data-file-schema.xml",
+            "out/aiida_60.save/K00001/evc1.dat",
+            "out/aiida_60.save/K00001/evc_occupied1.dat",
+        ],
+    )
+    merge_occ = _remote("merge-occ", ["evc_occupied1.dat"])
+    merge_emp = _remote("merge-emp", ["evc0_empty1.dat"])
+
+    base = KcpBaseInputs(
+        ecutwfc=65.0,
+        ecutrho=260.0,
+        nspin=2,
+        nelec=18,
+        ntyp=len(ozone_structure.kinds),
+        mt_correction=not any(ozone_structure.pbc),
+        nelup=9,
+        neldw=9,
+        tot_magnetization=None,
+    )
+    inputs = {
+        "code": code,
+        "structure": ozone_structure,
+        "parameters": orm.Dict(dict=_build_dft_parameters(base, nbnd=10, restart_mode="restart")),
+        "pseudos": ozone_real_pseudos,
+        "parent_folder": parent,
+        "read_wavefunctions": {"evc_occupied1": merge_occ, "evc0_empty1": merge_emp},
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.kcp", inputs)
+
+    by_dest = {dest: src for _, src, dest in calc_info.remote_symlink_list}
+    read_k = "out/aiida_50.save/K00001"
+
+    # External files land in the read K00001, sourced from the remote roots.
+    assert by_dest[f"{read_k}/evc_occupied1.dat"].endswith("/evc_occupied1.dat")
+    assert "merge-occ" in by_dest[f"{read_k}/evc_occupied1.dat"]
+    assert "merge-emp" in by_dest[f"{read_k}/evc0_empty1.dat"]
+
+    # The parent's same-named entry was skipped; other parent files walked.
+    assert "kcp-dummy-parent" not in by_dest[f"{read_k}/evc_occupied1.dat"]
+    assert "kcp-dummy-parent" in by_dest[f"{read_k}/evc1.dat"]

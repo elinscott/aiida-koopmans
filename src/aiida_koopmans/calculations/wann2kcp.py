@@ -16,12 +16,12 @@ keep their trailing slash.
 Two modes are supported:
 
 * ``wannier2kcp`` (the mode the FoldToSupercell workgraph needs) -- folds
-  Wannier orbitals into the supercell. The caller must stage four inputs into
-  the work directory (see ``KcpCalculation`` for the symlink idiom): the
-  ``<seedname>_hr.dat`` Hamiltonian, the nscf ``outdir`` (recursive symlink),
-  ``<seedname>.nnkp``, and ``<seedname>.chk``. The run writes ``evcw.dat`` for
-  a spin-polarized calculation or ``evcw1.dat`` + ``evcw2.dat`` for a
-  non-spin-polarized one.
+  Wannier orbitals into the supercell. Four inputs are staged into the work
+  directory: the nscf ``outdir`` (``parent_folder``, symlinked as ``TMP``),
+  ``<seedname>.nnkp`` (``nnkp_file``), and ``<seedname>.chk`` +
+  ``<seedname>_hr.dat`` (both copied out of ``wannier_folder``, the wannier90
+  ``retrieved`` folder). The run writes ``evcw.dat`` for a spin-polarized
+  calculation or ``evcw1.dat`` + ``evcw2.dat`` for a non-spin-polarized one.
 * ``ks2kcp`` -- converts plain Kohn-Sham orbitals; no Wannier inputs required.
 
 Downstream steps pick up the ``evcw*`` files from ``remote_folder`` (they are
@@ -33,7 +33,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from aiida.common import CalcInfo
-from aiida.orm import Dict, RemoteData
+from aiida.orm import Dict, RemoteData, SinglefileData
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
 
@@ -46,8 +46,19 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     _INPUT_FILE = "aiida.wki"
     _OUTPUT_FILE = "aiida.wko"
     _DEFAULT_OUTDIR = "TMP"
-    _DEFAULT_PREFIX = "kc"
+    # ``prefix`` must match the prefix of the upstream pw.x nscf whose scratch
+    # is symlinked in as ``TMP`` — aiida-quantumespresso's ``PwCalculation``
+    # hard-codes ``_PREFIX = "aiida"``, so wann2kcp.x must look for
+    # ``TMP/aiida.save``. (Legacy koopmans used ``kc`` because its pw.x runs
+    # used that prefix.)
+    _DEFAULT_PREFIX = "aiida"
     _DEFAULT_SEEDNAME = "wannier90"
+    # Filenames inside ``wannier_folder`` (the wannier90 ``retrieved``
+    # FolderData): aiida-wannier90's ``Wannier90Calculation`` hard-codes its
+    # seedname to ``aiida``, so the checkpoint and Hamiltonian arrive as
+    # ``aiida.chk`` / ``aiida_hr.dat``. Overridable via
+    # ``settings['wannier_source_seedname']``.
+    _WANNIER_SOURCE_SEEDNAME = "aiida"
 
     # The wann2kcp input is a single Fortran namelist spelled ``&inputpp``
     # (lowercase in the file, parsed as ``data['inputpp']``).
@@ -114,10 +125,38 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             ),
         )
         spec.input(
+            "nnkp_file",
+            valid_type=SinglefileData,
+            required=False,
+            help=(
+                "The ``.nnkp`` file emitted by the wannier90 post-processing "
+                "(``-pp``) run. Copied into the work directory as "
+                "``<seedname>.nnkp``. Required for ``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
+            "wannier_folder",
+            valid_type=FolderData,
+            required=False,
+            help=(
+                "The wannier90 ``retrieved`` folder holding the checkpoint and "
+                "real-space Hamiltonian (``aiida.chk`` must be forced into the "
+                "wannier90 retrieve list; ``aiida_hr.dat`` requires "
+                "``write_hr``). They are copied into the work directory as "
+                "``<seedname>.chk`` / ``<seedname>_hr.dat``. Required for "
+                "``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
             "settings",
             valid_type=Dict,
             required=False,
-            help="Optional CalcJob-level settings (cmdline overrides, extra retrieve paths).",
+            help=(
+                "Optional CalcJob-level settings: ``additional_retrieve_list`` "
+                "adds retrieve paths; ``wannier_source_seedname`` overrides the "
+                "seedname used to locate files inside ``wannier_folder`` "
+                "(default ``aiida``)."
+            ),
         )
 
         spec.inputs["metadata"]["options"]["parser_name"].default = "koopmans.wann2kcp"
@@ -146,6 +185,7 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         calc_info = CalcInfo()
         calc_info.codes_info = [self._make_code_info()]
         calc_info.remote_symlink_list = self._build_remote_symlink_list()
+        calc_info.local_copy_list = self._build_local_copy_list(parameters)
         calc_info.retrieve_list = self._build_retrieve_list(parameters)
 
         return calc_info
@@ -167,20 +207,47 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             parameters.setdefault(key, default)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
-        """Recursively symlink the parent nscf ``outdir`` into ``./TMP/``.
+        """Symlink the parent nscf scratch into ``./TMP/``.
 
-        wann2kcp.x reads the Bloch wavefunctions from its ``outdir``. A
-        directory-level symlink is sufficient here -- unlike the kcp.x case
+        wann2kcp.x reads the Bloch wavefunctions from ``<outdir>/<prefix>.save``.
+        A directory-level symlink is sufficient here -- unlike the kcp.x case
         there are no per-file overlays -- so this stays a single entry. The
-        ``<seedname>.nnkp``, ``<seedname>.chk`` and ``*_hr.dat`` inputs are
-        staged by the consuming workgraph, not by this CalcJob, because their
-        provenance lives on different upstream nodes.
+        parent is an aiida-quantumespresso pw.x run, whose scratch lives under
+        ``<workdir>/out/`` (``PwCalculation._OUTPUT_SUBFOLDER``), so the ``out``
+        subdirectory is what lands at ``TMP`` — combined with the owned
+        ``prefix = aiida`` this resolves to ``TMP/aiida.save``.
         """
         if "parent_folder" not in self.inputs:
             return []
         parent = self.inputs.parent_folder
-        source = parent.get_remote_path()
+        source = f"{parent.get_remote_path()}/out"
         return [(parent.computer.uuid, source, self._DEFAULT_OUTDIR)]
+
+    def _build_local_copy_list(self, parameters: dict) -> list[tuple[str, str, str]]:
+        """Copy the Wannier inputs (``.nnkp``, ``.chk``, ``_hr.dat``) into place.
+
+        The three files live on different upstream nodes (the ``-pp`` run's
+        ``nnkp_file`` output; the wannier90 ``retrieved`` folder), so they are
+        separate inputs rather than a single parent. Destination names follow
+        the ``seedname`` the namelist declares; source names inside
+        ``wannier_folder`` follow the wannier90 seedname (``aiida`` upstream,
+        overridable via ``settings['wannier_source_seedname']``).
+        """
+        seedname = parameters.get("seedname", self._DEFAULT_SEEDNAME)
+        copy_list: list[tuple[str, str, str]] = []
+        if "nnkp_file" in self.inputs:
+            nnkp = self.inputs.nnkp_file
+            copy_list.append((nnkp.uuid, nnkp.filename, f"{seedname}.nnkp"))
+        if "wannier_folder" in self.inputs:
+            folder = self.inputs.wannier_folder
+            source_seedname = self._WANNIER_SOURCE_SEEDNAME
+            if "settings" in self.inputs:
+                source_seedname = self.inputs.settings.get_dict().get(
+                    "wannier_source_seedname", source_seedname
+                )
+            copy_list.append((folder.uuid, f"{source_seedname}.chk", f"{seedname}.chk"))
+            copy_list.append((folder.uuid, f"{source_seedname}_hr.dat", f"{seedname}_hr.dat"))
+        return copy_list
 
     def _build_retrieve_list(self, parameters: dict) -> list[str]:
         """Retrieve stdout plus the ``evcw`` wavefunction files for provenance.

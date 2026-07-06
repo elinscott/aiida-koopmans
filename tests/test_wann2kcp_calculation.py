@@ -60,7 +60,9 @@ class TestInjectOwnedKeys:
         params: dict = {}
         calc._inject_owned_keys(params)
         assert params["outdir"] == "./TMP/"
-        assert params["prefix"] == "kc"
+        # Matches aiida-quantumespresso's fixed pw.x prefix (the nscf scratch
+        # symlinked in as TMP is always an ``aiida.save`` tree).
+        assert params["prefix"] == "aiida"
         assert params["seedname"] == "wannier90"
         assert params["wan_mode"] == "wannier2kcp"
 
@@ -146,9 +148,11 @@ def test_wannier2kcp_full_render(
     assert isinstance(calc_info, datastructures.CalcInfo)
     assert calc_info.codes_info[0].cmdline_params == ["-in", "aiida.wki"]
 
-    # Parent outdir symlinked into ./TMP/.
-    symlink_dests = [item[2] for item in calc_info.remote_symlink_list]
-    assert symlink_dests == ["TMP"]
+    # The parent's pw.x scratch (its ``out`` subfolder) symlinked into ./TMP/,
+    # so ``outdir + prefix`` resolves to ``TMP/aiida.save``.
+    assert [(item[1], item[2]) for item in calc_info.remote_symlink_list] == [
+        (f"{parent_root.as_posix()}/out", "TMP")
+    ]
 
     # evcw files retrieved in wannier2kcp mode.
     retrieved = set(calc_info.retrieve_list)
@@ -159,10 +163,90 @@ def test_wannier2kcp_full_render(
         rendered = handle.read()
     assert rendered.startswith("&INPUTPP\n")
     assert "outdir = './TMP/'" in rendered
-    assert "prefix = 'kc'" in rendered
+    # ``prefix`` must match aiida-quantumespresso's fixed pw.x prefix.
+    assert "prefix = 'aiida'" in rendered
     assert "seedname = 'wannier90'" in rendered
     assert "spin_component = 'up'" in rendered
     assert "wan_mode = 'wannier2kcp'" in rendered
+
+
+def test_wannier2kcp_stages_nnkp_chk_and_hr(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    aiida_local_code_factory,
+):
+    """Stage ``.nnkp`` / ``.chk`` / ``_hr.dat`` via the dedicated inputs.
+
+    The ``nnkp_file`` SinglefileData lands as ``<seedname>.nnkp``; the two
+    wannier90 artefacts inside ``wannier_folder`` (upstream seedname
+    ``aiida``) land as ``<seedname>.chk`` / ``<seedname>_hr.dat``.
+    """
+    import io
+
+    from aiida import orm
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+
+    nnkp = orm.SinglefileData(io.BytesIO(b"nnkp"), filename="aiida.nnkp")
+    wannier_folder = orm.FolderData()
+    wannier_folder.put_object_from_bytes(b"chk", "aiida.chk")
+    wannier_folder.put_object_from_bytes(b"hr", "aiida_hr.dat")
+
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp", "seedname": "aiida"}),
+        "nnkp_file": nnkp,
+        "wannier_folder": wannier_folder,
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.wann2kcp", inputs)
+
+    copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
+    assert copies == {
+        ("aiida.nnkp", "aiida.nnkp"),
+        ("aiida.chk", "aiida.chk"),
+        ("aiida_hr.dat", "aiida_hr.dat"),
+    }
+
+
+def test_wannier2kcp_staging_respects_seednames(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    aiida_local_code_factory,
+):
+    """Destination names follow the namelist seedname; sources follow settings."""
+    import io
+
+    from aiida import orm
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+
+    nnkp = orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp")
+    wannier_folder = orm.FolderData()
+    wannier_folder.put_object_from_bytes(b"chk", "w90.chk")
+    wannier_folder.put_object_from_bytes(b"hr", "w90_hr.dat")
+
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "nnkp_file": nnkp,
+        "wannier_folder": wannier_folder,
+        "settings": orm.Dict(dict={"wannier_source_seedname": "w90"}),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.wann2kcp", inputs)
+
+    # Default namelist seedname is ``wannier90`` — destinations follow it.
+    copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
+    assert copies == {
+        ("pp.nnkp", "wannier90.nnkp"),
+        ("w90.chk", "wannier90.chk"),
+        ("w90_hr.dat", "wannier90_hr.dat"),
+    }
 
 
 def test_ks2kcp_does_not_retrieve_evcw(

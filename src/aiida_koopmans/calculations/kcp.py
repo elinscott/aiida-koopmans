@@ -140,6 +140,26 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 "to a different canonical KI basis."
             ),
         )
+        spec.input_namespace(
+            "read_wavefunctions",
+            valid_type=RemoteData,
+            dynamic=True,
+            required=False,
+            help=(
+                "Externally-produced wavefunction files to stage into this "
+                "calc's read save (``out/<prefix>_<NDR>.save/K00001/``). Keyed "
+                "by destination stem (``.dat`` filenames *without* the "
+                "extension — namespace keys cannot contain ``.``); each value "
+                "is the RemoteData whose root holds ``<stem>.dat``. Used by "
+                "the periodic MLWF initialisation to link the folded "
+                "``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat`` files from "
+                "the merge_evc.x runs into the ``dft_init`` (and first trial "
+                "KI) read directory — legacy ``_koopmans_dscf.py:1244-1245`` "
+                "and ``:521-522``. Matching destinations are skipped during "
+                "the primary parent walk so these symlinks are the only "
+                "entries at those paths."
+            ),
+        )
         spec.input(
             "settings",
             valid_type=Dict,
@@ -386,6 +406,11 @@ class KcpCalculation(KoopmansStdoutCalculation):
             else {}
         )
         overlay_skip |= {f"{self._K_SUBDIR}/{dest}.dat" for dest in overlays_map.values()}
+        # ``read_wavefunctions`` entries also land in the read K00001 —
+        # exclude their destinations from the primary parent walk so the
+        # external symlinks below are authoritative.
+        read_wavefunctions = dict(self.inputs.get("read_wavefunctions", None) or {})
+        overlay_skip |= {f"{self._K_SUBDIR}/{stem}.dat" for stem in read_wavefunctions}
 
         if "parent_folder" in self.inputs:
             parent = self.inputs.parent_folder
@@ -436,6 +461,14 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 source_abs = str(parent_save_abs / self._K_SUBDIR / f"{source_stem}.dat")
                 dest_rel = f"{target_save}/{self._K_SUBDIR}/{dest_stem}.dat"
                 symlinks.append((parent.computer.uuid, source_abs, dest_rel))
+
+        # Externally-produced wavefunctions (folded Wannier orbitals from
+        # merge_evc.x runs): ``<remote>/<stem>.dat`` → read K00001. Sorted for
+        # a deterministic symlink order.
+        for stem, remote in sorted(read_wavefunctions.items()):
+            source_abs = str(PurePosixPath(remote.get_remote_path()) / f"{stem}.dat")
+            dest_rel = f"{target_save}/K00001/{stem}.dat"
+            symlinks.append((remote.computer.uuid, source_abs, dest_rel))
 
         return symlinks
 
