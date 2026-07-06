@@ -15,20 +15,32 @@ Two graphs are exposed:
   one :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock`
   per manifold (occupied / empty), then :func:`RunDFPT`.
 
-Spin handling: kcw.x requires an nspin=2 parent scratch even for
-closed-shell systems because the DFPT perturbations are spin-dependent, so
-:func:`SinglepointDFPTWorkflow` forces ``nspin = 2`` + ``tot_magnetization = 0`` on
-the PW runs and ``spin_component = 'up'`` on pw2wannier90. The kcw chain
-itself then runs once on the up channel (``CONTROL.spin_component = 1``).
+Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
+``aiida_quantumespresso`` ``SpinType``):
 
-Current scope (spin-unpolarized / closed-shell, single-manifold):
+* ``NONE`` — kcw.x still requires an nspin=2 parent scratch (the DFPT
+  perturbations are spin-dependent), so the PW runs are forced to
+  ``nspin = 2`` + ``tot_magnetization = 0`` and pw2wannier90 to
+  ``spin_component = 'up'`` (legacy ``force_nspin2``;
+  ``_wannierize.py:531-532``). One kcw chain on the up channel.
+* ``COLLINEAR`` — the legacy ``spin_components`` loop: per-channel
+  wannierization (wannier90 ``spin``, pw2wannier90 ``spin_component``) and
+  a kcw chain per channel (``CONTROL.spin_component`` 1 / 2), with the
+  down-channel results in the ``_down`` output keys.
+* ``NON_COLLINEAR`` / ``SPIN_ORBIT`` — spinor scratch (``noncolin``, plus
+  ``lspinorb`` for SOC), ``spinors = .true.`` wannierization with doubled
+  ``num_wann``, one kcw chain. No legacy equivalent; QE reference:
+  ``KCW/examples/example05.1`` nspin4 variants.
 
-* One occupied block + at most one empty block. Multi-block manifolds need
-  the u / hr / centres merge machinery, which is not implemented here.
-* No spin-polarized systems: that needs the per-spin wann2kc/screen/ham
-  fan-out, not just the nspin=2 scratch.
-* No per-orbital screening fan-out: one screen calculation solves all
-  orbitals (the behaviour when no orbital grouping applies).
+Remaining scope cuts (deliberate deviations from legacy, single-manifold):
+
+* One occupied block + at most one empty block per spin channel. Legacy
+  merges multiple occupied sub-blocks (u / hr / centres merge steps) before
+  kcw.x; that machinery is not ported yet, so multi-block inputs must be
+  rejected upstream.
+* No per-orbital screening fan-out (legacy ``i_orb`` grouping): one screen
+  calculation solves all orbitals, which is legacy's own behaviour when no
+  orbital grouping applies.
 * No coarse-grid pre-screening (``dfpt_coarse_grid``) and no
   unfold-and-interpolate postprocessing.
 """
@@ -46,7 +58,12 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
-from aiida_koopmans.types import ExplicitProjectionBlock, ProjectionBlock, SpinChannel
+from aiida_koopmans.types import (
+    ExplicitProjectionBlock,
+    ProjectionBlock,
+    SpinChannel,
+    SpinType,
+)
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
 from aiida_koopmans.workgraphs.pw import RunScfNscf
@@ -306,6 +323,11 @@ class KoopmansDFPTOutputs(TypedDict, total=False):
     annotated as plain ``dict`` here because a TypedDict annotation on a
     ``@task.graph`` output is read as a nested namespace socket rather than a
     leaf ``orm.Dict``.
+
+    A spin-polarized (collinear) :func:`SinglepointDFPTWorkflow` runs the kcw.x
+    chain once per channel: the unsuffixed keys carry the spin-up results
+    and the ``_down`` variants carry spin-down. Unpolarized and spinor runs
+    have a single chain and never populate the ``_down`` keys.
     """
 
     alphas: orm.List
@@ -313,6 +335,11 @@ class KoopmansDFPTOutputs(TypedDict, total=False):
     ham_parameters: dict
     bands: orm.BandsData
     wann2kc_remote_folder: orm.RemoteData
+    alphas_down: orm.List
+    screen_parameters_down: dict
+    ham_parameters_down: dict
+    bands_down: orm.BandsData
+    wann2kc_remote_folder_down: orm.RemoteData
 
 
 @task.calcfunction(outputs=["wannier_files"])
@@ -493,6 +520,54 @@ def RunDFPT(
     return outputs
 
 
+def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
+    """Return the SYSTEM-namelist keys a DFPT chain forces on the PW runs.
+
+    * Unpolarized: kcw.x still requires an nspin=2 scratch (the DFPT
+      perturbations are spin-dependent — legacy ``force_nspin2``; the
+      tutorial_3 scf/nscf.pwi carry ``nspin=2 + tot_magnetization=0``).
+    * Collinear: nspin=2 without pinning the magnetization — the caller's
+      overrides carry the physical ``tot_magnetization`` /
+      ``starting_magnetization``.
+    * Noncollinear / spin-orbit: spinor wavefunctions (``noncolin``), plus
+      ``lspinorb`` for SOC (QE reference: KCW/examples/example05.1 nspin4).
+    """
+    if spin == SpinType.COLLINEAR:
+        return {"nspin": 2}
+    if spin == SpinType.NON_COLLINEAR:
+        return {"noncolin": True}
+    if spin == SpinType.SPIN_ORBIT:
+        return {"noncolin": True, "lspinorb": True}
+    return {"nspin": 2, "tot_magnetization": 0}
+
+
+def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any]:
+    """Return the per-channel wannierization overrides a DFPT chain forces on.
+
+    kcw.x reads the U matrices and Wannier centres from files the wannier90
+    runs only write on request (``write_u_matrices`` / ``write_xyz``). With a
+    collinear scratch, pw2wannier90 must pick its channel explicitly and the
+    wannier90 input selects the same channel via ``spin`` (KCW example05.1
+    nspin2); a spinor scratch instead needs ``spinors = .true.`` and no
+    channel selection (nspin4 variants).
+    """
+    w90_params: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}
+    defaults: dict[str, Any] = {"wannier90": {"wannier90": {"parameters": w90_params}}}
+    if spin in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
+        w90_params["spinors"] = True
+        return defaults
+    if spin == SpinType.COLLINEAR:
+        w90_params["spin"] = channel.value
+    defaults["pw2wannier90"] = {
+        "pw2wannier90": {
+            "parameters": {
+                "INPUTPP": {"spin_component": "down" if channel == SpinChannel.DOWN else "up"}
+            }
+        },
+    }
+    return defaults
+
+
 @task.graph
 def SinglepointDFPTWorkflow(
     codes: Codes,
@@ -501,39 +576,52 @@ def SinglepointDFPTWorkflow(
     kpoints: orm.KpointsData,
     kgrid: list[int],
     emp_block: ProjectionBlock | None = None,
+    occ_block_down: ProjectionBlock | None = None,
+    emp_block_down: ProjectionBlock | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
+    alpha_guess_down: list[float] | None = None,
     has_disentangle: bool = False,
+    has_disentangle_down: bool = False,
     l_vcut: bool | None = None,
+    spin: SpinType = SpinType.NONE,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
-    One shared scf + nscf (:func:`RunScfNscf`, forced to ``nspin = 2`` /
-    ``tot_magnetization = 0`` because kcw.x's spin-dependent DFPT
-    perturbations need a two-channel scratch, with ``nosym`` / ``noinv`` on
-    the nscf so kcw.x sees the full k-point set), one :func:`WannierizeBlock`
-    per manifold with ``write_u_matrices`` / ``write_xyz`` forced on and
-    pw2wannier90 pinned to ``spin_component = 'up'``, then
-    :func:`RunDFPT` on the up channel.
+    One shared scf + nscf (:func:`RunScfNscf`, with the spin-regime SYSTEM
+    keys of :func:`_pw_spin_system_defaults` forced on and ``nosym`` /
+    ``noinv`` on the nscf so kcw.x sees the full k-point set), one
+    :func:`WannierizeBlock` per manifold and channel, then one
+    :func:`RunDFPT` per channel:
+
+    * ``spin = NONE`` — one chain on the up channel of the closed-shell
+      nspin=2 scratch (``occ_block`` / ``emp_block``; legacy behaviour).
+    * ``spin = COLLINEAR`` — two chains (legacy ``spin_components`` loop):
+      ``occ_block`` / ``emp_block`` / ``alpha_guess`` / ``has_disentangle``
+      describe spin-up, their ``_down`` twins spin-down, and the kcw runs
+      carry ``CONTROL.spin_component`` 1 / 2. The caller's ``overrides``
+      must supply the magnetization (``tot_magnetization`` or
+      ``starting_magnetization``). Down-channel results land in the
+      ``_down`` output keys.
+    * ``spin = NON_COLLINEAR`` / ``SPIN_ORBIT`` — one chain on the spinor
+      scratch; the blocks must be spinor manifolds (``num_wann`` doubled,
+      from ``derive_dfpt_manifolds(..., spin_channel=SPINOR)``).
 
     ``overrides`` namespaces: ``"scf"`` / ``"nscf"`` feed the shared PW
-    steps, ``"wannier90"`` feeds both per-manifold wannier builders (its
+    steps, ``"wannier90"`` feeds every per-manifold wannier builder (its
     ``"pw2wannier90"`` sub-namespace reaches the pw2wannier90 step).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
     overrides = overrides or {}
+    collinear = spin == SpinType.COLLINEAR
 
-    # kcw.x requires an nspin=2 scratch even for closed-shell systems (the
-    # DFPT perturbations are spin-dependent): force nspin=2 with zero total
-    # magnetization on both PW runs. The nscf additionally needs the
-    # complete Monkhorst-Pack set: no symmetry reduction (nosym/noinv).
     spin_defaults: dict[str, Any] = {
-        "pw": {"parameters": {"SYSTEM": {"nspin": 2, "tot_magnetization": 0}}},
+        "pw": {"parameters": {"SYSTEM": _pw_spin_system_defaults(spin)}},
     }
     nscf_defaults: dict[str, Any] = recursive_merge(
         spin_defaults,
@@ -557,75 +645,99 @@ def SinglepointDFPTWorkflow(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
-    # kcw.x reads the U matrices and Wannier centres from files the wannier90
-    # runs only write on request. With the nspin=2 scratch, pw2wannier90 must
-    # pick the up channel explicitly; the wannier90 input itself carries no
-    # spin key for a closed-shell system.
-    w90_defaults: dict[str, Any] = {
-        "wannier90": {
-            "wannier90": {"parameters": {"write_u_matrices": True, "write_xyz": True}},
-        },
-        "pw2wannier90": {
-            "pw2wannier90": {"parameters": {"INPUTPP": {"spin_component": "up"}}},
-        },
-    }
-    # Same precedence as above: the staging files and the up-channel pin are
-    # requirements of the kcw chain, not defaults a caller may disable.
-    wannier_overrides = recursive_merge(overrides.get("wannier90", {}), w90_defaults)
+    channels: list[dict[str, Any]] = [
+        {
+            "channel": SpinChannel.UP if collinear else SpinChannel.NONE,
+            "suffix": "_up" if collinear else "",
+            "occ_block": occ_block,
+            "emp_block": emp_block,
+            "alpha_guess": alpha_guess,
+            "has_disentangle": has_disentangle,
+            "spin_component": 1,
+            "out_key": lambda key: key,
+        }
+    ]
+    if collinear:
+        if occ_block_down is None:
+            raise ValueError("spin='collinear' requires occ_block_down.")
+        channels.append(
+            {
+                "channel": SpinChannel.DOWN,
+                "suffix": "_down",
+                "occ_block": occ_block_down,
+                "emp_block": emp_block_down,
+                "alpha_guess": alpha_guess_down,
+                "has_disentangle": has_disentangle_down,
+                "spin_component": 2,
+                "out_key": lambda key: f"{key}_down",
+            }
+        )
 
-    occ = WannierizeBlock(
-        codes=codes,
-        structure=structure,
-        block=occ_block,
-        projection_type=occ_block["projection_type"],
-        nscf_remote_folder=nscf_remote_folder,
-        kpoints=kpoints,
-        pseudo_family=pseudo_family,
-        protocol=protocol,
-        overrides=wannier_overrides,
-        metadata={"call_link_label": "wannierize_occ"},
-    )
+    outputs = KoopmansDFPTOutputs()
+    for ch in channels:
+        # The staging files and the channel selection are requirements of the
+        # kcw chain, not defaults a caller may disable: force-merge them on
+        # top of the caller's wannier90 overrides.
+        wannier_overrides = recursive_merge(
+            overrides.get("wannier90", {}), _channel_w90_defaults(spin, ch["channel"])
+        )
 
-    dfpt_inputs: dict[str, Any] = {
-        "codes": codes,
-        "nscf_remote_folder": nscf_remote_folder,
-        "occ_retrieved": occ["hr_retrieved"],
-        "num_wann_occ": occ_block["num_wann"],
-        "num_wann_emp": 0,
-        "kgrid": kgrid,
-        "bands_kpoints": bands_kpoints,
-        "eps_inf": eps_inf,
-        "alpha_guess": alpha_guess,
-        "has_disentangle": has_disentangle,
-        "l_vcut": l_vcut,
-        "metadata": {"call_link_label": "dfpt"},
-    }
-
-    if emp_block is not None:
-        emp = WannierizeBlock(
+        ch_occ_block = ch["occ_block"]
+        occ = WannierizeBlock(
             codes=codes,
             structure=structure,
-            block=emp_block,
-            projection_type=emp_block["projection_type"],
+            block=ch_occ_block,
+            projection_type=ch_occ_block["projection_type"],
             nscf_remote_folder=nscf_remote_folder,
             kpoints=kpoints,
             pseudo_family=pseudo_family,
             protocol=protocol,
             overrides=wannier_overrides,
-            metadata={"call_link_label": "wannierize_emp"},
+            metadata={"call_link_label": f"wannierize_occ{ch['suffix']}"},
         )
-        dfpt_inputs["emp_retrieved"] = emp["hr_retrieved"]
-        dfpt_inputs["num_wann_emp"] = emp_block["num_wann"]
 
-    dfpt = RunDFPT(**dfpt_inputs)
+        dfpt_inputs: dict[str, Any] = {
+            "codes": codes,
+            "nscf_remote_folder": nscf_remote_folder,
+            "occ_retrieved": occ["hr_retrieved"],
+            "num_wann_occ": ch_occ_block["num_wann"],
+            "num_wann_emp": 0,
+            "kgrid": kgrid,
+            "bands_kpoints": bands_kpoints,
+            "eps_inf": eps_inf,
+            "alpha_guess": ch["alpha_guess"],
+            "has_disentangle": ch["has_disentangle"],
+            "l_vcut": l_vcut,
+            "spin_component": ch["spin_component"],
+            "metadata": {"call_link_label": f"dfpt{ch['suffix']}"},
+        }
 
-    outputs = KoopmansDFPTOutputs(
-        alphas=dfpt["alphas"],
-        ham_parameters=dfpt["ham_parameters"],
-        wann2kc_remote_folder=dfpt["wann2kc_remote_folder"],
-    )
-    if alpha_guess is None:
-        outputs["screen_parameters"] = dfpt["screen_parameters"]
-    if bands_kpoints is not None:
-        outputs["bands"] = dfpt["bands"]
+        ch_emp_block = ch["emp_block"]
+        if ch_emp_block is not None:
+            emp = WannierizeBlock(
+                codes=codes,
+                structure=structure,
+                block=ch_emp_block,
+                projection_type=ch_emp_block["projection_type"],
+                nscf_remote_folder=nscf_remote_folder,
+                kpoints=kpoints,
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                overrides=wannier_overrides,
+                metadata={"call_link_label": f"wannierize_emp{ch['suffix']}"},
+            )
+            dfpt_inputs["emp_retrieved"] = emp["hr_retrieved"]
+            dfpt_inputs["num_wann_emp"] = ch_emp_block["num_wann"]
+
+        dfpt = RunDFPT(**dfpt_inputs)
+
+        out_key = ch["out_key"]
+        outputs[out_key("alphas")] = dfpt["alphas"]
+        outputs[out_key("ham_parameters")] = dfpt["ham_parameters"]
+        outputs[out_key("wann2kc_remote_folder")] = dfpt["wann2kc_remote_folder"]
+        if ch["alpha_guess"] is None:
+            outputs[out_key("screen_parameters")] = dfpt["screen_parameters"]
+        if bands_kpoints is not None:
+            outputs[out_key("bands")] = dfpt["bands"]
+
     return outputs

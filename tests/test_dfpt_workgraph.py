@@ -273,6 +273,97 @@ class TestSinglepointDFPTBuild:
         pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
         assert pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nspin"] == 2
 
+    def test_collinear_fans_out_per_channel(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_koopmans.types import SpinType
+
+        magnetization = {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            occ_block=_block("occ_up", range(1, 6)),
+            emp_block=_block("emp_up", range(6, 9)),
+            occ_block_down=_block("occ_down", range(1, 4)),
+            emp_block_down=_block("emp_down", range(4, 9)),
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            spin=SpinType.COLLINEAR,
+            overrides={"scf": magnetization, "nscf": magnetization},
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("scf_nscf") == 1
+        for expected in (
+            "wannierize_occ_up",
+            "wannierize_emp_up",
+            "dfpt_up",
+            "wannierize_occ_down",
+            "wannierize_emp_down",
+            "dfpt_down",
+        ):
+            assert expected in names, names
+
+        # nspin=2 is still forced, but the magnetization is the caller's.
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert scf_system["nspin"] == 2
+        assert scf_system["tot_magnetization"] == 2
+
+        # Each channel's wannierization selects its spin in both wannier90
+        # and pw2wannier90, and each kcw chain reads its channel.
+        for suffix, channel, component in (("_up", "up", 1), ("_down", "down", 2)):
+            w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"].value
+            w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+            assert w90_params["spin"] == channel
+            inputpp = w90_overrides["pw2wannier90"]["pw2wannier90"]["parameters"]["INPUTPP"]
+            assert inputpp["spin_component"] == channel
+            assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
+
+    def test_collinear_requires_down_channel_blocks(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_koopmans.types import SpinType
+
+        with pytest.raises(ValueError, match="occ_block_down"):
+            SinglepointDFPTWorkflow.build(
+                codes=dfpt_codes,
+                structure=silicon_structure,
+                occ_block=_block("occ_up", range(1, 5)),
+                kpoints=kmesh,
+                kgrid=[2, 2, 2],
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                spin=SpinType.COLLINEAR,
+            )
+
+    def test_spinor_single_chain(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_koopmans.types import SpinType
+
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            occ_block=_block("occ", range(1, 9)),  # spinor manifold: counts doubled
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            spin=SpinType.SPIN_ORBIT,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "wannierize_occ" in names
+        assert "dfpt" in names
+        assert "dfpt_down" not in names
+
+        # Spinor scratch: noncolin + lspinorb instead of nspin=2.
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert scf_system["noncolin"] is True
+        assert scf_system["lspinorb"] is True
+        assert "nspin" not in scf_system
+        assert "tot_magnetization" not in scf_system
+
+        # Spinor wannierization: spinors on, no channel selection anywhere.
+        w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"].value
+        w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+        assert w90_params["spinors"] is True
+        assert "spin" not in w90_params
+        assert "pw2wannier90" not in w90_overrides
+
 
 # ----------------------------------------------------------------------
 # derive_dfpt_manifolds / normalize_alpha_guess (pure helpers)
