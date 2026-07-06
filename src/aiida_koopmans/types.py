@@ -72,6 +72,7 @@ class SpinChannel(str, Enum):
     NONE = "none"
     UP = "up"
     DOWN = "down"
+    SPINOR = "spinor"
 
     @property
     def index(self) -> int:
@@ -79,6 +80,7 @@ class SpinChannel(str, Enum):
 
         ``NONE`` and ``UP`` both live at index 0 (kcp.x's nspin=1 file layout
         and the up channel of nspin=2 share the leading axis); ``DOWN`` is 1.
+        ``SPINOR`` (noncollinear, nspin=4) has a single band index — 0.
         """
         return 1 if self is SpinChannel.DOWN else 0
 

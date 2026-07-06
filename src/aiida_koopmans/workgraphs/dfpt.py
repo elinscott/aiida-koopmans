@@ -117,25 +117,57 @@ def _split_manifolds(
     return occupied, empty
 
 
+def _default_channel_nocc(spin_channel: SpinChannel, nelec: int) -> int:
+    """Occupied-band count of a channel when the caller supplies none.
+
+    Spinor bands are singly occupied (``nocc = nelec``); the unpolarized
+    channel holds electron pairs. Collinear channels have no default — their
+    occupations depend on the magnetization, which only the caller knows.
+    """
+    if spin_channel in (SpinChannel.UP, SpinChannel.DOWN):
+        raise ValueError(
+            f"spin_channel={spin_channel.value!r} needs an explicit per-channel "
+            "nocc (derived from the electron count and the magnetization)."
+        )
+    if spin_channel == SpinChannel.SPINOR:
+        return nelec
+    if nelec % 2:
+        raise ValueError(
+            f"Odd electron count ({nelec}) requires spin='collinear', which "
+            "derives per-channel occupations from the magnetization."
+        )
+    return nelec // 2
+
+
 def derive_dfpt_manifolds(
     structure: orm.StructureData,
     projection_blocks: list,
     nelec: int,
     nbnd: int | None,
+    spin_channel: SpinChannel = SpinChannel.NONE,
+    nocc: int | None = None,
 ) -> tuple[ProjectionBlock, ProjectionBlock | None, bool, int]:
     """Turn user projection blocks into the occupied/empty DFPT manifolds.
 
-    Derives nocc from the electron count, nemp from the projections, and
-    disentanglement when the empty manifold has more bands than Wannier
-    functions. Scope: spin-unpolarized, exactly one occupied block, at most
-    one empty block.
+    Ports the manifold bookkeeping of legacy ``KoopmansDFPTWorkflow.__init__``
+    (nocc from the electron count, nemp from the projections, disentanglement
+    when the empty manifold has more bands than Wannier functions) for one
+    spin channel: exactly one occupied block, at most one empty block.
 
     Args:
         structure: the periodic structure (for per-site projection counting).
-        projection_blocks: list of projection blocks, each a list of
-            ``wannier90_input`` ``Projection``-like objects.
+        projection_blocks: list of projection blocks *for this channel*, each
+            a list of ``wannier90_input`` ``Projection``-like objects.
         nelec: total electron count (from the pseudopotential valences).
         nbnd: number of bands of the nscf, or None to default to nocc.
+        spin_channel: which channel these blocks describe. ``NONE`` (default)
+            is spin-unpolarized (``nocc = nelec / 2``); ``UP`` / ``DOWN`` are
+            the collinear channels (caller must supply the per-channel
+            ``nocc`` from the magnetization); ``SPINOR`` is the noncollinear
+            case — every band is singly occupied (``nocc = nelec``) and each
+            projection yields two spinor Wannier functions.
+        nocc: per-channel occupied-band count, overriding the electron-count
+            default. Required for ``UP`` / ``DOWN``.
 
     Returns:
         ``(occ_block, emp_block, has_disentangle, n_orbitals)`` where the
@@ -144,12 +176,9 @@ def derive_dfpt_manifolds(
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-    if nelec % 2:
-        raise NotImplementedError(
-            f"Odd electron count ({nelec}) requires spin polarization, which is not "
-            "yet supported for DFPT screening."
-        )
-    nocc = nelec // 2
+    spinor = spin_channel == SpinChannel.SPINOR
+    if nocc is None:
+        nocc = _default_channel_nocc(spin_channel, nelec)
     nbnd = nocc if nbnd is None else int(nbnd)
 
     if not projection_blocks:
@@ -158,8 +187,12 @@ def derive_dfpt_manifolds(
             "``calculator_parameters.w90.projections``."
         )
 
+    # With spinors (nspin=4) each projection orbital carries two spin
+    # components, so a projection block spans twice as many Wannier
+    # functions as its orbital count (KCW example05.1: sp3 -> num_wann 8).
+    wann_per_orbital = 2 if spinor else 1
     blocks_with_counts = [
-        (block, sum(_projection_num_wann(structure, p) for p in block))
+        (block, wann_per_orbital * sum(_projection_num_wann(structure, p) for p in block))
         for block in projection_blocks
     ]
     occupied, empty = _split_manifolds(blocks_with_counts, nocc)
@@ -183,9 +216,12 @@ def derive_dfpt_manifolds(
         # entries verbatim into the .win projections block.
         return [f"{p.site}:{p.ang_mtm}" for p in block]
 
+    label_suffix = (
+        f"_{spin_channel.value}" if spin_channel in (SpinChannel.UP, SpinChannel.DOWN) else ""
+    )
     occ_block = ExplicitProjectionBlock(
-        label="occ",
-        spin=SpinChannel.NONE,
+        label=f"occ{label_suffix}",
+        spin=spin_channel,
         num_wann=num_wann_occ,
         num_bands=num_wann_occ,
         include_bands=list(range(1, nocc + 1)),
@@ -207,8 +243,8 @@ def derive_dfpt_manifolds(
             )
         has_disentangle = num_bands_emp != num_wann_emp
         emp_block = ExplicitProjectionBlock(
-            label="emp",
-            spin=SpinChannel.NONE,
+            label=f"emp{label_suffix}",
+            spin=spin_channel,
             num_wann=num_wann_emp,
             num_bands=num_bands_emp,
             include_bands=list(range(nocc + 1, nbnd + 1)),
@@ -220,17 +256,22 @@ def derive_dfpt_manifolds(
     return occ_block, emp_block, has_disentangle, num_wann_occ + num_wann_emp
 
 
-def normalize_alpha_guess(raw_guess: float | list, n_orbitals: int) -> list[float]:
+def normalize_alpha_guess(
+    raw_guess: float | list,
+    n_orbitals: int,
+    spin_channel: SpinChannel = SpinChannel.NONE,
+) -> list[float]:
     """Flatten a user ``alpha_guess`` into one alpha per orbital.
 
     Accepts the three shapes the input file allows: a single float (uniform
-    guess), a flat list, or a nested per-spin list (spin channel 0 is taken;
-    the scope is spin-unpolarized).
+    guess), a flat list, or the nested per-spin list (``spin_channel.index``
+    selects the channel: up/none/spinor take the first entry, down the
+    second).
     """
     if isinstance(raw_guess, float):
         return [raw_guess] * n_orbitals
     if raw_guess and isinstance(raw_guess[0], list):
-        return [float(a) for a in raw_guess[0]]
+        return [float(a) for a in raw_guess[spin_channel.index]]
     return [float(a) for a in raw_guess]
 
 
@@ -326,6 +367,7 @@ def RunDFPT(
     alpha_guess: list[float] | None = None,
     has_disentangle: bool = False,
     l_vcut: bool | None = None,
+    spin_component: int = 1,
 ) -> KoopmansDFPTOutputs:
     """Run the kcw.x chain off provided wannierization outputs.
 
@@ -351,8 +393,13 @@ def RunDFPT(
             straight to ham.
         has_disentangle: whether the empty manifold was disentangled
             (``num_bands != num_wann``).
-        l_vcut: Gygi-Baldereschi long-range cutoff; None means the
-            periodic-system default (on).
+        l_vcut: Gygi-Baldereschi long-range cutoff (legacy ``gb_correction``);
+            None means the periodic-system default (on).
+        spin_component: which collinear spin channel kcw.x reads (1 = up,
+            2 = down). Spin-unpolarized runs use the default 1 (the nspin=2
+            scratch's channels are identical); a spin-polarized workflow
+            calls this task once per channel. Ignored by kcw.x for
+            noncollinear scratches.
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
@@ -363,7 +410,7 @@ def RunDFPT(
         "read_unitary_matrix": True,
         "lrpa": False,
         "l_vcut": l_vcut,
-        "spin_component": 1,
+        "spin_component": spin_component,
         "mp1": kgrid[0],
         "mp2": kgrid[1],
         "mp3": kgrid[2],

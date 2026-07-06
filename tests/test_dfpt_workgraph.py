@@ -359,13 +359,84 @@ class TestDeriveDfptManifolds:
     def test_odd_electron_count_raises(self, silicon_structure):
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
-        with pytest.raises(NotImplementedError, match="Odd electron count"):
+        with pytest.raises(ValueError, match="Odd electron count"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
                 projection_blocks=[[_FakeProjection("Si", 0)]],
                 nelec=7,
                 nbnd=None,
             )
+
+    def test_collinear_channel_requires_explicit_nocc(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        with pytest.raises(ValueError, match="per-channel"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[[_FakeProjection("Si", -3)]],
+                nelec=16,
+                nbnd=None,
+                spin_channel=SpinChannel.UP,
+            )
+
+    def test_collinear_channels_use_given_nocc(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
+        up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
+        dn_blocks = [[_FakeProjection("Si", 1)]]  # 6 wann
+        occ_up, emp_up, _, n_up = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=up_blocks,
+            nelec=14,
+            nbnd=8,
+            spin_channel=SpinChannel.UP,
+            nocc=8,
+        )
+        occ_dn, emp_dn, _, n_dn = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=dn_blocks,
+            nelec=14,
+            nbnd=6,
+            spin_channel=SpinChannel.DOWN,
+            nocc=6,
+        )
+        assert occ_up["label"] == "occ_up"
+        assert occ_up["spin"] == SpinChannel.UP
+        assert (occ_up["num_wann"], n_up) == (8, 8)
+        assert occ_dn["label"] == "occ_down"
+        assert occ_dn["spin"] == SpinChannel.DOWN
+        assert (occ_dn["num_wann"], n_dn) == (6, 6)
+        assert emp_up is None and emp_dn is None
+
+    def test_spinor_doubles_num_wann_and_uses_nelec_occupations(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # KCW example05.1 nspin4: the same sp3 block that gives num_wann=8
+        # in a collinear run spans 16 spinor Wannier functions, and all
+        # nelec=16 bands are singly occupied.
+        occ = [_FakeProjection("Si", -3)]  # 8 orbitals -> 16 spinor WFs
+        emp = [_FakeProjection("Si", 0)]  # 2 orbitals -> 4 spinor WFs
+        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=[occ, emp],
+            nelec=16,
+            nbnd=22,
+            spin_channel=SpinChannel.SPINOR,
+        )
+        assert occ_block["label"] == "occ"
+        assert occ_block["spin"] == SpinChannel.SPINOR
+        assert occ_block["num_wann"] == 16
+        assert occ_block["num_bands"] == 16
+        assert occ_block["exclude_bands"] == "17-22"
+        assert emp_block is not None
+        assert emp_block["num_wann"] == 4
+        assert emp_block["num_bands"] == 6
+        assert has_disentangle is True
+        assert n_orbitals == 20
 
 
 class TestNormalizeAlphaGuess:
@@ -383,3 +454,11 @@ class TestNormalizeAlphaGuess:
         from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
 
         assert normalize_alpha_guess([[0.1, 0.2]], 2) == [0.1, 0.2]
+
+    def test_nested_per_spin_list_selects_channel(self):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
+
+        nested = [[0.1, 0.2], [0.3, 0.4]]
+        assert normalize_alpha_guess(nested, 2, SpinChannel.UP) == [0.1, 0.2]
+        assert normalize_alpha_guess(nested, 2, SpinChannel.DOWN) == [0.3, 0.4]
