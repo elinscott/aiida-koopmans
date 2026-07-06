@@ -249,6 +249,10 @@ def WannierizeBlocks(
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=scf_nscf_overrides or None,
+        # The blocks' wannier90 / pw2wannier90 read eigenstates on the
+        # explicit ``kpoints`` mesh, so the nscf must run on exactly that
+        # grid (not the protocol's kpoints_distance-derived one).
+        nscf_kpoints=kpoints,
         metadata={"call_link_label": "scf_nscf"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
@@ -276,6 +280,13 @@ def WannierizeBlocks(
         )
 
     return WannierizeBlocksOutputs(
-        nscf=PwOutputs(remote_folder=nscf_remote_folder),
+        nscf=PwOutputs(
+            remote_folder=nscf_remote_folder,
+            # Exposed for the fold-to-supercell consistency check: the
+            # PW-vs-CP band-gap comparison needs the nscf eigenvalues and
+            # scalar results.
+            output_parameters=scf_nscf["nscf_output_parameters"],
+            output_band=scf_nscf["nscf_output_band"],
+        ),
         blocks=block_outputs,
     )

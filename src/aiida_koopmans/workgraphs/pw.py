@@ -207,6 +207,14 @@ def RunScfNscf(
         nscf_data.pop("kpoints_force_parity", None)
         nscf_data["kpoints"] = nscf_kpoints
 
+    # Explicit NSCF k-mesh: PwBaseWorkChain accepts exactly one of
+    # ``kpoints`` / ``kpoints_distance``, so drop the protocol's distance
+    # (and its companion parity flag) before setting the mesh.
+    if nscf_kpoints is not None:
+        nscf_data.pop("kpoints_distance", None)
+        nscf_data.pop("kpoints_force_parity", None)
+        nscf_data["kpoints"] = nscf_kpoints
+
     # Wire SCF remote_folder → NSCF parent_folder
     nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
 
