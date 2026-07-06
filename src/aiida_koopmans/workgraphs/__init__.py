@@ -27,6 +27,8 @@ class Codes(TypedDict, total=False):
     kcp: orm.AbstractCode
     kcw: orm.AbstractCode
     ph: orm.AbstractCode
+    wann2kcp: orm.AbstractCode
+    merge_evc: orm.AbstractCode
 
 
 def inject_pseudo_family(
