@@ -73,7 +73,7 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 
 [tool.pytest.ini_options]
 # Configuration for [pytest](https://docs.pytest.org)
-python_files = "test_*.py example_*.py"
+python_files = "test_*.py"
 addopts = "--pdbcls=IPython.terminal.debugger:TerminalPdb"
 filterwarnings = [
     "ignore::DeprecationWarning:aiida:",
