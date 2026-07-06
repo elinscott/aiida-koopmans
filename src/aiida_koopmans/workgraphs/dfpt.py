@@ -550,6 +550,12 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any
     wannier90 input selects the same channel via ``spin`` (KCW example05.1
     nspin2); a spinor scratch instead needs ``spinors = .true.`` and no
     channel selection (nspin4 variants).
+
+    These must be explicit overrides rather than upstream's
+    ``spin_type`` machinery: ``Wannier90WorkChain`` injects
+    ``spin_component`` at runtime by detecting nspin=2 from its *own*
+    scf/nscf inputs, which :func:`BlockWannierize` deliberately omits
+    (shared-nscf pattern), so the upstream path can never fire here.
     """
     w90_params: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}
     defaults: dict[str, Any] = {"wannier90": {"wannier90": {"parameters": w90_params}}}
