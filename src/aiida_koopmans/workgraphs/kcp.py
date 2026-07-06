@@ -1579,8 +1579,8 @@ def ScreeningIteration(
     is_first_iteration: bool = False,
     self_hartree_tol: float | None = None,
     variational_orbital_overlays: dict | None = None,
-    initial_evc_occupied1: orm.RemoteData | None = None,
-    initial_evc_occupied2: orm.RemoteData | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     ki_overrides: KcpNamelistOverrides | None = None,
@@ -1835,8 +1835,8 @@ def ComputeScreeningParameters(
     alpha_numsteps: int = 1,
     alpha_conv_thr: float = 1.0e-3,
     self_hartree_tol: float | None = None,
-    initial_evc_occupied1: orm.RemoteData | None = None,
-    initial_evc_occupied2: orm.RemoteData | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: KoopmansDSCFOverrides | None = None,
@@ -2607,10 +2607,11 @@ def _build_kcp_inputs(
     folder onto its read save (see
     ``KcpCalculation._build_remote_symlink_list``).
 
-    ``read_wavefunctions`` maps destination stems to the ``RemoteData``
-    (or socket) whose root holds ``<stem>.dat``; the CalcJob symlinks
-    each into its read ``K00001`` (the MLWF-init staging of folded
-    ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat`` files).
+    ``read_wavefunctions`` maps destination stems to the
+    ``SinglefileData`` (or socket) holding the wavefunction; the CalcJob
+    copies each into its read ``K00001`` as ``<stem>.dat`` (the MLWF-init
+    staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
+    merge outputs).
     """
     inputs: dict[str, Any] = {
         "code": code,

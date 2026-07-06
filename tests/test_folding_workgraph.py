@@ -68,11 +68,11 @@ class TestEnumerateFoldTargets:
     def test_spinless_groups_emit_both_kcp_spin_slots(self):
         groups = group_blocks_to_merge(_spinless_blocks(), {SpinChannel.NONE: 4})
         targets = enumerate_fold_targets(groups, spin_polarized=False)
-        assert [(t["stem"], t["source_filename"]) for t in targets] == [
-            ("evc_occupied1", "evcw1.dat"),
-            ("evc_occupied2", "evcw2.dat"),
-            ("evc0_empty1", "evcw1.dat"),
-            ("evc0_empty2", "evcw2.dat"),
+        assert [(t["stem"], t["source_port"]) for t in targets] == [
+            ("evc_occupied1", "evcw1"),
+            ("evc_occupied2", "evcw2"),
+            ("evc0_empty1", "evcw1"),
+            ("evc0_empty2", "evcw2"),
         ]
 
     def test_spin_polarized_groups_emit_one_slot_each(self):
@@ -80,11 +80,11 @@ class TestEnumerateFoldTargets:
             _spin_polarized_blocks(), {SpinChannel.UP: 7, SpinChannel.DOWN: 5}
         )
         targets = enumerate_fold_targets(groups, spin_polarized=True)
-        assert [(t["stem"], t["source_filename"]) for t in targets] == [
-            ("evc_occupied1", "evcw.dat"),
-            ("evc0_empty1", "evcw.dat"),
-            ("evc_occupied2", "evcw.dat"),
-            ("evc0_empty2", "evcw.dat"),
+        assert [(t["stem"], t["source_port"]) for t in targets] == [
+            ("evc_occupied1", "evcw"),
+            ("evc0_empty1", "evcw"),
+            ("evc_occupied2", "evcw"),
+            ("evc0_empty2", "evcw"),
         ]
 
     def test_group_indices_point_into_the_group_list(self):
@@ -175,6 +175,10 @@ class TestFoldToSupercellGraphBuild:
         names = [t.name for t in wg.tasks]
         fold_names = [name for name in names if name.startswith("fold_")]
         merge_names = [name for name in names if name.startswith("merge_")]
+        extract_names = [name for name in names if name.startswith("extract_")]
         assert fold_names == [f"fold_{b['label']}" for b in blocks]
+        # One chk/hr extraction per block lifts the wannier90 artefacts into
+        # SinglefileData nodes.
+        assert extract_names == [f"extract_{b['label']}" for b in blocks]
         assert len(merge_names) == n_merges
         assert names.count("map_zone") == 0

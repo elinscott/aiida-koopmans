@@ -68,15 +68,15 @@ class MlwfInitializationOutputs(TypedDict):
     * ``remote_folder`` — the ``dft_init`` save; the first trial KI's
       ``parent_folder``.
     * ``evc_occupied1`` / ``evc_occupied2`` — the folded occupied-manifold
-      wavefunctions (merge_evc.x remotes) the trial KI re-stages into its
-      read ``K00001``.
+      wavefunctions (merge_evc.x ``merged_file`` outputs) the trial KI
+      stages into its read ``K00001``.
     * ``report`` — the consistency-check numbers (PW/CP gaps and the
       initial/final kcp.x energies).
     """
 
     remote_folder: orm.RemoteData
-    evc_occupied1: orm.RemoteData
-    evc_occupied2: orm.RemoteData
+    evc_occupied1: orm.SinglefileData
+    evc_occupied2: orm.SinglefileData
     report: dict
 
 

@@ -17,15 +17,16 @@ Two modes are supported:
 
 * ``wannier2kcp`` (the mode the FoldToSupercell workgraph needs) -- folds
   Wannier orbitals into the supercell. Four inputs are staged into the work
-  directory: the nscf ``outdir`` (``parent_folder``, symlinked as ``TMP``),
-  ``<seedname>.nnkp`` (``nnkp_file``), and ``<seedname>.chk`` +
-  ``<seedname>_hr.dat`` (both copied out of ``wannier_folder``, the wannier90
-  ``retrieved`` folder). The run writes ``evcw.dat`` for a spin-polarized
-  calculation or ``evcw1.dat`` + ``evcw2.dat`` for a non-spin-polarized one.
+  directory: the nscf scratch (``parent_folder``, symlinked as ``TMP`` --
+  bulk scratch, so a ``RemoteData`` like every QE post-processing parent)
+  and the three enumerated Wannier files ``nnkp_file`` / ``chk_file`` /
+  ``hr_file`` (``SinglefileData``, copied in as ``<seedname>.nnkp`` /
+  ``<seedname>.chk`` / ``<seedname>_hr.dat``). The run writes ``evcw.dat``
+  for a spin-polarized calculation or ``evcw1.dat`` + ``evcw2.dat`` for a
+  non-spin-polarized one; the parser re-emits each as a ``SinglefileData``
+  output (``evcw`` / ``evcw1`` / ``evcw2``) so the folded wavefunctions are
+  first-class nodes in the provenance graph.
 * ``ks2kcp`` -- converts plain Kohn-Sham orbitals; no Wannier inputs required.
-
-Downstream steps pick up the ``evcw*`` files from ``remote_folder`` (they are
-also retrieved into the ``retrieved`` folder for provenance / a merge step).
 """
 
 from __future__ import annotations
@@ -53,12 +54,10 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     # used that prefix.)
     _DEFAULT_PREFIX = "aiida"
     _DEFAULT_SEEDNAME = "wannier90"
-    # Filenames inside ``wannier_folder`` (the wannier90 ``retrieved``
-    # FolderData): aiida-wannier90's ``Wannier90Calculation`` hard-codes its
-    # seedname to ``aiida``, so the checkpoint and Hamiltonian arrive as
-    # ``aiida.chk`` / ``aiida_hr.dat``. Overridable via
-    # ``settings['wannier_source_seedname']``.
-    _WANNIER_SOURCE_SEEDNAME = "aiida"
+    # The evcw wavefunctions a ``wannier2kcp`` run can produce; retrieved and
+    # re-emitted by the parser as ``SinglefileData`` outputs of the same name
+    # (minus the extension).
+    _EVCW_FILES: ClassVar[tuple[str, ...]] = ("evcw.dat", "evcw1.dat", "evcw2.dat")
 
     # The wann2kcp input is a single Fortran namelist spelled ``&inputpp``
     # (lowercase in the file, parsed as ``data['inputpp']``).
@@ -135,28 +134,30 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             ),
         )
         spec.input(
-            "wannier_folder",
-            valid_type=FolderData,
+            "chk_file",
+            valid_type=SinglefileData,
             required=False,
             help=(
-                "The wannier90 ``retrieved`` folder holding the checkpoint and "
-                "real-space Hamiltonian (``aiida.chk`` must be forced into the "
-                "wannier90 retrieve list; ``aiida_hr.dat`` requires "
-                "``write_hr``). They are copied into the work directory as "
-                "``<seedname>.chk`` / ``<seedname>_hr.dat``. Required for "
+                "The wannier90 checkpoint (holds the U matrices). Copied into "
+                "the work directory as ``<seedname>.chk``. Required for "
                 "``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
+            "hr_file",
+            valid_type=SinglefileData,
+            required=False,
+            help=(
+                "The wannier90 real-space Hamiltonian (``write_hr``). Copied "
+                "into the work directory as ``<seedname>_hr.dat``. Required "
+                "for ``wan_mode='wannier2kcp'``."
             ),
         )
         spec.input(
             "settings",
             valid_type=Dict,
             required=False,
-            help=(
-                "Optional CalcJob-level settings: ``additional_retrieve_list`` "
-                "adds retrieve paths; ``wannier_source_seedname`` overrides the "
-                "seedname used to locate files inside ``wannier_folder`` "
-                "(default ``aiida``)."
-            ),
+            help="Optional CalcJob-level settings (cmdline overrides, extra retrieve paths).",
         )
 
         spec.inputs["metadata"]["options"]["parser_name"].default = "koopmans.wann2kcp"
@@ -170,6 +171,23 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             valid_type=Dict,
             required=True,
             help="Scalar results: ``job_done`` flag and ``walltime``.",
+        )
+        # The folded wavefunctions as first-class nodes. A spin-resolved run
+        # (``spin_component`` set) writes ``evcw``; a spinless run writes
+        # ``evcw1`` + ``evcw2``. All optional at the spec level; the parser
+        # errors when a completed ``wannier2kcp`` run produced none.
+        for evcw_name in cls._EVCW_FILES:
+            spec.output(
+                evcw_name.removesuffix(".dat"),
+                valid_type=SinglefileData,
+                required=False,
+                help=f"The folded ``{evcw_name}`` wavefunction (``wannier2kcp`` mode).",
+            )
+
+        spec.exit_code(
+            320,
+            "ERROR_OUTPUT_EVC_MISSING",
+            message="A completed wannier2kcp run retrieved no ``evcw*.dat`` wavefunction file.",
         )
 
     def prepare_for_submission(self, folder):
@@ -226,27 +244,22 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     def _build_local_copy_list(self, parameters: dict) -> list[tuple[str, str, str]]:
         """Copy the Wannier inputs (``.nnkp``, ``.chk``, ``_hr.dat``) into place.
 
-        The three files live on different upstream nodes (the ``-pp`` run's
-        ``nnkp_file`` output; the wannier90 ``retrieved`` folder), so they are
-        separate inputs rather than a single parent. Destination names follow
-        the ``seedname`` the namelist declares; source names inside
-        ``wannier_folder`` follow the wannier90 seedname (``aiida`` upstream,
-        overridable via ``settings['wannier_source_seedname']``).
+        The three files are separate enumerated ``SinglefileData`` inputs
+        (their provenance lives on different upstream nodes: the ``-pp``
+        run's ``nnkp_file`` output vs the wannier90 checkpoint / Hamiltonian).
+        Destination names follow the ``seedname`` the namelist declares.
         """
         seedname = parameters.get("seedname", self._DEFAULT_SEEDNAME)
+        destinations = {
+            "nnkp_file": f"{seedname}.nnkp",
+            "chk_file": f"{seedname}.chk",
+            "hr_file": f"{seedname}_hr.dat",
+        }
         copy_list: list[tuple[str, str, str]] = []
-        if "nnkp_file" in self.inputs:
-            nnkp = self.inputs.nnkp_file
-            copy_list.append((nnkp.uuid, nnkp.filename, f"{seedname}.nnkp"))
-        if "wannier_folder" in self.inputs:
-            folder = self.inputs.wannier_folder
-            source_seedname = self._WANNIER_SOURCE_SEEDNAME
-            if "settings" in self.inputs:
-                source_seedname = self.inputs.settings.get_dict().get(
-                    "wannier_source_seedname", source_seedname
-                )
-            copy_list.append((folder.uuid, f"{source_seedname}.chk", f"{seedname}.chk"))
-            copy_list.append((folder.uuid, f"{source_seedname}_hr.dat", f"{seedname}_hr.dat"))
+        for input_name, destination in destinations.items():
+            if input_name in self.inputs:
+                node = self.inputs[input_name]
+                copy_list.append((node.uuid, node.filename, destination))
         return copy_list
 
     def _build_retrieve_list(self, parameters: dict) -> list[str]:

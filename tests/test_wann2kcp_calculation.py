@@ -176,11 +176,10 @@ def test_wannier2kcp_stages_nnkp_chk_and_hr(
     generate_calc_job,
     aiida_local_code_factory,
 ):
-    """Stage ``.nnkp`` / ``.chk`` / ``_hr.dat`` via the dedicated inputs.
+    """Stage ``.nnkp`` / ``.chk`` / ``_hr.dat`` via the enumerated file inputs.
 
-    The ``nnkp_file`` SinglefileData lands as ``<seedname>.nnkp``; the two
-    wannier90 artefacts inside ``wannier_folder`` (upstream seedname
-    ``aiida``) land as ``<seedname>.chk`` / ``<seedname>_hr.dat``.
+    Each ``SinglefileData`` lands under a destination name derived from the
+    namelist ``seedname``, regardless of the node's own filename.
     """
     import io
 
@@ -188,16 +187,12 @@ def test_wannier2kcp_stages_nnkp_chk_and_hr(
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
 
-    nnkp = orm.SinglefileData(io.BytesIO(b"nnkp"), filename="aiida.nnkp")
-    wannier_folder = orm.FolderData()
-    wannier_folder.put_object_from_bytes(b"chk", "aiida.chk")
-    wannier_folder.put_object_from_bytes(b"hr", "aiida_hr.dat")
-
     inputs = {
         "code": code,
         "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp", "seedname": "aiida"}),
-        "nnkp_file": nnkp,
-        "wannier_folder": wannier_folder,
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp"),
+        "chk_file": orm.SinglefileData(io.BytesIO(b"chk"), filename="aiida.chk"),
+        "hr_file": orm.SinglefileData(io.BytesIO(b"hr"), filename="aiida_hr.dat"),
         "metadata": {"options": {"resources": {"num_machines": 1}}},
     }
 
@@ -205,42 +200,36 @@ def test_wannier2kcp_stages_nnkp_chk_and_hr(
 
     copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
     assert copies == {
-        ("aiida.nnkp", "aiida.nnkp"),
+        ("pp.nnkp", "aiida.nnkp"),
         ("aiida.chk", "aiida.chk"),
         ("aiida_hr.dat", "aiida_hr.dat"),
     }
 
 
-def test_wannier2kcp_staging_respects_seednames(
+def test_wannier2kcp_staging_follows_default_seedname(
     aiida_profile,
     fixture_sandbox,
     generate_calc_job,
     aiida_local_code_factory,
 ):
-    """Destination names follow the namelist seedname; sources follow settings."""
+    """Without an explicit seedname the files land under ``wannier90.*``."""
     import io
 
     from aiida import orm
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
 
-    nnkp = orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp")
-    wannier_folder = orm.FolderData()
-    wannier_folder.put_object_from_bytes(b"chk", "w90.chk")
-    wannier_folder.put_object_from_bytes(b"hr", "w90_hr.dat")
-
     inputs = {
         "code": code,
         "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
-        "nnkp_file": nnkp,
-        "wannier_folder": wannier_folder,
-        "settings": orm.Dict(dict={"wannier_source_seedname": "w90"}),
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp"),
+        "chk_file": orm.SinglefileData(io.BytesIO(b"chk"), filename="w90.chk"),
+        "hr_file": orm.SinglefileData(io.BytesIO(b"hr"), filename="w90_hr.dat"),
         "metadata": {"options": {"resources": {"num_machines": 1}}},
     }
 
     calc_info = generate_calc_job(fixture_sandbox, "koopmans.wann2kcp", inputs)
 
-    # Default namelist seedname is ``wannier90`` — destinations follow it.
     copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
     assert copies == {
         ("pp.nnkp", "wannier90.nnkp"),

@@ -51,7 +51,7 @@ class TestBuildCmdline:
 
 
 # ----------------------------------------------------------------------
-# End-to-end: command line + symlink staging
+# End-to-end: command line + file staging
 # ----------------------------------------------------------------------
 
 
@@ -59,38 +59,29 @@ def test_merge_evc_full_calc_info(
     aiida_profile,
     fixture_sandbox,
     generate_calc_job,
-    fixture_localhost,
     aiida_local_code_factory,
-    tmp_path_factory,
 ):
-    """Assemble a full ``MergeEvcCalculation`` and check the command + symlinks.
+    """Assemble a full ``MergeEvcCalculation`` and check the command + staging.
 
-    Two stand-in source RemoteData folders are merged into ``evcw.dat``; the
-    test asserts the ``-nr 8 -i input_0.dat -i input_1.dat -o evcw.dat`` command
-    and that each source is symlinked as ``input_{i}.dat`` in sorted-key order.
+    Two source ``SinglefileData`` wavefunctions are merged into ``evcw.dat``;
+    the test asserts the ``-nr 8 -i input_0.dat -i input_1.dat -o evcw.dat``
+    command and that each source is copied in as ``input_{i}.dat`` in
+    sorted-key order regardless of its own filename.
     """
+    import io
+
     from aiida import orm
-    from aiida.common import LinkType, datastructures
+    from aiida.common import datastructures
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.merge_evc")
-
-    def _make_remote(label):
-        calc = orm.CalcJobNode(computer=fixture_localhost, process_type="")
-        calc.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
-        calc.store()
-        root = tmp_path_factory.mktemp(label)
-        remote = orm.RemoteData(computer=fixture_localhost, remote_path=root.as_posix())
-        remote.base.links.add_incoming(calc, link_type=LinkType.CREATE, link_label="remote_folder")
-        remote.store()
-        return remote
 
     inputs = {
         "code": code,
         "kgrid": orm.List(list=[2, 2, 2]),
         "dest_filename": orm.Str("evcw.dat"),
         "source_files": {
-            "block_0": _make_remote("merge-src-0"),
-            "block_1": _make_remote("merge-src-1"),
+            "b00": orm.SinglefileData(io.BytesIO(b"wf0"), filename="evcw1.dat"),
+            "b01": orm.SinglefileData(io.BytesIO(b"wf1"), filename="evcw1.dat"),
         },
         "metadata": {"options": {"resources": {"num_machines": 1}}},
     }
@@ -109,50 +100,12 @@ def test_merge_evc_full_calc_info(
         "evcw.dat",
     ]
 
-    # Each source symlinked as input_{i}.dat in sorted-key order.
-    dests = [item[2] for item in calc_info.remote_symlink_list]
-    assert dests == ["input_0.dat", "input_1.dat"]
-    # Default source filename equals dest filename.
-    sources = [item[1] for item in calc_info.remote_symlink_list]
-    assert all(s.endswith("/evcw.dat") for s in sources)
+    # Each source copied in as input_{i}.dat in sorted-key order.
+    assert [(src, dest) for _, src, dest in calc_info.local_copy_list] == [
+        ("evcw1.dat", "input_0.dat"),
+        ("evcw1.dat", "input_1.dat"),
+    ]
 
     # Merged output + stdout retrieved.
     assert "evcw.dat" in calc_info.retrieve_list
     assert "aiida.out" in calc_info.retrieve_list
-
-
-def test_merge_evc_source_filenames_override(
-    aiida_profile,
-    fixture_sandbox,
-    generate_calc_job,
-    fixture_localhost,
-    aiida_local_code_factory,
-    tmp_path_factory,
-):
-    """``settings['source_filenames']`` selects a per-source file name."""
-    from aiida import orm
-    from aiida.common import LinkType
-
-    code = aiida_local_code_factory(executable="true", entry_point="koopmans.merge_evc")
-
-    calc = orm.CalcJobNode(computer=fixture_localhost, process_type="")
-    calc.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
-    calc.store()
-    root = tmp_path_factory.mktemp("merge-src")
-    remote = orm.RemoteData(computer=fixture_localhost, remote_path=root.as_posix())
-    remote.base.links.add_incoming(calc, link_type=LinkType.CREATE, link_label="remote_folder")
-    remote.store()
-
-    inputs = {
-        "code": code,
-        "kgrid": orm.List(list=[1, 1, 1]),
-        "dest_filename": orm.Str("evcw1.dat"),
-        "source_files": {"block_0": remote},
-        "settings": orm.Dict(dict={"source_filenames": {"block_0": "evcw.dat"}}),
-        "metadata": {"options": {"resources": {"num_machines": 1}}},
-    }
-
-    calc_info = generate_calc_job(fixture_sandbox, "koopmans.merge_evc", inputs)
-    sources = [item[1] for item in calc_info.remote_symlink_list]
-    assert sources[0].endswith("/evcw.dat")
-    assert calc_info.codes_info[0].cmdline_params[-1] == "evcw1.dat"
