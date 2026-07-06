@@ -9,6 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import NotRequired, TypedDict
 
+from aiida_quantumespresso.common.types import SpinType as SpinType
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 
