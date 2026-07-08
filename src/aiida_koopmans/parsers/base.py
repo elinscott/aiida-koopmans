@@ -1,10 +1,8 @@
 """Shared scaffolding for the Koopmans QE-fork stdout parsers.
 
-The kcp.x / kcw.x / wann2kcp.x parsers all open their stdout the same way --
-guard the retrieved folder, look up the ``output_filename`` attribute, check
-it landed, and read it -- returning the matching exit code at each step. They
-also all seed their scalar-results dict with the same
-``job_done`` / ``walltime`` skeleton. That boilerplate lives here.
+Provides, for kcp.x / kcw.x / wann2kcp.x: stdout retrieval returning the
+matching exit code at each failure point, and the common
+``job_done`` / ``walltime`` scalar skeleton.
 
 ``merge_evc.x`` reads no stdout (it only checks that the merged file was
 retrieved), so its parser stays a plain :class:`~aiida.parsers.Parser`.

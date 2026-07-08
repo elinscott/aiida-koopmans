@@ -375,8 +375,7 @@ class KcwHamCalculation(KcwCalculation):
             help=(
                 "Screening parameters for *all* orbitals (occupied then "
                 "empty), written to ``file_alpharef.txt``. kcw.x ham takes a "
-                "single file rather than a filled/empty split (legacy "
-                "``KoopmansHamCalculator.write_alphas``)."
+                "single file rather than a filled/empty split."
             ),
         )
         spec.input(

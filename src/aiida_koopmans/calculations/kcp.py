@@ -135,9 +135,7 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 "Matching destinations are skipped during the primary "
                 "parent walk so the overlay symlinks are the only entries "
                 "at those paths. Used to force ``evc0N = evcN`` for "
-                "``init_orbitals='kohn-sham'`` (legacy "
-                "``_koopmans_dscf.py:521-522`` + variational-orbital map at "
-                "``_koopmans_dscf.py:1340-1347``) — without this the kcp.x "
+                "``init_orbitals='kohn-sham'`` — without this the kcp.x "
                 "inner loop picks up a stale variational guess and converges "
                 "to a different canonical KI basis."
             ),

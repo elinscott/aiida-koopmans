@@ -1840,29 +1840,28 @@ def _validate_scope(
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
         raise NotImplementedError(
-            f"correction={correction!r} not yet ported. "
+            f"correction={correction!r} not yet supported. "
             f"Supported corrections: {sorted(c.value for c in supported)}. "
             "PKIPZ requires a perturbative post-processing pass on top of a "
             "KI trial; NONE / ALL are workflow-control flags not consumed here."
         )
     if init_orbitals != VariationalOrbitalType.KOHN_SHAM:
         raise NotImplementedError(
-            f"init_orbitals={init_orbitals!r} not yet ported. "
+            f"init_orbitals={init_orbitals!r} not yet supported. "
             f"Only {VariationalOrbitalType.KOHN_SHAM!r} is implemented. "
             "MLWF / projected-WF / PZ initialisation requires a separate "
             "wannierize + fold-to-supercell pipeline."
         )
     if fix_spin_contamination:
         raise NotImplementedError(
-            "fix_spin_contamination=True is not yet ported. The legacy workflow "
-            "runs a 7-call spin-symmetrisation pre-pass; its AiiDA equivalent "
-            "is a separate SpinSymmetrizeTask that hasn't been written yet."
+            "fix_spin_contamination=True is not yet supported: it requires a "
+            "spin-symmetrisation pre-pass (a dedicated SpinSymmetrizeTask) "
+            "that has not been written yet."
         )
     if any(structure.pbc):
         raise NotImplementedError(
-            "Periodic systems are not yet supported. The MVP targets the "
-            "molecular (non-periodic) case used in tutorial_1. Periodic "
-            "workflows require supercell folding and Wannier orbitals."
+            "Periodic systems are not yet supported: they require supercell "
+            "folding and Wannier variational orbitals."
         )
 
 

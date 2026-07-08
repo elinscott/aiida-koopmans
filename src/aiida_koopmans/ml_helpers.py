@@ -70,13 +70,16 @@ def real_spherical_harmonics(
 ) -> np.ndarray:
     """Calculate Y_lm from eq. (20) in Himanen et al 2020.
 
-    ``theta`` is the polar and ``phi_angle`` the azimuthal angle. Note that
-    legacy HEAD calls ``sph_harm_y(abs(m), l, phi, theta)`` — a scipy>=1.15
-    migration slip that kept the argument order of the removed ``sph_harm``
-    (whose signature was ``(m, n, azimuth, polar)``) and therefore zeroes
-    every ``l != |m|`` harmonic. This port restores the pre-migration
-    behaviour: ``sph_harm(abs(m), l, phi, theta) == sph_harm_y(l, abs(m),
-    theta, phi)``.
+    ``theta`` is the polar and ``phi_angle`` the azimuthal angle.
+
+    scipy>=1.15 replaced ``sph_harm(m, n, azimuth, polar)`` with
+    ``sph_harm_y(n, m, polar, azimuth)`` — the degree/order pair and the
+    angle pair both swap places, and calling ``sph_harm_y`` with the old
+    argument order silently zeroes every ``l != |m|`` harmonic. The correct
+    mapping used here is ``sph_harm(abs(m), l, phi, theta) ==
+    sph_harm_y(l, abs(m), theta, phi)``. (The reference ASE-based koopmans
+    package currently carries the old-order slip, so descriptor comparisons
+    against it will differ until that is fixed upstream.)
     """
     from scipy.special import sph_harm_y
 

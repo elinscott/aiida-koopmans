@@ -169,7 +169,7 @@ def derive_dfpt_manifolds(
             f"DFPT screening currently supports exactly one occupied projection block "
             f"and at most one empty block (got {len(occupied)} occupied / {len(empty)} "
             "empty). Multi-block manifolds need the u/hr/centres merge machinery, "
-            "which is not yet ported."
+            "which is not yet supported."
         )
     num_wann_occ = occupied[0][1]
     if num_wann_occ != nocc:

@@ -1,12 +1,9 @@
 """Shared scaffolding for the Koopmans QE-fork CalcJobs.
 
-The kcp.x / kcw.x / wann2kcp.x / merge_evc.x plugins are all thin ``CalcJob``
-wrappers around Koopmans-fork Quantum ESPRESSO binaries that upstream
-aiida-quantumespresso does not cover. They independently grew the same
-boilerplate: the ``NO_RETRIEVED_FOLDER`` / stdout exit codes, the ``-in
-<input>`` :class:`~aiida.common.CodeInfo` block, the ``additional_retrieve_list``
-settings hook, the Fortran ``&NL ... /`` namelist renderer, and the
-``file_alpharef.txt`` writer. Those live here.
+Provides, for kcp.x / kcw.x / wann2kcp.x / merge_evc.x: the common exit
+codes, the ``-in <input>`` :class:`~aiida.common.CodeInfo` block, the
+``additional_retrieve_list`` settings hook, the Fortran ``&NL ... /``
+namelist renderer, and the ``file_alpharef.txt`` writer.
 
 Two tiers:
 
