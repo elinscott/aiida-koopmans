@@ -151,9 +151,10 @@ _OZONE_BASE = KcpBaseInputs(
 class TestBuildDftParameters:
     def test_has_expected_namelists(self):
         params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
-        assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS"}
+        assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS", "EE"}
         assert "NKSIC" not in params
-        assert "EE" not in params
+        # EE machinery always on; periodic systems compensate with 'none'.
+        assert params["EE"]["which_compensation"] == "none"
 
     def test_dft_control_is_from_scratch(self):
         # ndr/ndw are owned by ``KcpCalculation._inject_owned_keys`` (universal
@@ -227,12 +228,12 @@ class TestBuildKiParameters:
         assert params["ELECTRONS"]["do_outerloop"] is False
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
 
-    def test_periodic_omits_ee_namelist(self):
-        # Periodic systems (mt_correction=False) emit no &EE block; do_ee=False
-        # in &SYSTEM keeps kcp.x from trying to read it.
+    def test_periodic_uses_no_compensation(self):
+        # The EE machinery is always on (legacy calculator default); periodic
+        # systems select which_compensation='none' rather than dropping &EE.
         params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
-        assert "EE" not in params
-        assert params["SYSTEM"]["do_ee"] is False
+        assert params["EE"]["which_compensation"] == "none"
+        assert params["SYSTEM"]["do_ee"] is True
 
     def test_aperiodic_emits_tcc(self):
         base = replace(_OZONE_BASE, mt_correction=True)

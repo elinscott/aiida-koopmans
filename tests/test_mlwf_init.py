@@ -142,7 +142,8 @@ class TestDftDummyParameters:
     def test_plain_dft(self):
         params = _build_dft_dummy_parameters(_SUPERCELL_BASE)
         assert params["SYSTEM"]["do_orbdep"] is False
-        assert "EE" not in params  # periodic: no Martyna-Tuckerman
+        # EE machinery always on (legacy default); periodic -> no countercharge.
+        assert params["EE"]["which_compensation"] == "none"
 
 
 class TestDftInitFromWannierParameters:

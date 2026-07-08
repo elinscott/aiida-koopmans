@@ -894,7 +894,7 @@ def KoopmansDSCFWorkflow(
         # ("wavefunctions dimensions changed") and silently random-initialises
         # the empties. Legacy reference: Si 2x2x2 runs nbnd=64 (4 occ + 4 emp
         # WFs) even though the primitive wannierization used nbnd=20.
-        run_nbnd = sum(block["num_wann"] for block in blocks) * ncells
+        run_nbnd = sum(block["num_wann"] for block in cast("list", blocks)) * ncells
         run_tot_magnetization = scale_extensive(tot_magnetization, ncells)
     else:
         run_structure = structure
@@ -2217,7 +2217,14 @@ def _build_dft_parameters(
         "ecutrho": base.ecutrho,
         "nbnd": nbnd,
         "nspin": base.nspin,
-        "do_ee": base.mt_correction,
+        # Legacy calculator default: the electrostatic-embedding machinery is
+        # ALWAYS on (``do_ee: True`` in ``settings/_koopmans_cp.py``); only
+        # ``EE.which_compensation`` switches between 'tcc' (aperiodic,
+        # mt_correction) and 'none' (periodic). EE participates in the
+        # orbital self-interaction evaluation even with compensation 'none' —
+        # gating do_ee on mt_correction skews the trial-KI lambda response
+        # (verified on Si 2x2x2: filled/empty ratios off by 2.1x/5.5x).
+        "do_ee": True,
         "do_orbdep": False,
         "fixed_state": False,
         "do_wf_cmplx": True,
@@ -2263,8 +2270,10 @@ def _build_dft_parameters(
             **{f"ion_radius({i + 1})": 1.0 for i in range(base.ntyp)},
         },
     }
-    if base.mt_correction:
-        params["EE"] = {"which_compensation": "tcc"}
+    # Legacy ``internal_new_kcp_calculator``: 'tcc' countercharge for
+    # aperiodic systems, explicit 'none' for periodic ones (the &EE namelist
+    # is always written because ``do_ee`` is always on).
+    params["EE"] = {"which_compensation": "tcc" if base.mt_correction else "none"}
     return params
 
 
@@ -2647,7 +2656,7 @@ def _autogenerate_nrb(
         for vec in at
     ]
     rc_safe = 3.0
-    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr):
+    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr, strict=True):
         system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
 
 
