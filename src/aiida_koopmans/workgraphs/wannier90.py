@@ -77,6 +77,43 @@ Wannier90Task = task(Wannier90WorkChain)
 Wannier90OptimizeTask = task(Wannier90OptimizeWorkChain)
 
 
+def _finalize_wannier_builder(
+    builder: Any,
+    *,
+    kpoint_path: dict[str, Any] | None,
+    bands_kpoints: orm.KpointsData | None,
+    projector_rotation: np.ndarray | None,
+    set_bands_kpoints: bool,
+) -> dict[str, Any]:
+    """Apply the shared bands-path / projector-rotation wiring, then flatten to a dict.
+
+    Both ``Wannier90TaskViaBuilder`` and ``Wannier90OptimizeTaskViaBuilder``
+    share this finalisation tail: enforce that ``kpoint_path`` and
+    ``bands_kpoints`` are mutually exclusive, wire the explicit bands path
+    onto the nested wannier90 builder, apply the optional
+    ``projector_rotation``, and reduce the builder to the plain-dict inputs
+    the wrapped task expects.
+
+    ``set_bands_kpoints`` distinguishes the two callers: the plain builder
+    assigns ``bands_kpoints`` onto ``builder.wannier90.wannier90`` here,
+    whereas the optimize builder passes it to ``get_builder_from_protocol``
+    upstream and only needs it for the mutual-exclusion check.
+    """
+    if kpoint_path is not None and bands_kpoints is not None:
+        raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
+
+    if kpoint_path is not None:
+        builder.wannier90.wannier90.kpoint_path = kpoint_path
+
+    if set_bands_kpoints and bands_kpoints is not None:
+        builder.wannier90.wannier90.bands_kpoints = bands_kpoints
+
+    if projector_rotation is not None:
+        builder.projector_rotation = projector_rotation
+
+    return get_dict_from_builder(builder)
+
+
 @task.graph
 def Wannier90TaskViaBuilder(
     codes: Codes,
@@ -161,19 +198,13 @@ def Wannier90TaskViaBuilder(
         print_summary=print_summary,
     )
 
-    if kpoint_path is not None and bands_kpoints is not None:
-        raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
-
-    if kpoint_path is not None:
-        builder.wannier90.wannier90.kpoint_path = kpoint_path
-
-    if bands_kpoints is not None:
-        builder.wannier90.wannier90.bands_kpoints = bands_kpoints
-
-    if projector_rotation is not None:
-        builder.projector_rotation = projector_rotation
-
-    data = get_dict_from_builder(builder)
+    data = _finalize_wannier_builder(
+        builder,
+        kpoint_path=kpoint_path,
+        bands_kpoints=bands_kpoints,
+        projector_rotation=projector_rotation,
+        set_bands_kpoints=True,
+    )
 
     # Submit the workchain with converted inputs
     outputs = Wannier90Task(**data)
@@ -303,12 +334,6 @@ def Wannier90OptimizeTaskViaBuilder(
         bands_kpoints=bands_kpoints,
     )
 
-    if kpoint_path is not None and bands_kpoints is not None:
-        raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
-
-    if kpoint_path is not None:
-        builder.wannier90.wannier90.kpoint_path = kpoint_path
-
     if optimize_disprojmax_range is not None:
         builder.optimize_disprojmax_range = optimize_disprojmax_range
     if optimize_disprojmin_range is not None:
@@ -320,10 +345,15 @@ def Wannier90OptimizeTaskViaBuilder(
     # extract ``.value`` so the default serializer wraps a plain str into ``orm.Str``.
     builder.optimize_mu_reference = optimize_mu_reference.value
 
-    if projector_rotation is not None:
-        builder.projector_rotation = projector_rotation
-
-    data = get_dict_from_builder(builder)
+    # ``bands_kpoints`` is already wired through ``get_builder_from_protocol``
+    # above, so the finaliser only needs it for the mutual-exclusion check.
+    data = _finalize_wannier_builder(
+        builder,
+        kpoint_path=kpoint_path,
+        bands_kpoints=bands_kpoints,
+        projector_rotation=projector_rotation,
+        set_bands_kpoints=False,
+    )
 
     outputs = Wannier90OptimizeTask(**data)
 

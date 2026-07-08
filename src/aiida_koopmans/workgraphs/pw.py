@@ -10,6 +10,8 @@ from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.workgraphs import inject_pseudo_family
+
 
 class PwOutputs(TypedDict, total=False):
     """Outputs of a single PwBaseWorkChain run."""
@@ -80,9 +82,7 @@ def PwBandsTaskViaBuilder(
     overrides = overrides or {}
 
     # Inject pseudo_family into both scf and bands overrides
-    if pseudo_family is not None:
-        overrides.setdefault("scf", {}).setdefault("pseudo_family", pseudo_family)
-        overrides.setdefault("bands", {}).setdefault("pseudo_family", pseudo_family)
+    inject_pseudo_family(overrides, pseudo_family, ("scf", "bands"))
 
     builder = PwBandsWorkChain.get_builder_from_protocol(
         code=code,
@@ -147,9 +147,8 @@ def PwScfNscfTask(
     overrides = overrides or {}
 
     # Inject pseudo_family as a top-level override for both steps
+    inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
     scf_overrides = overrides.get("scf", {})
-    if pseudo_family is not None:
-        scf_overrides.setdefault("pseudo_family", pseudo_family)
 
     # --- SCF builder ---
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
@@ -166,9 +165,8 @@ def PwScfNscfTask(
 
     # --- NSCF builder ---
     # Start from protocol defaults, then merge NSCF-specific overrides
+    # (pseudo_family already seeded above).
     nscf_overrides = overrides.get("nscf", {})
-    if pseudo_family is not None:
-        nscf_overrides.setdefault("pseudo_family", pseudo_family)
 
     # Ensure calculation type is nscf
     nscf_defaults: dict[str, Any] = {

@@ -9,7 +9,7 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.workgraphs import Codes, inject_pseudo_family
 
 
 class PdosOutputs(TypedDict):
@@ -57,9 +57,7 @@ def PdosTaskViaBuilder(
     overrides = overrides or {}
 
     # Inject pseudo_family into scf and nscf overrides
-    if pseudo_family is not None:
-        overrides.setdefault("scf", {}).setdefault("pseudo_family", pseudo_family)
-        overrides.setdefault("nscf", {}).setdefault("pseudo_family", pseudo_family)
+    inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
 
     builder = PdosWorkChain.get_builder_from_protocol(
         pw_code=codes["pw"],

@@ -414,12 +414,52 @@ def generate_alphas(
     }
 
 
+class FilledIterItem(TypedDict):
+    """One per-orbital work item for the *filled* Delta-SCF fan-out.
+
+    Built by :func:`build_filled_iter_source` and consumed field-by-field
+    by :func:`PerOrbitalScreening`, which scatters one
+    :func:`FilledOrbitalScreening` per representative filled orbital.
+    ``spin_channel`` / ``band_index`` are in the physical frame (they
+    index the trial-KI lambda matrices); ``fixed_band`` is the 1-indexed
+    kcp.x band position.
+    """
+
+    orbital: VariationalOrbital
+    fixed_band: int
+    spin_channel: SpinChannel
+    band_index: int
+    alpha_guess: float
+
+
+class EmptyIterItem(TypedDict):
+    """One per-orbital work item for the *empty* Delta-SCF fan-out.
+
+    Built by :func:`build_empty_iter_source` and consumed field-by-field
+    by :func:`PerOrbitalScreening`, which scatters one
+    :func:`EmptyOrbitalScreening` per representative empty orbital. The
+    three parameter dicts are fully baked into the (possibly spin-swapped)
+    kcp.x frame; ``spin_channel`` / ``band_index`` stay in the physical
+    frame for indexing the trial-KI lambda matrices. ``overlay`` is the
+    ``pz_print`` save-file map (``{}`` when no spin swap is needed).
+    """
+
+    orbital: VariationalOrbital
+    spin_channel: SpinChannel
+    band_index: int
+    alpha_guess: float
+    dummy_parameters: dict
+    pz_parameters: dict
+    n_plus_1_parameters: dict
+    overlay: dict
+
+
 def build_filled_iter_source(
     nelup: int | None,
     neldw: int | None,
     orbitals: list[VariationalOrbital],
     filled_alphas: dict,
-) -> dict[str, dict]:
+) -> dict[str, FilledIterItem]:
     """Materialise the per-orbital items for the *filled* fan-out loop.
 
     A plain function (not a ``@task``): it runs inside the deferred body
@@ -458,7 +498,7 @@ def build_filled_iter_source(
     """
     if nelup is None or neldw is None:
         raise ValueError("nelup and neldw are required (kcp.x runs at nspin=2)")
-    out: dict[str, dict] = {}
+    out: dict[str, FilledIterItem] = {}
     for o in orbitals:
         if not o["representative"] or not o["filled"]:
             continue
@@ -486,7 +526,7 @@ def build_empty_iter_source(
     orbitals: list[VariationalOrbital],
     empty_alphas: dict,
     correction: Correction = Correction.KI,
-) -> dict[str, dict]:
+) -> dict[str, EmptyIterItem]:
     """Materialise the per-orbital items for the *empty* fan-out loop.
 
     A plain function (not a ``@task``): it runs inside the deferred body
@@ -524,7 +564,7 @@ def build_empty_iter_source(
     overlay_swap = _spin_swap_save_overlay(nspin=2)
     n_empty_up = max(0, nbnd - base.nelup)
     max_n_filled = max(base.nelup, base.neldw)
-    out: dict[str, dict] = {}
+    out: dict[str, EmptyIterItem] = {}
     for o in orbitals:
         if not o["representative"] or o["filled"]:
             continue
