@@ -1,5 +1,5 @@
-"""Output parsers for aiida-koopmans CalcJobs."""
+"""Output parsers for aiida-koopmans CalcJobs.
 
-from aiida_koopmans.parsers.kcp import KcpParser
-
-__all__ = ("KcpParser",)
+Parsers are registered via the ``aiida.parsers`` entry points in
+``pyproject.toml``; import them from their own modules.
+"""
