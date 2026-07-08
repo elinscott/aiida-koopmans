@@ -16,18 +16,12 @@ The Koopmans DSCF closed-shell init is a 3-step chain:
    state is preserved on the first iteration.
 
 The work is pure byte substitution on a handful of small XML / binary
-files — no QE binary is invoked. The substitutions mirror the legacy
-``ConvertFilesFromSpin1To2`` process at
-``koopmans/src/koopmans/processes/koopmans_cp.py:55-92``:
+files — no QE binary is invoked. The substitutions are:
 
 * ``nk="1"`` → ``nk="2"``
 * ``nspin="1"`` → ``nspin="2"``
 * (down channel only) ``ik="1"`` → ``ik="2"``
 * (down channel only) ``ispin="1"`` → ``ispin="2"``
-
-The per-file substitution map is taken from the legacy
-``KoopmansCPCalculator.files_to_convert_with_spin1_to_spin2`` property
-at ``koopmans/src/koopmans/calculators/_koopmans_cp.py:591-613``.
 
 Implemented as ``@task.calcfunction`` (rather than a full ``CalcJob``)
 because the operation is pure local file substitution with no external
@@ -49,11 +43,8 @@ from aiida_workgraph import task
 # Files that need spin-1 → spin-2 conversion. Each entry maps a source
 # filename in the nspin=1 ``K00001/`` directory to the two destination
 # filenames (spin-up, spin-down) in the nspin=2 ``K00001/`` directory.
-#
-# Ported verbatim from ``files_to_convert_with_spin1_to_spin2`` in
-# ``koopmans/src/koopmans/calculators/_koopmans_cp.py:591-613``. The list
-# is deliberately fixed — kcp.x emits exactly this set of per-orbital
-# files in the closed-shell branch.
+# The list is deliberately fixed — kcp.x emits exactly this set of
+# per-orbital files in the closed-shell branch.
 _CONVERSION_MAP: tuple[tuple[str, str, str], ...] = (
     ("evc0.dat", "evc01.dat", "evc02.dat"),
     ("evc0_empty1.dat", "evc0_empty1.dat", "evc0_empty2.dat"),
@@ -75,14 +66,11 @@ _K_SUBDIR = "K00001"
 
 
 def _convert_spin1_to_spin2_bytes(content: bytes) -> tuple[bytes, bytes]:
-    """Apply the legacy nspin=1 → nspin=2 byte substitutions.
+    """Apply the nspin=1 → nspin=2 byte substitutions.
 
     Returns ``(spin_up_bytes, spin_down_bytes)``. Both channels start
     from the same nspin=1 content; the down channel additionally has
     ``ik="1"`` → ``ik="2"`` and ``ispin="1"`` → ``ispin="2"`` applied.
-
-    See ``ConvertFilesFromSpin1To2._run`` at
-    ``koopmans/src/koopmans/processes/koopmans_cp.py:76-89``.
     """
     up = content.replace(b'nk="1"', b'nk="2"').replace(b'nspin="1"', b'nspin="2"')
     down = up.replace(b'ik="1"', b'ik="2"').replace(b'ispin="1"', b'ispin="2"')
@@ -173,9 +161,8 @@ def convert_spin1_to_spin2(
     for spin1_name, up_name, down_name in _CONVERSION_MAP:
         src = spin1_k / spin1_name
         if not src.exists():
-            # Mirror the legacy behaviour: only convert files that
-            # actually exist on the parent. The map is a superset of
-            # what kcp.x emits in any given run.
+            # Only convert files that actually exist on the parent. The
+            # map is a superset of what kcp.x emits in any given run.
             continue
         content = src.read_bytes()
         up_bytes, down_bytes = _convert_spin1_to_spin2_bytes(content)

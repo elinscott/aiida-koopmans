@@ -1,10 +1,8 @@
 """Koopmans DFPT workflow (kcw.x): wann2kc → screen → ham.
 
-Port of the legacy ``koopmans/workflows/_koopmans_dfpt.py``
-(``KoopmansDFPTWorkflow`` + ``ComputeScreeningViaDFPTWorkflow``). kcw.x has
-no upstream aiida-quantumespresso coverage, so the three steps are backed by
-the in-repo CalcJobs in ``aiida_koopmans.calculations.kcw`` (one kcw.x
-binary, three ``CONTROL.calculation`` modes).
+kcw.x has no upstream aiida-quantumespresso coverage, so the three steps are
+backed by the in-repo CalcJobs in ``aiida_koopmans.calculations.kcw`` (one
+kcw.x binary, three ``CONTROL.calculation`` modes).
 
 Two graphs are exposed:
 
@@ -12,30 +10,25 @@ Two graphs are exposed:
   wannierization outputs (the shared nscf scratch plus the per-manifold
   wannier90 ``retrieved`` folders) and runs wann2kcw → screen → ham. When
   ``alpha_guess`` is provided the screen step is skipped and the guess is
-  fed straight to ham (legacy ``calculate_alpha = False`` path).
-* :func:`SinglepointDFPT` -- the end-to-end MVP: one shared scf + nscf, one
-  :func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierize` per
-  manifold (occupied / empty), then :func:`KoopmansDFPTTask`.
+  fed straight to ham.
+* :func:`SinglepointDFPT` -- the end-to-end workflow: one shared scf + nscf,
+  one :func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierize`
+  per manifold (occupied / empty), then :func:`KoopmansDFPTTask`.
 
 Spin handling: kcw.x requires an nspin=2 parent scratch even for
 closed-shell systems because the DFPT perturbations are spin-dependent, so
 :func:`SinglepointDFPT` forces ``nspin = 2`` + ``tot_magnetization = 0`` on
-the PW runs and ``spin_component = 'up'`` on pw2wannier90 (legacy
-``force_nspin2``; ``_wannierize.py:531-532``). The kcw chain itself then
-runs once on the up channel (``CONTROL.spin_component = 1``).
+the PW runs and ``spin_component = 'up'`` on pw2wannier90. The kcw chain
+itself then runs once on the up channel (``CONTROL.spin_component = 1``).
 
-MVP scope (deliberate deviations from legacy, all spin-unpolarized /
-closed-shell, single-manifold):
+Current scope (spin-unpolarized / closed-shell, single-manifold):
 
-* One occupied block + at most one empty block. Legacy merges multiple
-  occupied sub-blocks (u / hr / centres merge steps) before kcw.x; that
-  machinery is not ported yet, so multi-block inputs must be rejected
-  upstream.
+* One occupied block + at most one empty block. Multi-block manifolds need
+  the u / hr / centres merge machinery, which is not implemented here.
 * No spin-polarized systems: that needs the per-spin wann2kc/screen/ham
-  fan-out (legacy ``spin_components`` loop), not just the nspin=2 scratch.
-* No per-orbital screening fan-out (legacy ``i_orb`` grouping): one screen
-  calculation solves all orbitals, which is legacy's own behaviour when no
-  orbital grouping applies.
+  fan-out, not just the nspin=2 scratch.
+* No per-orbital screening fan-out: one screen calculation solves all
+  orbitals (the behaviour when no orbital grouping applies).
 * No coarse-grid pre-screening (``dfpt_coarse_grid``) and no
   unfold-and-interpolate postprocessing.
 """
@@ -132,11 +125,10 @@ def derive_dfpt_manifolds(
 ) -> tuple[ProjectionBlock, ProjectionBlock | None, bool, int]:
     """Turn user projection blocks into the occupied/empty DFPT manifolds.
 
-    Ports the manifold bookkeeping of legacy ``KoopmansDFPTWorkflow.__init__``
-    (nocc from the electron count, nemp from the projections, disentanglement
-    when the empty manifold has more bands than Wannier functions) for the
-    MVP scope: spin-unpolarized, exactly one occupied block, at most one
-    empty block.
+    Derives nocc from the electron count, nemp from the projections, and
+    disentanglement when the empty manifold has more bands than Wannier
+    functions. Scope: spin-unpolarized, exactly one occupied block, at most
+    one empty block.
 
     Args:
         structure: the periodic structure (for per-site projection counting).
@@ -232,8 +224,8 @@ def normalize_alpha_guess(raw_guess: float | list, n_orbitals: int) -> list[floa
     """Flatten a user ``alpha_guess`` into one alpha per orbital.
 
     Accepts the three shapes the input file allows: a single float (uniform
-    guess), a flat list, or the legacy nested per-spin list (spin channel 0
-    is taken; the MVP is spin-unpolarized).
+    guess), a flat list, or a nested per-spin list (spin channel 0 is taken;
+    the scope is spin-unpolarized).
     """
     if isinstance(raw_guess, float):
         return [raw_guess] * n_orbitals
@@ -286,8 +278,7 @@ def prepare_kcw_wannier_files(
     Collects the Wannier90 products out of the per-manifold ``retrieved``
     folders (requires the wannier90 runs to have set ``write_u_matrices``
     and ``write_xyz``) and renames the empty-manifold files to kcw.x's
-    hard-coded ``<seedname>_emp_*`` convention (legacy
-    ``_koopmans_dfpt.py:195-205``).
+    hard-coded ``<seedname>_emp_*`` convention.
     """
     merged = orm.FolderData()
 
@@ -349,13 +340,13 @@ def KoopmansDFPTTask(
         bands_kpoints: explicit k-path; when given, the ham step interpolates
             the Koopmans Hamiltonian along it (``HAM.do_bands``).
         eps_inf: macroscopic dielectric constant for the screen step's
-            long-range corrections (legacy ``workflow.eps_inf``).
+            long-range corrections.
         alpha_guess: when given, skip the screen step and feed these alphas
-            straight to ham (legacy ``calculate_alpha = False``).
+            straight to ham.
         has_disentangle: whether the empty manifold was disentangled
             (``num_bands != num_wann``).
-        l_vcut: Gygi-Baldereschi long-range cutoff (legacy ``gb_correction``);
-            None means the periodic-system default (on).
+        l_vcut: Gygi-Baldereschi long-range cutoff; None means the
+            periodic-system default (on).
     """
     l_vcut = True if l_vcut is None else bool(l_vcut)
     control = {
@@ -397,7 +388,7 @@ def KoopmansDFPTTask(
     outputs = KoopmansDFPTOutputs(wann2kc_remote_folder=wann2kc["remote_folder"])
 
     if alpha_guess is None:
-        # Legacy KoopmansScreenSettingsDict defaults (tight tr2, spread check).
+        # Screen defaults: tight tr2, spread check.
         screen_namelist: dict[str, Any] = {
             "tr2": 1.0e-18,
             "nmix": 4,
@@ -484,10 +475,8 @@ def SinglepointDFPT(
 
     # kcw.x requires an nspin=2 scratch even for closed-shell systems (the
     # DFPT perturbations are spin-dependent): force nspin=2 with zero total
-    # magnetization on both PW runs (legacy force_nspin2; the tutorial_3
-    # scf/nscf.pwi both carry nspin=2 + tot_magnetization=0). The nscf
-    # additionally needs the complete Monkhorst-Pack set: no symmetry
-    # reduction (legacy sets nosym/noinv on the wannierize nscf).
+    # magnetization on both PW runs. The nscf additionally needs the
+    # complete Monkhorst-Pack set: no symmetry reduction (nosym/noinv).
     spin_defaults: dict[str, Any] = {
         "pw": {"parameters": {"SYSTEM": {"nspin": 2, "tot_magnetization": 0}}},
     }
@@ -495,9 +484,9 @@ def SinglepointDFPT(
         spin_defaults,
         {"pw": {"parameters": {"SYSTEM": {"nosym": True, "noinv": True}}}},
     )
-    # Forced keys merge *on top of* caller overrides: legacy force_nspin2
-    # overwrites any user-supplied nspin, and a user nspin=1 would silently
-    # break kcw.x.
+    # Forced keys merge *on top of* caller overrides: the forced nspin=2
+    # overwrites any user-supplied nspin, since a user nspin=1 would
+    # silently break kcw.x.
     scf_nscf_overrides: dict[str, Any] = {
         "scf": recursive_merge(overrides.get("scf", {}), spin_defaults),
         "nscf": recursive_merge(overrides.get("nscf", {}), nscf_defaults),
@@ -515,8 +504,8 @@ def SinglepointDFPT(
 
     # kcw.x reads the U matrices and Wannier centres from files the wannier90
     # runs only write on request. With the nspin=2 scratch, pw2wannier90 must
-    # pick the up channel explicitly (legacy _wannierize.py:531-532); the
-    # wannier90 input itself carries no spin key for a closed-shell system.
+    # pick the up channel explicitly; the wannier90 input itself carries no
+    # spin key for a closed-shell system.
     w90_defaults: dict[str, Any] = {
         "wannier90": {
             "wannier90": {"parameters": {"write_u_matrices": True, "write_xyz": True}},

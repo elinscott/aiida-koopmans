@@ -1,32 +1,28 @@
 """Pure-Python machine-learning helpers for screening-parameter prediction.
 
-Port of the legacy ``koopmans/ml/`` package (descriptor computation and
-estimator fit/predict) with the ASE / engine / ``Band`` plumbing stripped:
-every function here takes and returns plain Python / numpy data, so the
-``@task``s in :mod:`aiida_koopmans.workgraphs.ml` stay thin wrappers.
+Every function here takes and returns plain Python / numpy data (descriptor
+computation and estimator fit/predict), so the ``@task``s in
+:mod:`aiida_koopmans.workgraphs.ml` stay thin wrappers. Sections:
 
-Layout mirrors the legacy modules:
+* radial/spherical basis functions
+* radial-basis precomputation
+* orbital-density decomposition
+* power-spectrum construction
+* estimators
+* dataset assembly / model fit / predict — JSON-serialisable model dicts
+  (no sklearn objects), so a trained model can live in an ``orm.Dict``
 
-* radial/spherical basis functions        (``ml/_basis_functions.py``)
-* radial-basis precomputation             (``ml/_precompute_parameters_of_basis.py``)
-* orbital-density decomposition           (``ml/_compute_decomposition.py`` + ``ml/_misc.py``)
-* power-spectrum construction             (``ml/_compute_power.py``)
-* estimators                              (``ml/_ml_models.py``)
-* dataset assembly / model fit / predict  (new; replaces ``MLModel`` /
-  ``OccEmpMLModels`` with JSON-serialisable model dicts — no dill, no
-  sklearn objects, so a trained model can live in an ``orm.Dict``)
-
-The estimators reproduce the legacy sklearn stack numerically
-(``StandardScaler`` + ``Ridge(alpha=1.0)`` for ridge regression,
-``Ridge(alpha=0.0)`` for linear regression, ``DummyRegressor('mean')`` for
-the mean estimator) in closed form with numpy only, so scikit-learn is not
-a runtime dependency. scipy (already a transitive dependency) is imported
-lazily and only by the orbital-density descriptor path.
+The estimators reproduce the sklearn stack numerically (``StandardScaler``
++ ``Ridge(alpha=1.0)`` for ridge regression, ``Ridge(alpha=0.0)`` for
+linear regression, ``DummyRegressor('mean')`` for the mean estimator) in
+closed form with numpy only, so scikit-learn is not a runtime dependency.
+scipy (already a transitive dependency) is imported lazily and only by the
+orbital-density descriptor path.
 """
 
 # ruff: noqa: E741, N803, N806
-# (physics / ML notation kept from the legacy code: ``l`` is the angular-momentum
-#  quantum number, ``X`` / ``Y`` are design-matrix / target arrays.)
+# (physics / ML notation: ``l`` is the angular-momentum quantum number,
+#  ``X`` / ``Y`` are design-matrix / target arrays.)
 
 from __future__ import annotations
 
@@ -36,8 +32,8 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
-# ase_koopmans.units.Bohr, the constant the legacy density normalisation
-# (1 / Bohr^3) was written against.
+# Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
+# written against this value.
 BOHR_RADIUS_ANG = 0.5291772105638411
 
 ESTIMATOR_TYPES = ("ridge_regression", "linear_regression", "mean")
@@ -49,7 +45,7 @@ _SPIN_KEY_TO_INDEX = {"none": 0, "up": 0, "down": 1}
 
 
 # ----------------------------------------------------------------------
-# Basis functions (legacy ml/_basis_functions.py)
+# Basis functions
 # ----------------------------------------------------------------------
 
 
@@ -93,7 +89,7 @@ def real_spherical_harmonics(
 
 
 # ----------------------------------------------------------------------
-# Radial-basis precomputation (legacy ml/_precompute_parameters_of_basis.py)
+# Radial-basis precomputation
 # ----------------------------------------------------------------------
 
 
@@ -162,7 +158,7 @@ def precompute_parameters_of_radial_basis(
 
 
 # ----------------------------------------------------------------------
-# Orbital-density decomposition (legacy ml/_compute_decomposition.py + _misc.py)
+# Orbital-density decomposition
 # ----------------------------------------------------------------------
 
 
@@ -206,10 +202,8 @@ def precompute_basis_function(
 ) -> np.ndarray:
     """Precompute the total basis (radial * spherical basis function) over the integration domain.
 
-    The legacy version took the two basis-function callables as arguments; the
-    only pair ever passed was (:func:`g` parameterised by alphas/betas,
-    :func:`real_spherical_harmonics`), so this port takes alphas/betas
-    directly.
+    The basis functions are :func:`g` (parameterised by alphas/betas) and
+    :func:`real_spherical_harmonics`.
     """
     # Values of the spherical basis function for each grid point for each (l, m) pair.
     Y_array_all = np.zeros((*np.shape(r_cartesian)[:3], l_max + 1, 2 * l_max + 1))
@@ -404,10 +398,9 @@ def compute_decomposition(
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """Compute the expansion coefficients of the total and orbital densities.
 
-    De-ASE'd port of the legacy ``compute_decomposition``: file / ``Band`` /
-    ``Cell`` objects are replaced by xml strings, per-orbital wannier centers
-    (one per entry of ``orbital_densities_xml``, cartesian, same length units
-    as ``cell_lengths``) and the orthorhombic cell diagonal ``(a, b, c)``.
+    Inputs are xml strings, per-orbital wannier centers (one per entry of
+    ``orbital_densities_xml``, cartesian, same length units as
+    ``cell_lengths``) and the orthorhombic cell diagonal ``(a, b, c)``.
 
     Returns per-orbital ``(orbital_coefficients, total_coefficients)`` lists
     aligned with the input order; feed each pair to
@@ -417,7 +410,7 @@ def compute_decomposition(
 
     total_density_r, nr_xml = read_density_xml(total_density_xml, "CHARGE-DENSITY", norm_const)
 
-    # Legacy loads the lattice vectors z-major: lat_vecs = (c, b, a).
+    # Lattice vectors are loaded z-major: lat_vecs = (c, b, a).
     lat_vecs = np.array([cell_lengths[2], cell_lengths[1], cell_lengths[0]])
 
     # Define the cartesian grid (z, y, x ordering, periodic wrap on the last point).
@@ -459,8 +452,8 @@ def compute_decomposition(
         rho_r, _ = read_density_xml(orbital_density_xml, "EFFECTIVE-POTENTIAL", norm_const)
 
         # Bring the density onto the integration domain centred on the
-        # orbital's center, folded into the unit cell. Legacy indexes the
-        # center (x, y, z) but stores grids z-major, hence the reversal.
+        # orbital's center, folded into the unit cell. The center is
+        # (x, y, z) but grids are stored z-major, hence the reversal.
         wfc_center = np.array(
             [center[2] % lat_vecs[0], center[1] % lat_vecs[1], center[0] % lat_vecs[2]]
         )
@@ -482,7 +475,7 @@ def compute_decomposition(
 
 
 # ----------------------------------------------------------------------
-# Power spectrum (legacy ml/_compute_power.py)
+# Power spectrum
 # ----------------------------------------------------------------------
 
 
@@ -525,20 +518,20 @@ def compute_power_mat(coff_matrix: np.ndarray, n_max: int, l_max: int) -> np.nda
 def compute_power_spectrum(
     orbital_coefficients: np.ndarray, total_coefficients: np.ndarray, n_max: int, l_max: int
 ) -> np.ndarray:
-    """Compute one orbital's power-spectrum descriptor (legacy ``ComputePowerSpectrumProcess``)."""
+    """Compute one orbital's power-spectrum descriptor."""
     coff_matrix = read_coeff_matrix(orbital_coefficients, total_coefficients, n_max, l_max)
     return compute_power_mat(coff_matrix, n_max, l_max)
 
 
 # ----------------------------------------------------------------------
-# Estimators (legacy ml/_ml_models.py, sklearn replaced with closed forms)
+# Estimators (sklearn replaced with closed forms)
 # ----------------------------------------------------------------------
 
 
 def fit_estimator(X: Any, y: Any, estimator_type: str = "ridge_regression") -> dict[str, Any]:
     """Fit an estimator and return it as a JSON-serialisable dict.
 
-    Reproduces the legacy estimators exactly:
+    Reproduces these sklearn estimators exactly:
 
     * ``ridge_regression`` — ``StandardScaler`` + ``Ridge(alpha=1.0)``
     * ``linear_regression`` — ``Ridge(alpha=0.0)`` (ordinary least squares)
@@ -694,10 +687,8 @@ def fit_screening_model(
 ) -> dict[str, Any]:
     """Fit the screening-parameter model on a (merged) dataset.
 
-    Replaces the legacy ``MLModel`` / ``OccEmpMLModels`` pair: with
-    ``occ_and_emp_together`` one estimator covers every orbital, otherwise
-    separate ``occ`` / ``emp`` estimators are fitted (legacy
-    ``ml.occ_and_emp_together``).
+    With ``occ_and_emp_together`` one estimator covers every orbital,
+    otherwise separate ``occ`` / ``emp`` estimators are fitted.
     """
     submodels: dict[str, dict[str, Any]] = {}
     if occ_and_emp_together:

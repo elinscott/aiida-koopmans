@@ -2,7 +2,7 @@
 
 Pure-python/numpy tests — no AiiDA profile, no QE runs. Where scikit-learn
 is importable, the closed-form estimators are cross-checked against the
-exact sklearn stack the legacy code used (``StandardScaler`` +
+exact sklearn stack they reproduce (``StandardScaler`` +
 ``Ridge(alpha=1.0)``, ``Ridge(alpha=0.0)``, ``DummyRegressor('mean')``).
 """
 
@@ -235,7 +235,7 @@ class TestEstimators:
 
     @pytest.mark.parametrize("estimator_type", ["ridge_regression", "linear_regression", "mean"])
     def test_matches_sklearn(self, estimator_type):
-        """Pin numerical equivalence with the exact legacy sklearn stack."""
+        """Pin numerical equivalence with the exact sklearn stack."""
         sklearn = pytest.importorskip("sklearn")  # noqa: F841
 
         from sklearn.dummy import DummyRegressor

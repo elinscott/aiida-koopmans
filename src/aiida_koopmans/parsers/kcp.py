@@ -142,7 +142,7 @@ class KcpParser(Parser):
 
         for idx, line in enumerate(lines):
             if "                total energy" in line:
-                # Legacy pattern: total energy line has the value 3 tokens from the end.
+                # The total energy line has the value 3 tokens from the end.
                 tokens = line.split()
                 try:
                     results["energy"] = _fortran_float(tokens[-3]) * _HARTREE_TO_EV

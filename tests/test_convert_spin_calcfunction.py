@@ -60,8 +60,7 @@ def test_convert_bytes_preserves_binary_payload():
 
 
 def test_conversion_map_matches_legacy_filename_set():
-    # Mirror of the (manually-curated) legacy list at
-    # koopmans/src/koopmans/calculators/_koopmans_cp.py:597-598.
+    # The manually-curated conversion source-filename set.
     expected_sources = {
         "evc0.dat",
         "evc0_empty1.dat",

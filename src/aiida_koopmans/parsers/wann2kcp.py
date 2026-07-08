@@ -2,9 +2,7 @@
 
 wann2kcp.x emits little structured output: the only signal worth capturing is
 whether the run finished (``JOB DONE`` in stdout) and, when present, the
-wall-time line. This mirrors the minimal "did it finish" parsing the ASE
-``Wann2KCP`` reader does (see ``ase_koopmans.io.espresso._x2y.read_x2y_out``,
-which keys completion off ``results['job done']``) and the analogous
+wall-time line. This is the same minimal "did it finish" check as the
 ``job_done`` extraction in :class:`~aiida_koopmans.parsers.kcp.KcpParser`.
 """
 
@@ -54,9 +52,9 @@ class Wann2kcpParser(Parser):
 
         The wall-time line in wann2kcp.x stdout starts with the (upper-cased)
         program name and has the time token as the second-to-last field, e.g.
-        ``WANN2KCP   :      0.12s CPU      0.15s WALL``. We mirror the ASE
-        reader: take the second-to-last token of the program line and parse
-        it as a Fortran time string.
+        ``WANN2KCP   :      0.12s CPU      0.15s WALL``. Take the
+        second-to-last token of the program line and parse it as a Fortran
+        time string.
         """
         results: dict[str, Any] = {
             "job_done": False,

@@ -174,8 +174,8 @@ def filled_and_empty_counts_task(
 ) -> FilledEmptyCountOutputs:
     """Runtime task variant of :func:`filled_and_empty_counts`.
 
-    Mirrors the call in the legacy DSCF refinement loop where the totals
-    must come out of socket-valued ``nelec`` / ``nelup`` / ``neldw``.
+    For the DSCF refinement loop, where the totals must come out of
+    socket-valued ``nelec`` / ``nelup`` / ``neldw``.
     """
     n_filled, n_empty = filled_and_empty_counts(
         nspin=nspin, nbnd=nbnd, nelec=nelec, nelup=nelup, neldw=neldw

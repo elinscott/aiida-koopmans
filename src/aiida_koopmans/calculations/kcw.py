@@ -25,8 +25,7 @@ tree is symlinked per-file into the calc's own ``out/``. For
 is the **wann2kcw** run (whose ``out/`` additionally holds the ``kcw/``
 conversion products). Per-file (not directory-level) symlinks mean any file
 kcw.x writes lands in the child's own scratch instead of mutating the
-parent's (legacy uses ``recursive_symlink=True`` for the same reason;
-``_koopmans_dfpt.py:290-291``).
+parent's.
 
 When Wannier functions are used (``kcw_at_ks=.false.``,
 ``read_unitary_matrix=.true.``), kcw.x additionally reads the Wannier90
@@ -402,7 +401,7 @@ class KcwHamCalculation(KcwCalculation):
     ``file_alpharef.txt``. When ``HAM.do_bands`` is true a ``kpoints`` input
     holding the explicit band path is required and rendered as a
     ``K_POINTS crystal_b`` card (all points explicit, zero intermediate
-    points -- same convention as the legacy ASE writer).
+    points).
     """
 
     _CALCULATION = "ham"
@@ -466,8 +465,7 @@ class KcwHamCalculation(KcwCalculation):
         """Write ``file_alpharef.txt`` from the ``alphas`` input.
 
         Every alpha is written to the "filled" file with an empty companion
-        file, mirroring legacy ``KoopmansHamCalculator.write_alphas`` (which
-        passes an all-``True`` fake filling to ``write_alpha_files``).
+        file (kcw.x ham takes a single alpha file, not a filled/empty split).
         """
         alphas = self.inputs.alphas.get_list()
         content = f"{len(alphas)}\n"

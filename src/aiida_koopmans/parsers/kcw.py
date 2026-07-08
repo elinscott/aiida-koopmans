@@ -3,9 +3,7 @@
 All three modes share the stdout header/footer conventions (``JOB DONE``,
 ``KCW          :  ...s CPU  ...s WALL``); the mode-specific content is the
 ``relaxed ... alpha ...`` screening table for ``screen`` and the interpolated
-eigenvalue blocks for ``ham``. The line patterns mirror the legacy ASE
-readers (``ase_koopmans.io.espresso._wann2kc`` / ``_koopmans_screen`` /
-``_koopmans_ham``).
+eigenvalue blocks for ``ham``.
 """
 
 from __future__ import annotations
@@ -91,9 +89,9 @@ class KcwScreenParser(KcwBaseParser):
         iwann  =  1  relaxed = 0.0935  unrelaxed = 0.6516  alpha = 0.1436  self Hartree = 0.3554
 
     (a trailing ``*`` on ``iwann*`` marks orbitals whose alpha was copied
-    from another member of the same spread group -- they are included, same
-    as the legacy reader). The ``alpha`` column becomes the ``alphas``
-    ``orm.List`` output; the other columns land in ``output_parameters``.
+    from another member of the same spread group -- they are included). The
+    ``alpha`` column becomes the ``alphas`` ``orm.List`` output; the other
+    columns land in ``output_parameters``.
     """
 
     def _parse_mode(self, stdout: str, results: dict[str, Any]):
@@ -133,8 +131,7 @@ class KcwHamParser(KcwBaseParser):
     ``KC interpolated eigenvalues at k=`` blocks become the ``bands``
     ``BandsData`` output; the ``KS`` / ``KI`` per-grid-point eigenvalue
     tables land in ``output_parameters``. For a Gamma-only run kcw.x prints
-    no interpolated blocks, so the KI grid eigenvalues stand in for them
-    (same fallback as the legacy ASE reader).
+    no interpolated blocks, so the KI grid eigenvalues stand in for them.
     """
 
     def _parse_mode(self, stdout: str, results: dict[str, Any]):

@@ -3,8 +3,7 @@
 ``merge_evc.x`` concatenates the per-block ``evcw`` wavefunction files produced
 by :class:`~aiida_koopmans.calculations.wann2kcp.Wann2kcpCalculation` into a
 single supercell ``evc`` file. Unlike ``kcp.x`` / ``wann2kcp.x`` it takes no
-Fortran namelist -- it is a pure command-line tool. Mirroring the legacy
-``MergeEVCProcess`` (``koopmans/processes/merge_evc.py``), the command is::
+Fortran namelist -- it is a pure command-line tool. The command is::
 
     merge_evc.x -nr <prod(kgrid)> -i input_0.dat -i input_1.dat ... -o <dest>
 
@@ -14,8 +13,8 @@ is a standalone ``CalcJob``.
 
 The source ``evc`` files arrive as a dynamic ``source_files`` namespace of
 ``RemoteData`` nodes. Each is symlinked into the work directory as
-``input_{i}.dat`` in the namespace's sorted-key order, matching the legacy
-``input_{i}.dat`` naming. The merged file is written to ``dest_filename`` and
+``input_{i}.dat`` in the namespace's sorted-key order. The merged file is
+written to ``dest_filename`` and
 retrieved into the ``retrieved`` folder (it also remains on
 ``remote_folder``).
 """
@@ -141,9 +140,9 @@ class MergeEvcCalculation(CalcJob):
     def _build_cmdline(kgrid: list[int], input_names: list[str], dest_filename: str) -> list[str]:
         """Assemble the ``merge_evc.x`` argument list.
 
-        Produces ``-nr <prod(kgrid)> -i input_0.dat ... -o <dest>`` -- the same
-        shape as the legacy ``MergeEVCProcess.command``. ``-nr`` is the product
-        of the k-grid (``math.prod`` avoids a numpy dependency here).
+        Produces ``-nr <prod(kgrid)> -i input_0.dat ... -o <dest>``. ``-nr``
+        is the product of the k-grid (``math.prod`` avoids a numpy dependency
+        here).
         """
         nr = math.prod(kgrid)
         params: list[str] = ["-nr", str(nr)]

@@ -7,10 +7,8 @@ consumes. It is part of the Koopmans QE fork and has no upstream
 ``CalcJob`` (it is intentionally not a subclass of any vanilla QE post-
 processing calculation).
 
-The input is a single Fortran ``&inputpp`` namelist written to a ``.wki`` file
-(the ASE ``Wann2KCP`` writer emits the same namelist name; see
-``ase_koopmans.io.espresso._x2y.write_x2y_in``). Namelist value formatting is
-shared with the ``kcp.x`` plugin via
+The input is a single Fortran ``&inputpp`` namelist written to a ``.wki``
+file. Namelist value formatting is shared with the ``kcp.x`` plugin via
 ``aiida_quantumespresso.utils.convert.convert_input_to_namelist_entry`` so
 booleans render as ``.true.`` / ``.false.``, strings are quoted, and paths
 keep their trailing slash.
@@ -49,9 +47,8 @@ class Wann2kcpCalculation(CalcJob):
     _DEFAULT_PREFIX = "kc"
     _DEFAULT_SEEDNAME = "wannier90"
 
-    # The wann2kcp input is a single Fortran namelist; the ASE writer and the
-    # QE reader both spell it ``&inputpp`` (lowercase in the file, parsed as
-    # ``data['inputpp']``). See ``ase_koopmans.io.espresso._x2y``.
+    # The wann2kcp input is a single Fortran namelist spelled ``&inputpp``
+    # (lowercase in the file, parsed as ``data['inputpp']``).
     _NAMELIST = "INPUTPP"
 
     # Keys the CalcJob owns; users cannot set them in ``parameters``. ``outdir``
@@ -59,9 +56,8 @@ class Wann2kcpCalculation(CalcJob):
     # path via a recursive symlink, and ``prefix`` matches that scratch tree.
     _BLOCKED_KEYS: ClassVar[frozenset[str]] = frozenset({"outdir", "prefix"})
 
-    # The full set of valid wann2kcp keys, mirrored from the legacy
-    # ``Wann2KCPSettingsDict`` (``koopmans/settings/_wann2kcp.py``). Unknown
-    # keys are rejected so a typo doesn't silently produce a broken input.
+    # The full set of valid wann2kcp keys. Unknown keys are rejected so a
+    # typo doesn't silently produce a broken input.
     _VALID_KEYS: ClassVar[frozenset[str]] = frozenset(
         {
             "outdir",
@@ -76,9 +72,9 @@ class Wann2kcpCalculation(CalcJob):
         }
     )
 
-    # Legacy defaults from ``Wann2KCPSettingsDict``. ``outdir`` is owned by the
-    # CalcJob (see ``_BLOCKED_KEYS``) so its default lives in ``_DEFAULT_OUTDIR``
-    # and is injected, not defaulted here.
+    # Default namelist values. ``outdir`` is owned by the CalcJob (see
+    # ``_BLOCKED_KEYS``) so its default lives in ``_DEFAULT_OUTDIR`` and is
+    # injected, not defaulted here.
     _DEFAULTS: ClassVar[dict[str, str]] = {
         "prefix": _DEFAULT_PREFIX,
         "seedname": _DEFAULT_SEEDNAME,
@@ -177,13 +173,12 @@ class Wann2kcpCalculation(CalcJob):
     # ------------------------------------------------------------------
 
     def _inject_owned_keys(self, parameters: dict) -> None:
-        """Inject the CalcJob-owned ``outdir`` and fill in legacy defaults.
+        """Inject the CalcJob-owned ``outdir`` and fill in defaults.
 
         ``outdir`` always points at the fixed ``./TMP/`` work-dir path the nscf
         scratch is symlinked into (see ``_build_remote_symlink_list``). The
-        remaining defaults (``prefix``, ``seedname``, ``wan_mode``) match the
-        legacy ``Wann2KCPSettingsDict`` and are only set when the caller did
-        not supply them.
+        remaining defaults (``prefix``, ``seedname``, ``wan_mode``) are only
+        set when the caller did not supply them.
         """
         parameters["outdir"] = f"./{self._DEFAULT_OUTDIR}/"
         for key, default in self._DEFAULTS.items():
@@ -192,13 +187,12 @@ class Wann2kcpCalculation(CalcJob):
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
         """Recursively symlink the parent nscf ``outdir`` into ``./TMP/``.
 
-        wann2kcp.x reads the Bloch wavefunctions from its ``outdir``; the
-        legacy folding workflow links the nscf scratch in recursively (see
-        ``_folding.py``). A directory-level symlink is sufficient here -- unlike
-        the kcp.x case there are no per-file overlays -- so this stays a single
-        entry. The ``<seedname>.nnkp``, ``<seedname>.chk`` and ``*_hr.dat``
-        inputs are staged by the consuming workgraph (Phase B), not by this
-        CalcJob, because their provenance lives on different upstream nodes.
+        wann2kcp.x reads the Bloch wavefunctions from its ``outdir``. A
+        directory-level symlink is sufficient here -- unlike the kcp.x case
+        there are no per-file overlays -- so this stays a single entry. The
+        ``<seedname>.nnkp``, ``<seedname>.chk`` and ``*_hr.dat`` inputs are
+        staged by the consuming workgraph, not by this CalcJob, because their
+        provenance lives on different upstream nodes.
         """
         if "parent_folder" not in self.inputs:
             return []

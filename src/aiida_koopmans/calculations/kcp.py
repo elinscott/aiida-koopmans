@@ -33,11 +33,10 @@ class KcpCalculation(CalcJob):
     _ALPHAREF_FILE = "file_alpharef.txt"
     _ALPHAREF_EMPTY_FILE = "file_alpharef_empty.txt"
     # All koopmans kcp.x runs use the same ndr/ndw pair. AiiDA scratch
-    # already isolates each calc, so per-step renumbering (legacy's
-    # ``ndw=63``, ``ndw=64``, …) buys us nothing — every calc reads from
-    # ``out/aiida_50.save/`` (symlinked from the parent's writeout) and
-    # writes to ``out/aiida_60.save/``. Override these in a subclass if
-    # you ever need a different scheme.
+    # already isolates each calc, so per-step renumbering buys us nothing
+    # — every calc reads from ``out/aiida_50.save/`` (symlinked from the
+    # parent's writeout) and writes to ``out/aiida_60.save/``. Override
+    # these in a subclass if you ever need a different scheme.
     _NDR = 50
     _NDW = 60
 
@@ -159,16 +158,8 @@ class KcpCalculation(CalcJob):
         spec.inputs["metadata"]["options"]["input_filename"].default = cls._INPUT_FILE
         spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
         spec.inputs["metadata"]["options"]["withmpi"].default = True
-        # Default targets ``core.direct``-style schedulers. The
-        # ``hyperqueue`` scheduler accepts the same shape via the
-        # ``num_machines`` * ``num_mpiprocs_per_machine`` backward-compat
-        # path (it computes ``num_cpus`` from those when no explicit
-        # ``num_cpus`` is provided; see ``HyperQueueJobResource``). The
-        # HQ worker's CPU pool — set up by ``koopmans install`` — is the
-        # authoritative cap on parallelism; this default just declares
-        # each individual calc as a single-rank job. Callers wanting
-        # multi-rank kcp.x runs should override via
-        # ``metadata.options.resources``.
+        # Declare each calc as a single-rank job; callers wanting multi-rank
+        # kcp.x runs override via ``metadata.options.resources``.
         spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
 
         spec.output(
@@ -350,8 +341,7 @@ class KcpCalculation(CalcJob):
             # ``aiida_koopmans.workgraphs.kcp.build_filled_iter_source`` and
             # ``generate_alphas``). When the kcp.x run is ``nspin=2`` we
             # mirror that one list onto every spin slot before writing the
-            # block-spin ``file_alpharef`` — same convention as legacy
-            # ``koopmans/bands.py:298-301``.
+            # block-spin ``file_alpharef``.
             if (
                 SpinChannel.NONE in per_spin
                 and SpinChannel.NONE not in order
@@ -430,10 +420,9 @@ class KcpCalculation(CalcJob):
             # the ``dft_n+1`` step reads them under the *renamed*
             # ``evc_occupied{ispin}.dat`` (kcp.x's
             # ``restart_from_wannier_pwscf`` machinery hard-codes that
-            # filename). Two symlinks per call, one per spin — matches
-            # legacy ``_koopmans_dscf.py:776-778``. The KI-DSCF flow is
-            # always nspin=2, so both source files are guaranteed to
-            # exist on the pz_print parent.
+            # filename). Two symlinks per call, one per spin. The KI-DSCF
+            # flow is always nspin=2, so both source files are guaranteed
+            # to exist on the pz_print parent.
             evc_parent = self.inputs.parent_folder_evcfixed
             evc_save = (
                 PurePosixPath(evc_parent.get_remote_path())
@@ -452,8 +441,7 @@ class KcpCalculation(CalcJob):
             # but kcp.x's NKSIC inner loop reads its variational starting
             # guess from ``evc0{ispin}.dat`` / ``evc0_empty{ispin}.dat``.
             # For ``init_orbitals='kohn-sham'`` we want the variational
-            # guess to *be* the canonical KS basis (legacy
-            # ``_koopmans_dscf.py:1340-1347``), so re-point those four
+            # guess to *be* the canonical KS basis, so re-point those four
             # filenames at the corresponding ``evc{ispin}.dat`` /
             # ``evc_empty{ispin}.dat`` from the same parent. Without this,
             # the inner loop minimises from a stale guess and lands on a

@@ -1,33 +1,29 @@
 """Machine-learning (trajectory) workflow: per-snapshot fan-out + model train/test.
 
-Port of the legacy ``koopmans/workflows/_trajectory.py``
-(``TrajectoryWorkflow``) plus the train/predict layer of ``koopmans/ml/``.
-Each snapshot runs the full :func:`KoopmansDSCFWorkflow` (frozen public
-interface, treated as a black box); the fan-out is the native for-loop over
-a dynamic ``snapshots`` input namespace inside the ``@task.graph`` body (no
-Map zone). Per-snapshot ``(descriptor, alpha)`` pairs are then gathered into
-a single training/evaluation ``@task`` that consumes the dynamic namespace.
+Each snapshot runs the full :func:`KoopmansDSCFWorkflow` (treated as a
+black box); the fan-out is the native for-loop over a dynamic
+``snapshots`` input namespace inside the ``@task.graph`` body. Per-snapshot
+``(descriptor, alpha)`` pairs are then gathered into a single
+training/evaluation ``@task`` that consumes the dynamic namespace.
 
-Scope notes (MVP):
+Scope notes:
 
-* **Descriptor**: ``self_hartree`` only. The legacy default
-  ``orbital_density`` (power-spectrum) descriptor needs the trial KI's
-  real-space orbital-density files, which the ``KcpCalculation`` does not
-  currently print/retrieve — the descriptor math is already ported in
+* **Descriptor**: ``self_hartree`` only. The ``orbital_density``
+  (power-spectrum) descriptor needs the trial KI's real-space
+  orbital-density files, which the ``KcpCalculation`` does not currently
+  print/retrieve — the descriptor math lives in
   :mod:`aiida_koopmans.ml_helpers` (``compute_decomposition`` /
   ``compute_power_spectrum``) and can be wired once retrieval lands.
 * **Modes**: ``train`` (fit a model on the computed alphas) and ``test``
   (compare a previously trained model's predictions against freshly
-  computed alphas). Legacy ``predict`` mode (inject predicted alphas and
-  skip the Delta-SCF refinement) is blocked on the frozen
-  ``KoopmansDSCFWorkflow`` interface, which accepts only a scalar
-  ``initial_alpha``.
+  computed alphas). ``predict`` mode (inject predicted alphas and skip the
+  Delta-SCF refinement) is blocked on the ``KoopmansDSCFWorkflow``
+  interface, which accepts only a scalar ``initial_alpha``.
 * **Alphas**: read directly from ``KoopmansDSCFOutputs["alphas"]`` — the
   converged screening parameters the final KI consumed, exposed at the
   DSCF workflow level.
-* ``train_on_the_fly`` has no analogue here: snapshots run concurrently,
-  so the model is fitted once on the gathered data (matching legacy
-  ``train_on_the_fly=False`` behaviour).
+* Snapshots run concurrently, so the model is fitted once on the gathered
+  data (no train-on-the-fly).
 """
 
 from __future__ import annotations
@@ -111,8 +107,7 @@ def train_screening_model(
 
     The single gather point of the workflow: consumes the dynamic
     per-snapshot namespace so the fit sees all ``(descriptor, alpha)``
-    pairs at once (legacy trains after all snapshots when
-    ``train_on_the_fly`` is off).
+    pairs at once.
     """
     merged = ml_helpers.concatenate_datasets(datasets)
     model = ml_helpers.fit_screening_model(
@@ -190,18 +185,16 @@ def TrajectoryWorkflow(
     become link-label components, so they must match ``[A-Za-z0-9_]+``
     (e.g. ``snapshot_1``). Every snapshot fans out into an independent
     :func:`KoopmansDSCFWorkflow` (all DSCF inputs besides ``structure`` are
-    shared), mirroring the legacy ``TrajectoryWorkflow`` which re-ran
-    ``KoopmansDSCFWorkflow.fromparent`` with updated positions.
+    shared).
 
     ``ml_mode``:
 
-    * ``"none"`` — just run the snapshots (legacy trajectory task without
-      any ``ml`` flags).
+    * ``"none"`` — just run the snapshots.
     * ``"train"`` — additionally extract per-orbital ``(self-Hartree,
       alpha)`` pairs from every snapshot and fit a screening model; the
       fitted model is the ``model`` output.
     * ``"test"`` — extract the same pairs and score the supplied
-      ``ml_model`` against the computed alphas (legacy ``ml.test``).
+      ``ml_model`` against the computed alphas.
     """
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")

@@ -1,25 +1,10 @@
 """aiida-workgraph builders for kcp.x.
 
 Wraps :class:`~aiida_koopmans.calculations.kcp.KcpCalculation` as a task and
-composes it into higher-level workflows.
-
-**Current scope (MVP).** Only the minimum path needed for tutorial_1 (ozone,
-KI + DSCF + kohn-sham init, molecular / non-periodic, alpha_numsteps=1) is
-implemented. All other branches of the legacy ``KoopmansDSCFWorkflow`` raise
-``NotImplementedError`` at build time with a clear message.
-
-The MVP ``KoopmansDSCFWorkflow`` executes **two** kcp.x calls:
-
-1. DFT initialization (``do_orbdep=False``, nspin=2, from scratch)
-2. KI final (``do_orbdep=True``, ``which_orbdep='nki'``, restart from step 1,
-   initial alphas = ``initial_alpha`` for every orbital)
-
-The legacy implementation for the same inputs executes 20 kcp.x calls
-including spin-symmetrization (7), a trial KI pass (1), a Delta SCF loop to
-compute the alphas (12), and a final KI (1). Porting the Delta SCF alpha loop
-and spin-symmetrization is deferred to later phases — the code below is
-structured so those extensions can slot in as additional ``@task.graph``
-helpers without reshaping the public ``KoopmansDSCFWorkflow`` signature.
+composes it into the Koopmans DSCF workflow: DFT init → trial KI →
+per-orbital Delta-SCF alpha refinement → final KI, supporting KI/KIPZ,
+spin-polarised and closed-shell systems, and multi-iteration refinement
+with self-Hartree orbital grouping.
 """
 
 from __future__ import annotations
@@ -126,9 +111,8 @@ class KcpBaseInputs:
     ``dataclasses.asdict`` (which preserves ``None`` fields) and
     reconstructs via ``cls(**value)`` on the receiving side. Plain
     ``dict`` / ``TypedDict`` sockets, by contrast, silently strip
-    ``None``-valued entries in transit — closed-shell tutorial_1
-    (``tot_magnetization=None``) hit exactly that failure mode before
-    this migration.
+    ``None``-valued entries in transit (e.g. ``tot_magnetization=None``
+    for a closed-shell system).
     """
 
     ecutwfc: float
@@ -146,7 +130,8 @@ class KcpNamelistOverrides(TypedDict, total=False):
     """Override shape for a single kcp.x input rendering.
 
     Each key corresponds to a Fortran namelist. Values are merged on top of
-    the MVP defaults via ``aiida_quantumespresso.workflows.protocols.utils.recursive_merge``.
+    the default kcp.x namelist values via
+    ``aiida_quantumespresso.workflows.protocols.utils.recursive_merge``.
     """
 
     CONTROL: dict[str, Any]
@@ -213,8 +198,7 @@ class ScreeningIterationOutputs(TypedDict):
       next iteration's ``parent_folder`` (and, after the loop, the final
       KI's parent).
     * ``max_error`` — convergence indicator; the loop terminates when
-      this falls below the legacy ``1e-3 eV`` threshold (legacy
-      ``_koopmans_dscf.py:633``).
+      this falls below the ``1e-3 eV`` threshold.
     """
 
     alphas: AlphaScreening
@@ -234,9 +218,8 @@ class ScreeningParametersOutputs(TypedDict):
       alpha-refinement iteration, in the shape :class:`AlphaScreening`
       that ``KcpCalculation`` accepts at its ``alphas`` input.
     * ``trial_remote`` — the last iteration's trial-KI ``remote_folder``;
-      becomes the final KI's ``parent_folder`` (legacy convention,
-      ``_koopmans_dscf.py:276+333``), so the final KI inherits the
-      converged variational orbital basis.
+      becomes the final KI's ``parent_folder``, so the final KI inherits
+      the converged variational orbital basis.
     """
 
     alphas: AlphaScreening
@@ -272,8 +255,7 @@ def compute_alpha_from_dscf(
 ) -> dict:
     """Compute the new alpha for one orbital from its Delta-SCF perturbed run.
 
-    Implements equation 10 of Nguyen et al. (2018) 10.1103/PhysRevX.8.021051,
-    matching legacy ``_koopmans_dscf.py:944``::
+    Implements equation 10 of Nguyen et al. (2018) 10.1103/PhysRevX.8.021051::
 
         alpha_new = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)
 
@@ -287,7 +269,7 @@ def compute_alpha_from_dscf(
 
     Both energies and lambdas are in eV (the parser converts from Hartree),
     so the units cancel on division. ``error = |dE - lambda_a|`` is the
-    convergence indicator the legacy loop monitors. The lambda arrays are
+    convergence indicator the refinement loop monitors. The lambda arrays are
     stacked ``(nspin, n, n)``; ``spin_channel.index`` selects the spin axis.
     """
     trial_e = trial_output_parameters["energy"]
@@ -370,8 +352,7 @@ def max_alpha_error(filled_errors: dict, empty_errors: dict):
 
     Returns ``max |dE - lambda|`` across every per-orbital error in both
     branches. The alpha-refinement loop in ``ComputeScreeningParameters`` stops
-    when this falls below ``1e-3 eV`` (legacy threshold from
-    ``_koopmans_dscf.py:633``). ``filled_errors`` / ``empty_errors`` are
+    when this falls below ``1e-3 eV``. ``filled_errors`` / ``empty_errors`` are
     the per-spin dicts produced by :func:`assemble_alpha_screening` (each
     keyed by ``SpinChannel`` value mapping to a per-orbital list).
     """
@@ -488,7 +469,6 @@ def build_filled_iter_source(
         # interleaves the filled blocks before the empty ones —
         # DOWN-channel bands are shifted by ``nelup`` (not by the
         # symmetric halved count, which is wrong when nelup != neldw).
-        # See legacy ``_koopmans_dscf.py:759-760``.
         fixed_band = index + nelup if spin == SpinChannel.DOWN else index
         out[map_key_for(o)] = {
             "orbital": o,
@@ -528,11 +508,9 @@ def build_empty_iter_source(
     kcp.x parameter dicts (``dummy_parameters``, ``pz_parameters``,
     ``n_plus_1_parameters``) so ``EmptyOrbitalScreening`` stays a thin
     three-step pipeline. Spin-aware electron addition and the kcp-frame
-    spin-swap decision (legacy ``_swap_spin_channels``,
-    ``koopmans/src/koopmans/calculators/_koopmans_cp.py:159-205``)
-    happen here so a wrong branch can't silently produce kcp.x inputs
-    that violate ``nupdwn(1) >= nupdwn(2)`` on the DOWN-channel empty
-    orbital. ``spin_channel`` and ``band_index`` are emitted in the
+    spin-swap decision happen here so a wrong branch can't silently
+    produce kcp.x inputs that violate ``nupdwn(1) >= nupdwn(2)`` on the
+    DOWN-channel empty orbital. ``spin_channel`` and ``band_index`` are emitted in the
     **physical** frame because they index the trial KI's lambda
     matrices in :func:`compute_alpha_from_dscf` (which were computed
     before any swap).
@@ -554,19 +532,16 @@ def build_empty_iter_source(
         orb_index = o["index"]
         n_filled_this_spin = base.neldw if spin == SpinChannel.DOWN else base.nelup
 
-        # ``fixed_band`` is **clamped to the per-spin LUMO position**
-        # (legacy ``_koopmans_dscf.py:758`` —
-        # ``min(band.index, n_filled+1)``). kcp.x interprets
+        # ``fixed_band`` is clamped to the per-spin LUMO position
+        # (``min(band.index, n_filled+1)``). kcp.x interprets
         # ``fixed_band`` as the slot where the constrained orbital
         # lands after re-ordering, not as the band's pre-screening
         # index — and that slot is always the LUMO of the relevant
         # spin manifold. The actual orbital we're constraining is
         # selected by ``index_empty_to_save`` (which pz_print writes
         # into ``evcfixed_empty.dat``). Passing the un-clamped per-spin
-        # position here causes kcp.x's internal ordering to drift on
-        # the second CG iter — manifests as ``corrupted double-linked
-        # list`` heap corruption on higher empties of an open-shell
-        # DOWN channel (e.g. O2's 2nd DOWN π* empty).
+        # position corrupts kcp.x's internal ordering on higher empties
+        # of an open-shell DOWN channel.
         fixed_band_per_spin = n_filled_this_spin + 1
         fixed_band = (
             fixed_band_per_spin + base.nelup if spin == SpinChannel.DOWN else fixed_band_per_spin
@@ -574,19 +549,17 @@ def build_empty_iter_source(
 
         # ``index_empty_to_save`` is a *global* 1-indexed counter
         # across the full empty manifold (UP empties first, then
-        # DOWN). Legacy ``_koopmans_dscf.py:697-699`` shifts DOWN's
-        # per-spin index by ``n_empty_up``. ``i`` here is the 0-indexed
-        # position within this spin's empty manifold (= ``orb_index
-        # - n_filled_this_spin - 1``).
+        # DOWN): DOWN's per-spin index is shifted by ``n_empty_up``.
+        # ``i`` here is the 0-indexed position within this spin's empty
+        # manifold (= ``orb_index - n_filled_this_spin - 1``).
         i = orb_index - n_filled_this_spin - 1
         if spin == SpinChannel.DOWN:
             index_empty_to_save = i + 1 + n_empty_up
         else:
             index_empty_to_save = i + 1
 
-        # Spin-aware extra electron: legacy puts it in the channel
-        # of the orbital being screened. ``SpinChannel.NONE``
-        # (closed-shell input) defaults to UP.
+        # The extra electron goes in the channel of the orbital being
+        # screened. ``SpinChannel.NONE`` (closed-shell input) defaults to UP.
         if spin == SpinChannel.DOWN:
             nelup_np1 = base.nelup
             neldw_np1 = base.neldw + 1
@@ -690,8 +663,7 @@ def DFTInitialization(
 
     Default behaviour is the standard from-scratch nspin=2 DFT init; the
     extra keyword-only flags exist to support the closed-shell
-    spin-symmetric 3-step init chain (legacy
-    ``restart_with_higher_precision``): an nspin=1 from-scratch run with
+    spin-symmetric 3-step init chain: an nspin=1 from-scratch run with
     outer loop, then an nspin=2 from-scratch *dummy* with the outer loop
     disabled, then the final nspin=2 restarted run.
 
@@ -699,7 +671,7 @@ def DFTInitialization(
         restart_mode: forwarded to ``&CONTROL.restart_mode``. Pair with
             ``parent_folder`` when restarting.
         outerloop: when ``False``, disables the outer / empty-manifold
-            outer loops (matches legacy nspin{1,2}_dummy_calculator).
+            outer loops (used by the nspin=1/2 dummy steps).
         parent_folder: ``RemoteData`` whose save tree is symlinked onto
             the working directory; required for ``restart_mode='restart'``.
         name: ``call_link_label`` for the underlying kcp.x calc. Defaults
@@ -790,8 +762,7 @@ def KoopmansDSCFWorkflow(
 
     # Resolve pseudo family + electron counts once, at runtime, so the
     # results flow downstream as plain AiiDA-typed sockets instead of
-    # ``TaggedValue`` proxies (the failure mode of the inline plain-Python
-    # call inside a nested ``@task.graph`` body).
+    # ``TaggedValue`` proxies (which break inside a nested ``@task.graph`` body).
     pseudos = resolve_pseudo_family_task(
         family_label=pseudo_family,
         structure=structure,
@@ -808,8 +779,8 @@ def KoopmansDSCFWorkflow(
 
     if spin_polarized:
         # Spin-polarised systems are seeded directly from a single
-        # nspin=2 from-scratch run; legacy treats the up/down channels as
-        # independent and does not pre-symmetrise.
+        # nspin=2 from-scratch run: the up/down channels are independent,
+        # with no pre-symmetrisation.
         dft = DFTInitialization(
             code=code,
             structure=structure,
@@ -827,9 +798,7 @@ def KoopmansDSCFWorkflow(
             metadata={"call_link_label": "dft_init"},
         )
     else:
-        # Closed-shell spin-symmetric init chain (legacy
-        # ``restart_with_higher_precision`` in
-        # ``koopmans/workflows/_workflow.py:1602-1670``):
+        # Closed-shell spin-symmetric init chain:
         #
         # 1. nspin=1 from scratch — converges the single-channel solution.
         # 2. nspin=2 from-scratch dummy — lays out the nspin=2 save tree
@@ -935,9 +904,8 @@ def KoopmansDSCFWorkflow(
     # Final KI: applies the converged screening parameters to produce
     # the Koopmans-corrected spectrum. Restarts from the *last
     # iteration's* trial KI save (``screening["trial_remote"]``) so it
-    # inherits the converged variational orbital basis — legacy
-    # ``_koopmans_dscf.py:276+333`` parents the final KI on the trial
-    # KI's ``n_electron_restart_dir`` (not the bare DFT save).
+    # inherits the converged variational orbital basis (not the bare DFT
+    # save).
     #
     # Built via a ``KIFinal`` @task.graph wrapper rather than inline
     # ``KcpBaseTask(...)`` because the parameter-builder arithmetic
@@ -948,8 +916,7 @@ def KoopmansDSCFWorkflow(
     # ``alphas`` and ``parent_folder`` are wired explicitly from the
     # ``screening`` outputs at the call site so the provenance graph
     # shows that the final KI consumes the converged DSCF screening
-    # parameters (rather than hiding that dependency inside ``KIFinal``'s
-    # outputs).
+    # parameters.
     # ------------------------------------------------------------------
     ki_final = KIFinal(
         code=code,
@@ -1075,7 +1042,7 @@ def FilledOrbitalScreening(
 
     Submits a single ``dft_n-1`` kcp.x run (with ``fixed_band=fixed_band``,
     one electron pulled out of that orbital via ``f_cutoff=1e-5``), then
-    evaluates the legacy alpha formula at ``(spin_channel, band_index)``
+    evaluates the alpha formula at ``(spin_channel, band_index)``
     against the trial KI's lambda and bare-lambda matrices.
 
     Args:
@@ -1115,9 +1082,9 @@ def FilledOrbitalScreening(
         pseudos,
         options=options,
         parent_folder=trial_remote,
-        # ``call_link_label`` reflects the legacy calc-type name: plain
-        # DFT for KI, KIPZ-flavoured for KIPZ. Shows up in the live
-        # progress display via ``progress.prettify_label``.
+        # ``call_link_label`` reflects the calc-type name: plain DFT for
+        # KI, KIPZ-flavoured for KIPZ. Shows up in the live progress
+        # display via ``progress.prettify_label``.
         name="kipz_n_minus_1" if correction == Correction.KIPZ else "dft_n_minus_1",
     )
     dft_outputs = KcpBaseTask(**inputs)
@@ -1162,13 +1129,11 @@ def EmptyOrbitalScreening(
 ) -> OrbitalDeltaSCFOutputs:
     """Compute the new alpha for one **empty** orbital via Delta-SCF.
 
-    Three-step kcp.x sub-pipeline (legacy
-    ``02-calculate-screening-via-dscf/01-iteration-1/<orbital>/``):
+    Three-step kcp.x sub-pipeline:
 
     1. ``dft_n+1_dummy`` — scratch DFT with the empty orbital populated
        (``fixed_band`` + ``nelec=N+1``); writes the save layout the
-       subsequent steps consume. Phase A always runs this every
-       iteration; legacy reuses it from iteration 1 onwards (deferred).
+       subsequent steps consume. Rerun every iteration.
     2. ``pz_print`` — PZ run on the fixed empty orbital (parent =
        ``trial_remote``) that writes ``evcfixed_empty.dat``.
     3. ``dft_n+1`` — SCF DFT (parent = the dummy + ``pz_print``'s
@@ -1444,10 +1409,9 @@ def ScreeningIteration(
     :func:`AlphaRefinementLoop` can stop on convergence.
 
     ``is_first_iteration`` is forwarded to the trial-step builder so
-    KIPZ's molecular first trial can run its inner-loop CG once
-    (legacy ``_koopmans_dscf.py:450-452``); subsequent iterations
-    restart from the previous trial's already-converged variational
-    basis, so the inner loop is unnecessary.
+    KIPZ's molecular first trial can run its inner-loop CG once;
+    subsequent iterations restart from the previous trial's
+    already-converged variational basis, so the inner loop is unnecessary.
 
     The trial step is named ``ki_trial`` / ``kipz_trial`` per
     ``correction``. ``variational_orbital_overlays`` is supplied on
@@ -1534,11 +1498,11 @@ def ScreeningIteration(
 
 
 # ----------------------------------------------------------------------
-# Alpha-refinement recursion. Replaces the former ``While`` zone: each call
-# receives the *previous* iteration's outputs as concrete inputs, so the
-# stop decision (converged, or iteration budget exhausted) is a plain
-# Python branch in the deferred body. Non-terminal calls run one more
-# ``ScreeningIteration`` and recurse on its outputs.
+# Alpha-refinement recursion: each call receives the *previous* iteration's
+# outputs as concrete inputs, so the stop decision (converged, or iteration
+# budget exhausted) is a plain Python branch in the deferred body.
+# Non-terminal calls run one more ``ScreeningIteration`` and recurse on its
+# outputs.
 # ----------------------------------------------------------------------
 
 
@@ -1567,8 +1531,7 @@ def AlphaRefinementLoop(
 
     Terminates (returning the previous iteration's ``alphas`` +
     ``trial_remote`` unchanged) when either the previous iteration's
-    ``max |dE - lambda|`` fell below ``alpha_conv_thr`` (legacy
-    threshold ``1e-3 eV``, ``_koopmans_dscf.py:633``) or
+    ``max |dE - lambda|`` fell below ``alpha_conv_thr`` (``1e-3 eV``) or
     ``remaining_steps`` hit zero (the ``alpha_numsteps`` cap; the first
     iteration is unrolled in :func:`ComputeScreeningParameters`, so the
     initial budget is ``alpha_numsteps - 1``).
@@ -1678,12 +1641,11 @@ def ComputeScreeningParameters(
     needed because the converged ``evc0N.dat`` is already in place.
 
     The iteration count is bounded by ``alpha_numsteps`` and the loop also
-    short-circuits when ``max |dE - lambda| < alpha_conv_thr`` (legacy
-    threshold 1e-3 eV, ``_koopmans_dscf.py:633``).
+    short-circuits when ``max |dE - lambda| < alpha_conv_thr`` (1e-3 eV).
 
     The final KI restarts from the *last* iteration's trial KI
-    ``remote_folder`` (legacy ``_koopmans_dscf.py:276+333``) and uses the
-    final gathered alphas; only the alphas differ from the trial pass.
+    ``remote_folder`` and uses the final gathered alphas; only the alphas
+    differ from the trial pass.
 
     All per-orbital fan-out happens inside ``ScreeningIteration`` (via
     the nested ``PerOrbitalScreening`` graph); iterations 2..N run
@@ -1750,8 +1712,7 @@ def ComputeScreeningParameters(
     # (``max_error < alpha_conv_thr``) or budget exhaustion.
     #
     # TRIPWIRE -- KIPZ caching: under ``Correction.KIPZ`` the n+/-1 DFT
-    # alpha-step calculations are alpha-dependent (legacy
-    # ``_koopmans_dscf.py:742-758``): they consume the current
+    # alpha-step calculations are alpha-dependent: they consume the current
     # ``file_alpharef.txt`` via ``do_orbdep=True``. ``ScreeningIteration``
     # re-runs every iteration so this is implicitly correct, but a
     # future refactor that caches alpha-step calcs keyed off "DFT inputs
@@ -1783,9 +1744,9 @@ def ComputeScreeningParameters(
         options=options,
     )
 
-    # ``alpha_numsteps == 1`` (the tutorial_1 case) needs no refinement
-    # beyond iter_1 — skip the recursion node entirely so the graph
-    # matches the single-iteration shape exactly.
+    # ``alpha_numsteps == 1`` needs no refinement beyond iter_1 — skip the
+    # recursion node entirely so the graph matches the single-iteration
+    # shape exactly.
     if alpha_numsteps <= 1:
         return {
             "alphas": iter_1["alphas"],
@@ -1824,7 +1785,7 @@ def ComputeScreeningParameters(
 
 
 # ----------------------------------------------------------------------
-# MVP scope enforcement
+# Scope enforcement
 # ----------------------------------------------------------------------
 
 
@@ -1835,7 +1796,7 @@ def _validate_scope(
     fix_spin_contamination: bool,
     structure: orm.StructureData,
 ) -> None:
-    """Fail fast on inputs the MVP workflow cannot honour yet."""
+    """Fail fast on inputs the workflow cannot honour yet."""
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
         raise NotImplementedError(
@@ -1877,10 +1838,9 @@ def _swap_kcp_frame(
     nbup: int,
     nbdw: int,
 ) -> tuple[KcpBaseInputs, int]:
-    """Apply the legacy spin-channel swap to a kcp.x input frame.
+    """Apply the spin-channel swap to a kcp.x input frame.
 
-    Ports the parameter mutations from
-    ``koopmans/src/koopmans/calculators/_koopmans_cp.py:_swap_spin_channels``:
+    The mutations are:
 
     * swap ``nelup <-> neldw``;
     * negate ``tot_magnetization`` (if not None);
@@ -1888,11 +1848,10 @@ def _swap_kcp_frame(
       (``fixed_band <= nbup``) it becomes ``fixed_band + nbdw``,
       otherwise it becomes ``fixed_band - nbup``.
 
-    ``nbup`` / ``nbdw`` are the number of bands per spin block: when
-    ``nbnd is None`` the legacy uses ``nelup`` / ``neldw``; when
-    ``nbnd`` is set it uses ``nbnd`` for both. Callers should pass the
-    values that match the calc they're building (this helper does not
-    second-guess that choice).
+    ``nbup`` / ``nbdw`` are the number of bands per spin block (``nelup`` /
+    ``neldw`` when ``nbnd is None``, else ``nbnd`` for both). Callers
+    should pass the values that match the calc they're building (this
+    helper does not second-guess that choice).
 
     Returns ``(swapped_base, swapped_fixed_band)``. The original ``base``
     is not mutated (KcpBaseInputs is a frozen dataclass).
@@ -1984,10 +1943,8 @@ def _build_dft_parameters(
             previous save (e.g. the final nspin=2 step in the closed-shell
             spin-symmetric 3-step init).
         outerloop: when ``False``, set ``do_outerloop=False`` and
-            ``do_outerloop_empty=False`` and drop ``empty_states_maxstep``.
-            Matches the legacy ``nspin1_dummy_calculator`` /
-            ``nspin2_dummy_calculator`` settings used by
-            ``restart_with_higher_precision``.
+            ``do_outerloop_empty=False`` and drop ``empty_states_maxstep``
+            (the nspin=1/2 dummy init steps).
     """
     conv_thr = 1.0e-9 * base.nelec
     system: dict[str, Any] = {
@@ -2021,8 +1978,7 @@ def _build_dft_parameters(
         "conv_thr": conv_thr,
     }
     # ``empty_states_maxstep`` is only meaningful when the empty-manifold
-    # outer loop runs; legacy dummy calculators strip it when the loop is
-    # disabled (see ``nspin1_dummy_calculator`` in the legacy code).
+    # outer loop runs; drop it when the loop is disabled.
     if outerloop:
         electrons["empty_states_maxstep"] = 300
     params: dict[str, Any] = {
@@ -2071,9 +2027,9 @@ def _build_orbdep_parameters(
     are workflow-level controls and raise here.
 
     ``is_first_iteration`` toggles ``do_innerloop`` on for KIPZ
-    *molecular* trial calcs on the **first** alpha-loop iteration —
-    legacy ``_koopmans_dscf.py:450-452``. KIPZ's variational orbitals
-    shift with alpha, so the first trial (starting from KS-init
+    *molecular* trial calcs on the **first** alpha-loop iteration.
+    KIPZ's variational orbitals shift with alpha, so the first trial
+    (starting from KS-init
     orbitals) needs one CG inner-loop pass to converge them; later
     iterations restart from the previous trial's already-converged
     variational basis, so the inner loop is unnecessary.
@@ -2086,13 +2042,12 @@ def _build_orbdep_parameters(
     # Orbital-dependent screening.
     params["SYSTEM"]["do_orbdep"] = True
 
-    # The orbital-dependent SCF runs no outer loop and no inner loop except
-    # for PZ — see the legacy decision tree in
-    # ``koopmans/src/koopmans/workflows/_koopmans_dscf.py:1129-1138``.
+    # The orbital-dependent SCF runs no outer loop and no inner loop
+    # except for PZ.
     params["ELECTRONS"]["do_outerloop"] = False
     params["ELECTRONS"]["do_outerloop_empty"] = False
     # ``empty_states_maxstep`` is only meaningful when ``do_outerloop_empty``
-    # is true; legacy strips it when the empty-manifold loop is disabled.
+    # is true; drop it when the empty-manifold loop is disabled.
     params["ELECTRONS"].pop("empty_states_maxstep", None)
 
     if correction not in _CORRECTION_TO_WHICH_ORBDEP:
@@ -2102,17 +2057,12 @@ def _build_orbdep_parameters(
         )
     which_orbdep = _CORRECTION_TO_WHICH_ORBDEP[correction]
 
-    # PZ always wants the inner loop on (legacy ``_koopmans_dscf.py:1133-1134``).
-    # KIPZ wants it on for the first trial on molecular systems (legacy
-    # ``_koopmans_dscf.py:450-452`` — orbitals start from KS / PZ-init
-    # and need one CG inner-loop pass to converge to the
-    # KIPZ-consistent variational basis; subsequent iterations restart
-    # from the previous trial's already-converged orbitals).
-    # ``base.mt_correction`` is True iff non-PBC (set in
-    # :func:`_kcp_base_inputs` as ``not any(structure.pbc)``); legacy's
-    # condition is ``not all(pbc)`` (any non-periodic direction). The
-    # two agree for the fully-non-periodic systems the current
-    # ``_validate_scope`` accepts.
+    # PZ always wants the inner loop on. KIPZ wants it on for the first
+    # trial on molecular systems — orbitals start from KS / PZ-init and
+    # need one CG inner-loop pass to converge to the KIPZ-consistent
+    # variational basis; subsequent iterations restart from the previous
+    # trial's already-converged orbitals. ``base.mt_correction`` is True
+    # iff non-PBC (``not any(structure.pbc)``).
     do_innerloop = correction == Correction.PZ or (
         correction == Correction.KIPZ and is_first_iteration and base.mt_correction
     )
@@ -2137,30 +2087,24 @@ def _build_orbdep_parameters(
 
 
 # ----------------------------------------------------------------------
-# Delta -SCF alpha-refinement sub-step builders
+# Delta-SCF alpha-refinement sub-step builders
 # ----------------------------------------------------------------------
 #
 # These render the kcp.x inputs for the per-orbital sub-runs that compute
-# alpha screening parameters via Delta SCF. Step list (legacy ``tutorial_1`` /
-# ``02-calculate-screening-via-dscf/01-iteration-1/``):
+# alpha screening parameters via Delta SCF. Step list:
 #
 #   filled orbital → ``dft_n-1``
 #   empty  orbital → ``dft_n+1_dummy`` (iter 1 only) → ``pz_print`` → ``dft_n+1``
 #
-# Common deltas vs ``_build_dft_parameters`` (legacy
-# ``_koopmans_dscf.py:1087-1126``):
+# Common deltas vs ``_build_dft_parameters``:
 # - ``nbnd`` removed.
 # - ``conv_thr`` and ``esic_conv_thr`` 100x looser.
 # - ``empty_states_maxstep`` / ``do_outerloop_empty`` removed (no empty
 #   manifold treatment in these single-orbital runs).
 # - ``&NKSIC`` always present (even when ``do_orbdep=False``) carrying
 #   the shared inner-loop convergence knobs.
-#
-# Phase A scope: KI only (functional='ki'), single iteration, non-spin-
-# polarised, no orbital grouping, no Makov-Payne correction, no early
-# exit. See the deferred-items block at the end of this file.
 
-_LOOSE_CONV_FACTOR = 100.0  # legacy: ``conv_thr *= 100`` for alpha-loop sub-runs
+_LOOSE_CONV_FACTOR = 100.0  # ``conv_thr *= 100`` for alpha-loop sub-runs
 
 
 def _alpha_step_lite_nksic(
@@ -2168,7 +2112,7 @@ def _alpha_step_lite_nksic(
 ) -> dict[str, Any]:
     """Minimal ``&NKSIC`` block emitted on every alpha-loop step.
 
-    All keys here appear in every legacy alpha-loop ``.cpi`` regardless of
+    All keys here appear in every alpha-loop ``.cpi`` regardless of
     ``do_orbdep``; ``index_empty_to_save`` is set only on the
     empty-orbital sub-runs.
     """
@@ -2204,18 +2148,15 @@ def _alpha_step_dft_base(base: KcpBaseInputs) -> dict[str, Any]:
 def _add_kipz_orbdep(params: dict) -> None:
     """Turn a DFT-skeleton alpha step into a KIPZ one (in place).
 
-    For KIPZ (legacy ``_koopmans_dscf.py:1059-1064`` + 1075-1080), the
-    n-1 / n+1 alpha-loop steps run with orbital-dependent screening
-    on (``do_orbdep=True``, ``which_orbdep='nkipz'``), unlike KI's
-    plain DFT n-1 / n+1. The shared "lite" NKSIC block is extended
+    For KIPZ the n-1 / n+1 alpha-loop steps run with orbital-dependent
+    screening on (``do_orbdep=True``, ``which_orbdep='nkipz'``), unlike
+    KI's plain DFT n-1 / n+1. The shared "lite" NKSIC block is extended
     with the screening knobs the trial KIPZ carries.
 
-    Note that this also implies (see legacy ``_koopmans_dscf.py:742-758``)
-    that KIPZ's DFT-step results are alpha-*dependent* and **must** be
-    re-run on every alpha iteration. The current AiiDA port already
-    re-runs every iteration (no caching layer); the deferred
-    optimisation #4 (alpha-independent calc reuse) must be gated on
-    ``functional != 'kipz'`` when it lands.
+    This implies KIPZ's DFT-step results are alpha-*dependent* and
+    **must** be re-run on every alpha iteration (the current port already
+    does, with no caching layer): any future alpha-independent calc reuse
+    must be gated on ``functional != 'kipz'``.
     """
     params["SYSTEM"]["do_orbdep"] = True
     params["NKSIC"].update(
@@ -2235,7 +2176,7 @@ def _build_n_minus_1_parameters(
     fixed_band: int,
     correction: Correction = Correction.KI,
 ) -> dict[str, Any]:
-    """Filled-orbital N-1 step (legacy ``dft_n-1`` / ``kipz_n-1``).
+    """Filled-orbital N-1 step (``dft_n-1`` / ``kipz_n-1``).
 
     Plain DFT for ``Correction.KI``; gains orbital-dependent
     screening (``do_orbdep=True``, ``nkipz``) for ``Correction.KIPZ``.
@@ -2266,8 +2207,8 @@ def _build_dft_n_plus_1_dummy_parameters(
     ``dft_n+1`` consume on subsequent steps.
 
     Caller must pass a ``base`` already incremented for the N+1 charge
-    state (legacy convention: spin-up gets the extra electron) — i.e.
-    ``nelec += 1`` and ``nelup += 1`` relative to the trial-KI base.
+    state (spin-up gets the extra electron) — i.e. ``nelec += 1`` and
+    ``nelup += 1`` relative to the trial-KI base.
     """
     params = _alpha_step_dft_base(base)
     params["CONTROL"]["restart_mode"] = "from_scratch"
@@ -2287,7 +2228,7 @@ def _build_n_plus_1_parameters(
     index_empty_to_save: int = 1,
     correction: Correction = Correction.KI,
 ) -> dict[str, Any]:
-    """Empty-orbital N+1 step (legacy ``dft_n+1`` / ``kipz_n+1``).
+    """Empty-orbital N+1 step (``dft_n+1`` / ``kipz_n+1``).
 
     Restarts from ``dft_n+1_dummy`` plus the print step's
     ``evcfixed_empty.dat``; caller stages both files into the work dir.
@@ -2314,7 +2255,7 @@ def _build_print_parameters(
     index_empty_to_save: int = 1,
     correction: Correction = Correction.KI,
 ) -> dict[str, Any]:
-    """Empty-orbital print step (legacy ``pz_print`` / ``kipz_print``).
+    """Empty-orbital print step (``pz_print`` / ``kipz_print``).
 
     Writes ``evcfixed_empty{ispin}.dat`` for the n+1 step. Runs at
     the *original* electron count (same nelec / nelup / neldw as the
@@ -2331,44 +2272,35 @@ def _build_print_parameters(
     params["NKSIC"]["index_empty_to_save"] = index_empty_to_save
     # The print step's only job is to write ``evcfixed_empty{ispin}.dat``;
     # it operates on already-converged orbitals from the trial-KI save and
-    # must NOT run the inner-loop SCF. ``_build_orbdep_parameters(functional="pz")``
-    # turns it on by default — override here. Legacy reference:
-    # tutorial_1's pz_print.cpi has ``do_innerloop=.false.``. Without this,
-    # kcp.x runs a full PZ inner-CG cycle and the print step balloons from
-    # ~1 second to ~20 minutes.
+    # must NOT run the inner-loop SCF (which the PZ skeleton turns on by
+    # default). Leaving it on makes kcp.x run a full PZ inner-CG cycle,
+    # ballooning the print step from ~1 second to ~20 minutes.
     params["NKSIC"]["do_innerloop"] = False
     return params
 
 
 # ----------------------------------------------------------------------
-# Scope notes — what's intentionally deferred:
+# Intentionally deferred:
 # ----------------------------------------------------------------------
-#
-# Landed since the Phase-A MVP: multi-iteration refinement with early
-# exit (recursive ``AlphaRefinementLoop``), orbital grouping
-# (``self_hartree_tol`` → ``assign_orbital_groups``), spin-polarised
-# systems, and KIPZ. Still deferred:
 #
 # 1. **pKIPZ.** Perturbative post-processing pass on top of a KI trial;
 #    ``_validate_scope`` rejects it.
 #
 # 2. **Makov-Payne correction** to Delta E (``mp_correction``,
-#    ``eps_inf``). Legacy applies a per-orbital correction term when
-#    the system is charged-periodic. Omitted — the structure scope
-#    guard already rejects periodic systems.
+#    ``eps_inf``): a per-orbital correction term for charged-periodic
+#    systems. Omitted — the structure scope guard already rejects
+#    periodic systems.
 #
 # 3. **Mixing across iterations** (``alpha_mixing``).
 #
-# 4. **alpha-independent calc reuse** across iterations. Legacy caches
-#    the ``dft_n-1`` results for filled orbitals because they don't
-#    depend on alpha (``_koopmans_dscf.py:806-815``). Every iteration
-#    currently re-runs them. NOTE: any future caching must opt out for
-#    KIPZ, whose alpha steps are alpha-*dependent* — see the TRIPWIRE
-#    comment in ``ComputeScreeningParameters``.
+# 4. **alpha-independent calc reuse** across iterations. The ``dft_n-1``
+#    results for filled orbitals don't depend on alpha, but every
+#    iteration currently re-runs them. NOTE: any future caching must opt
+#    out for KIPZ, whose alpha steps are alpha-*dependent* — see the
+#    TRIPWIRE comment in ``ComputeScreeningParameters``.
 #
-# 5. **ML predict shortcut** (``self.ml.predict``). Legacy can
-#    short-circuit the loop using a pre-trained ML model. Out of
-#    scope.
+# 5. **ML predict shortcut**: short-circuiting the loop using a
+#    pre-trained ML model.
 # ----------------------------------------------------------------------
 
 

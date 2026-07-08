@@ -1,10 +1,9 @@
 """Variational-orbital grouping for screening-parameter reuse.
 
-A port of the legacy ``koopmans/variational_orbitals.py:assign_groups``
-(branch ``pydantic``): cluster variational orbitals by a per-orbital
-scalar (default self-Hartree energy) so that orbitals close in that
-value receive a single representative screening-parameter calculation,
-with the result copied onto the rest of the group.
+Cluster variational orbitals by a per-orbital scalar (default
+self-Hartree energy) so that orbitals close in that value receive a
+single representative screening-parameter calculation, with the result
+copied onto the rest of the group.
 
 The clustering uses ``scipy.cluster.hierarchy.fcluster`` with complete
 linkage. Orbitals are partitioned by ``(spin, filled)`` first — never
@@ -113,10 +112,7 @@ def _assign_groups_fcluster(
     Recurses with ``0.9 * tol`` when the resulting clusters aren't
     well-separated (any pair of clusters with an inter-cluster gap
     < ``2 * tol``). Raises when ``tol`` shrinks below
-    ``0.01 * default_tol``.
-
-    Port of ``koopmans/variational_orbitals.py:_assign_groups_fcluster``
-    (PR-branch ``pydantic``). Returns labels reordered to start at 1.
+    ``0.01 * default_tol``. Returns labels reordered to start at 1.
     """
     import numpy as np
 
@@ -165,11 +161,10 @@ def _assign_groups_fcluster(
 def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
     """In-place: set ``representative`` for one orbital per group.
 
-    Mirrors legacy ``variational_orbitals.py:to_solve`` ordering: for
-    filled orbitals, walk per-spin **highest → lowest** index; for
-    empty orbitals, walk per-spin **lowest → highest** index. The
-    first orbital encountered in each group becomes its representative;
-    all others are marked non-representative.
+    Ordering: for filled orbitals, walk per-spin **highest → lowest**
+    index; for empty orbitals, walk per-spin **lowest → highest** index.
+    The first orbital encountered in each group becomes its
+    representative; all others are marked non-representative.
     """
     seen: set[int] = set()
     spin_order = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE)
@@ -305,10 +300,9 @@ def expand_alphas_by_group(
     from :func:`assign_orbital_groups` (every orbital with its
     grouping decision).
 
-    Returns flat ``{map_key: float}`` dicts (split into filled / empty
-    per the legacy DSCF wiring) carrying one entry per orbital — non-
-    representative members inherit their group's representative alpha
-    and error.
+    Returns flat ``{map_key: float}`` dicts (split into filled / empty)
+    carrying one entry per orbital — non-representative members inherit
+    their group's representative alpha and error.
 
     When no grouping ran upstream (every orbital is its own
     representative — the ``tol is None`` short-circuit), this is the
@@ -316,9 +310,9 @@ def expand_alphas_by_group(
     """
     # Build {group_id: (alpha, error)} lookup from the representative
     # gather dicts. Filled and empty representatives live in different
-    # input dicts because the legacy DSCF wiring scatters them to
-    # separate fan-out loops; merging by group id is unambiguous because
-    # subset partitioning keeps filled and empty in distinct groups.
+    # input dicts because they scatter to separate fan-out loops; merging
+    # by group id is unambiguous because subset partitioning keeps filled
+    # and empty in distinct groups.
     rep_by_group: dict[int, tuple[float, float]] = {}
     for o in orbitals:
         if not o["representative"]:

@@ -1,9 +1,8 @@
 """Parser regression tests for the kcw.x parsers.
 
-The fixture stdout files are frozen copies of the legacy test data at
-``koopmans/tests/data/kcw/`` (a 2x2x2 silicon-like KI run: 4 occupied + 4
-empty Wannier functions), renamed from the legacy ``kc.*`` prefix to the
-CalcJob's ``aiida.*``.
+The fixture stdout files are frozen reference outputs (a 2x2x2 silicon-like
+KI run: 4 occupied + 4 empty Wannier functions), renamed from the ``kc.*``
+prefix to the CalcJob's ``aiida.*``.
 """
 
 from __future__ import annotations

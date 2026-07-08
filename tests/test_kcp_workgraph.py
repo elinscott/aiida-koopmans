@@ -159,7 +159,7 @@ class TestBuildDftParameters:
 
     def test_ion_radius_scales_with_ntyp(self):
         # ``ion_radius(i)`` must be emitted once per species — ozone has
-        # ``ntyp=1`` so we get a single entry, not the legacy hardcoded 1..4.
+        # ``ntyp=1`` so we get a single entry, not a hardcoded 1..4.
         params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["IONS"]["ion_radius(1)"] == 1.0
         assert "ion_radius(2)" not in params["IONS"]
@@ -209,7 +209,6 @@ class TestBuildKiParameters:
 
     def test_ki_disables_innerloop(self):
         # ``do_innerloop`` is True only for PZ; KI / KIPZ run no inner loop.
-        # See legacy decision tree in koopmans/workflows/_koopmans_dscf.py:1129-1138.
         params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert params["NKSIC"]["do_innerloop"] is False
 
@@ -223,7 +222,7 @@ class TestBuildKipzOrbdepParameters:
 
     KIPZ piggy-backs on the same ODD machinery as KI but flips
     ``which_orbdep`` to ``nkipz`` and turns the inner CG loop on for
-    the first molecular trial (legacy ``_koopmans_dscf.py:450-452``).
+    the first molecular trial.
     """
 
     def test_kipz_which_orbdep_is_nkipz(self):
@@ -266,8 +265,7 @@ class TestBuildNMinus1Parameters:
     def test_kipz_enables_orbdep_with_nkipz(self):
         params = _build_n_minus_1_parameters(_OZONE_BASE, fixed_band=5, correction=Correction.KIPZ)
         # KIPZ's n-1 step is alpha-dependent: do_orbdep=True + which_orbdep='nkipz'.
-        # See legacy _koopmans_dscf.py:1059-1064 + the tripwire comment in
-        # KoopmansDSCFWorkflow.
+        # See the tripwire comment in KoopmansDSCFWorkflow.
         assert params["SYSTEM"]["do_orbdep"] is True
         assert params["NKSIC"]["which_orbdep"] == "nkipz"
         assert params["NKSIC"]["do_bare_eigs"] is True
@@ -302,7 +300,7 @@ class TestBuildPrintParameters:
     """``_build_print_parameters`` — print step writes evcfixed_empty.dat."""
 
     def test_ki_uses_pz_orbdep(self):
-        # KI's print step uses PZ-flavour orbdep (legacy ``pz_print``).
+        # KI's print step uses PZ-flavour orbdep (the ``pz_print`` step).
         params = _build_print_parameters(
             _OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KI
         )
@@ -318,7 +316,7 @@ class TestBuildPrintParameters:
 
     def test_print_step_disables_innerloop(self):
         # The print step operates on already-converged orbitals and must
-        # not re-run the inner CG cycle (legacy tutorial_1 pz_print.cpi).
+        # not re-run the inner CG cycle.
         ki = _build_print_parameters(_OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KI)
         kipz = _build_print_parameters(
             _OZONE_BASE, nbnd=10, fixed_band=6, correction=Correction.KIPZ
@@ -328,16 +326,14 @@ class TestBuildPrintParameters:
 
 
 # ----------------------------------------------------------------------
-# Legacy spin-channel swap helpers
+# Spin-channel swap helpers
 # ----------------------------------------------------------------------
 
 
 class TestSwapKcpFrame:
     """Pure-function checks on ``_swap_kcp_frame``.
 
-    Mirrors the legacy ``_swap_spin_channels`` from
-    ``koopmans/src/koopmans/calculators/_koopmans_cp.py:159-205``: swap
-    nelup<->neldw, negate tot_magnetization (if set), and shift
+    The swap: swap nelup<->neldw, negate tot_magnetization (if set), and shift
     fixed_band by the per-spin band block size depending on which
     block it currently points into.
     """
@@ -479,7 +475,7 @@ class TestFilledAndEmptyCounts:
 class TestComputeAlphaFromDscf:
     """Pin the alpha-update formula against known inputs.
 
-    Reference: legacy ``_koopmans_dscf.py:944`` —
+    Reference formula:
     ``alpha = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)``.
 
     Both energies and lambdas are in eV (the parser converts from Hartree
@@ -826,10 +822,10 @@ class TestKoopmansDSCFGraphBuild:
             return any(substr in label for label in sub_labels)
 
         assert _sub_has("generate_alphas"), sub_labels
-        # Per-orbital fan-out lives inside the ``ScreeningIteration`` sub-graph
-        # extracted by B.2. ``ki_final`` no longer lives here — it's at the
-        # workflow level (it's the application of the screening parameters,
-        # not part of computing them).
+        # Per-orbital fan-out lives inside the ``ScreeningIteration`` sub-graph.
+        # ``ki_final`` no longer lives here — it's at the workflow level (it's
+        # the application of the screening parameters, not part of computing
+        # them).
         assert _sub_has("ScreeningIteration"), sub_labels
         assert not _sub_has("ki_final"), sub_labels
 
@@ -1112,7 +1108,7 @@ class TestKoopmansDSCFGraphBuild:
     ):
         """Closed-shell init expands into a spin-symmetric 3+1 sub-chain.
 
-        Wires the legacy ``restart_with_higher_precision`` flow:
+        Wires the spin-symmetric init flow:
         nspin=1 → nspin=2 dummy → ConvertSpin1ToSpin2 → nspin=2 restart.
         Each step gets a distinct ``call_link_label`` so the provenance
         graph stays readable.
@@ -1225,7 +1221,7 @@ class TestKoopmansDSCFGraphBuild:
         ``nelup=7, neldw=5, nbnd=8`` (O2 triplet with SG15 6e pseudo):
         UP has 1 empty, DOWN has 3 empties. Symmetric ``n_empty // 2``
         halving would have wrongly emitted 2 per spin. Also verifies the
-        legacy LUMO-clamp on ``fixed_band``, the global ``index_empty_to_save``
+        LUMO-clamp on ``fixed_band``, the global ``index_empty_to_save``
         counter, and the ``band_index`` offset by ``max(nelup, neldw)``
         (where the trial-KI lambda matrix's empty block starts).
         """
@@ -1250,8 +1246,7 @@ class TestKoopmansDSCFGraphBuild:
         assert source["up_orb_8"]["dummy_parameters"]["SYSTEM"]["fixed_band"] == 8
 
         # ``index_empty_to_save`` is the global counter across spins —
-        # legacy ``_koopmans_dscf.py:697-699`` puts UP empties first
-        # then DOWN. UP empty -> 1; DOWN empties -> 2, 3, 4.
+        # UP empties come first, then DOWN. UP empty -> 1; DOWN empties -> 2, 3, 4.
         assert source["up_orb_8"]["dummy_parameters"]["NKSIC"]["index_empty_to_save"] == 1
         for k, expected in (("down_orb_6", 2), ("down_orb_7", 3), ("down_orb_8", 4)):
             got = source[k]["dummy_parameters"]["NKSIC"]["index_empty_to_save"]
@@ -1276,12 +1271,10 @@ class TestKoopmansDSCFGraphBuild:
     def test_filled_iter_source_open_shell_o2_layout(self):
         """O2-shaped filled iterator: 7 UP + 5 DOWN, DOWN bands shifted by nelup.
 
-        For genuinely open-shell systems ``nelup != neldw``, legacy
-        ``_koopmans_dscf.py:759-760`` shifts DOWN-channel
-        ``fixed_band`` by ``nelup`` (not by a symmetric halved count).
-        Closed-shell symmetric input previously hid this — closed-shell
-        ozone has ``nelup == neldw`` so the shift agreed regardless of
-        which choice was made.
+        For genuinely open-shell systems ``nelup != neldw``, the DOWN-channel
+        ``fixed_band`` is shifted by ``nelup`` (not by a symmetric halved
+        count). Closed-shell ozone has ``nelup == neldw`` so the shift agrees
+        regardless of which choice is made — only open-shell exercises it.
         """
         from aiida_koopmans.workgraphs.kcp import build_filled_iter_source
         from aiida_koopmans.workgraphs.variational_orbitals import (
@@ -1349,7 +1342,7 @@ class TestKoopmansDSCFGraphBuild:
     def test_spin_polarized_init_is_single_step(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        """Spin-polarised init: legacy runs no symmetric pre-pass.
+        """Spin-polarised init: no symmetric pre-pass.
 
         Open-shell systems use independent up/down channels at init —
         only the single ``dft_init`` step should appear, with none of

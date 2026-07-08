@@ -58,11 +58,11 @@ class VariationalOrbitalType(str, Enum):
     this so user-facing inputs and the AiiDA dispatcher both reference
     the same enum.
 
-    * ``PZ``: PZ-initialised variational orbitals (legacy default for
-      ``init_orbitals``).
+    * ``PZ``: PZ-initialised variational orbitals.
     * ``KOHN_SHAM``: KS orbitals from the DFT init reused as
-      variational (the MVP path; produces a KS-as-variational overlay
-      so the trial KI's ``evc0N.dat`` is the DFT ``evcN.dat``).
+      variational (the currently-supported path; produces a
+      KS-as-variational overlay so the trial KI's ``evc0N.dat`` is the
+      DFT ``evcN.dat``).
     * ``MLWFS``: maximally-localised Wannier functions
       (Wannier90-based; deferred).
     * ``PROJWFS``: projected Wannier functions (deferred).
@@ -80,11 +80,8 @@ class VariationalOrbitalType(str, Enum):
 class SpinChannel(str, Enum):
     """Spin channel index used as a dict key in per-spin data structures.
 
-    Values match the legacy koopmans convention from
-    ``koopmans/src/koopmans/utils/_spin.py``
-    (``SpinType = Literal[None, "up", "down", "spinor"]``). String-valued
-    so AiiDA / JSON round-trips preserve the value (a JSON-deserialised
-    ``"up"`` compares equal to ``SpinChannel.UP``).
+    String-valued so AiiDA / JSON round-trips preserve the value (a
+    JSON-deserialised ``"up"`` compares equal to ``SpinChannel.UP``).
 
     Use ``SpinChannel.NONE`` for ``nspin == 1`` calculations (no spin
     polarisation, single channel).
@@ -218,9 +215,8 @@ class OrbitalDict(TypedDict):
 class _ProjectionBlockBase(TypedDict):
     """Band-bookkeeping shared by every projection block (any source).
 
-    Ports the per-block bookkeeping of legacy
-    ``projections.ProjectionBlock`` that is independent of *how* the
-    Wannier functions are obtained: the block's label, spin, the counts
+    The per-block bookkeeping that is independent of *how* the Wannier
+    functions are obtained: the block's label, spin, the counts
     (``num_wann`` is the common denominator across all projection
     sources), and which bands it covers. ``projection_type`` is the
     discriminator (a real :class:`WannierProjectionType`, registered for
@@ -273,9 +269,8 @@ ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
 class MergeGroup(TypedDict):
     """A set of :class:`ProjectionBlock` instances merged into one kcp.x manifold.
 
-    Ports the value side of legacy ``ProjectionBlocks.to_merge``: blocks
-    that share a filling (occupied vs empty) and spin are merged together
-    (their per-block ``evcw`` wavefunctions are concatenated by
+    Blocks that share a filling (occupied vs empty) and spin are merged
+    together (their per-block ``evcw`` wavefunctions are concatenated by
     ``merge_evc.x``) into a single ``evc_occupied`` / ``evc0_empty`` file
     that seeds the supercell kcp.x run.
 
@@ -292,9 +287,9 @@ class MergeGroup(TypedDict):
 def block_w90_kwargs(block: ProjectionBlock) -> dict:
     """Return the Wannier90 input keywords for a single block.
 
-    Mirrors legacy ``ProjectionBlock.w90_kwargs``: the per-block
-    ``num_wann`` / ``num_bands`` / ``exclude_bands`` (and ``spin`` when
-    the block is spin-resolved) that distinguish one block's Wannier90
+    The per-block ``num_wann`` / ``num_bands`` / ``exclude_bands`` (and
+    ``spin`` when the block is spin-resolved) that distinguish one block's
+    Wannier90
     cycle from another's. ``projections`` is included only for an
     :class:`ExplicitProjectionBlock`; automatic blocks rely on
     ``projection_type`` instead. ``exclude_bands`` is omitted when the
@@ -320,8 +315,8 @@ def group_blocks_to_merge(
 ) -> list[MergeGroup]:
     """Group blocks into occupied / empty manifolds per spin.
 
-    Ports legacy ``ProjectionBlocks.to_merge``. A block is *occupied* when
-    all of its ``include_bands`` lie at or below that spin channel's
+    A block is *occupied* when all of its ``include_bands`` lie at or
+    below that spin channel's
     occupied-band count, and *empty* when they all lie above it; a block
     that straddles the boundary is an error (the projections must be split
     so each block is purely occupied or purely empty).
@@ -368,8 +363,7 @@ def group_blocks_to_merge(
 def merge_dest_filename(filled: bool, spin_index: int) -> str:
     """kcp.x-side filename for a merged manifold wavefunction.
 
-    Ports legacy ``_folding._construct_dest_filename``: the supercell
-    kcp.x run reads its initial variational orbitals from
+    The supercell kcp.x run reads its initial variational orbitals from
     ``evc_occupied{n}.dat`` (occupied manifold) or ``evc0_empty{n}.dat``
     (empty manifold), where ``n`` is the 1-based kcp.x spin index
     (1 = up / unpolarized, 2 = down).
