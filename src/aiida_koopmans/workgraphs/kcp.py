@@ -2575,6 +2575,82 @@ def _build_print_parameters(
 # ----------------------------------------------------------------------
 
 
+def _fft_dimension_allowed(nr: int) -> bool:
+    """QE's FFT-dimension rule: factors of 2/3/5 only (no 7s or 11s)."""
+    if nr < 1:
+        return False
+    remainder = nr
+    powers = {2: 0, 3: 0, 5: 0, 7: 0, 11: 0}
+    for factor in powers:
+        while remainder > 1 and remainder % factor == 0:
+            remainder //= factor
+            powers[factor] += 1
+    return remainder == 1 and powers[7] == 0 and powers[11] == 0
+
+
+def _good_fft(nr: int) -> int:
+    """Bump ``nr`` up to the next FFT-friendly dimension (legacy ``good_fft``)."""
+    while not _fft_dimension_allowed(nr) and nr <= 2049:
+        nr += 1
+    return nr
+
+
+def _autogenerate_nrb(
+    structure: orm.StructureData,
+    pseudos: dict[str, UpfData],
+    parameters: dict[str, Any],
+) -> None:
+    """Fill ``SYSTEM.nr{1,2,3}b`` when any pseudo carries core corrections.
+
+    Port of legacy ``_koopmans_cp.py:_autogenerate_nr``: kcp.x aborts with
+    "nr1b, nr2b, nr3b must be given for ultrasoft and core corrected pp"
+    when a pseudo has non-linear core corrections and the small-box grid is
+    unset (bites e.g. PseudoDojo; SG15 has no NLCC). Same conservative
+    guess as legacy: the full density-grid dimensions scaled by
+    ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
+    cutoff radius is <= 2.6 Bohr). User-supplied values always win.
+    """
+    from qe_tools import CONSTANTS
+    from upf_to_json import upf_to_json
+
+    system = parameters.setdefault("SYSTEM", {})
+    if all(system.get(key) is not None for key in ("nr1b", "nr2b", "nr3b")):
+        return
+
+    def _core_corrected(pseudo: UpfData) -> bool:
+        try:
+            header = upf_to_json(pseudo.get_content(), pseudo.filename)["pseudo_potential"][
+                "header"
+            ]
+        except Exception:
+            # Unparseable UPF (e.g. minimal test fixtures): treat as no-NLCC.
+            # Not a silent-corruption risk — a real core-corrected pseudo that
+            # slips through makes kcp.x abort loudly with its own
+            # "nr1b, nr2b, nr3b must be given" error.
+            return False
+        return bool(header["core_correction"])
+
+    if not any(_core_corrected(pseudo) for pseudo in pseudos.values()):
+        return
+
+    angstrom_to_bohr = 1.0 / CONSTANTS.bohr_to_ang
+    cell = np.array(structure.cell, dtype=float)
+    alat_bohr = float(np.linalg.norm(cell[0])) * angstrom_to_bohr
+    # Reduced lattice vectors ("at" in QE), dimensionless in units of alat.
+    at = cell * angstrom_to_bohr / alat_bohr
+
+    ecutrho = float(system.get("ecutrho") or 4.0 * system["ecutwfc"])
+    # Density-grid dimensions, as QE derives them:
+    # nr_i = 2 * int( sqrt(ecutrho) / (2 pi / alat) * |at_i| ) + 1
+    nr = [
+        _good_fft(2 * int(np.sqrt(ecutrho) / (2.0 * np.pi / alat_bohr) * np.linalg.norm(vec)) + 1)
+        for vec in at
+    ]
+    rc_safe = 3.0
+    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr):
+        system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
+
+
 def _build_kcp_inputs(
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -2620,6 +2696,7 @@ def _build_kcp_inputs(
     staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
     merge outputs).
     """
+    _autogenerate_nrb(structure, pseudos, parameters)
     inputs: dict[str, Any] = {
         "code": code,
         "structure": structure,
