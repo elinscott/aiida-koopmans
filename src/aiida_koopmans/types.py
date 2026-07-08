@@ -15,11 +15,6 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 class Correction(str, Enum):
     """The Koopmans correction (functional) the workflow applies.
 
-    Canonical definition for the whole project: the user-facing
-    ``koopmans2`` package re-exports this rather than defining its
-    own copy, so the dispatcher can pass an enum value across the
-    package boundary without a string round-trip.
-
     Members:
 
     * ``KI``: Koopmans-Integral correction (the default).
@@ -37,10 +32,6 @@ class Correction(str, Enum):
     * ``NONE``: no Koopmans correction (plain DFT only).
     * ``ALL``: run KI / KIPZ / PKIPZ together (user-facing workflow
       control).
-
-    String-valued (``str`` subclass) so AiiDA / JSON round-trips
-    preserve the value: a deserialised ``"ki"`` compares equal to
-    ``Correction.KI``.
     """
 
     KI = "ki"
@@ -54,10 +45,6 @@ class Correction(str, Enum):
 class VariationalOrbitalType(str, Enum):
     """Initial variational orbitals to use for the trial KI / KIPZ run.
 
-    Canonical definition: ``koopmans2.input_file.workflow`` re-exports
-    this so user-facing inputs and the AiiDA dispatcher both reference
-    the same enum.
-
     * ``PZ``: PZ-initialised variational orbitals.
     * ``KOHN_SHAM``: KS orbitals from the DFT init reused as
       variational (the currently-supported path; produces a
@@ -66,9 +53,6 @@ class VariationalOrbitalType(str, Enum):
     * ``MLWFS``: maximally-localised Wannier functions
       (Wannier90-based; deferred).
     * ``PROJWFS``: projected Wannier functions (deferred).
-
-    String-valued so AiiDA / JSON round-trips preserve the value
-    (``"kohn-sham"`` compares equal to ``VariationalOrbitalType.KOHN_SHAM``).
     """
 
     PZ = "pz"
@@ -79,9 +63,6 @@ class VariationalOrbitalType(str, Enum):
 
 class SpinChannel(str, Enum):
     """Spin channel index used as a dict key in per-spin data structures.
-
-    String-valued so AiiDA / JSON round-trips preserve the value (a
-    JSON-deserialised ``"up"`` compares equal to ``SpinChannel.UP``).
 
     Use ``SpinChannel.NONE`` for ``nspin == 1`` calculations (no spin
     polarisation, single channel).
@@ -105,29 +86,16 @@ class VariationalOrbital(TypedDict):
     """Structured record for a single variational orbital.
 
     Carries spin / per-spin 1-indexed position / filled-vs-empty plus
-    its place in any grouping (``group_id``, ``representative``).
-    Defined as a :class:`TypedDict` rather than a ``dataclass`` so
-    instances are plain dicts at runtime — ``list[VariationalOrbital]``
-    survives ``aiida-workgraph``'s storage path (``orm.List`` →
-    ``clean_value``) because ``Mapping`` instances are recursed into,
-    with each leaf landing on a primitive (``SpinChannel`` is a
-    ``str``-Enum, the rest are ``int`` / ``bool``).
+    its place in any grouping (``group_id``, ``representative``). The
+    key names *are* the structural information — stable and never
+    parsed back into parts, unlike a flat string label like
+    ``"up_orb_5"``; use :func:`map_key_for` when a string label is
+    needed (only at the ``aiida-workgraph`` ``Map`` zone boundary).
 
-    Access fields by string keys: ``o["spin"]``, ``o["index"]``,
-    ``o["filled"]``, ``o["group_id"]``, ``o["representative"]``. The
-    key names *are* the structural information — they're stable and
-    never parsed back into parts, unlike a flat string label like
-    ``"up_orb_5"``. Use :func:`map_key_for` when a string label is
-    needed (only at the ``aiida-workgraph`` ``Map`` zone boundary,
-    where iteration handles require strings).
-
-    On AiiDA round-trip the ``spin`` value comes back as a plain
-    ``str`` rather than a :class:`SpinChannel` enum — ``SpinChannel``
-    inherits from ``str`` so ``o["spin"] == SpinChannel.UP`` continues
-    to work, but ``o["spin"] is SpinChannel.UP`` does not. Prefer
-    ``==`` everywhere (this is also the project-wide
-    ``feedback_taggedvalue_is_comparison`` rule for ``@task.graph``
-    bodies).
+    On AiiDA round-trip ``spin`` comes back as a plain ``str`` rather
+    than a :class:`SpinChannel` enum, so compare with ``==`` not
+    ``is`` (``SpinChannel`` subclasses ``str``, so
+    ``o["spin"] == SpinChannel.UP`` holds but ``is`` does not).
     """
 
     spin: SpinChannel
@@ -180,19 +148,12 @@ class AlphaScreening(TypedDict):
 class OrbitalDict(TypedDict):
     """A single resolved Wannier orbital as a plain dict.
 
-    A typed *view* over the dict that AiiDA already produces via
+    A typed view over the dict AiiDA produces via
     ``Orbital.get_orbital_dict()`` for the ``core.realhydrogen`` orbital
-    type (the one ``aiida-wannier90``'s ``OrbitalData`` stores). It is not
-    a new schema: :func:`orbital_data_to_dicts` /
-    :func:`dicts_to_orbital_data` round-trip it losslessly against
-    ``OrbitalData``.
-
-    Defined as a :class:`TypedDict` so a ``list[OrbitalDict]`` is plain
-    primitives all the way down (``position`` etc. are floats / ints /
-    ``None`` / lists) and therefore survives ``aiida-workgraph``'s storage
-    path (``orm.List`` -> ``clean_value``) without being wrapped in an
-    ``OrbitalData`` node per orbital. Convert to ``OrbitalData`` only at
-    the ``Wannier90WorkChain`` input boundary.
+    type (the one ``aiida-wannier90``'s ``OrbitalData`` stores);
+    :func:`orbital_data_to_dicts` / :func:`dicts_to_orbital_data`
+    round-trip it losslessly against ``OrbitalData``. Convert to
+    ``OrbitalData`` only at the ``Wannier90WorkChain`` input boundary.
 
     The keys mirror ``aiida.tools.data.orbital.realhydrogen``'s fields
     exactly; ``test_projection_blocks`` asserts parity so an upstream
@@ -235,11 +196,9 @@ class _ProjectionBlockBase(TypedDict):
 class ExplicitProjectionBlock(_ProjectionBlockBase):
     """A block whose Wannier functions come from explicit projections.
 
-    ``projection_type`` is ``WannierProjectionType.ANALYTIC``. ``projections``
-    is *required* (it is the resolved ``list[OrbitalDict]``), so its presence
-    is what distinguishes this arm of the :data:`ProjectionBlock` union from
-    :class:`AutomaticProjectionBlock` at type-check time -- ``num_wann ==
-    len(projections)``.
+    ``projection_type`` is ``WannierProjectionType.ANALYTIC``.
+    ``projections`` is the resolved ``list[OrbitalDict]`` and is
+    required (``num_wann == len(projections)``).
     """
 
     projections: list[OrbitalDict]
@@ -251,18 +210,12 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
     For ``projection_type`` in ``{SCDM, ATOMIC_PROJECTORS_QE,
     ATOMIC_PROJECTORS_EXTERNAL, RANDOM}`` there are no explicit projection
     orbitals -- the block is defined by ``num_wann`` (plus the frozen /
-    disentanglement windows carried elsewhere). It deliberately has no
-    ``projections`` key, so ``"projections" in block`` narrows the
-    :data:`ProjectionBlock` union to the explicit arm.
+    disentanglement windows carried elsewhere).
     """
 
 
-# Two genuinely different shapes rather than one TypedDict with an optional
-# ``projections`` field: the union makes "analytic-but-no-projections" (and
-# "automatic-but-has-projections") unrepresentable at type-check time. There is
-# no runtime / serialization difference -- both arms are plain dicts with
-# primitive leaves -- so Map-zone storage is unaffected; the union is purely a
-# static guarantee. Narrow with ``"projections" in block``.
+# Analytic blocks carry ``projections``; automatic blocks do not, so
+# ``"projections" in block`` narrows the union to the explicit arm.
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
 
 

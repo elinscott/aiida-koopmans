@@ -237,10 +237,8 @@ def assign_orbital_groups(
     Returns ``list[VariationalOrbital]`` in the canonical order
     produced by :func:`enumerate_variational_orbitals`. Each entry
     carries ``group_id`` + ``representative`` reflecting the
-    clustering decision; the four other fields (``spin``, ``index``,
-    ``filled``) are the orbital's identity. A flat dict-list crosses
-    task boundaries cleanly through AiiDA's storage path because
-    every value is a primitive (``SpinChannel`` is a ``str``-Enum).
+    clustering decision; the other fields (``spin``, ``index``,
+    ``filled``) are the orbital's identity.
     """
     orbitals = enumerate_variational_orbitals(
         nelup=nelup, neldw=neldw, nbnd=nbnd, spin_polarized=spin_polarized

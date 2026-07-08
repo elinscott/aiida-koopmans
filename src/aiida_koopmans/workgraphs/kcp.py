@@ -100,9 +100,7 @@ class KcpBaseInputs:
 
     Each parameter builder takes one ``KcpBaseInputs`` (built once per
     workgraph from ``structure`` + electron-count outputs) plus its
-    step-specific kwargs. Collapsing this set into a single object
-    removes the 9-kwarg forwarding boilerplate that otherwise repeats
-    at every builder call site. ``nbnd`` is intentionally *not* here —
+    step-specific kwargs. ``nbnd`` is intentionally *not* here —
     DFT/KI/PZ steps need it but alpha-step (dft_n±1) builders strip it,
     so it stays a step-level kwarg.
 
@@ -475,19 +473,14 @@ def build_filled_iter_source(
     every orbital is its own representative and the fan-out is
     unchanged.
 
-    Each emitted item is a ``dict`` carrying the per-orbital
-    parameters the consumer (``FilledOrbitalScreening``) needs:
-    ``orbital`` (the :class:`VariationalOrbital` TypedDict, carrying
-    spin / per-spin index / filled / group_id / representative),
-    ``fixed_band`` (1-indexed kcp.x band position), ``band_index``
-    (0-indexed numpy index into the trial-KI lambda matrix),
-    ``alpha_guess`` (per-orbital alpha in use this refinement
-    iteration), and ``spin_channel`` (= ``orbital["spin"]``,
-    normalised to the enum).
+    Each emitted item is a :class:`FilledIterItem`; ``band_index`` is
+    the 0-indexed numpy index into the trial-KI lambda matrix and
+    ``alpha_guess`` is the per-orbital alpha in use this refinement
+    iteration.
 
-    ``filled_alphas`` is keyed by spin tag (matching
-    :class:`SpinChannel`'s string values — what survives AiiDA's
-    serializer round-trip) and maps to per-channel alpha lists.
+    ``filled_alphas`` is keyed by spin tag (:class:`SpinChannel`'s
+    string values — what survives AiiDA's serializer round-trip) and
+    maps to per-channel alpha lists.
     On iteration 1 the caller passes :func:`generate_alphas`'s uniform
     output; on subsequent iterations the previous iteration's gathered
     alphas.
