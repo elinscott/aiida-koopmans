@@ -49,9 +49,7 @@ from pathlib import PurePosixPath
 from typing import ClassVar
 
 from aiida import orm
-from aiida.common import CalcInfo, CodeInfo
-from aiida.engine import CalcJob
-from aiida_quantumespresso.utils.convert import convert_input_to_namelist_entry
+from aiida.common import CalcInfo
 from pydantic import ValidationError
 from pydantic_espresso.models.kcw.develop import (
     ControlNamelist,
@@ -60,13 +58,18 @@ from pydantic_espresso.models.kcw.develop import (
     WannierNamelist,
 )
 
+from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
+from aiida_koopmans.utils import walk_remote_files
 
-class KcwCalculation(CalcJob):
+
+class KcwCalculation(KoopmansStdoutCalculation):
     """Shared machinery for the three kcw.x calculation modes.
 
     Not registered as an entry point itself -- use one of the three
     subclasses, which pin ``CONTROL.calculation`` and the parser.
     """
+
+    _TOOL_NAME = "kcw.x"
 
     _PREFIX = "aiida"
     _OUTPUT_SUBFOLDER = "out"
@@ -150,19 +153,6 @@ class KcwCalculation(CalcJob):
             help="Scalar results: ``job_done`` flag and ``walltime``.",
         )
 
-        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
-        spec.exit_code(
-            302, "ERROR_OUTPUT_STDOUT_MISSING", message="The kcw.x stdout file was not retrieved."
-        )
-        spec.exit_code(
-            303, "ERROR_OUTPUT_STDOUT_READ", message="The kcw.x stdout could not be read."
-        )
-        spec.exit_code(
-            310,
-            "ERROR_OUTPUT_STDOUT_INCOMPLETE",
-            message="The kcw.x stdout ends before ``JOB DONE``.",
-        )
-
     def prepare_for_submission(self, folder):
         """Render the input file and build the ``CalcInfo``."""
         parameters = self._normalize_parameters(self.inputs.parameters.get_dict())
@@ -175,13 +165,8 @@ class KcwCalculation(CalcJob):
 
         self._write_extra_input_files(folder, parameters)
 
-        code_info = CodeInfo()
-        code_info.code_uuid = self.inputs.code.uuid
-        code_info.cmdline_params = ["-in", self._INPUT_FILE]
-        code_info.stdout_name = self._OUTPUT_FILE
-
         calc_info = CalcInfo()
-        calc_info.codes_info = [code_info]
+        calc_info.codes_info = [self._make_code_info()]
         calc_info.local_copy_list = self._build_local_copy_list()
         calc_info.remote_symlink_list = self._build_remote_symlink_list()
         calc_info.retrieve_list = self._build_retrieve_list(parameters)
@@ -260,11 +245,7 @@ class KcwCalculation(CalcJob):
             options = parameters.get(nl)
             if not options:
                 continue
-            lines = [f"&{nl}\n"]
-            for key, val in options.items():
-                lines.append(convert_input_to_namelist_entry(key, val))
-            lines.append("/\n")
-            out.append("".join(lines))
+            out.append(cls.render_namelist(nl, options))
         return "".join(out)
 
     def _render_extra_cards(self, parameters: dict) -> str:
@@ -299,7 +280,7 @@ class KcwCalculation(CalcJob):
         parent_root = PurePosixPath(parent.get_remote_path())
         parent_out = parent_root / self._OUTPUT_SUBFOLDER
         symlinks: list[tuple[str, str, str]] = []
-        for rel_file in self._walk_remote_files(parent, self._OUTPUT_SUBFOLDER):
+        for rel_file in walk_remote_files(parent, self._OUTPUT_SUBFOLDER):
             symlinks.append(
                 (
                     parent.computer.uuid,
@@ -309,37 +290,10 @@ class KcwCalculation(CalcJob):
             )
         return symlinks
 
-    @staticmethod
-    def _walk_remote_files(remote: orm.RemoteData, relpath: str) -> list[str]:
-        """Recursively enumerate files under ``relpath`` on a ``RemoteData``.
-
-        Returns paths relative to ``relpath`` using forward slashes. Same
-        helper as ``KcpCalculation._walk_remote_files`` (kept local so the
-        two plugins stay independent).
-        """
-        out: list[str] = []
-        root = PurePosixPath(remote.get_remote_path())
-        with remote.get_authinfo().get_transport() as transport:
-
-            def _walk(sub: str) -> None:
-                here = str(root / relpath / sub) if sub else str(root / relpath)
-                for name in transport.listdir(here):
-                    child_rel = f"{sub}/{name}" if sub else name
-                    child_full = f"{here}/{name}"
-                    if transport.isdir(child_full):
-                        _walk(child_rel)
-                    else:
-                        out.append(child_rel)
-
-            _walk("")
-        return out
-
     def _build_retrieve_list(self, parameters: dict) -> list[str]:
         """Retrieve stdout plus any user extras."""
         retrieve_list: list[str] = [self._OUTPUT_FILE]
-        if "settings" in self.inputs:
-            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
-            retrieve_list.extend(extra)
+        retrieve_list.extend(self._additional_retrieve_list())
         return retrieve_list
 
 
@@ -410,9 +364,6 @@ class KcwHamCalculation(KcwCalculation):
     _DEFAULT_PARSER = "koopmans.kcw_ham"
     _MODE_NAMELIST = "HAM"
 
-    _ALPHAREF_FILE = "file_alpharef.txt"
-    _ALPHAREF_EMPTY_FILE = "file_alpharef_empty.txt"
-
     @classmethod
     def define(cls, spec):
         """Add the ham-specific ``alphas`` / ``kpoints`` inputs and ``bands`` output."""
@@ -467,13 +418,8 @@ class KcwHamCalculation(KcwCalculation):
         Every alpha is written to the "filled" file with an empty companion
         file (kcw.x ham takes a single alpha file, not a filled/empty split).
         """
-        alphas = self.inputs.alphas.get_list()
-        content = f"{len(alphas)}\n"
-        content += "".join(f"{i + 1} {a} 1.0\n" for i, a in enumerate(alphas))
-        with folder.open(self._ALPHAREF_FILE, "w", encoding="utf-8") as handle:
-            handle.write(content)
-        with folder.open(self._ALPHAREF_EMPTY_FILE, "w", encoding="utf-8") as handle:
-            handle.write("0\n")
+        self._write_alpha_file(folder, self.inputs.alphas.get_list(), self._ALPHAREF_FILE)
+        self._write_alpha_file(folder, [], self._ALPHAREF_EMPTY_FILE)
 
     def _build_retrieve_list(self, parameters: dict) -> list[str]:
         """Also retrieve the real-space Koopmans Hamiltonians when written.

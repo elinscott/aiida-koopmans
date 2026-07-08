@@ -12,32 +12,22 @@ from typing import Any
 
 import numpy as np
 from aiida import orm
-from aiida.parsers import Parser
 from qe_tools import CONSTANTS
 
-from aiida_koopmans.parsers.kcp import _safe_floats, _time_string_to_seconds
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, _time_string_to_seconds
+from aiida_koopmans.parsers.kcp import _safe_floats
 
 _RY_TO_EV = CONSTANTS.ry_to_ev
 
 
-class KcwBaseParser(Parser):
+class KcwBaseParser(KoopmansStdoutParser):
     """Shared stdout retrieval + common-scalar parsing for the kcw.x modes."""
 
     def parse(self, **kwargs: Any):
         """Read the stdout, delegate to ``_parse_mode``, and check completion."""
-        try:
-            retrieved = self.retrieved
-        except Exception:
-            return self.exit_codes.ERROR_NO_RETRIEVED_FOLDER
-
-        stdout_filename = self.node.base.attributes.get("output_filename")
-        if stdout_filename not in retrieved.base.repository.list_object_names():
-            return self.exit_codes.ERROR_OUTPUT_STDOUT_MISSING
-
-        try:
-            stdout = retrieved.base.repository.get_object_content(stdout_filename)
-        except OSError:
-            return self.exit_codes.ERROR_OUTPUT_STDOUT_READ
+        stdout = self._read_stdout()
+        if not isinstance(stdout, str):
+            return stdout
 
         results = self._parse_common(stdout)
         mode_exit = self._parse_mode(stdout, results)
@@ -57,17 +47,10 @@ class KcwBaseParser(Parser):
         """
         return None
 
-    @staticmethod
-    def _parse_common(stdout: str) -> dict[str, Any]:
+    def _parse_common(self, stdout: str) -> dict[str, Any]:
         """Extract ``job_done`` and the walltime from the kcw.x stdout."""
-        results: dict[str, Any] = {
-            "job_done": False,
-            "walltime": None,
-            "walltime_units": "s",
-        }
+        results = self._base_scalars(stdout)
         for line in stdout.splitlines():
-            if "JOB DONE" in line:
-                results["job_done"] = True
             if "KCW          :" in line:
                 time_str = line.split("CPU")[-1].split("WALL")[0].strip()
                 try:

@@ -40,6 +40,8 @@ from aiida import orm
 from aiida.manage import get_config
 from aiida_workgraph import task
 
+from aiida_koopmans.calculations.kcp import KcpCalculation
+
 # Files that need spin-1 → spin-2 conversion. Each entry maps a source
 # filename in the nspin=1 ``K00001/`` directory to the two destination
 # filenames (spin-up, spin-down) in the nspin=2 ``K00001/`` directory.
@@ -56,13 +58,13 @@ _CONVERSION_MAP: tuple[tuple[str, str, str], ...] = (
     ("lambda01.dat", "lambda01.dat", "lambda02.dat"),
 )
 
-# Layout constants — must match :class:`KcpCalculation` so the downstream
+# Layout constants — sourced from :class:`KcpCalculation` so the downstream
 # kcp.x run picks the result up via its ``parent_folder`` symlink.
-_PREFIX = "aiida"
-_OUTPUT_SUBFOLDER = "out"
-_NDW = 60
+_PREFIX = KcpCalculation._PREFIX
+_OUTPUT_SUBFOLDER = KcpCalculation._OUTPUT_SUBFOLDER
+_NDW = KcpCalculation._NDW
 _SAVE_DIRNAME = f"{_PREFIX}_{_NDW}.save"
-_K_SUBDIR = "K00001"
+_K_SUBDIR = KcpCalculation._K_SUBDIR
 
 
 def _convert_spin1_to_spin2_bytes(content: bytes) -> tuple[bytes, bytes]:

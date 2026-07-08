@@ -16,14 +16,15 @@ from typing import Any
 
 import numpy as np
 from aiida import orm
-from aiida.parsers import Parser
 from qe_tools import CONSTANTS
+
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, _time_string_to_seconds
 
 _HARTREE_TO_EV = CONSTANTS.hartree_to_ev
 _BOHR_TO_ANG = CONSTANTS.bohr_to_ang
 
 
-class KcpParser(Parser):
+class KcpParser(KoopmansStdoutParser):
     """Parse the stdout and Hamiltonian XML outputs of a ``KcpCalculation``."""
 
     def parse(self, **kwargs: Any):
@@ -33,19 +34,9 @@ class KcpParser(Parser):
         declared a non-empty ``retrieve_temporary_list``; that's where the
         Hamiltonian XMLs land for parsing before they're discarded.
         """
-        try:
-            retrieved = self.retrieved
-        except Exception:
-            return self.exit_codes.ERROR_NO_RETRIEVED_FOLDER
-
-        stdout_filename = self.node.base.attributes.get("output_filename")
-        if stdout_filename not in retrieved.base.repository.list_object_names():
-            return self.exit_codes.ERROR_OUTPUT_STDOUT_MISSING
-
-        try:
-            stdout = retrieved.base.repository.get_object_content(stdout_filename)
-        except OSError:
-            return self.exit_codes.ERROR_OUTPUT_STDOUT_READ
+        stdout = self._read_stdout()
+        if not isinstance(stdout, str):
+            return stdout
 
         parsed, eigenvalues = self._parse_stdout(stdout)
         self.out("output_parameters", orm.Dict(dict=parsed))
@@ -376,23 +367,6 @@ def _parse_convergence_line(line: str) -> dict[str, Any] | None:
         except ValueError:
             pass
     return entry
-
-
-def _time_string_to_seconds(time_str: str) -> float:
-    """Convert strings like ``1d 2h 3m 4s`` / ``3m 4s`` / ``4s`` to seconds."""
-    days, hours, minutes = 0.0, 0.0, 0.0
-    rem = time_str
-    if "d" in rem:
-        d_part, rem = rem.split("d", 1)
-        days = float(d_part)
-    if "h" in rem:
-        h_part, rem = rem.split("h", 1)
-        hours = float(h_part)
-    if "m" in rem:
-        m_part, rem = rem.split("m", 1)
-        minutes = float(m_part)
-    seconds = float(rem.rstrip("s").strip() or 0.0)
-    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
 def _read_hamiltonian_xml(content: str) -> np.ndarray:

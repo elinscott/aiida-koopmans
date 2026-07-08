@@ -12,17 +12,20 @@ import copy
 from pathlib import PurePosixPath
 from typing import ClassVar
 
-from aiida.common import CalcInfo, CodeInfo
-from aiida.engine import CalcJob
+from aiida.common import CalcInfo
 from aiida.orm import ArrayData, Dict, RemoteData, StructureData
 from aiida.plugins import DataFactory
-from aiida_quantumespresso.utils.convert import convert_input_to_namelist_entry
+
+from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
+from aiida_koopmans.utils import walk_remote_files
 
 UpfData = DataFactory("pseudo.upf")
 
 
-class KcpCalculation(CalcJob):
+class KcpCalculation(KoopmansStdoutCalculation):
     """AiiDA plugin for running kcp.x, the Koopmans-modified CP code in Quantum ESPRESSO."""
+
+    _TOOL_NAME = "kcp.x"
 
     _INPUT_FILE = "aiida.cpi"
     _OUTPUT_FILE = "aiida.cpo"
@@ -30,8 +33,7 @@ class KcpCalculation(CalcJob):
     _PREFIX = "aiida"
     _OUTPUT_SUBFOLDER = "out"
     _PSEUDO_SUBFOLDER = "pseudo"
-    _ALPHAREF_FILE = "file_alpharef.txt"
-    _ALPHAREF_EMPTY_FILE = "file_alpharef_empty.txt"
+    _K_SUBDIR = "K00001"
     # All koopmans kcp.x runs use the same ndr/ndw pair. AiiDA scratch
     # already isolates each calc, so per-step renumbering buys us nothing
     # — every calc reads from ``out/aiida_50.save/`` (symlinked from the
@@ -187,18 +189,6 @@ class KcpCalculation(CalcJob):
             help="Bare Hamiltonian lambda matrices, present when ``do_bare_eigs=.true.``.",
         )
 
-        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
-        spec.exit_code(
-            302, "ERROR_OUTPUT_STDOUT_MISSING", message="The kcp.x stdout file was not retrieved."
-        )
-        spec.exit_code(
-            303, "ERROR_OUTPUT_STDOUT_READ", message="The kcp.x stdout could not be read."
-        )
-        spec.exit_code(
-            310,
-            "ERROR_OUTPUT_STDOUT_INCOMPLETE",
-            message="The kcp.x stdout ends before ``JOB DONE``.",
-        )
         spec.exit_code(
             320,
             "ERROR_OUTPUT_HAM_MISSING",
@@ -243,13 +233,8 @@ class KcpCalculation(CalcJob):
             nspin=nspin, do_orbdep=do_orbdep, do_bare_eigs=do_bare_eigs
         )
 
-        code_info = CodeInfo()
-        code_info.code_uuid = self.inputs.code.uuid
-        code_info.cmdline_params = ["-in", self._INPUT_FILE]
-        code_info.stdout_name = self._OUTPUT_FILE
-
         calc_info = CalcInfo()
-        calc_info.codes_info = [code_info]
+        calc_info.codes_info = [self._make_code_info()]
         calc_info.local_copy_list = local_copy_list
         calc_info.remote_symlink_list = remote_symlink_list
         calc_info.retrieve_list = retrieve_list
@@ -392,7 +377,7 @@ class KcpCalculation(CalcJob):
         # those paths.
         overlay_skip: set[str] = set()
         if "parent_folder_evcfixed" in self.inputs:
-            overlay_skip |= {f"K00001/evc_occupied{ispin}.dat" for ispin in (1, 2)}
+            overlay_skip |= {f"{self._K_SUBDIR}/evc_occupied{ispin}.dat" for ispin in (1, 2)}
         # ``variational_orbital_overlays`` also overrides entries from the
         # primary parent — different *source name* (e.g. ``evc1.dat`` instead
         # of ``evc01.dat``) at the *same destination*. Skip the destinations
@@ -402,13 +387,13 @@ class KcpCalculation(CalcJob):
             if "variational_orbital_overlays" in self.inputs
             else {}
         )
-        overlay_skip |= {f"K00001/{dest}.dat" for dest in overlays_map.values()}
+        overlay_skip |= {f"{self._K_SUBDIR}/{dest}.dat" for dest in overlays_map.values()}
 
         if "parent_folder" in self.inputs:
             parent = self.inputs.parent_folder
             parent_root = PurePosixPath(parent.get_remote_path())
             parent_save_abs = parent_root / parent_save_relpath
-            for rel_file in self._walk_remote_files(parent, parent_save_relpath):
+            for rel_file in walk_remote_files(parent, parent_save_relpath):
                 if rel_file in overlay_skip:
                     continue
                 abs_source = str(parent_save_abs / rel_file)
@@ -428,11 +413,11 @@ class KcpCalculation(CalcJob):
                 PurePosixPath(evc_parent.get_remote_path())
                 / self._OUTPUT_SUBFOLDER
                 / f"{self._PREFIX}_{self._NDW}.save"
-                / "K00001"
+                / self._K_SUBDIR
             )
             for ispin in (1, 2):
                 evc_source = evc_save / f"evcfixed_empty{ispin}.dat"
-                evc_target = f"{target_save}/K00001/evc_occupied{ispin}.dat"
+                evc_target = f"{target_save}/{self._K_SUBDIR}/evc_occupied{ispin}.dat"
                 symlinks.append((evc_parent.computer.uuid, str(evc_source), evc_target))
 
         if overlays_map:
@@ -450,47 +435,16 @@ class KcpCalculation(CalcJob):
             parent = self.inputs.parent_folder
             parent_save_abs = PurePosixPath(parent.get_remote_path()) / parent_save_relpath
             for source_stem, dest_stem in overlays_map.items():
-                source_abs = str(parent_save_abs / "K00001" / f"{source_stem}.dat")
-                dest_rel = f"{target_save}/K00001/{dest_stem}.dat"
+                source_abs = str(parent_save_abs / self._K_SUBDIR / f"{source_stem}.dat")
+                dest_rel = f"{target_save}/{self._K_SUBDIR}/{dest_stem}.dat"
                 symlinks.append((parent.computer.uuid, source_abs, dest_rel))
 
         return symlinks
 
-    @staticmethod
-    def _walk_remote_files(remote: RemoteData, relpath: str) -> list[str]:
-        """Recursively enumerate files under ``relpath`` on a ``RemoteData``.
-
-        Returns paths relative to ``relpath``, using forward slashes. Uses
-        the node's AiiDA transport (one open per call), so this works
-        unchanged for ``core.local``, ``core.ssh``, or any other transport
-        plugin. Symlinks pointing at directories are followed via
-        ``transport.isdir`` — that matches what we want here, since the
-        parent's ``.save`` itself may already be a symlinked tree from a
-        further-upstream parent.
-        """
-        out: list[str] = []
-        root = PurePosixPath(remote.get_remote_path())
-        with remote.get_authinfo().get_transport() as transport:
-
-            def _walk(sub: str) -> None:
-                here = str(root / relpath / sub) if sub else str(root / relpath)
-                for name in transport.listdir(here):
-                    child_rel = f"{sub}/{name}" if sub else name
-                    child_full = f"{here}/{name}"
-                    if transport.isdir(child_full):
-                        _walk(child_rel)
-                    else:
-                        out.append(child_rel)
-
-            _walk("")
-        return out
-
     def _build_retrieve_list(self) -> list[str]:
         """Files persisted in the ``retrieved`` FolderData: stdout, CRASH, user extras."""
         retrieve_list: list[str] = [self._OUTPUT_FILE, self._CRASH_FILE]
-        if "settings" in self.inputs:
-            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
-            retrieve_list.extend(extra)
+        retrieve_list.extend(self._additional_retrieve_list())
         return retrieve_list
 
     def _build_retrieve_temporary_list(
@@ -505,7 +459,7 @@ class KcpCalculation(CalcJob):
         """
         if not do_orbdep:
             return []
-        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDW}.save/K00001"
+        ham_dir = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDW}.save/{self._K_SUBDIR}"
         temp_list: list = []
         for ispin in range(1, nspin + 1):
             tag = str(ispin) if nspin > 1 else ""
@@ -552,21 +506,13 @@ class KcpCalculation(CalcJob):
             options = parameters.get(nl)
             if not options:
                 continue
-            out.append(cls._render_one_namelist(nl, options))
+            out.append(cls.render_namelist(nl, options))
             rendered.add(nl)
         for nl, options in parameters.items():
             if nl in rendered or not options:
                 continue
-            out.append(cls._render_one_namelist(nl, options))
+            out.append(cls.render_namelist(nl, options))
         return "".join(out)
-
-    @staticmethod
-    def _render_one_namelist(name: str, options: dict) -> str:
-        lines = [f"&{name}\n"]
-        for key, val in options.items():
-            lines.append(convert_input_to_namelist_entry(key, val))
-        lines.append("/\n")
-        return "".join(lines)
 
     @staticmethod
     def _render_atomic_species(structure: StructureData, pseudos: dict) -> str:
@@ -590,15 +536,3 @@ class KcpCalculation(CalcJob):
         for vec in structure.cell:
             lines.append(f"  {vec[0]:.10f}  {vec[1]:.10f}  {vec[2]:.10f}\n")
         return "".join(lines)
-
-    @staticmethod
-    def _write_alpha_file(folder, alphas: list[float], filename: str) -> None:
-        """Write screening parameters in kcp.x ``file_alpharef[_empty].txt`` format.
-
-        Format: first line is the orbital count, subsequent lines are
-        ``{index} {alpha} 1.0`` (1-indexed).
-        """
-        content = f"{len(alphas)}\n"
-        content += "".join(f"{i + 1} {a} 1.0\n" for i, a in enumerate(alphas))
-        with folder.open(filename, "w", encoding="utf-8") as handle:
-            handle.write(content)

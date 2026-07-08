@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import math
 
-from aiida.common import CalcInfo, CodeInfo
-from aiida.engine import CalcJob
+from aiida.common import CalcInfo
 from aiida.orm import Dict, List, RemoteData, Str
 
+from aiida_koopmans.calculations.base import KoopmansCalculation
 
-class MergeEvcCalculation(CalcJob):
+
+class MergeEvcCalculation(KoopmansCalculation):
     """AiiDA plugin for running ``merge_evc.x`` from the Koopmans Quantum ESPRESSO fork."""
 
     _OUTPUT_FILE = "aiida.out"
@@ -89,7 +90,6 @@ class MergeEvcCalculation(CalcJob):
             help="Scalar results: a ``merged`` flag confirming the output file was written.",
         )
 
-        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
         spec.exit_code(
             302,
             "ERROR_OUTPUT_FILE_MISSING",
@@ -120,13 +120,8 @@ class MergeEvcCalculation(CalcJob):
 
         cmdline_params = self._build_cmdline(kgrid, input_names, dest_filename)
 
-        code_info = CodeInfo()
-        code_info.code_uuid = self.inputs.code.uuid
-        code_info.cmdline_params = cmdline_params
-        code_info.stdout_name = self._OUTPUT_FILE
-
         calc_info = CalcInfo()
-        calc_info.codes_info = [code_info]
+        calc_info.codes_info = [self._make_code_info(cmdline_params)]
         calc_info.remote_symlink_list = remote_symlink_list
         calc_info.retrieve_list = self._build_retrieve_list(dest_filename)
 
@@ -154,7 +149,5 @@ class MergeEvcCalculation(CalcJob):
     def _build_retrieve_list(self, dest_filename: str) -> list[str]:
         """Retrieve the merged output file plus stdout and any user extras."""
         retrieve_list: list[str] = [dest_filename, self._OUTPUT_FILE]
-        if "settings" in self.inputs:
-            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
-            retrieve_list.extend(extra)
+        retrieve_list.extend(self._additional_retrieve_list())
         return retrieve_list

@@ -32,14 +32,16 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from aiida.common import CalcInfo, CodeInfo
-from aiida.engine import CalcJob
+from aiida.common import CalcInfo
 from aiida.orm import Dict, RemoteData
-from aiida_quantumespresso.utils.convert import convert_input_to_namelist_entry
+
+from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
 
 
-class Wann2kcpCalculation(CalcJob):
+class Wann2kcpCalculation(KoopmansStdoutCalculation):
     """AiiDA plugin for running ``wann2kcp.x`` from the Koopmans Quantum ESPRESSO fork."""
+
+    _TOOL_NAME = "wann2kcp.x"
 
     _INPUT_FILE = "aiida.wki"
     _OUTPUT_FILE = "aiida.wko"
@@ -131,21 +133,6 @@ class Wann2kcpCalculation(CalcJob):
             help="Scalar results: ``job_done`` flag and ``walltime``.",
         )
 
-        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
-        spec.exit_code(
-            302,
-            "ERROR_OUTPUT_STDOUT_MISSING",
-            message="The wann2kcp.x stdout file was not retrieved.",
-        )
-        spec.exit_code(
-            303, "ERROR_OUTPUT_STDOUT_READ", message="The wann2kcp.x stdout could not be read."
-        )
-        spec.exit_code(
-            310,
-            "ERROR_OUTPUT_STDOUT_INCOMPLETE",
-            message="The wann2kcp.x stdout ends before ``JOB DONE``.",
-        )
-
     def prepare_for_submission(self, folder):
         """Render the ``.wki`` input file and build the ``CalcInfo``."""
         raw = self.inputs.parameters.get_dict() if "parameters" in self.inputs else {}
@@ -156,13 +143,8 @@ class Wann2kcpCalculation(CalcJob):
         with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
             handle.write(content)
 
-        code_info = CodeInfo()
-        code_info.code_uuid = self.inputs.code.uuid
-        code_info.cmdline_params = ["-in", self._INPUT_FILE]
-        code_info.stdout_name = self._OUTPUT_FILE
-
         calc_info = CalcInfo()
-        calc_info.codes_info = [code_info]
+        calc_info.codes_info = [self._make_code_info()]
         calc_info.remote_symlink_list = self._build_remote_symlink_list()
         calc_info.retrieve_list = self._build_retrieve_list(parameters)
 
@@ -213,9 +195,7 @@ class Wann2kcpCalculation(CalcJob):
         retrieve_list: list[str] = [self._OUTPUT_FILE]
         if parameters.get("wan_mode", "wannier2kcp") == "wannier2kcp":
             retrieve_list += ["evcw.dat", "evcw1.dat", "evcw2.dat"]
-        if "settings" in self.inputs:
-            extra = self.inputs.settings.get_dict().get("additional_retrieve_list", [])
-            retrieve_list.extend(extra)
+        retrieve_list.extend(self._additional_retrieve_list())
         return retrieve_list
 
     # ------------------------------------------------------------------
@@ -250,8 +230,4 @@ class Wann2kcpCalculation(CalcJob):
     @classmethod
     def _render_namelist(cls, parameters: dict) -> str:
         """Render the single ``&inputpp`` namelist for the ``.wki`` file."""
-        lines = [f"&{cls._NAMELIST}\n"]
-        for key, val in parameters.items():
-            lines.append(convert_input_to_namelist_entry(key, val))
-        lines.append("/\n")
-        return "".join(lines)
+        return cls.render_namelist(cls._NAMELIST, parameters)
