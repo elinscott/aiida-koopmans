@@ -887,7 +887,14 @@ def KoopmansDSCFWorkflow(
             kgrid=kgrid,
             metadata={"call_link_label": "make_supercell"},
         ).result
-        run_nbnd = nbnd * ncells
+        # The supercell bands are exactly the folded Wannier manifolds:
+        # (occ + emp WFs per primitive cell) x images. Scaling the primitive
+        # ``nbnd`` instead demands more empty states than the folded
+        # ``evc0_empty`` provides — kcp.x then rejects the file
+        # ("wavefunctions dimensions changed") and silently random-initialises
+        # the empties. Legacy reference: Si 2x2x2 runs nbnd=64 (4 occ + 4 emp
+        # WFs) even though the primitive wannierization used nbnd=20.
+        run_nbnd = sum(block["num_wann"] for block in blocks) * ncells
         run_tot_magnetization = scale_extensive(tot_magnetization, ncells)
     else:
         run_structure = structure
