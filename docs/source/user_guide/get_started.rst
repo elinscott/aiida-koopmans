@@ -2,41 +2,47 @@
 Getting started
 ===============
 
-This page should contain a short guide on what the plugin does and
-a short example on how to use the plugin.
+``aiida-koopmans`` provides the AiiDA plugins behind the `koopmans
+<https://koopmans-functionals.org>`_ package: ``CalcJob``/``Parser`` pairs for
+the Koopmans-fork Quantum ESPRESSO binaries (``kcp.x``, ``kcw.x``,
+``wann2kcp.x``, ``merge_evc.x``) and the ``@task.graph`` workflows that
+compose them (together with upstream ``aiida-quantumespresso`` and
+``aiida-wannier90-workflows`` workchains) into full Koopmans spectral
+functional calculations.
 
 Installation
 ++++++++++++
 
 Use the following commands to install the plugin::
 
-    git clone https://github.com/elinscott/aiida-koopmans .
+    git clone https://github.com/elinscott/aiida-koopmans
     cd aiida-koopmans
-    pip install -e .  # also installs aiida, if missing (but not postgres)
-    #pip install -e .[pre-commit,testing] # install extras for more features
-    verdi quicksetup  # better to set up a new profile
-    verdi plugin list aiida.calculations  # should now show your calculation plugins
+    pip install -e .
+    verdi presto  # set up an AiiDA profile, if you don't have one
+    verdi plugin list aiida.calculations  # should now show the koopmans.* plugins
 
-Then use ``verdi code setup`` with the ``koopmans`` input plugin
-to set up an AiiDA code for aiida-koopmans.
-
-Usage
-+++++
-
-A quick demo of how to submit a calculation::
-
-    verdi daemon start         # make sure the daemon is running
-    cd examples
-    verdi run test_submit.py        # submit test calculation
-    verdi calculation list -a  # check status of calculation
-
-If you have already set up your own aiida_koopmans code using
-``verdi code setup``, you may want to try the following command::
-
-    koopmans-submit  # uses aiida_koopmans.cli
+Most users should not drive this package directly: install the ``koopmans``
+package instead, whose ``koopmans install`` command sets up the AiiDA profile,
+codes, and pseudopotential families, and whose ``koopmans run`` command
+translates a koopmans input file into the workgraphs defined here.
 
 Available calculations
 ++++++++++++++++++++++
 
-.. aiida-calcjob:: DiffCalculation
-    :module: aiida_koopmans.calculations
+.. aiida-calcjob:: KcpCalculation
+    :module: aiida_koopmans.calculations.kcp
+
+.. aiida-calcjob:: Wann2kcpCalculation
+    :module: aiida_koopmans.calculations.wann2kcp
+
+.. aiida-calcjob:: MergeEvcCalculation
+    :module: aiida_koopmans.calculations.merge_evc
+
+.. aiida-calcjob:: Wann2kcCalculation
+    :module: aiida_koopmans.calculations.kcw
+
+.. aiida-calcjob:: KcwScreenCalculation
+    :module: aiida_koopmans.calculations.kcw
+
+.. aiida-calcjob:: KcwHamCalculation
+    :module: aiida_koopmans.calculations.kcw

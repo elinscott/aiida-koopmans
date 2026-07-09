@@ -1,0 +1,394 @@
+"""Parser for Quantum ESPRESSO ``kcp.x`` output files.
+
+Parses the stdout ``.cpo`` text output and, when orbital-dependent screening is
+requested, the Hamiltonian XML files under
+``<outdir>/<prefix>_<ndw>.save/K00001/``.
+
+Unit conversions use ``qe_tools.CONSTANTS`` (the AiiDA ecosystem's source of
+Hartree, Bohr, etc.).
+"""
+
+from __future__ import annotations
+
+import math
+import xml.etree.ElementTree as ET
+from typing import Any
+
+import numpy as np
+from aiida import orm
+from qe_tools import CONSTANTS
+
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, time_string_to_seconds
+
+
+class KcpParser(KoopmansStdoutParser):
+    """Parse the stdout and Hamiltonian XML outputs of a ``KcpCalculation``."""
+
+    def parse(self, **kwargs: Any):
+        """Entry point called by AiiDA after the CalcJob finishes.
+
+        ``retrieved_temporary_folder`` is supplied by AiiDA when the CalcJob
+        declared a non-empty ``retrieve_temporary_list``; that's where the
+        Hamiltonian XMLs land for parsing before they're discarded.
+        """
+        stdout = self._read_stdout()
+        if not isinstance(stdout, str):
+            return stdout
+
+        parsed, eigenvalues = self._parse_stdout(stdout)
+        self.out("output_parameters", orm.Dict(dict=parsed))
+        self._emit_eigenvalues(eigenvalues)
+
+        retrieved_temporary_folder = kwargs.get("retrieved_temporary_folder")
+        lambdas_exit = self._emit_lambdas(retrieved_temporary_folder)
+        if lambdas_exit is not None:
+            return lambdas_exit
+
+        if not parsed.get("job_done", False):
+            return self.exit_codes.ERROR_OUTPUT_STDOUT_INCOMPLETE
+
+        return None
+
+    def _emit_eigenvalues(self, eigenvalues: list[list[float]]) -> None:
+        """Pad the per-spin eigenvalue lists into a rectangular array and output it."""
+        if not eigenvalues:
+            return
+        max_len = max(len(row) for row in eigenvalues)
+        padded = np.full((len(eigenvalues), max_len), np.nan)
+        for i, row in enumerate(eigenvalues):
+            padded[i, : len(row)] = row
+        eig_array = orm.ArrayData()
+        eig_array.set_array("eigenvalues", padded)
+        self.out("output_eigenvalues", eig_array)
+
+    def _emit_lambdas(self, retrieved_temporary_folder):
+        """Emit ``output_lambdas`` / ``output_bare_lambdas`` when do_orbdep is set.
+
+        Hamiltonian XMLs live in the retrieved-temporary folder (set by the
+        CalcJob's ``retrieve_temporary_list``). Returns an exit-code node if
+        the folder is missing or any XML is, else ``None``.
+        """
+        params = self.node.inputs.parameters.get_dict()
+        system = {k.lower(): v for k, v in params.get("SYSTEM", {}).items()}
+        nksic = {k.lower(): v for k, v in params.get("NKSIC", {}).items()}
+        if not bool(system.get("do_orbdep", False)):
+            return None
+        if retrieved_temporary_folder is None:
+            return self.exit_codes.ERROR_OUTPUT_HAM_MISSING
+        nspin = int(system.get("nspin", 1))
+
+        lambdas = self._parse_lambdas(retrieved_temporary_folder, nspin=nspin, bare=False)
+        if lambdas is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
+            return lambdas
+        self.out("output_lambdas", lambdas)
+
+        if bool(nksic.get("do_bare_eigs", False)):
+            bare = self._parse_lambdas(retrieved_temporary_folder, nspin=nspin, bare=True)
+            if bare is self.exit_codes.ERROR_OUTPUT_HAM_MISSING:
+                return bare
+            self.out("output_bare_lambdas", bare)
+        return None
+
+    # ------------------------------------------------------------------
+    # stdout parsing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_stdout(stdout: str) -> tuple[dict[str, Any], list[list[float]]]:  # noqa: C901
+        """Extract the scalar results and per-spin eigenvalue lists from the .cpo text.
+
+        The branching mirrors the distinct patterns in kcp.x stdout (total
+        energy, HOMO/LUMO, orbital data, eigenvalues, convergence, walltime,
+        JOB DONE). Decomposing one-pattern-per-helper would spread the
+        complexity without reducing it.
+        """
+        results: dict[str, Any] = {
+            "energy": None,
+            "energy_units": "eV",
+            "odd_energy": None,
+            "homo_energy": None,
+            "lumo_energy": None,
+            "mp1_energy": None,
+            "mp2_energy": None,
+            "lambda_ii": None,
+            "walltime": None,
+            "walltime_units": "s",
+            "convergence": {"filled": [], "empty": []},
+            "job_done": False,
+            "orbital_data": {
+                "charge": [],
+                "centres": [],
+                "spreads": [],
+                "self-Hartree": [],
+            },
+        }
+        eigenvalues: list[list[float]] = []
+
+        lines = stdout.splitlines()
+        convergence_key = "filled"
+        i_spin_orbital = None
+
+        for idx, line in enumerate(lines):
+            if "                total energy" in line:
+                # The total energy line has the value 3 tokens from the end.
+                tokens = line.split()
+                try:
+                    results["energy"] = _fortran_float(tokens[-3]) * CONSTANTS.hartree_to_ev
+                except (IndexError, ValueError):
+                    pass
+
+            if "odd energy" in line:
+                tokens = line.split()
+                try:
+                    results["odd_energy"] = _fortran_float(tokens[3]) * CONSTANTS.hartree_to_ev
+                except (IndexError, ValueError):
+                    pass
+
+            if "fixed_lambda" in line and results["lambda_ii"] is None:
+                tokens = line.split()
+                try:
+                    results["lambda_ii"] = _fortran_float(tokens[-1]) * CONSTANTS.hartree_to_ev
+                except (IndexError, ValueError):
+                    pass
+
+            if (
+                "HOMO Eigenvalue (eV)" in line
+                and idx + 2 < len(lines)
+                and "*" not in lines[idx + 2]
+            ):
+                try:
+                    results["homo_energy"] = _fortran_float(lines[idx + 2].strip())
+                except ValueError:
+                    pass
+
+            if (
+                "LUMO Eigenvalue (eV)" in line
+                and idx + 2 < len(lines)
+                and "*" not in lines[idx + 2]
+            ):
+                try:
+                    results["lumo_energy"] = _fortran_float(lines[idx + 2].strip())
+                except ValueError:
+                    pass
+
+            if "Makov-Payne 1-order energy" in line:
+                tokens = line.split()
+                try:
+                    results["mp1_energy"] = _fortran_float(tokens[4]) * CONSTANTS.hartree_to_ev
+                except (IndexError, ValueError):
+                    pass
+
+            if "Makov-Payne 2-order energy" in line:
+                tokens = line.split()
+                try:
+                    results["mp2_energy"] = _fortran_float(tokens[4]) * CONSTANTS.hartree_to_ev
+                except (IndexError, ValueError):
+                    pass
+
+            if "Eigenvalues (eV), kp" in line:
+                if "Empty" not in line:
+                    eigenvalues.append([])
+                j = idx + 2
+                while j < len(lines) and lines[j].strip():
+                    eigenvalues[-1].extend(safe_floats(lines[j]))
+                    j += 1
+
+            if "Orb -- Charge  ---" in line or "Orb -- Empty Charge" in line:
+                tokens = line.split()
+                try:
+                    i_spin_orbital = int(tokens[-1]) - 1
+                except ValueError:
+                    i_spin_orbital = 0
+                for key in results["orbital_data"]:
+                    while len(results["orbital_data"][key]) < i_spin_orbital + 1:
+                        results["orbital_data"][key].append([])
+
+            if line.startswith(("OCC", "EMP")) and "NaN" not in line:
+                cleaned = line.replace("********", "   0.000")
+                values = [
+                    _fortran_float(cleaned[i - 4 : i + 4])
+                    for i, c in enumerate(cleaned)
+                    if c == "."
+                ]
+                if len(values) >= 6 and i_spin_orbital is not None:
+                    results["orbital_data"]["charge"][i_spin_orbital].append(values[0])
+                    results["orbital_data"]["centres"][i_spin_orbital].append(
+                        [v * CONSTANTS.bohr_to_ang for v in values[1:4]]
+                    )
+                    results["orbital_data"]["spreads"][i_spin_orbital].append(
+                        values[4] * CONSTANTS.bohr_to_ang * CONSTANTS.bohr_to_ang
+                    )
+                    results["orbital_data"]["self-Hartree"][i_spin_orbital].append(values[5])
+
+            if "PERFORMING CONJUGATE GRADIENT MINIMIZATION OF EMPTY STATES" in line:
+                convergence_key = "empty"
+
+            if "iteration = " in line and "eff iteration = " in line:
+                entry = _parse_convergence_line(line)
+                if entry is not None:
+                    results["convergence"][convergence_key].append(entry)
+
+            if "JOB DONE" in line:
+                results["job_done"] = True
+
+            if "wall time" in line:
+                # Expected shape: ``<prefix>, 3m 4s wall time``
+                try:
+                    time_part = line.split(",")[1].strip()
+                    # Drop trailing 'wall time'
+                    time_part = time_part.rstrip()
+                    if time_part.endswith("wall time"):
+                        time_part = time_part[: -len("wall time")].strip()
+                    results["walltime"] = time_string_to_seconds(time_part)
+                except (IndexError, ValueError):
+                    pass
+
+        return results, eigenvalues
+
+    # ------------------------------------------------------------------
+    # Hamiltonian XML parsing
+    # ------------------------------------------------------------------
+
+    def _parse_lambdas(self, retrieved_temporary_folder, nspin: int, bare: bool):
+        """Return an ArrayData of lambda matrices or an exit-code sentinel on failure.
+
+        The lambdas are stacked into a single ``(nspin, n, n)`` ndarray and
+        stored under one key (``"lambdas"``). Single-key ArrayData round-trips
+        cleanly through aiida-pythonjob's default deserializer (which calls
+        ``data.get_array()`` with no name) — pyfunctions consuming this output
+        get a plain ``np.ndarray`` for free. Spin axis order:
+        ``SpinChannel.NONE`` / ``UP`` at 0, ``SpinChannel.DOWN`` at 1
+        (matches ``SpinChannel.index``). Within each spin the matrix is
+        block-diagonal in (filled, empty) — so a global band index runs
+        over all orbitals in kcp.x's natural order.
+        """
+        from pathlib import Path
+
+        from aiida_koopmans.types import SpinChannel
+
+        cls = self.node.process_class
+        ham_dir = (
+            Path(retrieved_temporary_folder)
+            / cls._OUTPUT_SUBFOLDER
+            / f"{cls._PREFIX}_{cls._NDW}.save"
+            / "K00001"
+        )
+
+        # kcp.x writes hamiltonian.xml (no suffix) for nspin=1 and
+        # hamiltonian{1,2}.xml for nspin=2. The Fortran-style 1-based
+        # suffix is ``spin.index + 1`` (``.index`` is 0-based for ndarray use).
+        spins = [SpinChannel.NONE] if nspin == 1 else [SpinChannel.UP, SpinChannel.DOWN]
+
+        per_spin: list[np.ndarray | None] = [None] * nspin
+        for spin in spins:
+            file_tag = "" if spin is SpinChannel.NONE else str(spin.index + 1)
+            prefix_token = "hamiltonian0" if bare else "hamiltonian"
+            filled_path = ham_dir / f"{prefix_token}{file_tag}.xml"
+            empty_path = ham_dir / f"{prefix_token}_emp{file_tag}.xml"
+
+            try:
+                filled_content = filled_path.read_text()
+            except (OSError, FileNotFoundError):
+                return self.exit_codes.ERROR_OUTPUT_HAM_MISSING
+
+            filled = _read_hamiltonian_xml(filled_content)
+
+            try:
+                empty_content = empty_path.read_text()
+            except (OSError, FileNotFoundError):
+                empty = None
+            else:
+                empty = _read_hamiltonian_xml(empty_content)
+
+            combined = filled if empty is None else _block_diag(filled, empty)
+            per_spin[spin.index] = combined
+
+        array = orm.ArrayData()
+        array.set_array("lambdas", np.stack(per_spin, axis=0))
+        return array
+
+
+# ----------------------------------------------------------------------
+# Module-level helpers
+# ----------------------------------------------------------------------
+
+
+def _fortran_float(token: str) -> float:
+    """Parse a float that may use Fortran's 'd' exponent ('1.23d-4' -> 1.23e-4)."""
+    return float(token.replace("d", "e").replace("D", "e"))
+
+
+def safe_floats(string: str) -> list[float]:
+    """Parse whitespace-separated floats tolerantly, mapping ``*****`` to NaN."""
+    out: list[float] = []
+    for word in string.split():
+        if "*" in word:
+            # Reduce runs of stars, then pad with spaces and re-split.
+            while "**" in word:
+                word = word.replace("**", "*")
+            for tok in word.replace("*", " * ").split():
+                out.append(math.nan if tok == "*" else _fortran_float(tok))
+        elif word.count(".") > 1:
+            out.extend([math.nan] * word.count("."))
+        else:
+            try:
+                out.append(_fortran_float(word))
+            except ValueError:
+                out.append(math.nan)
+    return out
+
+
+def _parse_convergence_line(line: str) -> dict[str, Any] | None:
+    """Parse a kcp.x per-step convergence line.
+
+    The kcp.x stdout emits periodic lines of the form
+    ``iteration = N   eff iteration = M   Etot(Ha) = <float>   delta_E = <float>``.
+    """
+    try:
+        parts = [segment.split()[0] for segment in line.split("=")[1:]]
+    except IndexError:
+        return None
+    if len(parts) < 3:
+        return None
+    try:
+        entry = {
+            "iteration": int(parts[0]),
+            "eff_iteration": int(parts[1]),
+            "Etot": _fortran_float(parts[2]) * CONSTANTS.hartree_to_ev,
+        }
+    except ValueError:
+        return None
+    if len(parts) >= 4:
+        try:
+            entry["delta_E"] = _fortran_float(parts[3]) * CONSTANTS.hartree_to_ev
+        except ValueError:
+            pass
+    return entry
+
+
+def _read_hamiltonian_xml(content: str) -> np.ndarray:
+    """Parse a kcp.x hamiltonian XML into a complex square matrix (in eV)."""
+    # Input comes from our own kcp.x run via AiiDA's retrieve list — not
+    # untrusted user XML — so the standard-library parser is safe here.
+    root = ET.fromstring(content)  # noqa: S314
+    size = int(root.attrib["size"])
+    side = math.isqrt(size)
+    if side * side != size:
+        raise ValueError(f"Hamiltonian XML size {size} is not a perfect square.")
+    if root.text is None:
+        raise ValueError("Hamiltonian XML has no payload.")
+    entries: list[complex] = []
+    for row in root.text.strip().split("\n"):
+        re_part, im_part = (_fortran_float(x) for x in row.split(","))
+        entries.append(complex(re_part, im_part))
+    matrix = np.array(entries, dtype=np.complex128) * CONSTANTS.hartree_to_ev
+    return matrix.reshape((side, side))
+
+
+def _block_diag(filled: np.ndarray, empty: np.ndarray) -> np.ndarray:
+    """Block-diagonal stacking without pulling in scipy (two blocks only)."""
+    n, m = filled.shape[0], empty.shape[0]
+    out = np.zeros((n + m, n + m), dtype=filled.dtype)
+    out[:n, :n] = filled
+    out[n:, n:] = empty
+    return out
