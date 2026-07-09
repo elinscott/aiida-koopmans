@@ -39,6 +39,14 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Clone fork dependencies next to the checkout
+      # The [tool.uv.sources] path dependencies point at sibling checkouts of
+      # forks carrying features that are still working their way upstream.
+      # Drop entries here (and the corresponding uv source) as they merge.
+      run: |
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
@@ -57,6 +65,11 @@ jobs:
     timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
+    - name: Clone fork dependencies next to the checkout
+      run: |
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:

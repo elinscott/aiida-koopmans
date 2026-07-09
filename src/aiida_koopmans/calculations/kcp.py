@@ -79,7 +79,7 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 "and ``empty`` sub-inputs. Each is an ``orm.Dict`` keyed by "
                 "spin channel (``'none'`` for nspin=1, ``'up'`` / ``'down'`` "
                 "for nspin=2) mapping to per-orbital alpha lists. Shape "
-                "matches the :class:`~aiida_koopmans.types.AlphaScreening` "
+                "matches the ``aiida_koopmans.types.AlphaScreening`` "
                 "TypedDict so a workgraph ``@task`` returning that TypedDict "
                 "wires its namespace output straight through. Required when "
                 "the parameters request orbital-dependent screening."

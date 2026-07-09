@@ -1,7 +1,7 @@
 """Pure-Python machine-learning helpers for screening-parameter prediction.
 
 Every function here takes and returns plain Python / numpy data (descriptor
-computation and estimator fit/predict), so the ``@task``s in
+computation and estimator fit/predict), so the ``@task`` wrappers in
 :mod:`aiida_koopmans.workgraphs.ml` stay thin wrappers. Sections:
 
 * radial/spherical basis functions
