@@ -1,20 +1,15 @@
 """Block-by-block Wannierisation of a periodic system.
 
-Step "B1" of the periodic MLWF / projwfs Koopmans port. A single shared
-scf + nscf is run once (via :func:`PwScfNscfTask`), then each projection
-block (occupied / empty manifold, per spin) is Wannierised in its own
-``Wannier90WorkChain`` that *skips* scf and nscf and reads the shared nscf
-scratch directly.
-
-The fan-out over blocks is the documented dynamic scatter-gather: a native
-``for`` loop over ``blocks`` inside this ``@task.graph`` body (whose
-deferred execution makes ``blocks`` concrete, so each block is iterated and
-subscripted inline). No ``Map`` zone, no ``.value`` accessor, no unpack
-``@task``. Results are collected into a dict keyed by each block's stable
+A single shared scf + nscf is run once (via :func:`PwScfNscfTask`), then each
+projection block (occupied / empty manifold, per spin) is Wannierised in its
+own ``Wannier90WorkChain`` that *skips* scf and nscf and reads the shared
+nscf scratch directly. The per-block fan-out is a native ``for`` loop over
+``blocks`` inside the ``@task.graph`` body -- do not convert it to a ``Map``
+zone. Results are collected into a dict keyed by each block's stable
 ``label`` (e.g. ``"block_1"`` / ``"block_1_spin_up"``) and returned as a
 dynamic output namespace.
 
-Per-block file staging that the later fold-to-supercell step (B2) consumes:
+Per-block file staging that the supercell fold consumes:
 
 * ``hr_retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
   which holds ``aiida_hr.dat`` (the real-space Hamiltonian, written because
@@ -42,14 +37,14 @@ from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.pw import PwOutputs, PwScfNscfTask
 
 # Force retrieval of the wannier90 checkpoint: ``aiida.chk`` is not in the
-# default retrieve list, but B2 (fold-to-supercell) needs it to unitarily
+# default retrieve list, but the supercell fold needs it to unitarily
 # rotate the per-block manifolds. ``aiida_hr.dat`` lands in ``retrieved``
 # automatically once ``write_hr=True``.
 _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
 
 class BlockWannierOutputs(TypedDict):
-    """Per-block Wannierisation outputs that the supercell fold (B2) reads.
+    """Per-block Wannierisation outputs that the supercell fold reads.
 
     * ``hr_retrieved`` -- wannier90 ``retrieved`` FolderData (holds
       ``aiida_hr.dat``).
@@ -66,11 +61,11 @@ class BlockWannierOutputs(TypedDict):
 class BlockWannierizeOutputs(TypedDict):
     """Outputs of :func:`BlockWannierizeTask`.
 
-    * ``nscf`` -- the shared nscf :class:`PwOutputs` so B2 can read
-      ``nscf["remote_folder"]`` (the nscf scratch every block was built on).
+    * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
+      can read ``nscf["remote_folder"]`` (the nscf scratch every block was
+      built on).
     * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
-      a :class:`BlockWannierOutputs`, consumable downstream (B2) as a
-      namespace.
+      a :class:`BlockWannierOutputs`, consumable downstream as a namespace.
     """
 
     nscf: PwOutputs
@@ -100,13 +95,10 @@ def BlockWannierize(
     for this block's ``projection_type``, then:
 
     * pops the ``scf`` namespace and the ``nscf`` namespace so the workchain
-      skips both steps (``should_run_scf`` / ``should_run_nscf`` are simply
-      ``"scf" in inputs`` / ``"nscf" in inputs`` upstream), and points the
-      pw2wannier90 step at the shared nscf scratch via
-      ``pw2wannier90.pw2wannier90.parent_folder`` -- the only parent the
-      validator accepts once both scf and nscf are absent
-      (``wannier90.py`` ``validate_inputs`` lines 94-99; consumed in
-      ``setup`` lines 763-767);
+      skips both steps (upstream gates each on ``"scf" in inputs`` /
+      ``"nscf" in inputs``), and points the pw2wannier90 step at the shared
+      nscf scratch via ``pw2wannier90.pw2wannier90.parent_folder`` -- the only
+      parent the validator accepts once both scf and nscf are absent;
     * overrides the per-block ``num_wann`` / ``num_bands`` / ``exclude_bands``
       (and ``projections`` for explicit blocks) from
       :func:`block_w90_kwargs`;
@@ -195,23 +187,18 @@ def BlockWannierizeTask(
 
     A single :func:`PwScfNscfTask` runs scf + nscf once; every projection
     block is then Wannierised in its own ``Wannier90WorkChain`` that skips
-    scf / nscf and reads the shared nscf scratch
-    (``nscf["remote_folder"]``). The per-block fan-out is the documented
-    dynamic scatter-gather: a native ``for`` loop over ``blocks`` inside
-    this ``@task.graph`` body. The body is deferred, so ``blocks`` is a
-    concrete value -- we iterate it and subscript each block inline (no
-    ``Map`` zone, no ``.value``, no unpack ``@task``). The per-block
-    outputs are collected into a dict keyed by block label and returned as
-    the ``blocks`` dynamic namespace.
+    scf / nscf and reads the shared nscf scratch (``nscf["remote_folder"]``).
+    The per-block fan-out is a native ``for`` loop over ``blocks`` inside this
+    ``@task.graph`` body; the per-block outputs are collected into a dict
+    keyed by block label and returned as the ``blocks`` dynamic namespace.
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
             ``pw2wannier90``; ``projwfc`` is needed only for projection types
             that run projwfc (e.g. SCDM / energy-auto frozen window).
         structure: the periodic ``StructureData``.
-        blocks: the resolved projection blocks (B0 output); occupied and
-            empty manifolds appear as separate blocks. Each is Wannierised
-            independently.
+        blocks: the resolved projection blocks; occupied and empty manifolds
+            appear as separate blocks. Each is Wannierised independently.
         kpoints: the explicit k-mesh shared by the nscf and every block's
             wannier90 / pw2wannier90.
         pseudo_family: pseudopotential family label.
@@ -247,11 +234,9 @@ def BlockWannierizeTask(
     wannier_overrides = overrides.get("wannier90")
 
     # --- per-block Wannierisation: native for-loop fan-out ---
-    # ``blocks`` is concrete in this deferred body, so we iterate it and
-    # subscript each block inline. Each iteration adds an independent
-    # ``BlockWannierize`` (they share only the read-only nscf scratch, so
-    # they run in parallel). Collect the per-block outputs into a dict keyed
-    # by block label -> the ``blocks`` dynamic output namespace.
+    # Each iteration adds an independent ``BlockWannierize`` (they share only
+    # the read-only nscf scratch, so they run in parallel), collected into a
+    # dict keyed by block label -> the ``blocks`` dynamic output namespace.
     block_outputs: dict[str, BlockWannierOutputs] = {}
     for block in blocks:
         block_outputs[block["label"]] = BlockWannierize(

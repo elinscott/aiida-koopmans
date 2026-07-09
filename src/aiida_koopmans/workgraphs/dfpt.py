@@ -1,8 +1,8 @@
 """Koopmans DFPT workflow (kcw.x): wann2kc → screen → ham.
 
-kcw.x has no upstream aiida-quantumespresso coverage, so the three steps are
-backed by the in-repo CalcJobs in ``aiida_koopmans.calculations.kcw`` (one
-kcw.x binary, three ``CONTROL.calculation`` modes).
+The three steps are backed by the CalcJobs in
+``aiida_koopmans.calculations.kcw`` (one kcw.x binary, three
+``CONTROL.calculation`` modes).
 
 Two graphs are exposed:
 
