@@ -6,18 +6,18 @@ The three steps are backed by the CalcJobs in
 
 Two graphs are exposed:
 
-* :func:`KoopmansDFPTTask` -- the kcw.x chain proper. It *consumes*
+* :func:`RunDFPT` -- the kcw.x chain proper. It *consumes*
   wannierization outputs (the shared nscf scratch plus the per-manifold
   wannier90 ``retrieved`` folders) and runs wann2kcw → screen → ham. When
   ``alpha_guess`` is provided the screen step is skipped and the guess is
   fed straight to ham.
-* :func:`SinglepointDFPT` -- the end-to-end workflow: one shared scf + nscf,
-  one :func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierize`
-  per manifold (occupied / empty), then :func:`KoopmansDFPTTask`.
+* :func:`SinglepointDFPTWorkflow` -- the end-to-end workflow: one shared scf + nscf,
+  one :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock`
+  per manifold (occupied / empty), then :func:`RunDFPT`.
 
 Spin handling: kcw.x requires an nspin=2 parent scratch even for
 closed-shell systems because the DFPT perturbations are spin-dependent, so
-:func:`SinglepointDFPT` forces ``nspin = 2`` + ``tot_magnetization = 0`` on
+:func:`SinglepointDFPTWorkflow` forces ``nspin = 2`` + ``tot_magnetization = 0`` on
 the PW runs and ``spin_component = 'up'`` on pw2wannier90. The kcw chain
 itself then runs once on the up channel (``CONTROL.spin_component = 1``).
 
@@ -48,8 +48,8 @@ from aiida_koopmans.calculations.kcw import (
 )
 from aiida_koopmans.types import ExplicitProjectionBlock, ProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import BlockWannierize
-from aiida_koopmans.workgraphs.pw import PwScfNscfTask
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
+from aiida_koopmans.workgraphs.pw import RunScfNscf
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
 # working directory. The wannier90 CalcJob writes its products with the
@@ -64,9 +64,9 @@ _REQUIRED_SUFFIXES = ("_u.mat", "_hr.dat", "_centres.xyz")
 _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 
 
-Wann2kcTask = task(Wann2kcCalculation)
-KcwScreenTask = task(KcwScreenCalculation)
-KcwHamTask = task(KcwHamCalculation)
+Wann2kcStep = task(Wann2kcCalculation)
+KcwScreenStep = task(KcwScreenCalculation)
+KcwHamStep = task(KcwHamCalculation)
 
 
 def _projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
@@ -247,7 +247,7 @@ def alphas_from_guess(alpha_guess: list) -> list:
 
 
 class KoopmansDFPTOutputs(TypedDict, total=False):
-    """Outputs of :func:`KoopmansDFPTTask` / :func:`SinglepointDFPT`.
+    """Outputs of :func:`RunDFPT` / :func:`SinglepointDFPTWorkflow`.
 
     * ``alphas`` -- the screening parameters fed to the ham step (computed by
       screen, or the caller's guess when screening was skipped).
@@ -313,7 +313,7 @@ def prepare_kcw_wannier_files(
 
 
 @task.graph
-def KoopmansDFPTTask(
+def RunDFPT(
     codes: Codes,
     nscf_remote_folder: orm.RemoteData,
     occ_retrieved: orm.FolderData,
@@ -385,7 +385,7 @@ def KoopmansDFPTTask(
         metadata={"call_link_label": "prepare_kcw_wannier_files"},
     )["wannier_files"]
 
-    wann2kc = Wann2kcTask(
+    wann2kc = Wann2kcStep(
         code=codes["kcw"],
         parameters={"CONTROL": control, "WANNIER": wannier},
         parent_folder=nscf_remote_folder,
@@ -405,7 +405,7 @@ def KoopmansDFPTTask(
         }
         if eps_inf is not None:
             screen_namelist["eps_inf"] = eps_inf
-        screen = KcwScreenTask(
+        screen = KcwScreenStep(
             code=codes["kcw"],
             parameters={"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
             parent_folder=wann2kc["remote_folder"],
@@ -437,7 +437,7 @@ def KoopmansDFPTTask(
     }
     if do_bands:
         ham_inputs["kpoints"] = bands_kpoints
-    ham = KcwHamTask(**ham_inputs)
+    ham = KcwHamStep(**ham_inputs)
 
     outputs["alphas"] = alphas
     outputs["ham_parameters"] = ham["output_parameters"]
@@ -447,7 +447,7 @@ def KoopmansDFPTTask(
 
 
 @task.graph
-def SinglepointDFPT(
+def SinglepointDFPTWorkflow(
     codes: Codes,
     structure: orm.StructureData,
     occ_block: ProjectionBlock,
@@ -465,13 +465,13 @@ def SinglepointDFPT(
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
-    One shared scf + nscf (:func:`PwScfNscfTask`, forced to ``nspin = 2`` /
+    One shared scf + nscf (:func:`RunScfNscf`, forced to ``nspin = 2`` /
     ``tot_magnetization = 0`` because kcw.x's spin-dependent DFPT
     perturbations need a two-channel scratch, with ``nosym`` / ``noinv`` on
-    the nscf so kcw.x sees the full k-point set), one :func:`BlockWannierize`
+    the nscf so kcw.x sees the full k-point set), one :func:`WannierizeBlock`
     per manifold with ``write_u_matrices`` / ``write_xyz`` forced on and
     pw2wannier90 pinned to ``spin_component = 'up'``, then
-    :func:`KoopmansDFPTTask` on the up channel.
+    :func:`RunDFPT` on the up channel.
 
     ``overrides`` namespaces: ``"scf"`` / ``"nscf"`` feed the shared PW
     steps, ``"wannier90"`` feeds both per-manifold wannier builders (its
@@ -500,7 +500,7 @@ def SinglepointDFPT(
         "nscf": recursive_merge(overrides.get("nscf", {}), nscf_defaults),
     }
 
-    scf_nscf = PwScfNscfTask(
+    scf_nscf = RunScfNscf(
         code=codes["pw"],
         structure=structure,
         pseudo_family=pseudo_family,
@@ -526,7 +526,7 @@ def SinglepointDFPT(
     # requirements of the kcw chain, not defaults a caller may disable.
     wannier_overrides = recursive_merge(overrides.get("wannier90", {}), w90_defaults)
 
-    occ = BlockWannierize(
+    occ = WannierizeBlock(
         codes=codes,
         structure=structure,
         block=occ_block,
@@ -555,7 +555,7 @@ def SinglepointDFPT(
     }
 
     if emp_block is not None:
-        emp = BlockWannierize(
+        emp = WannierizeBlock(
             codes=codes,
             structure=structure,
             block=emp_block,
@@ -570,7 +570,7 @@ def SinglepointDFPT(
         dfpt_inputs["emp_retrieved"] = emp["hr_retrieved"]
         dfpt_inputs["num_wann_emp"] = emp_block["num_wann"]
 
-    dfpt = KoopmansDFPTTask(**dfpt_inputs)
+    dfpt = RunDFPT(**dfpt_inputs)
 
     outputs = KoopmansDFPTOutputs(
         alphas=dfpt["alphas"],

@@ -45,12 +45,12 @@ class ScfNscfOutputs(TypedDict):
     nscf_output_kpoints: NotRequired[orm.KpointsData]
 
 
-PwBaseTask = task(PwBaseWorkChain)
-PwBandsTask = task(PwBandsWorkChain)
+PwBaseStep = task(PwBaseWorkChain)
+PwBandsStep = task(PwBandsWorkChain)
 
 
 @task.graph
-def PwBandsTaskViaBuilder(
+def RunPwBands(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
@@ -105,7 +105,7 @@ def PwBandsTaskViaBuilder(
         data["bands_kpoints"] = bands_kpoints
 
     # Submit the workchain with converted inputs
-    output = PwBandsTask(**data)
+    output = PwBandsStep(**data)
 
     return ScfBandsOutputs(
         scf_parameters=output.scf_parameters,
@@ -114,7 +114,7 @@ def PwBandsTaskViaBuilder(
 
 
 @task.graph
-def PwScfNscfTask(
+def RunScfNscf(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
@@ -161,7 +161,7 @@ def PwScfNscfTask(
     scf_data = get_dict_from_builder(scf_builder)
     scf_data.pop("clean_workdir", None)
     scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
-    scf_outputs = PwBaseTask(**scf_data)
+    scf_outputs = PwBaseStep(**scf_data)
 
     # --- NSCF builder ---
     # Start from protocol defaults, then merge NSCF-specific overrides
@@ -192,7 +192,7 @@ def PwScfNscfTask(
     nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
 
     nscf_data.setdefault("metadata", {})["call_link_label"] = "nscf"
-    nscf_outputs = PwBaseTask(**nscf_data)
+    nscf_outputs = PwBaseStep(**nscf_data)
 
     return ScfNscfOutputs(
         scf_remote_folder=scf_outputs["remote_folder"],

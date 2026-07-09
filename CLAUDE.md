@@ -20,13 +20,13 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
        nscf_remote_folder: orm.RemoteData
        ...
 
-   PwBaseTask = task(PwBaseWorkChain)  # WorkChain-as-task at module level
+   PwBaseStep = task(PwBaseWorkChain)  # WorkChain-as-task at module level
 
    @task.graph
-   def PwScfNscfTask(code, structure, ..., overrides=None) -> ScfNscfOutputs:
+   def RunScfNscf(code, structure, ..., overrides=None) -> ScfNscfOutputs:
        builder = PwBaseWorkChain.get_builder_from_protocol(...)
        data = get_dict_from_builder(builder)
-       scf_outputs = PwBaseTask(**data)
+       scf_outputs = PwBaseStep(**data)
        # wire downstream via dict access
        nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
        ...
@@ -40,7 +40,7 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 
 ## Current state
 
-- Workgraphs present: `PwBandsTaskViaBuilder`, `PwScfNscfTask` (`workgraphs/pw.py`), `PdosTaskViaBuilder` (`workgraphs/pdos.py`), `Wannier90TaskViaBuilder`, `Wannier90OptimizeTaskViaBuilder` (`workgraphs/wannier90.py`).
+- Workgraphs present: `RunPwBands`, `RunScfNscf` (`workgraphs/pw.py`), `RunPdos` (`workgraphs/pdos.py`), `Wannierize`, `OptimizeWannierization` (`workgraphs/wannier90.py`).
 - **Cleanup needed:** `calculations.py` (DiffCalculation), `parsers.py` (DiffParser), `data/__init__.py` (DiffParameters) are `aiida-plugin-cutter` template leftovers. Safe to delete once a real Koopmans CalcJob or Data type replaces them.
 - No Koopmans-specific Data types defined yet — `Band`/`Bands`/`ProjectionBlock` equivalents still live in legacy `koopmans/src/koopmans/`.
 - No ASE↔AiiDA conversion utilities here; those belong in `../koopmans2/src/koopmans/aiida/conversion.py`.

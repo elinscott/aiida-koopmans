@@ -129,7 +129,7 @@ ignore = [
 # Allow re-export shape in __init__.py files.
 "src/aiida_koopmans/**/__init__.py" = ["F401", "F403"]
 # aiida-workgraph @task.graph functions are conventionally CamelCase
-# (see e.g. PwBandsTaskViaBuilder, Wannier90TaskViaBuilder upstream).
+# (see e.g. RunPwBands, Wannierize upstream).
 "src/aiida_koopmans/workgraphs/*.py" = ["N802"]
 
 [tool.ruff.lint.pydocstyle]

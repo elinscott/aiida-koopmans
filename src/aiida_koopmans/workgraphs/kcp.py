@@ -81,7 +81,7 @@ class KoopmansDSCFOutputs(TypedDict):
     workflow level so consumers (e.g. the ML trajectory workflow's
     training targets) read them directly instead of walking provenance.
     A separate ``TypedDict`` from :class:`KIFinalOutputs` because
-    ``alphas`` is an *input* of the final KI — :func:`KIFinal` cannot
+    ``alphas`` is an *input* of the final KI — :func:`RunFinalKI` cannot
     echo a graph input as an output, so the field is wired at the outer
     workflow level from the screening step's outputs.
     """
@@ -186,7 +186,7 @@ class ScreeningIterationOutputs(TypedDict):
     """Outputs of one alpha-refinement iteration (trial KI + per-orbital DSCF).
 
     Used to thread the next iteration's inputs through the recursive
-    :func:`AlphaRefinementLoop`:
+    :func:`RefineScreeningParameters`:
 
     * ``alphas`` — gathered per-orbital screening parameters; becomes the
       next iteration's trial-KI ``alphas`` input.
@@ -228,7 +228,7 @@ class ScreeningParametersOutputs(TypedDict):
 # Raw CalcJob as a workgraph task
 # ----------------------------------------------------------------------
 
-KcpBaseTask = task(KcpCalculation)
+KcpStep = task(KcpCalculation)
 
 
 # ----------------------------------------------------------------------
@@ -416,8 +416,8 @@ class FilledIterItem(TypedDict):
     """One per-orbital work item for the *filled* Delta-SCF fan-out.
 
     Built by :func:`build_filled_iter_source` and consumed field-by-field
-    by :func:`PerOrbitalScreening`, which scatters one
-    :func:`FilledOrbitalScreening` per representative filled orbital.
+    by :func:`ComputeOrbitalScreeningParameters`, which scatters one
+    :func:`ComputeFilledOrbitalScreeningParameter` per representative filled orbital.
     ``spin_channel`` / ``band_index`` are in the physical frame (they
     index the trial-KI lambda matrices); ``fixed_band`` is the 1-indexed
     kcp.x band position.
@@ -434,8 +434,8 @@ class EmptyIterItem(TypedDict):
     """One per-orbital work item for the *empty* Delta-SCF fan-out.
 
     Built by :func:`build_empty_iter_source` and consumed field-by-field
-    by :func:`PerOrbitalScreening`, which scatters one
-    :func:`EmptyOrbitalScreening` per representative empty orbital. The
+    by :func:`ComputeOrbitalScreeningParameters`, which scatters one
+    :func:`ComputeEmptyOrbitalScreeningParameter` per representative empty orbital. The
     three parameter dicts are fully baked into the (possibly spin-swapped)
     kcp.x frame; ``spin_channel`` / ``band_index`` stay in the physical
     frame for indexing the trial-KI lambda matrices. ``overlay`` is the
@@ -461,7 +461,7 @@ def build_filled_iter_source(
     """Materialise the per-orbital items for the *filled* fan-out loop.
 
     A plain function (not a ``@task``): it runs inside the deferred body
-    of :func:`PerOrbitalScreening`, where ``orbitals`` and
+    of :func:`ComputeOrbitalScreeningParameters`, where ``orbitals`` and
     ``filled_alphas`` are already concrete values, and its return dict
     is iterated by a native ``for`` loop.
 
@@ -523,7 +523,7 @@ def build_empty_iter_source(
     """Materialise the per-orbital items for the *empty* fan-out loop.
 
     A plain function (not a ``@task``): it runs inside the deferred body
-    of :func:`PerOrbitalScreening`, where ``orbitals`` / ``base`` /
+    of :func:`ComputeOrbitalScreeningParameters`, where ``orbitals`` / ``base`` /
     ``empty_alphas`` are already concrete values, so the spin-aware
     branching below evaluates on real ints and enums.
 
@@ -539,7 +539,7 @@ def build_empty_iter_source(
 
     For each orbital the per-iter dict carries the three fully-baked
     kcp.x parameter dicts (``dummy_parameters``, ``pz_parameters``,
-    ``n_plus_1_parameters``) so ``EmptyOrbitalScreening`` stays a thin
+    ``n_plus_1_parameters``) so ``ComputeEmptyOrbitalScreeningParameter`` stays a thin
     three-step pipeline. Spin-aware electron addition and the kcp-frame
     spin-swap decision happen here so a wrong branch can't silently
     produce kcp.x inputs that violate ``nupdwn(1) >= nupdwn(2)`` on the
@@ -654,7 +654,7 @@ def build_empty_iter_source(
             "band_index": band_index,
             "alpha_guess": alphas_for_spin[i],
             # Fully-baked kcp.x parameter dicts in the (possibly
-            # swapped) kcp frame; ``EmptyOrbitalScreening`` merges in
+            # swapped) kcp frame; ``ComputeEmptyOrbitalScreeningParameter`` merges in
             # per-step overrides on top.
             "dummy_parameters": dummy_p,
             "pz_parameters": pz_p,
@@ -673,7 +673,7 @@ def build_empty_iter_source(
 
 
 @task.graph
-def DFTInitialization(
+def InitializeOrbitals(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -743,7 +743,7 @@ def DFTInitialization(
         parent_folder=parent_folder,
         name=name,
     )
-    outputs = KcpBaseTask(**inputs)
+    outputs = KcpStep(**inputs)
 
     return DFTCPOutputs(
         parameters=outputs["output_parameters"],
@@ -814,7 +814,7 @@ def KoopmansDSCFWorkflow(
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
         # with no pre-symmetrisation.
-        dft = DFTInitialization(
+        dft = InitializeOrbitals(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -842,7 +842,7 @@ def KoopmansDSCFWorkflow(
         # 4. nspin=2 restart — final init starting from the symmetrised
         #    save; this is the ``remote_folder`` consumed by the
         #    downstream ComputeScreeningParameters.
-        dft_nspin1 = DFTInitialization(
+        dft_nspin1 = InitializeOrbitals(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -861,7 +861,7 @@ def KoopmansDSCFWorkflow(
             metadata={"call_link_label": "dft_init_nspin1"},
         )
 
-        dft_nspin2_dummy = DFTInitialization(
+        dft_nspin2_dummy = InitializeOrbitals(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -890,7 +890,7 @@ def KoopmansDSCFWorkflow(
             metadata={"call_link_label": "convert_spin1_to_spin2"},
         )
 
-        dft = DFTInitialization(
+        dft = InitializeOrbitals(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -940,8 +940,8 @@ def KoopmansDSCFWorkflow(
     # inherits the converged variational orbital basis (not the bare DFT
     # save).
     #
-    # Built via a ``KIFinal`` @task.graph wrapper rather than inline
-    # ``KcpBaseTask(...)`` because the parameter-builder arithmetic
+    # Built via a ``RunFinalKI`` @task.graph wrapper rather than inline
+    # ``KcpStep(...)`` because the parameter-builder arithmetic
     # (``conv_thr = 1e-9 * nelec``) needs ``nelec`` as a plain int.
     # Here at the workflow level ``nelec`` is a socket (output of
     # ``count_electrons_task``); the @task.graph boundary unwraps it.
@@ -951,7 +951,7 @@ def KoopmansDSCFWorkflow(
     # shows that the final KI consumes the converged DSCF screening
     # parameters.
     # ------------------------------------------------------------------
-    ki_final = KIFinal(
+    ki_final = RunFinalKI(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -980,7 +980,7 @@ def KoopmansDSCFWorkflow(
 
 
 @task.graph
-def KIFinal(
+def RunFinalKI(
     *,
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -1037,7 +1037,7 @@ def KIFinal(
         parent_folder=parent_folder,
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
     )
-    final = KcpBaseTask(**final_inputs)
+    final = KcpStep(**final_inputs)
     return KIFinalOutputs(
         parameters=final["output_parameters"],
         eigenvalues=final["output_eigenvalues"],
@@ -1048,7 +1048,7 @@ def KIFinal(
 
 
 @task.graph
-def FilledOrbitalScreening(
+def ComputeFilledOrbitalScreeningParameter(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -1120,7 +1120,7 @@ def FilledOrbitalScreening(
         # display via ``progress.prettify_label``.
         name="kipz_n_minus_1" if correction == Correction.KIPZ else "dft_n_minus_1",
     )
-    dft_outputs = KcpBaseTask(**inputs)
+    dft_outputs = KcpStep(**inputs)
 
     result = compute_alpha_from_dscf(
         trial_output_parameters=trial_output_parameters,
@@ -1140,7 +1140,7 @@ def FilledOrbitalScreening(
 
 
 @task.graph
-def EmptyOrbitalScreening(
+def ComputeEmptyOrbitalScreeningParameter(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -1208,7 +1208,7 @@ def EmptyOrbitalScreening(
         options=options,
         name="dft_n_plus_1_dummy",  # always plain DFT in both KI and KIPZ
     )
-    dummy_outputs = KcpBaseTask(**dummy_inputs)
+    dummy_outputs = KcpStep(**dummy_inputs)
 
     if pz_overrides:
         pz_parameters = recursive_merge(pz_parameters, pz_overrides)
@@ -1230,7 +1230,7 @@ def EmptyOrbitalScreening(
         variational_orbital_overlays=overlay,
         name="kipz_print" if correction == Correction.KIPZ else "pz_print",
     )
-    pz_outputs = KcpBaseTask(**pz_inputs)
+    pz_outputs = KcpStep(**pz_inputs)
 
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
@@ -1244,7 +1244,7 @@ def EmptyOrbitalScreening(
         parent_folder_evcfixed=pz_outputs["remote_folder"],
         name="kipz_n_plus_1" if correction == Correction.KIPZ else "dft_n_plus_1",
     )
-    n_plus_1_outputs = KcpBaseTask(**n_plus_1_inputs)
+    n_plus_1_outputs = KcpStep(**n_plus_1_inputs)
 
     result = compute_alpha_from_dscf(
         trial_output_parameters=trial_output_parameters,
@@ -1275,7 +1275,7 @@ def EmptyOrbitalScreening(
 
 
 @task.graph
-def PerOrbitalScreening(
+def ComputeOrbitalScreeningParameters(
     *,
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -1295,14 +1295,14 @@ def PerOrbitalScreening(
 ) -> _PerOrbitalAlphaOutputs:
     """Refine every representative orbital's alpha via per-orbital Delta-SCF.
 
-    Scatters one :func:`FilledOrbitalScreening` per representative filled
-    orbital and one :func:`EmptyOrbitalScreening` per representative empty
+    Scatters one :func:`ComputeFilledOrbitalScreeningParameter` per representative filled
+    orbital and one :func:`ComputeEmptyOrbitalScreeningParameter` per representative empty
     orbital (native ``for`` loops over the item dicts built by
     :func:`build_filled_iter_source` / :func:`build_empty_iter_source`,
     which run inline here on the concrete ``orbitals`` list). The
     per-orbital sub-graphs share only the read-only trial-KI scratch, so
     they run in parallel. Each sub-graph's ``call_link_label`` is
-    ``screen_<map_key>`` (e.g. ``screen_orb_3`` / ``screen_up_orb_10``).
+    ``compute_alpha_<map_key>`` (e.g. ``compute_alpha_orb_3`` / ``compute_alpha_up_orb_10``).
 
     The gathered ``{map_key: alpha/error}`` socket dicts feed
     :func:`expand_alphas_by_group` (broadcast representative results onto
@@ -1318,7 +1318,7 @@ def PerOrbitalScreening(
     filled_alphas: dict[str, Any] = {}
     filled_errors: dict[str, Any] = {}
     for key, item in filled_items.items():
-        filled_out = FilledOrbitalScreening(
+        filled_out = ComputeFilledOrbitalScreeningParameter(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -1340,7 +1340,7 @@ def PerOrbitalScreening(
             overrides=filled_overrides,
             options=options,
             correction=correction,
-            metadata={"call_link_label": f"screen_{key}"},
+            metadata={"call_link_label": f"compute_alpha_{key}"},
         )
         filled_alphas[key] = filled_out["alpha"]
         filled_errors[key] = filled_out["error"]
@@ -1355,7 +1355,7 @@ def PerOrbitalScreening(
     empty_alphas: dict[str, Any] = {}
     empty_errors: dict[str, Any] = {}
     for key, item in empty_items.items():
-        empty_out = EmptyOrbitalScreening(
+        empty_out = ComputeEmptyOrbitalScreeningParameter(
             code=code,
             structure=structure,
             pseudos=pseudos,
@@ -1374,7 +1374,7 @@ def PerOrbitalScreening(
             overrides=empty_overrides_dict,
             options=options,
             correction=correction,
-            metadata={"call_link_label": f"screen_{key}"},
+            metadata={"call_link_label": f"compute_alpha_{key}"},
         )
         empty_alphas[key] = empty_out["alpha"]
         empty_errors[key] = empty_out["error"]
@@ -1406,7 +1406,7 @@ def PerOrbitalScreening(
 
 # ----------------------------------------------------------------------
 # One DSCF iteration body: trial KI → per-orbital DSCF → assemble alphas.
-# Extracted so the recursive ``AlphaRefinementLoop`` in
+# Extracted so the recursive ``RefineScreeningParameters`` in
 # ``ComputeScreeningParameters`` can call it once per pass.
 # ----------------------------------------------------------------------
 
@@ -1435,11 +1435,11 @@ def ScreeningIteration(
 
     Runs a trial KI / KIPZ starting from ``current_alphas`` +
     ``parent_folder``, then the per-orbital Delta-SCF fan-out
-    (:func:`PerOrbitalScreening` — a nested ``@task.graph`` because the
+    (:func:`ComputeOrbitalScreeningParameters` — a nested ``@task.graph`` because the
     fan-out cardinality depends on ``assign_orbital_groups``' runtime
     output), which packs the gathered per-orbital alphas back into an
     :class:`AlphaScreening`. Reports ``max_error`` so the recursive
-    :func:`AlphaRefinementLoop` can stop on convergence.
+    :func:`RefineScreeningParameters` can stop on convergence.
 
     ``is_first_iteration`` is forwarded to the trial-step builder so
     KIPZ's molecular first trial can run its inner-loop CG once;
@@ -1475,7 +1475,7 @@ def ScreeningIteration(
         variational_orbital_overlays=variational_orbital_overlays,
         name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
     )
-    trial = KcpBaseTask(**trial_inputs)
+    trial = KcpStep(**trial_inputs)
 
     # Cluster variational orbitals by trial-KI self-Hartree so each
     # group only screens one representative; non-representative members
@@ -1498,7 +1498,7 @@ def ScreeningIteration(
     # runs once ``orbitals`` (a runtime output of ``assign_orbital_groups``)
     # is concrete — the scatter is then a native ``for`` loop, the gather
     # a plain dict of per-orbital sockets.
-    per_orbital = PerOrbitalScreening(
+    per_orbital = ComputeOrbitalScreeningParameters(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -1540,7 +1540,7 @@ def ScreeningIteration(
 
 
 @task.graph
-def AlphaRefinementLoop(
+def RefineScreeningParameters(
     *,
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -1601,7 +1601,7 @@ def AlphaRefinementLoop(
         metadata={"call_link_label": "screening_iteration"},
     )
 
-    remainder = AlphaRefinementLoop(
+    remainder = RefineScreeningParameters(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -1681,8 +1681,8 @@ def ComputeScreeningParameters(
     differ from the trial pass.
 
     All per-orbital fan-out happens inside ``ScreeningIteration`` (via
-    the nested ``PerOrbitalScreening`` graph); iterations 2..N run
-    through the recursive :func:`AlphaRefinementLoop`.
+    the nested ``ComputeOrbitalScreeningParameters`` graph); iterations 2..N run
+    through the recursive :func:`RefineScreeningParameters`.
     """
     ki_overrides = overrides.get("ki") if overrides else None
     filled_overrides = overrides.get("dft_n_minus_1") if overrides else None
@@ -1699,7 +1699,7 @@ def ComputeScreeningParameters(
     # Uniform-``initial_alpha`` payload feeds the first iteration's trial
     # KI (and its empty-orbital ``pz_print``). Subsequent iterations
     # consume the previous iteration's gathered alphas via the recursive
-    # ``AlphaRefinementLoop`` below.
+    # ``RefineScreeningParameters`` below.
     initial_alphas = generate_alphas(
         alpha_guess=initial_alpha,
         nbnd=nbnd,
@@ -1740,7 +1740,7 @@ def ComputeScreeningParameters(
     # from the rest: parent is ``dft_remote``, it carries the KS overlay,
     # and ``is_first_iteration=True`` drives KIPZ's one-off inner-loop CG
     # pass). Iterations 2..N run through the recursive
-    # ``AlphaRefinementLoop``, which receives the previous iteration's
+    # ``RefineScreeningParameters``, which receives the previous iteration's
     # outputs as concrete inputs and stops on convergence
     # (``max_error < alpha_conv_thr``) or budget exhaustion.
     #
@@ -1766,7 +1766,7 @@ def ComputeScreeningParameters(
         # pass to converge the variational orbitals starting from KS-init.
         # Subsequent iterations restart from the previous trial's already-
         # converged variational basis; see ``is_first_iteration=False``
-        # inside ``AlphaRefinementLoop`` and ``_build_orbdep_parameters``'s
+        # inside ``RefineScreeningParameters`` and ``_build_orbdep_parameters``'s
         # ``do_innerloop`` decision.
         is_first_iteration=True,
         self_hartree_tol=self_hartree_tol,
@@ -1786,7 +1786,7 @@ def ComputeScreeningParameters(
             "trial_remote": iter_1["trial_remote"],
         }
 
-    refinement = AlphaRefinementLoop(
+    refinement = RefineScreeningParameters(
         code=code,
         structure=structure,
         pseudos=pseudos,
@@ -1906,7 +1906,7 @@ def _spin_swap_save_overlay(*, nspin: int) -> dict[str, str]:
 
     Returns ``{"evc02": "evc01", "evc01": "evc02", "evc_empty2": "evc_empty1",
     "evc_empty1": "evc_empty2", ...}`` -- stem-only (no ``.dat`` suffix; the
-    CalcJob appends it). Used by ``EmptyOrbitalScreening`` when the N+1
+    CalcJob appends it). Used by ``ComputeEmptyOrbitalScreeningParameter`` when the N+1
     sub-runs run in the swapped frame but their parent (the trial KI's
     ``RemoteData``) is in the physical frame: each spin-tagged save file
     needs to be presented to kcp.x with its spin index flipped.
@@ -2354,7 +2354,7 @@ def _build_kcp_inputs(
     variational_orbital_overlays: dict[str, str] | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble a kwargs dict for ``KcpBaseTask(**inputs)``.
+    """Assemble a kwargs dict for ``KcpStep(**inputs)``.
 
     Plain Python data (the ``parameters`` dict, the ``alphas``
     TypedDict) is handed straight through; aiida-workgraph's
@@ -2368,9 +2368,9 @@ def _build_kcp_inputs(
     Inside the per-orbital screening sub-graphs, ``name`` is set statically
     (e.g. ``"dft_n_minus_1"``, ``"pz_print"``, ``"dft_n_plus_1_dummy"``,
     ``"dft_n_plus_1"``); the band/spin identity lives on the *wrapping*
-    sub-graph's ``call_link_label`` instead (``screen_<map_key>``, set by
-    the ``PerOrbitalScreening`` fan-out loop), so provenance reads as e.g.
-    ``screen_up_orb_2 -> dft_n_minus_1``.
+    sub-graph's ``call_link_label`` instead (``compute_alpha_<map_key>``, set by
+    the ``ComputeOrbitalScreeningParameters`` fan-out loop), so provenance reads as e.g.
+    ``compute_alpha_up_orb_2 -> dft_n_minus_1``.
 
     ``parent_folder_evcfixed`` is the ``RemoteData`` of a ``pz_print``
     run; only the ``dft_n+1`` step of the empty-orbital Delta-SCF branch

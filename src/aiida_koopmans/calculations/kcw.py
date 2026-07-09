@@ -10,8 +10,7 @@ One kcw.x binary runs three distinct calculation modes selected via the
 * ``ham`` -- build, interpolate, and diagonalize the Koopmans Hamiltonian
   (:class:`KcwHamCalculation`).
 
-kcw.x has no upstream aiida-quantumespresso coverage, so these are standalone
-CalcJobs (mirroring the conventions of the in-repo ``kcp.py`` plugin, which
+These CalcJobs mirror the conventions of the in-repo ``kcp.py`` plugin (which
 see for the parent-scratch symlink idiom).
 
 Chaining contract

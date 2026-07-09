@@ -1,6 +1,6 @@
 """Construction-level tests for the Koopmans DFPT workgraphs.
 
-Build the ``KoopmansDFPTTask`` and ``SinglepointDFPT`` graphs (no daemon, no
+Build the ``RunDFPT`` and ``SinglepointDFPTWorkflow`` graphs (no daemon, no
 real code execution) and introspect their task lists / wiring, mirroring the
 style of ``test_block_wannierize.py``. Also unit-tests the
 ``prepare_kcw_wannier_files`` calcfunction via its raw ``._callable``.
@@ -13,8 +13,8 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
-    KoopmansDFPTTask,
-    SinglepointDFPT,
+    RunDFPT,
+    SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
 
@@ -165,7 +165,7 @@ class TestKoopmansDFPTTaskBuild:
     def test_full_chain_with_screening_and_bands(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved, bands_path
     ):
-        wg = KoopmansDFPTTask.build(
+        wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             occ_retrieved=occ_retrieved,
@@ -187,7 +187,7 @@ class TestKoopmansDFPTTaskBuild:
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
-        wg = KoopmansDFPTTask.build(
+        wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             occ_retrieved=occ_retrieved,
@@ -205,7 +205,7 @@ class TestKoopmansDFPTTaskBuild:
 
 class TestSinglepointDFPTBuild:
     def test_occ_and_emp_manifolds(self, dfpt_codes, silicon_structure, kmesh, bands_path):
-        wg = SinglepointDFPT.build(
+        wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
             occ_block=_block("occ", range(1, 5)),
@@ -246,7 +246,7 @@ class TestSinglepointDFPTBuild:
             assert w90_params["write_xyz"] is True
 
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
-        wg = SinglepointDFPT.build(
+        wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
             occ_block=_block("occ", range(1, 5)),
@@ -261,7 +261,7 @@ class TestSinglepointDFPTBuild:
 
     def test_user_overrides_cannot_disable_nspin2(self, dfpt_codes, silicon_structure, kmesh):
         """The nspin=2 forcing is physics, so it wins over caller overrides."""
-        wg = SinglepointDFPT.build(
+        wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
             occ_block=_block("occ", range(1, 5)),

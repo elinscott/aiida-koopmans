@@ -1,9 +1,9 @@
 """Construction-level unit tests for the block-by-block Wannierize workgraph.
 
-These build the ``BlockWannierizeTask`` graph (no daemon, no real codes
+These build the ``WannierizeBlocks`` graph (no daemon, no real codes
 execution) and introspect its task list. The per-block fan-out is a native
 ``for`` loop in the (top-level) graph body, which runs at build time over the
-concrete ``blocks`` list -- so the built graph shows one ``BlockWannierize``
+concrete ``blocks`` list -- so the built graph shows one ``WannierizeBlock``
 per block plus a single shared ``scf_nscf`` task.
 """
 
@@ -11,7 +11,7 @@ import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
-from aiida_koopmans.workgraphs.block_wannierize import BlockWannierizeTask
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 
 # ----------------------------------------------------------------------
 # Fixtures: codes, structures, block shapes
@@ -118,12 +118,12 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
 
 
 # ----------------------------------------------------------------------
-# Graph construction: shared scf+nscf once, one BlockWannierize per block
+# Graph construction: shared scf+nscf once, one WannierizeBlock per block
 # ----------------------------------------------------------------------
 
 
 def _build(codes, structure, blocks, kpoints):
-    return BlockWannierizeTask.build(
+    return WannierizeBlocks.build(
         codes=codes,
         structure=structure,
         blocks=blocks,
@@ -147,9 +147,9 @@ class TestBlockWannierizeGraphBuild:
         # Shared scf+nscf appears exactly once.
         assert names.count("scf_nscf") == 1
         # The native for-loop unrolls at build time over the concrete blocks
-        # list: one independent BlockWannierize per block (aiida-workgraph
-        # auto-suffixes the repeats: BlockWannierize, BlockWannierize1, ...).
+        # list: one independent WannierizeBlock per block (aiida-workgraph
+        # auto-suffixes the repeats: WannierizeBlock, BlockWannierize1, ...).
         # No Map zone.
-        n_block_tasks = sum(1 for name in names if name.startswith("BlockWannierize"))
+        n_block_tasks = sum(1 for name in names if name.startswith("WannierizeBlock"))
         assert n_block_tasks == n_blocks
         assert names.count("map_zone") == 0

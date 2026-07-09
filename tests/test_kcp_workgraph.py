@@ -69,7 +69,7 @@ class TestValidateScope:
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
         # ``alpha_numsteps`` is range-checked by the koopmans2 Pydantic
         # input model upstream; the scope guard no longer needs to look
-        # at it. The recursive ``AlphaRefinementLoop`` handles any
+        # at it. The recursive ``RefineScreeningParameters`` handles any
         # positive count.
         _validate_scope(
             correction=Correction.KI,
@@ -773,10 +773,10 @@ class TestKoopmansDSCFGraphBuild:
         assert _has("count_electrons_task"), labels
         assert _has("dft_init"), labels
         assert _has("ComputeScreeningParameters"), labels
-        # Final KI is wrapped in a thin ``KIFinal`` @task.graph so its
+        # Final KI is wrapped in a thin ``RunFinalKI`` @task.graph so its
         # parameter-builder arithmetic runs in a scope where ``nelec``
         # is a plain int (not a socket from ``count_electrons_task``).
-        assert _has("KIFinal"), labels
+        assert _has("RunFinalKI"), labels
 
         # Now build the inner refinement sub-graph independently to
         # verify the Map-zone / source-builder / gather wiring.
@@ -880,7 +880,7 @@ class TestKoopmansDSCFGraphBuild:
         assert _iter_has("per_orbital_screening"), iter_labels
         # No Map zones remain.
         assert not any("map_zone" in s.lower() for s in iter_labels), iter_labels
-        # Convergence indicator the recursive ``AlphaRefinementLoop`` reads.
+        # Convergence indicator the recursive ``RefineScreeningParameters`` reads.
         assert _iter_has("max_alpha_error"), iter_labels
 
     def _build_per_orbital_wg(
@@ -891,17 +891,20 @@ class TestKoopmansDSCFGraphBuild:
         ozone_pseudo_family,
         spin_polarized,
     ):
-        """Build ``PerOrbitalScreening`` with concrete orbitals.
+        """Build ``ComputeOrbitalScreeningParameters`` with concrete orbitals.
 
         With concrete inputs the deferred body executes at build time,
         so the native for-loop fan-out is fully visible in the resulting
-        WorkGraph — one ``screen_<map_key>`` sub-graph per orbital.
+        WorkGraph — one ``compute_alpha_<map_key>`` sub-graph per orbital.
         """
         import numpy as np
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
-        from aiida_koopmans.workgraphs.kcp import PerOrbitalScreening, _kcp_base_inputs
+        from aiida_koopmans.workgraphs.kcp import (
+            ComputeOrbitalScreeningParameters,
+            _kcp_base_inputs,
+        )
         from aiida_koopmans.workgraphs.variational_orbitals import (
             enumerate_variational_orbitals,
         )
@@ -928,7 +931,7 @@ class TestKoopmansDSCFGraphBuild:
                 "empty": {"none": [0.6]},
             }
 
-        return PerOrbitalScreening.build(
+        return ComputeOrbitalScreeningParameters.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
@@ -968,8 +971,10 @@ class TestKoopmansDSCFGraphBuild:
             spin_polarized=False,
         )
         labels = self._all_link_labels(wg)
-        screen_labels = {s for s in labels if s.startswith("screen_")}
-        assert screen_labels == {f"screen_orb_{i}" for i in range(1, 11)}, sorted(screen_labels)
+        compute_alpha_labels = {s for s in labels if s.startswith("compute_alpha_")}
+        assert compute_alpha_labels == {f"compute_alpha_orb_{i}" for i in range(1, 11)}, sorted(
+            compute_alpha_labels
+        )
         # Gather steps packing per-orbital sockets back into an
         # ``AlphaScreening`` shape.
         assert any("expand_alphas_by_group" in s for s in labels), labels
@@ -980,7 +985,7 @@ class TestKoopmansDSCFGraphBuild:
     def test_multi_iteration_builds_refinement_loop(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        """``alpha_numsteps > 1`` chains a recursive ``AlphaRefinementLoop``.
+        """``alpha_numsteps > 1`` chains a recursive ``RefineScreeningParameters``.
 
         For ``alpha_numsteps = 1`` the dispatcher unrolls a single
         ``ScreeningIteration`` and skips the loop entirely; for >1 it
@@ -1040,7 +1045,7 @@ class TestKoopmansDSCFGraphBuild:
     ):
         """``alpha_numsteps == 1`` skips the refinement loop entirely.
 
-        The dispatcher gates ``AlphaRefinementLoop`` construction on
+        The dispatcher gates ``RefineScreeningParameters`` construction on
         ``alpha_numsteps > 1`` so the single-iteration graph carries no
         superfluous recursion node.
         """
@@ -1084,10 +1089,10 @@ class TestKoopmansDSCFGraphBuild:
     ):
         """``spin_polarized=True`` doubles the per-orbital fan-out.
 
-        Builds ``PerOrbitalScreening`` directly with concrete
+        Builds ``ComputeOrbitalScreeningParameters`` directly with concrete
         spin-polarised orbitals: the for-loop fan-out emits
-        ``screen_up_orb_N`` *and* ``screen_down_orb_N`` sub-graphs
-        (rather than a single representative ``screen_orb_N`` per
+        ``compute_alpha_up_orb_N`` *and* ``compute_alpha_down_orb_N`` sub-graphs
+        (rather than a single representative ``compute_alpha_orb_N`` per
         orbital), all visible at build time.
         """
         wg = self._build_per_orbital_wg(
@@ -1097,11 +1102,11 @@ class TestKoopmansDSCFGraphBuild:
             spin_polarized=True,
         )
         labels = self._all_link_labels(wg)
-        screen_labels = {s for s in labels if s.startswith("screen_")}
-        expected = {f"screen_up_orb_{i}" for i in range(1, 11)} | {
-            f"screen_down_orb_{i}" for i in range(1, 11)
+        compute_alpha_labels = {s for s in labels if s.startswith("compute_alpha_")}
+        expected = {f"compute_alpha_up_orb_{i}" for i in range(1, 11)} | {
+            f"compute_alpha_down_orb_{i}" for i in range(1, 11)
         }
-        assert screen_labels == expected, sorted(screen_labels)
+        assert compute_alpha_labels == expected, sorted(compute_alpha_labels)
 
     def test_closed_shell_init_chain_has_four_init_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
@@ -1133,7 +1138,7 @@ class TestKoopmansDSCFGraphBuild:
         """Call ``build_empty_iter_source`` and return its per-orbital dict.
 
         A plain function since the for-loop fan-out refactor (it runs
-        inline inside ``PerOrbitalScreening``'s deferred body), so it is
+        inline inside ``ComputeOrbitalScreeningParameters``'s deferred body), so it is
         unit-testable directly on spin-polarised ozone-shaped input.
         """
         from aiida_koopmans.workgraphs.kcp import (

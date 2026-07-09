@@ -1,6 +1,6 @@
 """Block-by-block Wannierisation of a periodic system.
 
-A single shared scf + nscf is run once (via :func:`PwScfNscfTask`), then each
+A single shared scf + nscf is run once (via :func:`RunScfNscf`), then each
 projection block (occupied / empty manifold, per spin) is Wannierised in its
 own ``Wannier90WorkChain`` that *skips* scf and nscf and reads the shared
 nscf scratch directly. The per-block fan-out is a native ``for`` loop over
@@ -34,7 +34,8 @@ from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ProjectionBlock, block_w90_kwargs
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.pw import PwOutputs, PwScfNscfTask
+from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
 # Force retrieval of the wannier90 checkpoint: ``aiida.chk`` is not in the
 # default retrieve list, but the supercell fold needs it to unitarily
@@ -43,7 +44,7 @@ from aiida_koopmans.workgraphs.pw import PwOutputs, PwScfNscfTask
 _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
 
-class BlockWannierOutputs(TypedDict):
+class WannierizeBlockOutputs(TypedDict):
     """Per-block Wannierisation outputs that the supercell fold reads.
 
     * ``hr_retrieved`` -- wannier90 ``retrieved`` FolderData (holds
@@ -58,25 +59,22 @@ class BlockWannierOutputs(TypedDict):
     nnkp_file: orm.SinglefileData
 
 
-class BlockWannierizeOutputs(TypedDict):
-    """Outputs of :func:`BlockWannierizeTask`.
+class WannierizeBlocksOutputs(TypedDict):
+    """Outputs of :func:`WannierizeBlocks`.
 
     * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
       can read ``nscf["remote_folder"]`` (the nscf scratch every block was
       built on).
     * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
-      a :class:`BlockWannierOutputs`, consumable downstream as a namespace.
+      a :class:`WannierizeBlockOutputs`, consumable downstream as a namespace.
     """
 
     nscf: PwOutputs
-    blocks: Annotated[dict, dynamic(BlockWannierOutputs)]
-
-
-Wannier90Task = task(Wannier90WorkChain)
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 @task.graph
-def BlockWannierize(
+def WannierizeBlock(
     codes: Codes,
     structure: orm.StructureData,
     block: ProjectionBlock,
@@ -88,7 +86,7 @@ def BlockWannierize(
     overrides: dict[str, Any] | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
-) -> BlockWannierOutputs:
+) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
     Seeds a ``Wannier90WorkChain`` builder via ``get_builder_from_protocol``
@@ -163,9 +161,9 @@ def BlockWannierize(
     data["pw2wannier90"]["pw2wannier90"]["parent_folder"] = nscf_remote_folder
 
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
-    outputs = Wannier90Task(**data)
+    outputs = Wannier90Step(**data)
 
-    return BlockWannierOutputs(
+    return WannierizeBlockOutputs(
         hr_retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
@@ -173,7 +171,7 @@ def BlockWannierize(
 
 
 @task.graph
-def BlockWannierizeTask(
+def WannierizeBlocks(
     codes: Codes,
     structure: orm.StructureData,
     blocks: list[ProjectionBlock],
@@ -183,10 +181,10 @@ def BlockWannierizeTask(
     overrides: dict[str, Any] | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
-) -> BlockWannierizeOutputs:
+) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
 
-    A single :func:`PwScfNscfTask` runs scf + nscf once; every projection
+    A single :func:`RunScfNscf` runs scf + nscf once; every projection
     block is then Wannierised in its own ``Wannier90WorkChain`` that skips
     scf / nscf and reads the shared nscf scratch (``nscf["remote_folder"]``).
     The per-block fan-out is a native ``for`` loop over ``blocks`` inside this
@@ -205,12 +203,12 @@ def BlockWannierizeTask(
         pseudo_family: pseudopotential family label.
         protocol: protocol name passed to both builders.
         overrides: optional overrides. ``overrides["scf"]`` / ``["nscf"]``
-            feed :func:`PwScfNscfTask`; ``overrides["wannier90"]`` feeds every
+            feed :func:`RunScfNscf`; ``overrides["wannier90"]`` feeds every
             per-block wannier builder.
         electronic_type / spin_type: forwarded to the wannier builder.
 
     Returns:
-        A :class:`BlockWannierizeOutputs`: the shared ``nscf`` outputs plus a
+        A :class:`WannierizeBlocksOutputs`: the shared ``nscf`` outputs plus a
         ``blocks`` namespace keyed by block label.
     """
     overrides = overrides or {}
@@ -222,7 +220,7 @@ def BlockWannierizeTask(
     if "nscf" in overrides:
         scf_nscf_overrides["nscf"] = overrides["nscf"]
 
-    scf_nscf = PwScfNscfTask(
+    scf_nscf = RunScfNscf(
         code=codes["pw"],
         structure=structure,
         pseudo_family=pseudo_family,
@@ -235,12 +233,12 @@ def BlockWannierizeTask(
     wannier_overrides = overrides.get("wannier90")
 
     # --- per-block Wannierisation: native for-loop fan-out ---
-    # Each iteration adds an independent ``BlockWannierize`` (they share only
+    # Each iteration adds an independent ``WannierizeBlock`` (they share only
     # the read-only nscf scratch, so they run in parallel), collected into a
     # dict keyed by block label -> the ``blocks`` dynamic output namespace.
-    block_outputs: dict[str, BlockWannierOutputs] = {}
+    block_outputs: dict[str, WannierizeBlockOutputs] = {}
     for block in blocks:
-        block_outputs[block["label"]] = BlockWannierize(
+        block_outputs[block["label"]] = WannierizeBlock(
             codes=codes,
             structure=structure,
             block=block,
@@ -254,7 +252,7 @@ def BlockWannierizeTask(
             spin_type=spin_type,
         )
 
-    return BlockWannierizeOutputs(
+    return WannierizeBlocksOutputs(
         nscf=PwOutputs(remote_folder=nscf_remote_folder),
         blocks=block_outputs,
     )

@@ -73,8 +73,8 @@ class WannierWorkflowOutputs(TypedDict):
     projwfc: ProjwfcOutputs
 
 
-Wannier90Task = task(Wannier90WorkChain)
-Wannier90OptimizeTask = task(Wannier90OptimizeWorkChain)
+Wannier90Step = task(Wannier90WorkChain)
+Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
 
 
 def _finalize_wannier_builder(
@@ -87,7 +87,7 @@ def _finalize_wannier_builder(
 ) -> dict[str, Any]:
     """Apply the shared bands-path / projector-rotation wiring, then flatten to a dict.
 
-    Both ``Wannier90TaskViaBuilder`` and ``Wannier90OptimizeTaskViaBuilder``
+    Both ``Wannierize`` and ``OptimizeWannierization``
     share this finalisation tail: enforce that ``kpoint_path`` and
     ``bands_kpoints`` are mutually exclusive, wire the explicit bands path
     onto the nested wannier90 builder, apply the optional
@@ -115,7 +115,7 @@ def _finalize_wannier_builder(
 
 
 @task.graph
-def Wannier90TaskViaBuilder(
+def Wannierize(
     codes: Codes,
     structure: orm.StructureData,
     protocol: str | None = None,
@@ -207,7 +207,7 @@ def Wannier90TaskViaBuilder(
     )
 
     # Submit the workchain with converted inputs
-    outputs = Wannier90Task(**data)
+    outputs = Wannier90Step(**data)
 
     # Return available outputs
     return WannierWorkflowOutputs(
@@ -236,7 +236,7 @@ class WannierOptimizeOutputs(TypedDict, total=False):
 
 
 @task.graph
-def Wannier90OptimizeTaskViaBuilder(
+def OptimizeWannierization(
     codes: Codes,
     structure: orm.StructureData,
     reference_bands: orm.BandsData | None = None,
@@ -355,7 +355,7 @@ def Wannier90OptimizeTaskViaBuilder(
         set_bands_kpoints=False,
     )
 
-    outputs = Wannier90OptimizeTask(**data)
+    outputs = Wannier90OptimizeStep(**data)
 
     return WannierOptimizeOutputs(
         scf=outputs.scf,

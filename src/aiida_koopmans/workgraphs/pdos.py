@@ -25,11 +25,11 @@ class PdosOutputs(TypedDict):
     projwfc_Pdos: NotRequired[orm.XyData]
 
 
-PdosTask = task(PdosWorkChain)
+PdosStep = task(PdosWorkChain)
 
 
 @task.graph
-def PdosTaskViaBuilder(
+def RunPdos(
     codes: Codes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
@@ -71,7 +71,7 @@ def PdosTaskViaBuilder(
 
     data = get_dict_from_builder(builder)
 
-    output = PdosTask(**data)
+    output = PdosStep(**data)
 
     return PdosOutputs(
         nscf_remote_folder=output.nscf__remote_folder,
