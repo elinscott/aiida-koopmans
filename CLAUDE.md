@@ -37,6 +37,7 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 5. **`clean_workdir` must be popped** before chaining remote folders, otherwise the upstream cleanup kills downstream inputs.
 6. **New Data types** (`Band`, `Bands`, `ProjectionBlock`, …) subclass `orm.Data` and register under the `aiida.data` entry point group in `pyproject.toml`.
 7. **Filename convention:** `workgraphs/<qe_tool>.py`, one module per physics step (`pw.py`, `pdos.py`, `wannier90.py`, eventually `kcw.py`, `ph.py`, `kcp.py`).
+8. **Naming convention:** case encodes what a call creates. **PascalCase** for anything whose call creates a process node — `@task.graph` builders (verb-first: `WannierizeBlock`, `RunScfNscf`, `ComputeOrbitalScreeningParameters`; `Workflow` suffix reserved for the dispatcher entry points) and `task(WorkChain/CalcJob)` constants (`Step` suffix: `KcpStep`, `PwBaseStep`). **snake_case** for leaf `@task`/calcfunction/workfunction computations (`compute_alpha_from_dscf`). No `Task`/`ViaBuilder` suffixes; internal alpha vocabulary stays `alpha`, user-facing graph names say `ScreeningParameter(s)`.
 
 ## Current state
 
