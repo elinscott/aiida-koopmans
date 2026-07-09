@@ -92,12 +92,12 @@ def PwBandsTaskViaBuilder(
         options=options or {},
     )
 
+    data = get_dict_from_builder(builder)
+
     # If nbnd is explicitly set, remove nbands_factor to avoid conflict
     bands_system = overrides.get("bands", {}).get("pw", {}).get("parameters", {}).get("SYSTEM", {})
     if "nbnd" in bands_system:
-        builder.pop("nbands_factor", None)
-
-    data = get_dict_from_builder(builder)
+        data.pop("nbands_factor", None)
 
     # Inject explicit bands_kpoints to bypass seekpath
     if bands_kpoints is not None:
@@ -158,8 +158,8 @@ def PwScfNscfTask(
         overrides=scf_overrides,
         options=options or {},
     )
-    scf_builder.pop("clean_workdir", None)
     scf_data = get_dict_from_builder(scf_builder)
+    scf_data.pop("clean_workdir", None)
     scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
     scf_outputs = PwBaseTask(**scf_data)
 
@@ -185,9 +185,8 @@ def PwScfNscfTask(
         overrides=nscf_merged,
         options=options or {},
     )
-    nscf_builder.pop("clean_workdir", None)
-
     nscf_data = get_dict_from_builder(nscf_builder)
+    nscf_data.pop("clean_workdir", None)
 
     # Wire SCF remote_folder → NSCF parent_folder
     nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]

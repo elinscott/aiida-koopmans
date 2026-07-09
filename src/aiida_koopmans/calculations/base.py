@@ -23,6 +23,7 @@ takes no namelist and its 302 exit code means "merged file missing", not
 
 from __future__ import annotations
 
+import abc
 from typing import ClassVar
 
 from aiida.common import CodeInfo
@@ -30,13 +31,17 @@ from aiida.engine import CalcJob
 from aiida_quantumespresso.utils.convert import convert_input_to_namelist_entry
 
 
-class KoopmansCalculation(CalcJob):
+class KoopmansCalculation(CalcJob, abc.ABC):
     """Universal base for the Koopmans QE-fork CalcJobs.
 
     Provides the one exit code every plugin shares, the ``CodeInfo`` builder,
     and the ``additional_retrieve_list`` settings hook. Subclasses set
     ``_OUTPUT_FILE`` (stdout name) and, for the ``-in <input>`` default
     command line, ``_INPUT_FILE``.
+
+    Abstract: ``prepare_for_submission`` is left unimplemented, so this class
+    (and the equally-abstract :class:`KoopmansStdoutCalculation`) cannot be
+    instantiated -- only the concrete plugin subclasses can.
     """
 
     # Human-readable binary name, interpolated into the shared stdout exit
@@ -69,6 +74,14 @@ class KoopmansCalculation(CalcJob):
         if "settings" in self.inputs:
             return list(self.inputs.settings.get_dict().get("additional_retrieve_list", []))
         return []
+
+    @abc.abstractmethod
+    def prepare_for_submission(self, folder):
+        """Render the input files and build the ``CalcInfo`` for this calc.
+
+        Abstract: every concrete plugin renders its own namelists / side
+        files, so the shared bases leave this unimplemented.
+        """
 
 
 class KoopmansStdoutCalculation(KoopmansCalculation):

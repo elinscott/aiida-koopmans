@@ -12,7 +12,7 @@ from typing import Any
 
 from aiida import orm
 
-from aiida_koopmans.parsers.base import KoopmansStdoutParser, _time_string_to_seconds
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, time_string_to_seconds
 
 
 class Wann2kcpParser(KoopmansStdoutParser):
@@ -53,7 +53,7 @@ class Wann2kcpParser(KoopmansStdoutParser):
                 tokens = line.split()
                 if len(tokens) >= 2:
                     try:
-                        results["walltime"] = _time_string_to_seconds(tokens[-2])
+                        results["walltime"] = time_string_to_seconds(tokens[-2])
                     except ValueError:
                         pass
         return results

@@ -57,7 +57,7 @@ class KoopmansStdoutParser(Parser):
         }
 
 
-def _time_string_to_seconds(time_str: str) -> float:
+def time_string_to_seconds(time_str: str) -> float:
     """Convert strings like ``1d 2h 3m 4s`` / ``3m 4s`` / ``4.5s`` to seconds."""
     days, hours, minutes = 0.0, 0.0, 0.0
     rem = time_str
@@ -74,4 +74,4 @@ def _time_string_to_seconds(time_str: str) -> float:
     return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
-__all__ = ("KoopmansStdoutParser", "_time_string_to_seconds")
+__all__ = ("KoopmansStdoutParser", "time_string_to_seconds")

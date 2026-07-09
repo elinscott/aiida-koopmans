@@ -120,10 +120,13 @@ def BlockWannierize(
         retrieve_hamiltonian=True,
         print_summary=False,
     )
+    # Flatten to a plain dict up front; every edit below is a dict edit.
+    data = get_dict_from_builder(builder)
+    w90 = data["wannier90"]["wannier90"]
 
     # --- per-block wannier90 parameters / projections ---
     w90_kwargs = block_w90_kwargs(block)
-    w90_params = builder.wannier90.wannier90.parameters.get_dict()
+    w90_params = w90["parameters"].get_dict()
     w90_params["num_wann"] = w90_kwargs["num_wann"]
     w90_params["num_bands"] = w90_kwargs["num_bands"]
     if "exclude_bands" in w90_kwargs:
@@ -131,31 +134,29 @@ def BlockWannierize(
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
     w90_params["write_hr"] = True
-    builder.wannier90.wannier90.parameters = orm.Dict(w90_params)
+    w90["parameters"] = orm.Dict(w90_params)
 
     # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic
     # blocks rely on ``projection_type`` alone (no ``projections`` key).
     if "projections" in w90_kwargs:
-        builder.wannier90.wannier90.projections = orm.List(list=w90_kwargs["projections"])
+        w90["projections"] = orm.List(list=w90_kwargs["projections"])
 
     # Share the nscf k-mesh so the per-block wannier90 / pw2wannier90 read
     # eigenstates on the exact grid the shared nscf produced.
-    builder.wannier90.wannier90.kpoints = kpoints
+    w90["kpoints"] = kpoints
 
     # Force ``aiida.chk`` into the wannier90 retrieve list (merged on top of
     # whatever ``settings`` the protocol set; the workchain only adds its own
     # ``postproc_setup`` key on top of this).
     existing_settings: dict = {}
-    if "settings" in builder.wannier90.wannier90:
-        existing_settings = builder.wannier90.wannier90.settings.get_dict()
+    if "settings" in w90:
+        existing_settings = w90["settings"].get_dict()
     existing_settings.update(_W90_RETRIEVE_SETTINGS)
-    builder.wannier90.wannier90.settings = orm.Dict(existing_settings)
-
-    data = get_dict_from_builder(builder)
+    w90["settings"] = orm.Dict(existing_settings)
 
     # Skip scf + nscf and reuse the shared nscf scratch. With both namespaces
     # absent the workchain validator requires the parent on the pw2wannier90
-    # step (``validate_inputs`` lines 94-99).
+    # step.
     data.pop("scf", None)
     data.pop("nscf", None)
     data.pop("clean_workdir", None)

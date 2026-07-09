@@ -65,8 +65,12 @@ from aiida_koopmans.utils import walk_remote_files
 class KcwCalculation(KoopmansStdoutCalculation):
     """Shared machinery for the three kcw.x calculation modes.
 
-    Not registered as an entry point itself -- use one of the three
-    subclasses, which pin ``CONTROL.calculation`` and the parser.
+    Abstract base: not registered as an entry point and never instantiated
+    directly -- use one of the three subclasses, which pin
+    ``CONTROL.calculation`` and the parser. Because the mode subclasses are
+    distinguished only by class attributes (there is no method for
+    :mod:`abc` to mark abstract), ``prepare_for_submission`` guards against a
+    bare base run by raising when ``_CALCULATION`` is unset.
     """
 
     _TOOL_NAME = "kcw.x"
@@ -155,6 +159,11 @@ class KcwCalculation(KoopmansStdoutCalculation):
 
     def prepare_for_submission(self, folder):
         """Render the input file and build the ``CalcInfo``."""
+        if not self._CALCULATION:
+            raise NotImplementedError(
+                "KcwCalculation is an abstract base; use Wann2kcCalculation, "
+                "KcwScreenCalculation, or KcwHamCalculation (each pins CONTROL.calculation)."
+            )
         parameters = self._normalize_parameters(self.inputs.parameters.get_dict())
         self._inject_owned_keys(parameters)
         self._validate_parameters(parameters)

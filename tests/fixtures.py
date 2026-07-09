@@ -8,7 +8,33 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+
+
+def sanitize(value):
+    """Recursively convert numbers to ``float``/``int`` so YAML output is stable.
+
+    Shared by the parser regression tests that snapshot ``output_parameters``
+    dicts with ``data_regression``.
+    """
+    if isinstance(value, dict):
+        return {k: sanitize(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize(v) for v in value]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | np.integer):
+        return int(value)
+    if isinstance(value, float | np.floating):
+        # Round to 8 sig figs — legacy .cpo stdout floats have only ~6-10
+        # significant digits depending on the printf format, and a tighter
+        # comparison would flake on trivial last-bit differences.
+        if np.isnan(value):
+            return float("nan")
+        return float(f"{value:.8g}")
+    return value
+
 
 # Ozone geometry taken from koopmans/tutorials/tutorial_1/ozone.json.
 _OZONE_CELL = [[14.1738, 0.0, 0.0], [0.0, 12.0, 0.0], [0.0, 0.0, 12.66]]

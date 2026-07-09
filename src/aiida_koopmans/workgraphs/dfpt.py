@@ -251,14 +251,20 @@ class KoopmansDFPTOutputs(TypedDict, total=False):
 
     * ``alphas`` -- the screening parameters fed to the ham step (computed by
       screen, or the caller's guess when screening was skipped).
-    * ``screen_parameters`` -- screen-step scalars (absent when screening was
-      skipped).
-    * ``ham_parameters`` -- ham-step scalars, including the KS / KI
-      eigenvalues on the k-grid.
+    * ``screen_parameters`` -- screen-step scalars (:class:`KcwScreenParameters`;
+      absent when screening was skipped).
+    * ``ham_parameters`` -- ham-step scalars (:class:`KcwHamParameters`),
+      including the KS / KI eigenvalues on the k-grid.
     * ``bands`` -- interpolated Koopmans band structure (present only when a
       band path was supplied).
     * ``wann2kc_remote_folder`` -- the wann2kcw scratch, for chaining further
       kcw.x runs off the same conversion.
+
+    ``screen_parameters`` / ``ham_parameters`` carry the key sets documented
+    by :class:`KcwScreenParameters` / :class:`KcwHamParameters`; they are
+    annotated as plain ``dict`` here because a TypedDict annotation on a
+    ``@task.graph`` output is read as a nested namespace socket rather than a
+    leaf ``orm.Dict``.
     """
 
     alphas: orm.List
@@ -348,6 +354,8 @@ def KoopmansDFPTTask(
         l_vcut: Gygi-Baldereschi long-range cutoff; None means the
             periodic-system default (on).
     """
+    # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
+    # to a plain bool before it lands in the stored ``control`` Dict.
     l_vcut = True if l_vcut is None else bool(l_vcut)
     control = {
         "kcw_iverbosity": 1,

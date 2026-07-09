@@ -20,6 +20,7 @@ from aiida import orm
 
 from aiida_koopmans.types import Correction
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_orbdep_parameters
+from tests.fixtures import sanitize
 
 
 def test_kcp_parser_tutorial_1_ozone_ki(
@@ -106,30 +107,10 @@ def test_kcp_parser_tutorial_1_ozone_ki(
     params.pop("walltime", None)
 
     snapshot = {
-        "output_parameters": _sanitize(params),
+        "output_parameters": sanitize(params),
         "eigenvalues_shape": list(eig.shape),
         "eigenvalues_has_nan": bool(np.isnan(eig).any()),
         "lambdas_shape": list(lam.shape),
         "bare_lambdas_shape": list(bare.shape),
     }
     data_regression.check(snapshot)
-
-
-def _sanitize(value):
-    """Recursively convert numbers to ``float``/``int`` so YAML output is stable."""
-    if isinstance(value, dict):
-        return {k: _sanitize(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_sanitize(v) for v in value]
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int | np.integer):
-        return int(value)
-    if isinstance(value, float | np.floating):
-        # Round to 8 sig figs — legacy .cpo stdout floats have only ~6-10
-        # significant digits depending on the printf format, and a tighter
-        # comparison would flake on trivial last-bit differences.
-        if np.isnan(value):
-            return float("nan")
-        return float(f"{value:.8g}")
-    return value

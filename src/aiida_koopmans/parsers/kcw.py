@@ -8,16 +8,47 @@ eigenvalue blocks for ``ham``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 from aiida import orm
 from qe_tools import CONSTANTS
 
-from aiida_koopmans.parsers.base import KoopmansStdoutParser, _time_string_to_seconds
-from aiida_koopmans.parsers.kcp import _safe_floats
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, time_string_to_seconds
+from aiida_koopmans.parsers.kcp import safe_floats
 
-_RY_TO_EV = CONSTANTS.ry_to_ev
+
+class KcwScreenParameters(TypedDict, total=False):
+    """``output_parameters`` payload of a ``screen``-mode kcw.x run.
+
+    The ``job_done`` / ``walltime`` / ``walltime_units`` keys come from the
+    shared base scalars; the rest are the per-orbital screening columns. Runtime
+    value stays an ``orm.Dict``; this is annotation-level only.
+    """
+
+    job_done: bool
+    walltime: float | None
+    walltime_units: str
+    relaxed: list[float]
+    unrelaxed: list[float]
+    self_hartree: list[float]
+    self_hartree_units: str
+
+
+class KcwHamParameters(TypedDict, total=False):
+    """``output_parameters`` payload of a ``ham``-mode kcw.x run.
+
+    The ``job_done`` / ``walltime`` / ``walltime_units`` keys come from the
+    shared base scalars; the eigenvalue tables are per grid-point. Runtime
+    value stays an ``orm.Dict``; this is annotation-level only.
+    """
+
+    job_done: bool
+    walltime: float | None
+    walltime_units: str
+    ks_eigenvalues_on_grid: list[list[float]]
+    ki_eigenvalues_on_grid: list[list[float]]
+    eigenvalue_units: str
 
 
 class KcwBaseParser(KoopmansStdoutParser):
@@ -54,7 +85,7 @@ class KcwBaseParser(KoopmansStdoutParser):
             if "KCW          :" in line:
                 time_str = line.split("CPU")[-1].split("WALL")[0].strip()
                 try:
-                    results["walltime"] = _time_string_to_seconds(time_str)
+                    results["walltime"] = time_string_to_seconds(time_str)
                 except ValueError:
                     pass
         return results
@@ -93,14 +124,17 @@ class KcwScreenParser(KcwBaseParser):
                 relaxed.append(float(tokens[-11]))
                 unrelaxed.append(float(tokens[-8]))
                 alphas.append(float(tokens[-5]))
-                self_hartrees.append(float(tokens[-1]) * _RY_TO_EV)
+                self_hartrees.append(float(tokens[-1]) * CONSTANTS.ry_to_ev)
             except (IndexError, ValueError):
                 continue
 
-        results["relaxed"] = relaxed
-        results["unrelaxed"] = unrelaxed
-        results["self_hartree"] = self_hartrees
-        results["self_hartree_units"] = "eV"
+        screen_fields: KcwScreenParameters = {
+            "relaxed": relaxed,
+            "unrelaxed": unrelaxed,
+            "self_hartree": self_hartrees,
+            "self_hartree_units": "eV",
+        }
+        results.update(screen_fields)
 
         if not alphas:
             return self.exit_codes.ERROR_OUTPUT_ALPHAS_MISSING
@@ -130,7 +164,7 @@ class KcwHamParser(KcwBaseParser):
                 eigenvalues.append([])
                 j = i_line + 2
                 while j < len(lines) and lines[j].strip():
-                    eigenvalues[-1] += _safe_floats(lines[j])
+                    eigenvalues[-1] += safe_floats(lines[j])
                     j += 1
 
             if "band energies (ev):" in line:
@@ -139,13 +173,16 @@ class KcwHamParser(KcwBaseParser):
 
             stripped = line.strip()
             if stripped.startswith("KS ") and ks_on_grid:
-                ks_on_grid[-1] += _safe_floats(stripped[3:])
+                ks_on_grid[-1] += safe_floats(stripped[3:])
             if stripped.startswith("KI ") and ki_on_grid:
-                ki_on_grid[-1] += _safe_floats(stripped[3:])
+                ki_on_grid[-1] += safe_floats(stripped[3:])
 
-        results["ks_eigenvalues_on_grid"] = ks_on_grid
-        results["ki_eigenvalues_on_grid"] = ki_on_grid
-        results["eigenvalue_units"] = "eV"
+        ham_fields: KcwHamParameters = {
+            "ks_eigenvalues_on_grid": ks_on_grid,
+            "ki_eigenvalues_on_grid": ki_on_grid,
+            "eigenvalue_units": "eV",
+        }
+        results.update(ham_fields)
 
         do_bands = self._do_bands_requested()
 

@@ -100,14 +100,12 @@ def resolve_pseudo_family(family_label: str, structure: orm.StructureData) -> di
         A dict mapping each kind name in ``structure`` to its ``UpfData`` node.
 
     Raises:
-        :class:`~aiida.common.exceptions.NotExistent`: if no family with that
+        :class:`~aiida.common.exceptions.NotExistent`: if no group with that
             label exists in the current profile.
+        :class:`~aiida.common.exceptions.MultipleObjectsError`: if more than
+            one group shares the label.
     """
-    from aiida_pseudo.groups.family.pseudo import PseudoPotentialFamily
-
-    family = (
-        orm.QueryBuilder().append(PseudoPotentialFamily, filters={"label": family_label}).one()[0]
-    )
+    family = orm.load_group(family_label)
     return family.get_pseudos(structure=structure)
 
 

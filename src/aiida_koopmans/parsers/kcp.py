@@ -18,10 +18,7 @@ import numpy as np
 from aiida import orm
 from qe_tools import CONSTANTS
 
-from aiida_koopmans.parsers.base import KoopmansStdoutParser, _time_string_to_seconds
-
-_HARTREE_TO_EV = CONSTANTS.hartree_to_ev
-_BOHR_TO_ANG = CONSTANTS.bohr_to_ang
+from aiida_koopmans.parsers.base import KoopmansStdoutParser, time_string_to_seconds
 
 
 class KcpParser(KoopmansStdoutParser):
@@ -136,21 +133,21 @@ class KcpParser(KoopmansStdoutParser):
                 # The total energy line has the value 3 tokens from the end.
                 tokens = line.split()
                 try:
-                    results["energy"] = _fortran_float(tokens[-3]) * _HARTREE_TO_EV
+                    results["energy"] = _fortran_float(tokens[-3]) * CONSTANTS.hartree_to_ev
                 except (IndexError, ValueError):
                     pass
 
             if "odd energy" in line:
                 tokens = line.split()
                 try:
-                    results["odd_energy"] = _fortran_float(tokens[3]) * _HARTREE_TO_EV
+                    results["odd_energy"] = _fortran_float(tokens[3]) * CONSTANTS.hartree_to_ev
                 except (IndexError, ValueError):
                     pass
 
             if "fixed_lambda" in line and results["lambda_ii"] is None:
                 tokens = line.split()
                 try:
-                    results["lambda_ii"] = _fortran_float(tokens[-1]) * _HARTREE_TO_EV
+                    results["lambda_ii"] = _fortran_float(tokens[-1]) * CONSTANTS.hartree_to_ev
                 except (IndexError, ValueError):
                     pass
 
@@ -177,14 +174,14 @@ class KcpParser(KoopmansStdoutParser):
             if "Makov-Payne 1-order energy" in line:
                 tokens = line.split()
                 try:
-                    results["mp1_energy"] = _fortran_float(tokens[4]) * _HARTREE_TO_EV
+                    results["mp1_energy"] = _fortran_float(tokens[4]) * CONSTANTS.hartree_to_ev
                 except (IndexError, ValueError):
                     pass
 
             if "Makov-Payne 2-order energy" in line:
                 tokens = line.split()
                 try:
-                    results["mp2_energy"] = _fortran_float(tokens[4]) * _HARTREE_TO_EV
+                    results["mp2_energy"] = _fortran_float(tokens[4]) * CONSTANTS.hartree_to_ev
                 except (IndexError, ValueError):
                     pass
 
@@ -193,7 +190,7 @@ class KcpParser(KoopmansStdoutParser):
                     eigenvalues.append([])
                 j = idx + 2
                 while j < len(lines) and lines[j].strip():
-                    eigenvalues[-1].extend(_safe_floats(lines[j]))
+                    eigenvalues[-1].extend(safe_floats(lines[j]))
                     j += 1
 
             if "Orb -- Charge  ---" in line or "Orb -- Empty Charge" in line:
@@ -216,10 +213,10 @@ class KcpParser(KoopmansStdoutParser):
                 if len(values) >= 6 and i_spin_orbital is not None:
                     results["orbital_data"]["charge"][i_spin_orbital].append(values[0])
                     results["orbital_data"]["centres"][i_spin_orbital].append(
-                        [v * _BOHR_TO_ANG for v in values[1:4]]
+                        [v * CONSTANTS.bohr_to_ang for v in values[1:4]]
                     )
                     results["orbital_data"]["spreads"][i_spin_orbital].append(
-                        values[4] * _BOHR_TO_ANG * _BOHR_TO_ANG
+                        values[4] * CONSTANTS.bohr_to_ang * CONSTANTS.bohr_to_ang
                     )
                     results["orbital_data"]["self-Hartree"][i_spin_orbital].append(values[5])
 
@@ -242,7 +239,7 @@ class KcpParser(KoopmansStdoutParser):
                     time_part = time_part.rstrip()
                     if time_part.endswith("wall time"):
                         time_part = time_part[: -len("wall time")].strip()
-                    results["walltime"] = _time_string_to_seconds(time_part)
+                    results["walltime"] = time_string_to_seconds(time_part)
                 except (IndexError, ValueError):
                     pass
 
@@ -321,7 +318,7 @@ def _fortran_float(token: str) -> float:
     return float(token.replace("d", "e").replace("D", "e"))
 
 
-def _safe_floats(string: str) -> list[float]:
+def safe_floats(string: str) -> list[float]:
     """Parse whitespace-separated floats tolerantly, mapping ``*****`` to NaN."""
     out: list[float] = []
     for word in string.split():
@@ -357,13 +354,13 @@ def _parse_convergence_line(line: str) -> dict[str, Any] | None:
         entry = {
             "iteration": int(parts[0]),
             "eff_iteration": int(parts[1]),
-            "Etot": _fortran_float(parts[2]) * _HARTREE_TO_EV,
+            "Etot": _fortran_float(parts[2]) * CONSTANTS.hartree_to_ev,
         }
     except ValueError:
         return None
     if len(parts) >= 4:
         try:
-            entry["delta_E"] = _fortran_float(parts[3]) * _HARTREE_TO_EV
+            entry["delta_E"] = _fortran_float(parts[3]) * CONSTANTS.hartree_to_ev
         except ValueError:
             pass
     return entry
@@ -384,7 +381,7 @@ def _read_hamiltonian_xml(content: str) -> np.ndarray:
     for row in root.text.strip().split("\n"):
         re_part, im_part = (_fortran_float(x) for x in row.split(","))
         entries.append(complex(re_part, im_part))
-    matrix = np.array(entries, dtype=np.complex128) * _HARTREE_TO_EV
+    matrix = np.array(entries, dtype=np.complex128) * CONSTANTS.hartree_to_ev
     return matrix.reshape((side, side))
 
 
