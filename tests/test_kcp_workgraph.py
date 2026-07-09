@@ -875,9 +875,9 @@ class TestKoopmansDSCFGraphBuild:
         # The per-orbital fan-out is a nested ``@task.graph`` (its body
         # is deferred until ``assign_orbital_groups``' output resolves,
         # so the scatter itself is invisible at build time — see
-        # ``test_per_orbital_screening_fanout_counts`` for the expanded
+        # ``test_compute_orbital_screening_parameters_fanout_counts`` for the expanded
         # shape).
-        assert _iter_has("per_orbital_screening"), iter_labels
+        assert _iter_has("compute_orbital_screening_parameters"), iter_labels
         # No Map zones remain.
         assert not any("map_zone" in s.lower() for s in iter_labels), iter_labels
         # Convergence indicator the recursive ``RefineScreeningParameters`` reads.
@@ -955,7 +955,7 @@ class TestKoopmansDSCFGraphBuild:
             trial_bare_lambdas=np.zeros((2, 10, 10)),
         )
 
-    def test_per_orbital_screening_fanout_counts(
+    def test_compute_orbital_screening_parameters_fanout_counts(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """Closed-shell ozone: 9 filled + 1 empty screening sub-graphs.
@@ -989,7 +989,7 @@ class TestKoopmansDSCFGraphBuild:
 
         For ``alpha_numsteps = 1`` the dispatcher unrolls a single
         ``ScreeningIteration`` and skips the loop entirely; for >1 it
-        adds one ``alpha_refinement_loop`` graph task consuming
+        adds one ``refine_screening_parameters`` graph task consuming
         iter 1's outputs (each recursion level decides
         converged-vs-continue on the *previous* iteration's
         ``max_error`` inside its deferred body). This test pins that
@@ -1032,7 +1032,7 @@ class TestKoopmansDSCFGraphBuild:
 
         # Exactly one refinement-loop task should be present (further
         # recursion levels are created at runtime, one per iteration).
-        n_loop = sum(1 for s in labels if "alpha_refinement_loop" in s)
+        n_loop = sum(1 for s in labels if "refine_screening_parameters" in s)
         assert n_loop == 1, (n_loop, labels)
         # The unrolled iter_1 exists as a ``ScreeningIteration`` task.
         assert sum(1 for s in labels if s == "ScreeningIteration") >= 1, labels
@@ -1081,7 +1081,7 @@ class TestKoopmansDSCFGraphBuild:
             dft_remote=dummy_remote,
         )
         labels = self._all_link_labels(sub_wg)
-        assert not any("alpha_refinement_loop" in s for s in labels), labels
+        assert not any("refine_screening_parameters" in s for s in labels), labels
         assert not any("while_zone" in s.lower() for s in labels), labels
 
     def test_spin_polarized_screening_emits_both_channels(

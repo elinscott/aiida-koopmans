@@ -1514,7 +1514,7 @@ def ScreeningIteration(
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         options=options,
-        metadata={"call_link_label": "per_orbital_screening"},
+        metadata={"call_link_label": "compute_orbital_screening_parameters"},
     )
 
     max_err = max_alpha_error(
@@ -1619,7 +1619,7 @@ def RefineScreeningParameters(
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         options=options,
-        metadata={"call_link_label": "alpha_refinement_loop"},
+        metadata={"call_link_label": "refine_screening_parameters"},
     )
     return ScreeningParametersOutputs(
         alphas=remainder["alphas"],
@@ -1805,7 +1805,7 @@ def ComputeScreeningParameters(
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         options=options,
-        metadata={"call_link_label": "alpha_refinement_loop"},
+        metadata={"call_link_label": "refine_screening_parameters"},
     )
 
     # The final KI (application of the converged screening parameters)
