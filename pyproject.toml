@@ -192,6 +192,7 @@ aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = 
 node-graph = { path = "../node-graph", editable = true }
 
 [tool.hatch.envs.docs]
+installer = "uv"
 features = ["docs"]
 
 [tool.hatch.envs.docs.scripts]
