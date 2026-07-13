@@ -18,29 +18,28 @@ Two graphs are exposed:
 Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 ``aiida_quantumespresso`` ``SpinType``):
 
-* ``NONE`` — kcw.x still requires an nspin=2 parent scratch (the DFPT
-  perturbations are spin-dependent), so the PW runs are forced to
-  ``nspin = 2`` + ``tot_magnetization = 0`` and pw2wannier90 to
-  ``spin_component = 'up'`` (legacy ``force_nspin2``;
-  ``_wannierize.py:531-532``). One kcw chain on the up channel.
-* ``COLLINEAR`` — the legacy ``spin_components`` loop: per-channel
-  wannierization (wannier90 ``spin``, pw2wannier90 ``spin_component``) and
-  a kcw chain per channel (``CONTROL.spin_component`` 1 / 2), with each
-  channel's results under its key in the ``channels`` output namespace.
+* ``NONE`` — kcw.x requires an nspin=2 parent scratch even for
+  closed-shell systems (the DFPT perturbations are spin-dependent), so
+  the PW runs are forced to ``nspin = 2`` + ``tot_magnetization = 0`` and
+  pw2wannier90 to ``spin_component = 'up'``. One kcw chain on the up
+  channel.
+* ``COLLINEAR`` — per-channel wannierization (wannier90 ``spin``,
+  pw2wannier90 ``spin_component``) and a kcw chain per channel
+  (``CONTROL.spin_component`` 1 / 2), with each channel's results under
+  its key in the ``channels`` output namespace.
 * ``NON_COLLINEAR`` / ``SPIN_ORBIT`` — spinor scratch (``noncolin``, plus
   ``lspinorb`` for SOC), ``spinors = .true.`` wannierization with doubled
-  ``num_wann``, one kcw chain. No legacy equivalent; QE reference:
+  ``num_wann``, one kcw chain. QE reference:
   ``KCW/examples/example05.1`` nspin4 variants.
 
-Remaining scope cuts (deliberate deviations from legacy, single-manifold):
+Current limitations:
 
-* One occupied block + at most one empty block per spin channel. Legacy
-  merges multiple occupied sub-blocks (u / hr / centres merge steps) before
-  kcw.x; that machinery is not ported yet, so multi-block inputs must be
-  rejected upstream.
-* No per-orbital screening fan-out (legacy ``i_orb`` grouping): one screen
-  calculation solves all orbitals, which is legacy's own behaviour when no
-  orbital grouping applies.
+* One occupied block + at most one empty block per spin channel. Merging
+  multiple occupied sub-blocks (u / hr / centres merge steps) before
+  kcw.x is not yet implemented, so multi-block inputs must be rejected
+  upstream.
+* No per-orbital screening fan-out (kcw.x ``i_orb`` grouping): one screen
+  calculation solves all orbitals.
 * No coarse-grid pre-screening (``dfpt_coarse_grid``) and no
   unfold-and-interpolate postprocessing.
 """
@@ -150,10 +149,10 @@ def derive_dfpt_manifolds(
 ) -> tuple[ProjectionBlock, ProjectionBlock | None, bool, int]:
     """Turn user projection blocks into the occupied/empty DFPT manifolds.
 
-    Ports the manifold bookkeeping of legacy ``KoopmansDFPTWorkflow.__init__``
-    (nocc from the electron count, nemp from the projections, disentanglement
-    when the empty manifold has more bands than Wannier functions) for one
-    spin channel: exactly one occupied block, at most one empty block.
+    Handles the manifold bookkeeping (nocc from the electron count, nemp from
+    the projections, disentanglement when the empty manifold has more bands
+    than Wannier functions) for one spin channel: exactly one occupied block,
+    at most one empty block.
 
     Args:
         structure: the periodic structure (for per-site projection counting).
@@ -430,8 +429,8 @@ def RunDFPT(
             straight to ham.
         has_disentangle: whether the empty manifold was disentangled
             (``num_bands != num_wann``).
-        l_vcut: Gygi-Baldereschi long-range cutoff (legacy ``gb_correction``);
-            None means the periodic-system default (on).
+        l_vcut: Gygi-Baldereschi long-range cutoff (the ``gb_correction``
+            workflow keyword); None means the periodic-system default (on).
         spin_component: which collinear spin channel kcw.x reads (1 = up,
             2 = down). Spin-unpolarized runs use the default 1 (the nspin=2
             scratch's channels are identical); a spin-polarized workflow
@@ -533,9 +532,9 @@ def RunDFPT(
 def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
     """Return the SYSTEM-namelist keys a DFPT chain forces on the PW runs.
 
-    * Unpolarized: kcw.x still requires an nspin=2 scratch (the DFPT
-      perturbations are spin-dependent — legacy ``force_nspin2``; the
-      tutorial_3 scf/nscf.pwi carry ``nspin=2 + tot_magnetization=0``).
+    * Unpolarized: kcw.x requires an nspin=2 scratch even for closed-shell
+      systems (the DFPT perturbations are spin-dependent), so the PW runs
+      carry ``nspin=2 + tot_magnetization=0``.
     * Collinear: nspin=2 without pinning the magnetization — the caller's
       overrides carry the physical ``tot_magnetization`` /
       ``starting_magnetization``.
@@ -687,11 +686,11 @@ def SinglepointDFPTWorkflow(
         channel_key = str(channel_key)
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
-        # Legacy koopmans wannier90 defaults: converge to the same minimum
-        # the reference implementation reaches (guiding centres keep the
-        # minimisation near the projection guess). The caller's overrides
-        # win over these; the channel staging/selection keys below are
-        # requirements of the kcw chain and are force-merged on top.
+        # Tight wannier90 convergence defaults: guiding centres keep the
+        # minimisation near the projection guess so the Wannier functions
+        # land in a reproducible minimum. The caller's overrides win over
+        # these; the channel staging/selection keys below are requirements
+        # of the kcw chain and are force-merged on top.
         wannier_defaults: dict[str, Any] = {
             "wannier90": {
                 "wannier90": {

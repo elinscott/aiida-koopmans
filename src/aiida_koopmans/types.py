@@ -22,8 +22,8 @@ class Correction(str, Enum):
       correction on the variational orbitals — different sub-step
       parameters; see ``aiida_koopmans/workgraphs/kcp.py``.
     * ``PKIPZ``: perturbative KIPZ (trial KI, KIPZ correction applied
-      post-hoc). Deferred — accepted at the type level but not yet
-      wired through the dispatcher.
+      post-hoc). Not yet implemented — accepted at the type level but
+      not wired through the dispatcher.
     * ``PZ``: plain Perdew-Zunger orbital-dependent functional —
       strictly not a "Koopmans correction" but routed through the
       same orbital-dependent screening machinery
@@ -51,8 +51,9 @@ class VariationalOrbitalType(str, Enum):
       KS-as-variational overlay so the trial KI's ``evc0N.dat`` is the
       DFT ``evcN.dat``).
     * ``MLWFS``: maximally-localised Wannier functions
-      (Wannier90-based; deferred).
-    * ``PROJWFS``: projected Wannier functions (deferred).
+      (Wannier90-based; not yet implemented in the kcp.x stream).
+    * ``PROJWFS``: projected Wannier functions (not yet implemented in
+      the kcp.x stream).
     """
 
     PZ = "pz"
