@@ -401,12 +401,12 @@ class TestDeriveDfptManifolds:
         )
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
-        assert occ_block["exclude_bands"] == "9-12"
+        assert occ_block["exclude_bands"] == [9, 10, 11, 12]
         assert occ_block["projections"] == ["Si:l=1", "Si:l=0"]
         assert emp_block is not None
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
-        assert emp_block["exclude_bands"] == "1-8"
+        assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert has_disentangle is True
         assert n_orbitals == 10
 
@@ -522,7 +522,7 @@ class TestDeriveDfptManifolds:
         assert occ_block["spin"] == SpinChannel.SPINOR
         assert occ_block["num_wann"] == 16
         assert occ_block["num_bands"] == 16
-        assert occ_block["exclude_bands"] == "17-22"
+        assert occ_block["exclude_bands"] == list(range(17, 23))
         assert emp_block is not None
         assert emp_block["num_wann"] == 4
         assert emp_block["num_bands"] == 6

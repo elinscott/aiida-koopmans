@@ -106,6 +106,16 @@ def projection_win_string(projection: Any) -> str:
     raise ValueError(f"Projection {projection!r} defines no site.")
 
 
+def _band_range_complement(start: int, end: int, nbnd: int) -> list[int] | None:
+    """Return the wannier90 ``exclude_bands`` list complementing ``[start, end]``.
+
+    A list of band indices (not the ``.win`` range string): aiida-wannier90's
+    input writer expects integers and does the range compression itself.
+    """
+    excluded = [*range(1, start), *range(end + 1, nbnd + 1)]
+    return excluded or None
+
+
 def _projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
     """Count the Wannier functions of one projection: site multiplicity x (2l+1).
 
@@ -267,7 +277,7 @@ def derive_dfpt_manifolds(
         num_wann=num_wann_occ,
         num_bands=num_wann_occ,
         include_bands=list(range(1, nocc + 1)),
-        exclude_bands=f"{nocc + 1}-{nbnd}" if nbnd > nocc else None,
+        exclude_bands=_band_range_complement(1, nocc, nbnd),
         projection_type=WannierProjectionType.ANALYTIC,
         projections=_projection_strings(occupied[0][0]),
     )
@@ -290,7 +300,7 @@ def derive_dfpt_manifolds(
             num_wann=num_wann_emp,
             num_bands=num_bands_emp,
             include_bands=list(range(nocc + 1, nbnd + 1)),
-            exclude_bands=f"1-{nocc}",
+            exclude_bands=_band_range_complement(nocc + 1, nbnd, nbnd),
             projection_type=WannierProjectionType.ANALYTIC,
             projections=_projection_strings(empty[0][0]),
         )

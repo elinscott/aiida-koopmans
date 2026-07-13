@@ -192,7 +192,7 @@ class _ProjectionBlockBase(TypedDict):
     num_wann: int
     num_bands: int
     include_bands: list[int]
-    exclude_bands: NotRequired[str | None]
+    exclude_bands: NotRequired[list[int] | None]
     projection_type: WannierProjectionType
 
 
