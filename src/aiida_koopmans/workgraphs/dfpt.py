@@ -760,15 +760,9 @@ def SinglepointDFPTWorkflow(
 
         dfpt = RunDFPT(**dfpt_inputs)
 
-        results = ChannelResults(
-            alphas=dfpt["alphas"],
-            ham_parameters=dfpt["ham_parameters"],
-            wann2kc_remote_folder=dfpt["wann2kc_remote_folder"],
-        )
-        if alpha_guess is None:
-            results["screen_parameters"] = dfpt["screen_parameters"]
-        if bands_kpoints is not None:
-            results["bands"] = dfpt["bands"]
-        channel_results[channel_key] = results
+        # Assign the whole RunDFPT output namespace as this key's value (the
+        # engine maps one socket per dynamic key; re-packing individual
+        # sockets into a fresh dict is not resolvable at execution time).
+        channel_results[channel_key] = dfpt
 
     return KoopmansDFPTOutputs(channels=channel_results)
