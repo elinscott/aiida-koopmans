@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, NotRequired, TypedDict
 
 from aiida import orm
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -122,6 +123,7 @@ def RunScfNscf(
     overrides: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
+    electronic_type: ElectronicType = ElectronicType.METAL,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
@@ -162,6 +164,7 @@ def RunScfNscf(
         protocol=protocol,
         overrides=scf_overrides,
         options=options or {},
+        electronic_type=electronic_type,
     )
     scf_data = get_dict_from_builder(scf_builder)
     scf_data.pop("clean_workdir", None)
@@ -189,6 +192,7 @@ def RunScfNscf(
         protocol=protocol,
         overrides=nscf_merged,
         options=options or {},
+        electronic_type=electronic_type,
     )
     nscf_data = get_dict_from_builder(nscf_builder)
     nscf_data.pop("clean_workdir", None)

@@ -51,6 +51,7 @@ import io
 from typing import Any, TypedDict
 
 from aiida import orm
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_workgraph import task
 
 from aiida_koopmans.calculations.kcw import (
@@ -693,6 +694,9 @@ def SinglepointDFPTWorkflow(
         protocol=protocol,
         overrides=scf_nscf_overrides,
         nscf_kpoints=explicit_kpoints,
+        # kcw.x refuses non-fixed occupations ("KC corrections only for
+        # insulators"), so the ground state must run as an insulator.
+        electronic_type=ElectronicType.INSULATOR,
         metadata={"call_link_label": "scf_nscf"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
