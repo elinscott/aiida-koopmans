@@ -731,11 +731,26 @@ def SinglepointDFPTWorkflow(
 
     outputs = KoopmansDFPTOutputs()
     for ch in channels:
-        # The staging files and the channel selection are requirements of the
-        # kcw chain, not defaults a caller may disable: force-merge them on
-        # top of the caller's wannier90 overrides.
+        # Legacy koopmans wannier90 defaults: converge to the same minimum
+        # the reference implementation reaches (guiding centres keep the
+        # minimisation near the projection guess). The caller's overrides
+        # win over these; the channel staging/selection keys below are
+        # requirements of the kcw chain and are force-merged on top.
+        wannier_defaults: dict[str, Any] = {
+            "wannier90": {
+                "wannier90": {
+                    "parameters": {
+                        "guiding_centres": True,
+                        "num_iter": 10000,
+                        "conv_tol": 1.0e-10,
+                        "conv_window": 5,
+                    }
+                }
+            }
+        }
         wannier_overrides = recursive_merge(
-            overrides.get("wannier90", {}), _channel_w90_defaults(spin, ch["channel"])
+            recursive_merge(wannier_defaults, overrides.get("wannier90", {})),
+            _channel_w90_defaults(spin, ch["channel"]),
         )
 
         ch_occ_block = ch["occ_block"]
