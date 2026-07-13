@@ -25,8 +25,8 @@ Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
   ``_wannierize.py:531-532``). One kcw chain on the up channel.
 * ``COLLINEAR`` — the legacy ``spin_components`` loop: per-channel
   wannierization (wannier90 ``spin``, pw2wannier90 ``spin_component``) and
-  a kcw chain per channel (``CONTROL.spin_component`` 1 / 2), with the
-  down-channel results in the ``_down`` output keys.
+  a kcw chain per channel (``CONTROL.spin_component`` 1 / 2), with each
+  channel's results under its key in the ``channels`` output namespace.
 * ``NON_COLLINEAR`` / ``SPIN_ORBIT`` — spinor scratch (``noncolin``, plus
   ``lspinorb`` for SOC), ``spinors = .true.`` wannierization with doubled
   ``num_wann``, one kcw chain. No legacy equivalent; QE reference:
@@ -48,11 +48,11 @@ Remaining scope cuts (deliberate deviations from legacy, single-manifold):
 from __future__ import annotations
 
 import io
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
-from aiida_workgraph import task
+from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -288,8 +288,8 @@ def alphas_from_guess(alpha_guess: list) -> list:
     return list(alpha_guess)
 
 
-class KoopmansDFPTOutputs(TypedDict, total=False):
-    """Outputs of :func:`RunDFPT` / :func:`SinglepointDFPTWorkflow`.
+class ChannelResults(TypedDict, total=False):
+    """Results of one kcw.x chain (one spin channel).
 
     * ``alphas`` -- the screening parameters fed to the ham step (computed by
       screen, or the caller's guess when screening was skipped).
@@ -306,24 +306,50 @@ class KoopmansDFPTOutputs(TypedDict, total=False):
     by :class:`KcwScreenParameters` / :class:`KcwHamParameters`; they are
     annotated as plain ``dict`` here because a TypedDict annotation on a
     ``@task.graph`` output is read as a nested namespace socket rather than a
-    leaf ``orm.Dict``.
-
-    A spin-polarized (collinear) :func:`SinglepointDFPTWorkflow` runs the kcw.x
-    chain once per channel: the unsuffixed keys carry the spin-up results
-    and the ``_down`` variants carry spin-down. Unpolarized and spinor runs
-    have a single chain and never populate the ``_down`` keys.
+    leaf ``orm.Dict``. ``alphas`` is annotated as a plain ``list`` so callers
+    receive the deserialized python value at the graph boundary.
     """
 
-    alphas: orm.List
+    alphas: list
     screen_parameters: dict
     ham_parameters: dict
     bands: orm.BandsData
     wann2kc_remote_folder: orm.RemoteData
-    alphas_down: orm.List
-    screen_parameters_down: dict
-    ham_parameters_down: dict
-    bands_down: orm.BandsData
-    wann2kc_remote_folder_down: orm.RemoteData
+
+
+class KoopmansDFPTOutputs(TypedDict):
+    """Outputs of :func:`SinglepointDFPTWorkflow`.
+
+    ``channels`` is a dynamic namespace keyed by spin channel
+    (:class:`SpinChannel` values as strings); each entry is the
+    :class:`ChannelResults` of that channel's kcw.x chain. Unpolarized and
+    spinor runs populate the single key ``"none"``; collinear runs populate
+    ``"up"`` and ``"down"``.
+    """
+
+    channels: Annotated[dict, dynamic(ChannelResults)]
+
+
+class _ManifoldBlocksRequired(TypedDict):
+    """Required part of :class:`ManifoldBlocks` (split so the rest can be optional)."""
+
+    occ: ProjectionBlock
+
+
+class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
+    """Per-spin-channel manifold description consumed by :func:`SinglepointDFPTWorkflow`.
+
+    * ``occ`` -- the occupied projection block (required).
+    * ``emp`` -- the empty projection block, when the channel has one.
+    * ``alpha_guess`` -- per-orbital screening-parameter guess for this
+      channel; when given the channel's screen step is skipped.
+    * ``has_disentangle`` -- whether the empty manifold was disentangled
+      (``num_bands != num_wann``). Defaults to False.
+    """
+
+    emp: ProjectionBlock | None
+    alpha_guess: list[float] | None
+    has_disentangle: bool
 
 
 @task.calcfunction(outputs=["wannier_files"])
@@ -379,7 +405,7 @@ def RunDFPT(
     has_disentangle: bool = False,
     l_vcut: bool | None = None,
     spin_component: int = 1,
-) -> KoopmansDFPTOutputs:
+) -> ChannelResults:
     """Run the kcw.x chain off provided wannierization outputs.
 
     Args:
@@ -451,7 +477,7 @@ def RunDFPT(
         metadata={"call_link_label": "wann2kc"},
     )
 
-    outputs = KoopmansDFPTOutputs(wann2kc_remote_folder=wann2kc["remote_folder"])
+    outputs = ChannelResults(wann2kc_remote_folder=wann2kc["remote_folder"])
 
     if alpha_guess is None:
         # Screen defaults: tight tr2, spread check.
@@ -562,21 +588,14 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any
 def SinglepointDFPTWorkflow(
     codes: Codes,
     structure: orm.StructureData,
-    occ_block: ProjectionBlock,
+    manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
     kgrid: list[int],
-    emp_block: ProjectionBlock | None = None,
-    occ_block_down: ProjectionBlock | None = None,
-    emp_block_down: ProjectionBlock | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     eps_inf: float | None = None,
-    alpha_guess: list[float] | None = None,
-    alpha_guess_down: list[float] | None = None,
-    has_disentangle: bool = False,
-    has_disentangle_down: bool = False,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
 ) -> KoopmansDFPTOutputs:
@@ -584,22 +603,24 @@ def SinglepointDFPTWorkflow(
 
     One shared scf + nscf (:func:`RunScfNscf`, with the spin-regime SYSTEM
     keys of :func:`_pw_spin_system_defaults` forced on and ``nosym`` /
-    ``noinv`` on the nscf so kcw.x sees the full k-point set), one
-    :func:`WannierizeBlock` per manifold and channel, then one
-    :func:`RunDFPT` per channel:
+    ``noinv`` on the nscf so kcw.x sees the full k-point set), then one
+    :func:`WannierizeBlock` per manifold and one :func:`RunDFPT` per entry
+    of ``manifolds`` — a dict keyed by spin channel (:class:`SpinChannel`
+    values as strings) whose values are :class:`ManifoldBlocks`:
 
-    * ``spin = NONE`` — one chain on the up channel of the closed-shell
-      nspin=2 scratch (``occ_block`` / ``emp_block``; legacy behaviour).
-    * ``spin = COLLINEAR`` — two chains (legacy ``spin_components`` loop):
-      ``occ_block`` / ``emp_block`` / ``alpha_guess`` / ``has_disentangle``
-      describe spin-up, their ``_down`` twins spin-down, and the kcw runs
-      carry ``CONTROL.spin_component`` 1 / 2. The caller's ``overrides``
-      must supply the magnetization (``tot_magnetization`` or
-      ``starting_magnetization``). Down-channel results land in the
-      ``_down`` output keys.
-    * ``spin = NON_COLLINEAR`` / ``SPIN_ORBIT`` — one chain on the spinor
-      scratch; the blocks must be spinor manifolds (``num_wann`` doubled,
-      from ``derive_dfpt_manifolds(..., spin_channel=SPINOR)``).
+    * ``spin = NONE`` — ``manifolds = {"none": ...}``: one chain on the up
+      channel of the closed-shell nspin=2 scratch.
+    * ``spin = COLLINEAR`` — ``manifolds = {"up": ..., "down": ...}``: one
+      wannierization + kcw chain per channel (``CONTROL.spin_component``
+      1 / 2). The caller's ``overrides`` must supply the magnetization
+      (``tot_magnetization`` or ``starting_magnetization``).
+    * ``spin = NON_COLLINEAR`` / ``SPIN_ORBIT`` — ``manifolds =
+      {"none": ...}``: one chain on the spinor scratch; the blocks must be
+      spinor manifolds (``num_wann`` doubled, from
+      ``derive_dfpt_manifolds(..., spin_channel=SPINOR)``).
+
+    Each channel's results land under its key in the ``channels`` output
+    namespace.
 
     ``overrides`` namespaces: ``"scf"`` / ``"nscf"`` feed the shared PW
     steps, ``"wannier90"`` feeds every per-manifold wannier builder (its
@@ -609,6 +630,18 @@ def SinglepointDFPTWorkflow(
 
     overrides = overrides or {}
     collinear = spin == SpinType.COLLINEAR
+
+    # Dynamic-namespace output keys must be plain strings, and the channel
+    # bookkeeping below rests on the keys naming real spin channels.
+    channel_keys = {str(key) for key in manifolds}
+    expected_keys = (
+        {SpinChannel.UP.value, SpinChannel.DOWN.value} if collinear else {SpinChannel.NONE.value}
+    )
+    if channel_keys != expected_keys:
+        raise ValueError(
+            f"spin={spin.value!r} requires manifolds keyed by "
+            f"{sorted(expected_keys)}, got {sorted(channel_keys)}."
+        )
 
     spin_defaults: dict[str, Any] = {
         "pw": {"parameters": {"SYSTEM": _pw_spin_system_defaults(spin)}},
@@ -649,36 +682,11 @@ def SinglepointDFPTWorkflow(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
-    channels: list[dict[str, Any]] = [
-        {
-            "channel": SpinChannel.UP if collinear else SpinChannel.NONE,
-            "suffix": "_up" if collinear else "",
-            "occ_block": occ_block,
-            "emp_block": emp_block,
-            "alpha_guess": alpha_guess,
-            "has_disentangle": has_disentangle,
-            "spin_component": 1,
-            "out_key": lambda key: key,
-        }
-    ]
-    if collinear:
-        if occ_block_down is None:
-            raise ValueError("spin='collinear' requires occ_block_down.")
-        channels.append(
-            {
-                "channel": SpinChannel.DOWN,
-                "suffix": "_down",
-                "occ_block": occ_block_down,
-                "emp_block": emp_block_down,
-                "alpha_guess": alpha_guess_down,
-                "has_disentangle": has_disentangle_down,
-                "spin_component": 2,
-                "out_key": lambda key: f"{key}_down",
-            }
-        )
-
-    outputs = KoopmansDFPTOutputs()
-    for ch in channels:
+    channel_results: dict[str, ChannelResults] = {}
+    for channel_key, manifold in manifolds.items():
+        channel_key = str(channel_key)
+        channel = SpinChannel(channel_key)
+        suffix = f"_{channel_key}" if collinear else ""
         # Legacy koopmans wannier90 defaults: converge to the same minimum
         # the reference implementation reaches (guiding centres keep the
         # minimisation near the projection guess). The caller's overrides
@@ -698,67 +706,70 @@ def SinglepointDFPTWorkflow(
         }
         wannier_overrides = recursive_merge(
             recursive_merge(wannier_defaults, overrides.get("wannier90", {})),
-            _channel_w90_defaults(spin, ch["channel"]),
+            _channel_w90_defaults(spin, channel),
         )
 
-        ch_occ_block = ch["occ_block"]
+        occ_block = manifold["occ"]
         occ = WannierizeBlock(
             codes=codes,
             structure=structure,
-            block=ch_occ_block,
-            projection_type=ch_occ_block["projection_type"],
+            block=occ_block,
+            projection_type=occ_block["projection_type"],
             nscf_remote_folder=nscf_remote_folder,
             kpoints=explicit_kpoints,
             mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             protocol=protocol,
             overrides=wannier_overrides,
-            metadata={"call_link_label": f"wannierize_occ{ch['suffix']}"},
+            metadata={"call_link_label": f"wannierize_occ{suffix}"},
         )
 
+        alpha_guess = manifold.get("alpha_guess")
         dfpt_inputs: dict[str, Any] = {
             "codes": codes,
             "nscf_remote_folder": nscf_remote_folder,
             "occ_retrieved": occ["hr_retrieved"],
-            "num_wann_occ": ch_occ_block["num_wann"],
+            "num_wann_occ": occ_block["num_wann"],
             "num_wann_emp": 0,
             "kgrid": kgrid,
             "bands_kpoints": bands_kpoints,
             "eps_inf": eps_inf,
-            "alpha_guess": ch["alpha_guess"],
-            "has_disentangle": ch["has_disentangle"],
+            "alpha_guess": alpha_guess,
+            "has_disentangle": manifold.get("has_disentangle", False),
             "l_vcut": l_vcut,
-            "spin_component": ch["spin_component"],
-            "metadata": {"call_link_label": f"dfpt{ch['suffix']}"},
+            "spin_component": 2 if channel == SpinChannel.DOWN else 1,
+            "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
 
-        ch_emp_block = ch["emp_block"]
-        if ch_emp_block is not None:
+        emp_block = manifold.get("emp")
+        if emp_block is not None:
             emp = WannierizeBlock(
                 codes=codes,
                 structure=structure,
-                block=ch_emp_block,
-                projection_type=ch_emp_block["projection_type"],
+                block=emp_block,
+                projection_type=emp_block["projection_type"],
                 nscf_remote_folder=nscf_remote_folder,
                 kpoints=explicit_kpoints,
                 mp_grid=mp_grid,
                 pseudo_family=pseudo_family,
                 protocol=protocol,
                 overrides=wannier_overrides,
-                metadata={"call_link_label": f"wannierize_emp{ch['suffix']}"},
+                metadata={"call_link_label": f"wannierize_emp{suffix}"},
             )
             dfpt_inputs["emp_retrieved"] = emp["hr_retrieved"]
-            dfpt_inputs["num_wann_emp"] = ch_emp_block["num_wann"]
+            dfpt_inputs["num_wann_emp"] = emp_block["num_wann"]
 
         dfpt = RunDFPT(**dfpt_inputs)
 
-        out_key = ch["out_key"]
-        outputs[out_key("alphas")] = dfpt["alphas"]
-        outputs[out_key("ham_parameters")] = dfpt["ham_parameters"]
-        outputs[out_key("wann2kc_remote_folder")] = dfpt["wann2kc_remote_folder"]
-        if ch["alpha_guess"] is None:
-            outputs[out_key("screen_parameters")] = dfpt["screen_parameters"]
+        results = ChannelResults(
+            alphas=dfpt["alphas"],
+            ham_parameters=dfpt["ham_parameters"],
+            wann2kc_remote_folder=dfpt["wann2kc_remote_folder"],
+        )
+        if alpha_guess is None:
+            results["screen_parameters"] = dfpt["screen_parameters"]
         if bands_kpoints is not None:
-            outputs[out_key("bands")] = dfpt["bands"]
+            results["bands"] = dfpt["bands"]
+        channel_results[channel_key] = results
 
-    return outputs
+    return KoopmansDFPTOutputs(channels=channel_results)

@@ -208,8 +208,12 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
-            emp_block=_block("emp", range(5, 9)),
+            manifolds={
+                "none": {
+                    "occ": _block("occ", range(1, 5)),
+                    "emp": _block("emp", range(5, 9)),
+                }
+            },
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             bands_kpoints=bands_path,
@@ -221,6 +225,14 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_occ" in names
         assert "wannierize_emp" in names
         assert "dfpt" in names
+
+        # The single chain's results sit under channels.none in the dynamic
+        # output namespace.
+        channel_keys = [ns._name for ns in wg.outputs.channels]
+        assert channel_keys == ["none"]
+        result_keys = [s._name for s in wg.outputs.channels.none]
+        for expected in ("alphas", "screen_parameters", "ham_parameters", "bands"):
+            assert expected in result_keys
 
         # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
         # DFPT perturbations are spin-dependent): both PW runs are forced to
@@ -249,7 +261,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
+            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -264,7 +276,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
+            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -280,10 +292,16 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ_up", range(1, 6)),
-            emp_block=_block("emp_up", range(6, 9)),
-            occ_block_down=_block("occ_down", range(1, 4)),
-            emp_block_down=_block("emp_down", range(4, 9)),
+            manifolds={
+                "up": {
+                    "occ": _block("occ_up", range(1, 6)),
+                    "emp": _block("emp_up", range(6, 9)),
+                },
+                "down": {
+                    "occ": _block("occ_down", range(1, 4)),
+                    "emp": _block("emp_down", range(4, 9)),
+                },
+            },
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -302,6 +320,14 @@ class TestSinglepointDFPTBuild:
         ):
             assert expected in names, names
 
+        # Each channel gathers its own results namespace under channels.<key>.
+        channel_keys = sorted(ns._name for ns in wg.outputs.channels)
+        assert channel_keys == ["down", "up"]
+        for key in ("up", "down"):
+            result_keys = [s._name for s in wg.outputs.channels[key]]
+            assert "alphas" in result_keys
+            assert "ham_parameters" in result_keys
+
         # nspin=2 is still forced, but the magnetization is the caller's.
         pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
         scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
@@ -318,14 +344,14 @@ class TestSinglepointDFPTBuild:
             assert inputpp["spin_component"] == channel
             assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
 
-    def test_collinear_requires_down_channel_blocks(self, dfpt_codes, silicon_structure, kmesh):
+    def test_collinear_requires_both_channels(self, dfpt_codes, silicon_structure, kmesh):
         from aiida_quantumespresso.common.types import SpinType
 
-        with pytest.raises(ValueError, match="occ_block_down"):
+        with pytest.raises(ValueError, match="manifolds keyed by"):
             SinglepointDFPTWorkflow.build(
                 codes=dfpt_codes,
                 structure=silicon_structure,
-                occ_block=_block("occ_up", range(1, 5)),
+                manifolds={"up": {"occ": _block("occ_up", range(1, 5))}},
                 kpoints=kmesh,
                 kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -338,7 +364,8 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 9)),  # spinor manifold: counts doubled
+            # Spinor manifold: counts doubled; single "none" channel.
+            manifolds={"none": {"occ": _block("occ", range(1, 9))}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
