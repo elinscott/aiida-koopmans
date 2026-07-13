@@ -130,6 +130,19 @@ def WannierizeBlock(
     w90_params["num_bands"] = w90_kwargs["num_bands"]
     if "exclude_bands" in w90_kwargs:
         w90_params["exclude_bands"] = w90_kwargs["exclude_bands"]
+    # Per-block disentanglement handling: a block with extra bands genuinely
+    # disentangles, so give it wannier90's real default iteration budget (the
+    # aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
+    # freezes the initial projection subspace); a block with
+    # num_bands == num_wann cannot disentangle, so strip the (globally
+    # supplied) windows outright.
+    user_w90_params = overrides.get("wannier90", {}).get("wannier90", {}).get("parameters", {})
+    if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
+        if "dis_num_iter" not in user_w90_params:
+            w90_params["dis_num_iter"] = 5000
+    else:
+        for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
+            w90_params.pop(key, None)
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
     w90_params["write_hr"] = True
