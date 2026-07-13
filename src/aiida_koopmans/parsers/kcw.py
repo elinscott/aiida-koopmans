@@ -49,6 +49,28 @@ class KcwHamParameters(TypedDict, total=False):
     ks_eigenvalues_on_grid: list[list[float]]
     ki_eigenvalues_on_grid: list[list[float]]
     eigenvalue_units: str
+    ks_homo_energy: float
+    ks_lumo_energy: float
+    ki_homo_energy: float
+    ki_lumo_energy: float
+
+
+def _interpolated_block(lines: list[str], start: int) -> list[float]:
+    """Collect one "KC interpolated eigenvalues" block (runs until a blank line)."""
+    values: list[float] = []
+    j = start
+    while j < len(lines) and lines[j].strip():
+        values += safe_floats(lines[j])
+        j += 1
+    return values
+
+
+def _record_homo_lumo(stripped: str, results: dict[str, Any]) -> None:
+    """Store a KS/KI homo-lumo summary line as scalar results."""
+    homo, lumo = safe_floats(stripped)[-2:]
+    prefix = "ks" if stripped.startswith("KS") else "ki"
+    results[f"{prefix}_homo_energy"] = homo
+    results[f"{prefix}_lumo_energy"] = lumo
 
 
 class KcwBaseParser(KoopmansStdoutParser):
@@ -161,20 +183,20 @@ class KcwHamParser(KcwBaseParser):
         for i_line, line in enumerate(lines):
             if "KC interpolated eigenvalues at k=" in line:
                 kpts.append([float(x) for x in line.split()[-3:]])
-                eigenvalues.append([])
-                j = i_line + 2
-                while j < len(lines) and lines[j].strip():
-                    eigenvalues[-1] += safe_floats(lines[j])
-                    j += 1
+                eigenvalues.append(_interpolated_block(lines, i_line + 2))
 
             if "band energies (ev):" in line:
                 ks_on_grid.append([])
                 ki_on_grid.append([])
 
             stripped = line.strip()
-            if stripped.startswith("KS ") and ks_on_grid:
+            if "highest occupied, lowest unoccupied level" in stripped:
+                # Summary line ("KS/KI highest occupied, lowest unoccupied
+                # level (ev): X Y"), not a grid eigenvalue row.
+                _record_homo_lumo(stripped, results)
+            elif stripped.startswith("KS ") and ks_on_grid:
                 ks_on_grid[-1] += safe_floats(stripped[3:])
-            if stripped.startswith("KI ") and ki_on_grid:
+            elif stripped.startswith("KI ") and ki_on_grid:
                 ki_on_grid[-1] += safe_floats(stripped[3:])
 
         ham_fields: KcwHamParameters = {
