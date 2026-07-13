@@ -86,22 +86,47 @@ KcwScreenStep = task(KcwScreenCalculation)
 KcwHamStep = task(KcwHamCalculation)
 
 
+def projection_win_string(projection: Any) -> str:
+    """Format one projection as a Wannier90 ``.win`` projections line.
+
+    ``projection`` is duck-typed on the ``wannier90_input`` ``Projection``
+    model. Element-labelled sites render as ``<element>:<ang_mtm>``;
+    single-point sites use Wannier90's ``f=x,y,z`` (crystal) / ``c=x,y,z``
+    (Cartesian) forms. The ``ang_mtm`` quantum numbers stringify to
+    Wannier90's own syntax (``l=-3`` for sp3, ...).
+    """
+    if projection.site is not None:
+        return f"{projection.site}:{projection.ang_mtm}"
+    fractional = getattr(projection, "fractional_site", None)
+    if fractional is not None:
+        return f"f={','.join(str(c) for c in fractional)}:{projection.ang_mtm}"
+    cartesian = getattr(projection, "cartesian_site", None)
+    if cartesian is not None:
+        return f"c={','.join(str(c) for c in cartesian)}:{projection.ang_mtm}"
+    raise ValueError(f"Projection {projection!r} defines no site.")
+
+
 def _projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
     """Count the Wannier functions of one projection: site multiplicity x (2l+1).
 
     ``projection`` is duck-typed on the ``wannier90_input`` ``Projection``
-    model (``.site`` element label, ``.ang_mtm`` quantum numbers).
+    model (``.site`` element label or a ``fractional_site`` /
+    ``cartesian_site`` single point, ``.ang_mtm`` quantum numbers).
     """
-    if projection.site is None:
-        raise NotImplementedError(
-            "Only element-labelled projection sites are supported for DFPT "
-            "(fractional/cartesian sites are not yet wired)."
-        )
-    n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
-    if n_sites == 0:
-        raise ValueError(
-            f"Projection site '{projection.site}' does not match any atom in the structure."
-        )
+    if projection.site is not None:
+        n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
+        if n_sites == 0:
+            raise ValueError(
+                f"Projection site '{projection.site}' does not match any atom in the structure."
+            )
+    elif (
+        getattr(projection, "fractional_site", None) is not None
+        or getattr(projection, "cartesian_site", None) is not None
+    ):
+        # An explicit point hosts exactly one set of orbitals.
+        n_sites = 1
+    else:
+        raise ValueError(f"Projection {projection!r} defines no site.")
     quantum_numbers = projection.ang_mtm
     if quantum_numbers.m_r is not None:
         multiplicity = len(quantum_numbers.m_r)
@@ -231,7 +256,7 @@ def derive_dfpt_manifolds(
     def _projection_strings(block: list) -> list[str]:
         # Wannier90-format projection lines; aiida-wannier90 writes orm.List
         # entries verbatim into the .win projections block.
-        return [f"{p.site}:{p.ang_mtm}" for p in block]
+        return [projection_win_string(p) for p in block]
 
     label_suffix = (
         f"_{spin_channel.value}" if spin_channel in (SpinChannel.UP, SpinChannel.DOWN) else ""
