@@ -51,7 +51,7 @@ import io
 from typing import Any, TypedDict
 
 from aiida import orm
-from aiida_quantumespresso.common.types import ElectronicType
+from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_workgraph import task
 
 from aiida_koopmans.calculations.kcw import (
@@ -63,7 +63,6 @@ from aiida_koopmans.types import (
     ExplicitProjectionBlock,
     ProjectionBlock,
     SpinChannel,
-    SpinType,
 )
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock

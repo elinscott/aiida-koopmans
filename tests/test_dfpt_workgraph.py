@@ -274,7 +274,7 @@ class TestSinglepointDFPTBuild:
         assert pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nspin"] == 2
 
     def test_collinear_fans_out_per_channel(self, dfpt_codes, silicon_structure, kmesh):
-        from aiida_koopmans.types import SpinType
+        from aiida_quantumespresso.common.types import SpinType
 
         magnetization = {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
         wg = SinglepointDFPTWorkflow.build(
@@ -319,7 +319,7 @@ class TestSinglepointDFPTBuild:
             assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
 
     def test_collinear_requires_down_channel_blocks(self, dfpt_codes, silicon_structure, kmesh):
-        from aiida_koopmans.types import SpinType
+        from aiida_quantumespresso.common.types import SpinType
 
         with pytest.raises(ValueError, match="occ_block_down"):
             SinglepointDFPTWorkflow.build(
@@ -333,7 +333,7 @@ class TestSinglepointDFPTBuild:
             )
 
     def test_spinor_single_chain(self, dfpt_codes, silicon_structure, kmesh):
-        from aiida_koopmans.types import SpinType
+        from aiida_quantumespresso.common.types import SpinType
 
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
