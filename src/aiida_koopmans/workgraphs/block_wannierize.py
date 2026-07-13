@@ -81,6 +81,7 @@ def WannierizeBlock(
     projection_type: WannierProjectionType,
     nscf_remote_folder: orm.RemoteData,
     kpoints: orm.KpointsData,
+    mp_grid: list[int] | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -132,6 +133,15 @@ def WannierizeBlock(
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
     w90_params["write_hr"] = True
+    # The protocol builder froze ``mp_grid`` from its own distance-derived
+    # mesh, which goes stale once the shared k-list is substituted below.
+    # Pin the real mesh dimensions when given (wannier90 cannot re-derive
+    # them from an explicit list); otherwise drop the key so a mesh
+    # ``kpoints`` input lets the calculation re-derive it.
+    if mp_grid is not None:
+        w90_params["mp_grid"] = mp_grid
+    else:
+        w90_params.pop("mp_grid", None)
     w90["parameters"] = orm.Dict(w90_params)
 
     # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic

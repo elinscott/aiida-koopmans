@@ -676,12 +676,23 @@ def SinglepointDFPTWorkflow(
         "nscf": recursive_merge(overrides.get("nscf", {}), nscf_defaults),
     }
 
+    # wannier90 / pw2wannier90 need the nscf eigenstates on the full
+    # (symmetry-unreduced) user grid, listed in wannier90's own k-point
+    # order — expand the mesh once and share the explicit list between the
+    # nscf and every per-block wannierisation. ``mp_grid`` keeps the mesh
+    # dimensions, which wannier90 cannot re-derive from an explicit list.
+    from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
+
+    mp_grid = kpoints.get_kpoints_mesh()[0]
+    explicit_kpoints = get_explicit_kpoints(kpoints)
+
     scf_nscf = RunScfNscf(
         code=codes["pw"],
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=scf_nscf_overrides,
+        nscf_kpoints=explicit_kpoints,
         metadata={"call_link_label": "scf_nscf"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
@@ -730,7 +741,8 @@ def SinglepointDFPTWorkflow(
             block=ch_occ_block,
             projection_type=ch_occ_block["projection_type"],
             nscf_remote_folder=nscf_remote_folder,
-            kpoints=kpoints,
+            kpoints=explicit_kpoints,
+            mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             protocol=protocol,
             overrides=wannier_overrides,
@@ -761,7 +773,8 @@ def SinglepointDFPTWorkflow(
                 block=ch_emp_block,
                 projection_type=ch_emp_block["projection_type"],
                 nscf_remote_folder=nscf_remote_folder,
-                kpoints=kpoints,
+                kpoints=explicit_kpoints,
+                mp_grid=mp_grid,
                 pseudo_family=pseudo_family,
                 protocol=protocol,
                 overrides=wannier_overrides,
