@@ -75,11 +75,18 @@ def _is_numeric_row(payload: str) -> bool:
 
 
 def _record_homo_lumo(stripped: str, results: dict[str, Any]) -> None:
-    """Store a KS/KI homo-lumo summary line as scalar results."""
-    homo, lumo = safe_floats(stripped)[-2:]
+    """Store a KS/KI homo(-lumo) summary line as scalar results.
+
+    Occupied-only manifolds print "highest occupied level" with a single
+    value; otherwise the line carries both homo and lumo.
+    """
     prefix = "ks" if stripped.startswith("KS") else "ki"
+    if "lowest unoccupied" in stripped:
+        homo, lumo = safe_floats(stripped)[-2:]
+        results[f"{prefix}_lumo_energy"] = lumo
+    else:
+        homo = safe_floats(stripped)[-1]
     results[f"{prefix}_homo_energy"] = homo
-    results[f"{prefix}_lumo_energy"] = lumo
 
 
 class KcwBaseParser(KoopmansStdoutParser):
@@ -199,7 +206,7 @@ class KcwHamParser(KcwBaseParser):
                 ki_on_grid.append([])
 
             stripped = line.strip()
-            if "highest occupied, lowest unoccupied level" in stripped:
+            if "highest occupied" in stripped and "level" in stripped:
                 # Summary line ("KS/KI highest occupied, lowest unoccupied
                 # level (ev): X Y"), not a grid eigenvalue row.
                 _record_homo_lumo(stripped, results)
