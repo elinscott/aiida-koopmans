@@ -420,7 +420,7 @@ class TestDeriveDfptManifolds:
         # l=0 -> 1 orbital) = 8 Wannier functions; nelec=16 makes them all filled.
         occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 0, m_r=[1])]
         emp = [_FakeProjection("Si", 0)]
-        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
             nelec=16,
@@ -434,7 +434,7 @@ class TestDeriveDfptManifolds:
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
         assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
-        assert has_disentangle is True
+        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
         assert n_orbitals == 10
 
     def test_hybrid_multiplicity_and_no_empty(self, silicon_structure):
@@ -442,7 +442,7 @@ class TestDeriveDfptManifolds:
 
         # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
         occ = [_FakeProjection("Si", -3)]
-        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ],
             nelec=16,
@@ -451,7 +451,6 @@ class TestDeriveDfptManifolds:
         assert occ_block["num_wann"] == 8
         assert occ_block["exclude_bands"] is None
         assert emp_block is None
-        assert has_disentangle is False
         assert n_orbitals == 8
 
     def test_straddling_block_raises(self, silicon_structure):
@@ -505,7 +504,7 @@ class TestDeriveDfptManifolds:
         # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
         up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
         dn_blocks = [[_FakeProjection("Si", 1)]]  # 6 wann
-        occ_up, emp_up, _, n_up = derive_dfpt_manifolds(
+        occ_up, emp_up, n_up = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=up_blocks,
             nelec=14,
@@ -513,7 +512,7 @@ class TestDeriveDfptManifolds:
             spin_channel=SpinChannel.UP,
             nocc=8,
         )
-        occ_dn, emp_dn, _, n_dn = derive_dfpt_manifolds(
+        occ_dn, emp_dn, n_dn = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=dn_blocks,
             nelec=14,
@@ -538,7 +537,7 @@ class TestDeriveDfptManifolds:
         # nelec=16 bands are singly occupied.
         occ = [_FakeProjection("Si", -3)]  # 8 orbitals -> 16 spinor WFs
         emp = [_FakeProjection("Si", 0)]  # 2 orbitals -> 4 spinor WFs
-        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
             nelec=16,
@@ -553,7 +552,7 @@ class TestDeriveDfptManifolds:
         assert emp_block is not None
         assert emp_block["num_wann"] == 4
         assert emp_block["num_bands"] == 6
-        assert has_disentangle is True
+        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
         assert n_orbitals == 20
 
 

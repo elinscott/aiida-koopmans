@@ -123,7 +123,7 @@ def RunScfNscf(
     overrides: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
-    electronic_type: ElectronicType = ElectronicType.METAL,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
@@ -145,6 +145,9 @@ def RunScfNscf(
             protocol's ``kpoints_distance``. A wannierisation NSCF must run
             on the full (symmetry-unreduced) grid in the k-point order the
             downstream wannier90 expects.
+        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
+            Koopmans functionals treat insulators exclusively, and kcw.x
+            refuses non-fixed occupations outright.
 
     Returns:
         Dict with remote folders and retrieved data from both steps.

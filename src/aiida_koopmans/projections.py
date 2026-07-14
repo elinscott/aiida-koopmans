@@ -61,3 +61,13 @@ def projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
         # sp3=-3 (4), sp3d=-4 (5), sp3d2=-5 (6).
         multiplicity = 2 * l_value + 1 if l_value >= 0 else 1 - l_value
     return n_sites * multiplicity
+
+
+def band_range_complement(start: int, end: int, nbnd: int) -> list[int] | None:
+    """Return the wannier90 ``exclude_bands`` list complementing ``[start, end]``.
+
+    A list of band indices (not the ``.win`` range string): aiida-wannier90's
+    input writer expects integers and does the range compression itself.
+    """
+    excluded = [*range(1, start), *range(end + 1, nbnd + 1)]
+    return excluded or None

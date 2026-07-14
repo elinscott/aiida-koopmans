@@ -50,7 +50,7 @@ import io
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
-from aiida_quantumespresso.common.types import ElectronicType, SpinType
+from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcw import (
@@ -58,7 +58,12 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
-from aiida_koopmans.projections import projection_num_wann, projection_win_string
+from aiida_koopmans.occupations import default_channel_nocc
+from aiida_koopmans.projections import (
+    band_range_complement,
+    projection_num_wann,
+    projection_win_string,
+)
 from aiida_koopmans.types import (
     ExplicitProjectionBlock,
     ProjectionBlock,
@@ -86,16 +91,6 @@ KcwScreenStep = task(KcwScreenCalculation)
 KcwHamStep = task(KcwHamCalculation)
 
 
-def _band_range_complement(start: int, end: int, nbnd: int) -> list[int] | None:
-    """Return the wannier90 ``exclude_bands`` list complementing ``[start, end]``.
-
-    A list of band indices (not the ``.win`` range string): aiida-wannier90's
-    input writer expects integers and does the range compression itself.
-    """
-    excluded = [*range(1, start), *range(end + 1, nbnd + 1)]
-    return excluded or None
-
-
 def _split_manifolds(
     blocks_with_counts: list[tuple[Any, int]], nocc: int
 ) -> tuple[list[tuple[Any, int]], list[tuple[Any, int]]]:
@@ -115,28 +110,6 @@ def _split_manifolds(
             )
         cursor += num_wann
     return occupied, empty
-
-
-def _default_channel_nocc(spin_channel: SpinChannel, nelec: int) -> int:
-    """Occupied-band count of a channel when the caller supplies none.
-
-    Spinor bands are singly occupied (``nocc = nelec``); the unpolarized
-    channel holds electron pairs. Collinear channels have no default — their
-    occupations depend on the magnetization, which only the caller knows.
-    """
-    if spin_channel in (SpinChannel.UP, SpinChannel.DOWN):
-        raise ValueError(
-            f"spin_channel={spin_channel.value!r} needs an explicit per-channel "
-            "nocc (derived from the electron count and the magnetization)."
-        )
-    if spin_channel == SpinChannel.SPINOR:
-        return nelec
-    if nelec % 2:
-        raise ValueError(
-            f"Odd electron count ({nelec}) requires spin='collinear', which "
-            "derives per-channel occupations from the magnetization."
-        )
-    return nelec // 2
 
 
 def derive_dfpt_manifolds(
@@ -170,7 +143,7 @@ def derive_dfpt_manifolds(
             default. Required for ``UP`` / ``DOWN``.
 
     Returns:
-        ``(occ_block, emp_block, has_disentangle, n_orbitals)`` where the
+        ``(occ_block, emp_block, n_orbitals)`` where the
         blocks are :class:`ExplicitProjectionBlock` (``emp_block`` may be
         None) and ``n_orbitals = num_wann_occ + num_wann_emp``.
     """
@@ -178,7 +151,7 @@ def derive_dfpt_manifolds(
 
     spinor = spin_channel == SpinChannel.SPINOR
     if nocc is None:
-        nocc = _default_channel_nocc(spin_channel, nelec)
+        nocc = default_channel_nocc(spin_channel, nelec)
     nbnd = nocc if nbnd is None else int(nbnd)
 
     if not projection_blocks:
@@ -225,13 +198,12 @@ def derive_dfpt_manifolds(
         num_wann=num_wann_occ,
         num_bands=num_wann_occ,
         include_bands=list(range(1, nocc + 1)),
-        exclude_bands=_band_range_complement(1, nocc, nbnd),
+        exclude_bands=band_range_complement(1, nocc, nbnd),
         projection_type=WannierProjectionType.ANALYTIC,
         projections=_projection_strings(occupied[0][0]),
     )
 
     emp_block = None
-    has_disentangle = False
     num_wann_emp = 0
     if empty:
         num_wann_emp = empty[0][1]
@@ -241,19 +213,18 @@ def derive_dfpt_manifolds(
                 f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
                 f"projection block requires {num_wann_emp} Wannier functions."
             )
-        has_disentangle = num_bands_emp != num_wann_emp
         emp_block = ExplicitProjectionBlock(
             label=f"emp{label_suffix}",
             spin=spin_channel,
             num_wann=num_wann_emp,
             num_bands=num_bands_emp,
             include_bands=list(range(nocc + 1, nbnd + 1)),
-            exclude_bands=_band_range_complement(nocc + 1, nbnd, nbnd),
+            exclude_bands=band_range_complement(nocc + 1, nbnd, nbnd),
             projection_type=WannierProjectionType.ANALYTIC,
             projections=_projection_strings(empty[0][0]),
         )
 
-    return occ_block, emp_block, has_disentangle, num_wann_occ + num_wann_emp
+    return occ_block, emp_block, num_wann_occ + num_wann_emp
 
 
 def normalize_alpha_guess(
@@ -342,13 +313,10 @@ class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
     * ``emp`` -- the empty projection block, when the channel has one.
     * ``alpha_guess`` -- per-orbital screening-parameter guess for this
       channel; when given the channel's screen step is skipped.
-    * ``has_disentangle`` -- whether the empty manifold was disentangled
-      (``num_bands != num_wann``). Defaults to False.
     """
 
     emp: ProjectionBlock | None
     alpha_guess: list[float] | None
-    has_disentangle: bool
 
 
 @task.calcfunction(outputs=["wannier_files"])
@@ -674,9 +642,6 @@ def SinglepointDFPTWorkflow(
         protocol=protocol,
         overrides=scf_nscf_overrides,
         nscf_kpoints=explicit_kpoints,
-        # kcw.x refuses non-fixed occupations ("KC corrections only for
-        # insulators"), so the ground state must run as an insulator.
-        electronic_type=ElectronicType.INSULATOR,
         metadata={"call_link_label": "scf_nscf"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
@@ -734,13 +699,17 @@ def SinglepointDFPTWorkflow(
             "bands_kpoints": bands_kpoints,
             "eps_inf": eps_inf,
             "alpha_guess": alpha_guess,
-            "has_disentangle": manifold.get("has_disentangle", False),
             "l_vcut": l_vcut,
             "spin_component": 2 if channel == SpinChannel.DOWN else 1,
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
 
         emp_block = manifold.get("emp")
+        # Disentanglement is a property of the empty block, not caller state:
+        # extra bands beyond the Wannier count mean the manifold disentangles.
+        dfpt_inputs["has_disentangle"] = (
+            emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
+        )
         if emp_block is not None:
             emp = WannierizeBlock(
                 codes=codes,
