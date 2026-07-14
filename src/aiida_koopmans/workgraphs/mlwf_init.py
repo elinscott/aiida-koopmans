@@ -5,7 +5,7 @@ Ports the ``init_orbitals in ('mlwfs', 'projwfs')`` branch of legacy
 for periodic systems:
 
 1. Wannierise every projection block off one shared scf + nscf
-   (:func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierizeTask`);
+   (:func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`);
 2. fold the per-block Wannier orbitals into Γ-point supercell wavefunctions
    (:func:`~aiida_koopmans.workgraphs.folding.FoldToSupercell`);
 3. run a from-scratch ``dft_dummy`` kcp.x on the supercell purely to lay out
@@ -41,10 +41,10 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.types import ProjectionBlock, SpinChannel, group_blocks_to_merge
 from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import BlockWannierizeTask
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
 from aiida_koopmans.workgraphs.kcp import (
-    KcpBaseTask,
+    KcpStep,
     UpfData,
     _build_dft_parameters,
     _build_kcp_inputs,
@@ -258,7 +258,7 @@ def MlwfInitialization(
     merge_groups = group_blocks_to_merge(blocks, num_occ_bands)
 
     # --- B1: block-by-block wannierisation on the primitive cell ---
-    wannierize = BlockWannierizeTask(
+    wannierize = WannierizeBlocks(
         codes=codes,
         structure=structure,
         blocks=blocks,
@@ -303,7 +303,7 @@ def MlwfInitialization(
         options=options,
         name="dft_dummy",
     )
-    dummy = KcpBaseTask(**dummy_inputs)
+    dummy = KcpStep(**dummy_inputs)
 
     # --- B4: dft_init — restart from the dummy save with the folded
     # Wannier wavefunctions staged into the read K00001 (legacy
@@ -323,7 +323,7 @@ def MlwfInitialization(
         read_wavefunctions=staged,
         name="dft_init",
     )
-    dft_init = KcpBaseTask(**init_inputs)
+    dft_init = KcpStep(**init_inputs)
 
     # --- B5: consistency checks. Their failure fails this whole graph,
     # whose outputs (below) only resolve on success — that's the barrier

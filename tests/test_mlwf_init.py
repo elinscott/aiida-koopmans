@@ -304,4 +304,4 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
         assert "wannier_initialization" in names, names
         assert not any("dft_init_nspin" in name for name in names), names
         assert any(name.startswith("ComputeScreeningParameters") for name in names), names
-        assert any(name.startswith("KIFinal") for name in names), names
+        assert any(name.startswith("RunFinalKI") for name in names), names

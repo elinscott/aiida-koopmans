@@ -3,7 +3,7 @@
 Step "B2" of the periodic MLWF / projwfs Koopmans port — the AiiDA port of
 legacy ``FoldToSupercellWorkflow`` (``koopmans/workflows/_folding.py``).
 Consumes the per-block outputs of
-:func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierizeTask` and
+:func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` and
 produces the ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat`` files that seed
 the supercell ``dft_init`` kcp.x run:
 
@@ -43,7 +43,7 @@ from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
 from aiida_koopmans.types import MergeGroup, ProjectionBlock, SpinChannel, merge_dest_filename
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import BlockWannierOutputs
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 
 Wann2kcpTask = task(Wann2kcpCalculation)
 MergeEvcTask = task(MergeEvcCalculation)
@@ -144,7 +144,7 @@ def FoldToSupercell(
     blocks: list[ProjectionBlock],
     merge_groups: list[MergeGroup],
     nscf_remote_folder: orm.RemoteData,
-    block_wannier: Annotated[dict, dynamic(BlockWannierOutputs)],
+    block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     kgrid: list[int],
     gamma_only: bool = False,
     spin_polarized: bool = False,
@@ -162,7 +162,7 @@ def FoldToSupercell(
             built on (``wann2kcp.x`` re-reads the Bloch states from it).
         block_wannier: per-block Wannierisation outputs keyed by block
             label — the ``blocks`` namespace of
-            :func:`~aiida_koopmans.workgraphs.block_wannierize.BlockWannierizeTask`.
+            :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`.
         kgrid: the primitive Monkhorst-Pack grid; its product is the
             ``-nr`` real-space fold count of ``merge_evc.x``.
         gamma_only: whether the primitive sampling is Γ-only. Forwarded as

@@ -536,7 +536,7 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any
     These must be explicit overrides rather than upstream's
     ``spin_type`` machinery: ``Wannier90WorkChain`` injects
     ``spin_component`` at runtime by detecting nspin=2 from its *own*
-    scf/nscf inputs, which :func:`BlockWannierize` deliberately omits
+    scf/nscf inputs, which :func:`WannierizeBlock` deliberately omits
     (shared-nscf pattern), so the upstream path can never fire here.
     """
     w90_params: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}

@@ -44,7 +44,7 @@ class Wann2kcpParser(KoopmansStdoutParser):
         if not parsed.get("job_done", False):
             return self.exit_codes.ERROR_OUTPUT_STDOUT_INCOMPLETE
 
-        return self._attach_evcw_outputs(retrieved)
+        return self._attach_evcw_outputs(self.retrieved)
 
     def _attach_evcw_outputs(self, retrieved: orm.FolderData):
         """Re-emit the retrieved ``evcw*.dat`` files as ``SinglefileData`` outputs.
