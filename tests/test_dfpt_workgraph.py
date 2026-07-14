@@ -391,6 +391,31 @@ class TestSinglepointDFPTBuild:
         assert "spin" not in w90_params
         assert "pw2wannier90" not in w90_overrides
 
+    def test_spinor_user_magnetization_wins(self, dfpt_codes, silicon_structure, kmesh):
+        """A caller-supplied starting_magnetization survives the domag nudge."""
+        from aiida_quantumespresso.common.types import SpinType
+
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": _block("occ", range(1, 9))}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            spin=SpinType.NON_COLLINEAR,
+            overrides={
+                "scf": {"pw": {"parameters": {"SYSTEM": {"starting_magnetization": [0.7]}}}}
+            },
+        )
+        scf_task = next(t for t in wg.tasks if t.name == "scf_nscf")
+        scf_overrides = scf_task.inputs.overrides.value
+        system = scf_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert system["starting_magnetization"] == [0.7]
+        assert system["noncolin"] is True
+        # The nscf, with no user value, keeps the domag nudge.
+        nscf_system = scf_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]
+        assert nscf_system["starting_magnetization"] == [0.001]
+
 
 # ----------------------------------------------------------------------
 # derive_dfpt_manifolds / normalize_alpha_guess (pure helpers)
