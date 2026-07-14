@@ -507,14 +507,18 @@ def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
       overrides carry the physical ``tot_magnetization`` /
       ``starting_magnetization``.
     * Noncollinear / spin-orbit: spinor wavefunctions (``noncolin``), plus
-      ``lspinorb`` for SOC (QE reference: KCW/examples/example05.1 nspin4).
+      ``lspinorb`` for SOC, with a tiny ``starting_magnetization`` so QE runs
+      the spin-accounting (``domag = .TRUE.``) branch — kcw.x's screening
+      drops the magnetization channels from the xc kernel otherwise and
+      diverges from the collinear result (QE reference:
+      KCW/examples/example05.1, ``nspin4_noSOC_MAG`` variant).
     """
     if spin == SpinType.COLLINEAR:
         return {"nspin": 2}
     if spin == SpinType.NON_COLLINEAR:
-        return {"noncolin": True}
+        return {"noncolin": True, "starting_magnetization": [0.001]}
     if spin == SpinType.SPIN_ORBIT:
-        return {"noncolin": True, "lspinorb": True}
+        return {"noncolin": True, "lspinorb": True, "starting_magnetization": [0.001]}
     return {"nspin": 2, "tot_magnetization": 0}
 
 
