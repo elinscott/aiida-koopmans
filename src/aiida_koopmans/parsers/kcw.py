@@ -65,6 +65,15 @@ def _interpolated_block(lines: list[str], start: int) -> list[float]:
     return values
 
 
+def _is_numeric_row(payload: str) -> bool:
+    """Whether a KS/KI-prefixed line is an eigenvalue row (numbers only).
+
+    Progress lines like "KS Hamiltonian calculation at k= ... DONE" share the
+    prefix; anything containing letters is not grid data.
+    """
+    return not any(c.isalpha() for c in payload)
+
+
 def _record_homo_lumo(stripped: str, results: dict[str, Any]) -> None:
     """Store a KS/KI homo-lumo summary line as scalar results."""
     homo, lumo = safe_floats(stripped)[-2:]
@@ -194,9 +203,9 @@ class KcwHamParser(KcwBaseParser):
                 # Summary line ("KS/KI highest occupied, lowest unoccupied
                 # level (ev): X Y"), not a grid eigenvalue row.
                 _record_homo_lumo(stripped, results)
-            elif stripped.startswith("KS ") and ks_on_grid:
+            elif stripped.startswith("KS ") and ks_on_grid and _is_numeric_row(stripped[3:]):
                 ks_on_grid[-1] += safe_floats(stripped[3:])
-            elif stripped.startswith("KI ") and ki_on_grid:
+            elif stripped.startswith("KI ") and ki_on_grid and _is_numeric_row(stripped[3:]):
                 ki_on_grid[-1] += safe_floats(stripped[3:])
 
         ham_fields: KcwHamParameters = {

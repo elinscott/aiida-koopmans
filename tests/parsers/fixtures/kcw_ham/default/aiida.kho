@@ -298,6 +298,7 @@
           KS    -3.1379  -0.5082   5.3077   5.3077   8.0062   9.7226   9.7226  14.1583
           KI    -3.7743  -1.1446   4.6713   4.6713   8.3386  10.0548  10.0549  14.4283
 
+        KS Hamiltonian calculation at k=      0.0000      0.0000      0.0000   ...    DONE 
         KS       highest occupied, lowest unoccupied level (ev):     6.5277    7.1112
         KI[2nd]  highest occupied, lowest unoccupied level (ev):     5.8913    7.4306
 
