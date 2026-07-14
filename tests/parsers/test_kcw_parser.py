@@ -140,5 +140,14 @@ def test_ham_parser_bands_and_grid_eigenvalues(
     assert len(params["ks_eigenvalues_on_grid"]) == 8
     assert len(params["ki_eigenvalues_on_grid"]) == 8
     assert all(len(row) == 8 for row in params["ki_eigenvalues_on_grid"])
+    # The KS/KI "highest occupied, lowest unoccupied" summary lines must not
+    # be swept into the grid tables (they would inject NaNs) ...
+    assert all(len(row) == 8 for row in params["ks_eigenvalues_on_grid"])
+    assert all(x == x for row in params["ks_eigenvalues_on_grid"] for x in row)
+    # ... and land as scalars instead.
+    assert params["ks_homo_energy"] == pytest.approx(6.5277)
+    assert params["ks_lumo_energy"] == pytest.approx(7.1112)
+    assert params["ki_homo_energy"] == pytest.approx(5.8913)
+    assert params["ki_lumo_energy"] == pytest.approx(7.4306)
     assert params["ks_eigenvalues_on_grid"][0][0] == pytest.approx(-5.4890)
     assert params["ki_eigenvalues_on_grid"][0][0] == pytest.approx(-6.1254)

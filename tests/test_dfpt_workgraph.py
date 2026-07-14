@@ -208,8 +208,12 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
-            emp_block=_block("emp", range(5, 9)),
+            manifolds={
+                "none": {
+                    "occ": _block("occ", range(1, 5)),
+                    "emp": _block("emp", range(5, 9)),
+                }
+            },
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             bands_kpoints=bands_path,
@@ -221,6 +225,14 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_occ" in names
         assert "wannierize_emp" in names
         assert "dfpt" in names
+
+        # The single chain's results sit under channels.none in the dynamic
+        # output namespace.
+        channel_keys = [ns._name for ns in wg.outputs.channels]
+        assert channel_keys == ["none"]
+        result_keys = [s._name for s in wg.outputs.channels.none]
+        for expected in ("alphas", "screen_parameters", "ham_parameters", "bands"):
+            assert expected in result_keys
 
         # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
         # DFPT perturbations are spin-dependent): both PW runs are forced to
@@ -249,7 +261,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
+            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -264,7 +276,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            occ_block=_block("occ", range(1, 5)),
+            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -272,6 +284,112 @@ class TestSinglepointDFPTBuild:
         )
         pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
         assert pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nspin"] == 2
+
+    def test_collinear_fans_out_per_channel(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_quantumespresso.common.types import SpinType
+
+        magnetization = {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={
+                "up": {
+                    "occ": _block("occ_up", range(1, 6)),
+                    "emp": _block("emp_up", range(6, 9)),
+                },
+                "down": {
+                    "occ": _block("occ_down", range(1, 4)),
+                    "emp": _block("emp_down", range(4, 9)),
+                },
+            },
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            spin=SpinType.COLLINEAR,
+            overrides={"scf": magnetization, "nscf": magnetization},
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("scf_nscf") == 1
+        for expected in (
+            "wannierize_occ_up",
+            "wannierize_emp_up",
+            "dfpt_up",
+            "wannierize_occ_down",
+            "wannierize_emp_down",
+            "dfpt_down",
+        ):
+            assert expected in names, names
+
+        # Each channel gathers its own results namespace under channels.<key>.
+        channel_keys = sorted(ns._name for ns in wg.outputs.channels)
+        assert channel_keys == ["down", "up"]
+        for key in ("up", "down"):
+            result_keys = [s._name for s in wg.outputs.channels[key]]
+            assert "alphas" in result_keys
+            assert "ham_parameters" in result_keys
+
+        # nspin=2 is still forced, but the magnetization is the caller's.
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert scf_system["nspin"] == 2
+        assert scf_system["tot_magnetization"] == 2
+
+        # Each channel's wannierization selects its spin in both wannier90
+        # and pw2wannier90, and each kcw chain reads its channel.
+        for suffix, channel, component in (("_up", "up", 1), ("_down", "down", 2)):
+            w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"].value
+            w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+            assert w90_params["spin"] == channel
+            inputpp = w90_overrides["pw2wannier90"]["pw2wannier90"]["parameters"]["INPUTPP"]
+            assert inputpp["spin_component"] == channel
+            assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
+
+    def test_collinear_requires_both_channels(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_quantumespresso.common.types import SpinType
+
+        with pytest.raises(ValueError, match="manifolds keyed by"):
+            SinglepointDFPTWorkflow.build(
+                codes=dfpt_codes,
+                structure=silicon_structure,
+                manifolds={"up": {"occ": _block("occ_up", range(1, 5))}},
+                kpoints=kmesh,
+                kgrid=[2, 2, 2],
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                spin=SpinType.COLLINEAR,
+            )
+
+    def test_spinor_single_chain(self, dfpt_codes, silicon_structure, kmesh):
+        from aiida_quantumespresso.common.types import SpinType
+
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            # Spinor manifold: counts doubled; single "none" channel.
+            manifolds={"none": {"occ": _block("occ", range(1, 9))}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            spin=SpinType.SPIN_ORBIT,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "wannierize_occ" in names
+        assert "dfpt" in names
+        assert "dfpt_down" not in names
+
+        # Spinor scratch: noncolin + lspinorb instead of nspin=2.
+        pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
+        scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert scf_system["noncolin"] is True
+        assert scf_system["lspinorb"] is True
+        assert "nspin" not in scf_system
+        assert "tot_magnetization" not in scf_system
+
+        # Spinor wannierization: spinors on, no channel selection anywhere.
+        w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"].value
+        w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+        assert w90_params["spinors"] is True
+        assert "spin" not in w90_params
+        assert "pw2wannier90" not in w90_overrides
 
 
 # ----------------------------------------------------------------------
@@ -302,7 +420,7 @@ class TestDeriveDfptManifolds:
         # l=0 -> 1 orbital) = 8 Wannier functions; nelec=16 makes them all filled.
         occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 0, m_r=[1])]
         emp = [_FakeProjection("Si", 0)]
-        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
             nelec=16,
@@ -310,13 +428,13 @@ class TestDeriveDfptManifolds:
         )
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
-        assert occ_block["exclude_bands"] == "9-12"
+        assert occ_block["exclude_bands"] == [9, 10, 11, 12]
         assert occ_block["projections"] == ["Si:l=1", "Si:l=0"]
         assert emp_block is not None
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
-        assert emp_block["exclude_bands"] == "1-8"
-        assert has_disentangle is True
+        assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
         assert n_orbitals == 10
 
     def test_hybrid_multiplicity_and_no_empty(self, silicon_structure):
@@ -324,7 +442,7 @@ class TestDeriveDfptManifolds:
 
         # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
         occ = [_FakeProjection("Si", -3)]
-        occ_block, emp_block, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ],
             nelec=16,
@@ -333,7 +451,6 @@ class TestDeriveDfptManifolds:
         assert occ_block["num_wann"] == 8
         assert occ_block["exclude_bands"] is None
         assert emp_block is None
-        assert has_disentangle is False
         assert n_orbitals == 8
 
     def test_straddling_block_raises(self, silicon_structure):
@@ -359,13 +476,84 @@ class TestDeriveDfptManifolds:
     def test_odd_electron_count_raises(self, silicon_structure):
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
-        with pytest.raises(NotImplementedError, match="Odd electron count"):
+        with pytest.raises(ValueError, match="Odd electron count"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
                 projection_blocks=[[_FakeProjection("Si", 0)]],
                 nelec=7,
                 nbnd=None,
             )
+
+    def test_collinear_channel_requires_explicit_nocc(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        with pytest.raises(ValueError, match="per-channel"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[[_FakeProjection("Si", -3)]],
+                nelec=16,
+                nbnd=None,
+                spin_channel=SpinChannel.UP,
+            )
+
+    def test_collinear_channels_use_given_nocc(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
+        up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
+        dn_blocks = [[_FakeProjection("Si", 1)]]  # 6 wann
+        occ_up, emp_up, n_up = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=up_blocks,
+            nelec=14,
+            nbnd=8,
+            spin_channel=SpinChannel.UP,
+            nocc=8,
+        )
+        occ_dn, emp_dn, n_dn = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=dn_blocks,
+            nelec=14,
+            nbnd=6,
+            spin_channel=SpinChannel.DOWN,
+            nocc=6,
+        )
+        assert occ_up["label"] == "occ_up"
+        assert occ_up["spin"] == SpinChannel.UP
+        assert (occ_up["num_wann"], n_up) == (8, 8)
+        assert occ_dn["label"] == "occ_down"
+        assert occ_dn["spin"] == SpinChannel.DOWN
+        assert (occ_dn["num_wann"], n_dn) == (6, 6)
+        assert emp_up is None and emp_dn is None
+
+    def test_spinor_doubles_num_wann_and_uses_nelec_occupations(self, silicon_structure):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        # KCW example05.1 nspin4: the same sp3 block that gives num_wann=8
+        # in a collinear run spans 16 spinor Wannier functions, and all
+        # nelec=16 bands are singly occupied.
+        occ = [_FakeProjection("Si", -3)]  # 8 orbitals -> 16 spinor WFs
+        emp = [_FakeProjection("Si", 0)]  # 2 orbitals -> 4 spinor WFs
+        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=[occ, emp],
+            nelec=16,
+            nbnd=22,
+            spin_channel=SpinChannel.SPINOR,
+        )
+        assert occ_block["label"] == "occ"
+        assert occ_block["spin"] == SpinChannel.SPINOR
+        assert occ_block["num_wann"] == 16
+        assert occ_block["num_bands"] == 16
+        assert occ_block["exclude_bands"] == list(range(17, 23))
+        assert emp_block is not None
+        assert emp_block["num_wann"] == 4
+        assert emp_block["num_bands"] == 6
+        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
+        assert n_orbitals == 20
 
 
 class TestNormalizeAlphaGuess:
@@ -383,3 +571,11 @@ class TestNormalizeAlphaGuess:
         from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
 
         assert normalize_alpha_guess([[0.1, 0.2]], 2) == [0.1, 0.2]
+
+    def test_nested_per_spin_list_selects_channel(self):
+        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
+
+        nested = [[0.1, 0.2], [0.3, 0.4]]
+        assert normalize_alpha_guess(nested, 2, SpinChannel.UP) == [0.1, 0.2]
+        assert normalize_alpha_guess(nested, 2, SpinChannel.DOWN) == [0.3, 0.4]

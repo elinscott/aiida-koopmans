@@ -22,8 +22,8 @@ class Correction(str, Enum):
       correction on the variational orbitals — different sub-step
       parameters; see ``aiida_koopmans/workgraphs/kcp.py``.
     * ``PKIPZ``: perturbative KIPZ (trial KI, KIPZ correction applied
-      post-hoc). Deferred — accepted at the type level but not yet
-      wired through the dispatcher.
+      post-hoc). Not yet implemented — accepted at the type level but
+      not wired through the dispatcher.
     * ``PZ``: plain Perdew-Zunger orbital-dependent functional —
       strictly not a "Koopmans correction" but routed through the
       same orbital-dependent screening machinery
@@ -51,8 +51,9 @@ class VariationalOrbitalType(str, Enum):
       KS-as-variational overlay so the trial KI's ``evc0N.dat`` is the
       DFT ``evcN.dat``).
     * ``MLWFS``: maximally-localised Wannier functions
-      (Wannier90-based; deferred).
-    * ``PROJWFS``: projected Wannier functions (deferred).
+      (Wannier90-based; not yet implemented in the kcp.x stream).
+    * ``PROJWFS``: projected Wannier functions (not yet implemented in
+      the kcp.x stream).
     """
 
     PZ = "pz"
@@ -71,6 +72,7 @@ class SpinChannel(str, Enum):
     NONE = "none"
     UP = "up"
     DOWN = "down"
+    SPINOR = "spinor"
 
     @property
     def index(self) -> int:
@@ -78,6 +80,7 @@ class SpinChannel(str, Enum):
 
         ``NONE`` and ``UP`` both live at index 0 (kcp.x's nspin=1 file layout
         and the up channel of nspin=2 share the leading axis); ``DOWN`` is 1.
+        ``SPINOR`` (noncollinear, nspin=4) has a single band index — 0.
         """
         return 1 if self is SpinChannel.DOWN else 0
 
@@ -189,7 +192,7 @@ class _ProjectionBlockBase(TypedDict):
     num_wann: int
     num_bands: int
     include_bands: list[int]
-    exclude_bands: NotRequired[str | None]
+    exclude_bands: NotRequired[list[int] | None]
     projection_type: WannierProjectionType
 
 

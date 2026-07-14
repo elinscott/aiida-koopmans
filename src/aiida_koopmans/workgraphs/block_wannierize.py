@@ -81,6 +81,7 @@ def WannierizeBlock(
     projection_type: WannierProjectionType,
     nscf_remote_folder: orm.RemoteData,
     kpoints: orm.KpointsData,
+    mp_grid: list[int] | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -129,9 +130,31 @@ def WannierizeBlock(
     w90_params["num_bands"] = w90_kwargs["num_bands"]
     if "exclude_bands" in w90_kwargs:
         w90_params["exclude_bands"] = w90_kwargs["exclude_bands"]
+    # Per-block disentanglement handling: a block with extra bands genuinely
+    # disentangles, so give it wannier90's real default iteration budget (the
+    # aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
+    # freezes the initial projection subspace); a block with
+    # num_bands == num_wann cannot disentangle, so strip the (globally
+    # supplied) windows outright.
+    user_w90_params = overrides.get("wannier90", {}).get("wannier90", {}).get("parameters", {})
+    if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
+        if "dis_num_iter" not in user_w90_params:
+            w90_params["dis_num_iter"] = 5000
+    else:
+        for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
+            w90_params.pop(key, None)
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
     w90_params["write_hr"] = True
+    # The protocol builder froze ``mp_grid`` from its own distance-derived
+    # mesh, which goes stale once the shared k-list is substituted below.
+    # Pin the real mesh dimensions when given (wannier90 cannot re-derive
+    # them from an explicit list); otherwise drop the key so a mesh
+    # ``kpoints`` input lets the calculation re-derive it.
+    if mp_grid is not None:
+        w90_params["mp_grid"] = mp_grid
+    else:
+        w90_params.pop("mp_grid", None)
     w90["parameters"] = orm.Dict(w90_params)
 
     # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic

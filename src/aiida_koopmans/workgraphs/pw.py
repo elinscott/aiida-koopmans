@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, NotRequired, TypedDict
 
 from aiida import orm
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -121,6 +122,8 @@ def RunScfNscf(
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     options: dict[str, Any] | None = None,
+    nscf_kpoints: orm.KpointsData | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
@@ -138,6 +141,13 @@ def RunScfNscf(
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
         options: Dictionary of options for metadata.options of nested CalcJobs.
+        nscf_kpoints: Explicit k-points for the NSCF step, replacing the
+            protocol's ``kpoints_distance``. A wannierisation NSCF must run
+            on the full (symmetry-unreduced) grid in the k-point order the
+            downstream wannier90 expects.
+        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
+            Koopmans functionals treat insulators exclusively, and kcw.x
+            refuses non-fixed occupations outright.
 
     Returns:
         Dict with remote folders and retrieved data from both steps.
@@ -157,6 +167,7 @@ def RunScfNscf(
         protocol=protocol,
         overrides=scf_overrides,
         options=options or {},
+        electronic_type=electronic_type,
     )
     scf_data = get_dict_from_builder(scf_builder)
     scf_data.pop("clean_workdir", None)
@@ -184,9 +195,17 @@ def RunScfNscf(
         protocol=protocol,
         overrides=nscf_merged,
         options=options or {},
+        electronic_type=electronic_type,
     )
     nscf_data = get_dict_from_builder(nscf_builder)
     nscf_data.pop("clean_workdir", None)
+
+    # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``:
+    # replace the protocol's distance-derived mesh with the caller's grid.
+    if nscf_kpoints is not None:
+        nscf_data.pop("kpoints_distance", None)
+        nscf_data.pop("kpoints_force_parity", None)
+        nscf_data["kpoints"] = nscf_kpoints
 
     # Wire SCF remote_folder → NSCF parent_folder
     nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
