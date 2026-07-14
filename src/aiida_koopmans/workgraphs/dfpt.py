@@ -614,19 +614,26 @@ def SinglepointDFPTWorkflow(
             f"{sorted(expected_keys)}, got {sorted(channel_keys)}."
         )
 
-    spin_defaults: dict[str, Any] = {
-        "pw": {"parameters": {"SYSTEM": _pw_spin_system_defaults(spin)}},
-    }
-    nscf_defaults: dict[str, Any] = recursive_merge(
-        spin_defaults,
-        {"pw": {"parameters": {"SYSTEM": {"nosym": True, "noinv": True}}}},
-    )
-    # Forced keys merge *on top of* caller overrides: the forced nspin=2
-    # overwrites any user-supplied nspin, since a user nspin=1 would
-    # silently break kcw.x.
+    forced_system = _pw_spin_system_defaults(spin)
+    # The domag nudge is a *default*, not a requirement: a genuinely magnetic
+    # system supplies its own starting_magnetization, which must win.
+    seed_system = {}
+    if "starting_magnetization" in forced_system:
+        seed_system = {"starting_magnetization": forced_system.pop("starting_magnetization")}
+
+    def _with_spin(user: dict[str, Any], extra_forced: dict[str, Any]) -> dict[str, Any]:
+        # seed (under) <- user <- forced (on top): the forced nspin/noncolin
+        # keys overwrite user values, since e.g. a user nspin=1 would
+        # silently break kcw.x.
+        forced = {
+            "pw": {"parameters": {"SYSTEM": {**forced_system, **extra_forced}}},
+        }
+        seeded = recursive_merge({"pw": {"parameters": {"SYSTEM": dict(seed_system)}}}, user)
+        return recursive_merge(seeded, forced)
+
     scf_nscf_overrides: dict[str, Any] = {
-        "scf": recursive_merge(overrides.get("scf", {}), spin_defaults),
-        "nscf": recursive_merge(overrides.get("nscf", {}), nscf_defaults),
+        "scf": _with_spin(overrides.get("scf", {}), {}),
+        "nscf": _with_spin(overrides.get("nscf", {}), {"nosym": True, "noinv": True}),
     }
 
     # wannier90 / pw2wannier90 need the nscf eigenstates on the full
