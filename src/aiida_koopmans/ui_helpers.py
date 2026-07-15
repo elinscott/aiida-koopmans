@@ -1,29 +1,12 @@
 """Pure-Python unfolding-and-interpolation helpers.
 
-Port of the legacy ``koopmans/processes/ui`` package (originally Riccardo
-De Gennaro's standalone "unfolding and interpolate" code) with the ASE /
-engine / ``Process`` plumbing stripped: every function here takes and
-returns plain Python / numpy data, so the tasks in
-:mod:`aiida_koopmans.workgraphs.ui` stay thin wrappers.
-
-Layout mirrors the legacy modules:
-
-* lattice / coordinate utilities         (``processes/ui/_utils.py``)
-* Wannier file parsers                   (``utils/_io.py`` +
-  ``ase_koopmans.io.wannier90.read_wannier90_out``, centres/spreads only)
-* the interpolation core                 (``processes/ui/_process.py``:
-  ``parse_hr`` / ``map_wannier`` / ``correct_phase`` / ``calc_bands``)
-* Gaussian-smearing DOS                  (``ase_koopmans.dft.dos.DOS`` with
-  ``w_k = 1`` for every k-point, as ``generate_dos`` used it)
-
-Deliberate deviations from legacy, all non-physics:
-
-* The ``nrpts == 1`` branch of the coarse-DFT-Hamiltonian reader referenced
-  an uninitialised attribute in legacy (``_process.py:183`` reshaped
-  ``self._hr_coarse`` — still ``None`` — instead of the freshly parsed
-  ``hr_coarse``) and would crash; here the parsed matrix is used.
-* Result files (``bands_interpolated.dat`` etc.), the debugging input JSON,
-  and plotting are not written — outputs live in the AiiDA database.
+Implements the unfolding-and-interpolation method of De Gennaro, Colonna,
+Linscott and Marzari, Phys. Rev. B 106, 035106 (2022): a supercell Wannier
+Hamiltonian is mapped onto primitive-cell R-vectors and its bands are
+interpolated along a k-path by Fourier transform, optionally with the
+smooth-interpolation correction from a denser-grid DFT Hamiltonian.
+Every function takes and returns plain Python / numpy data, so the tasks
+in :mod:`aiida_koopmans.workgraphs.ui` stay thin wrappers.
 """
 
 from __future__ import annotations
@@ -36,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 # ----------------------------------------------------------------------
-# Lattice / coordinate utilities (legacy processes/ui/_utils.py)
+# Lattice / coordinate utilities
 # ----------------------------------------------------------------------
 
 
@@ -69,8 +52,8 @@ def crys_to_cart(
 def reciprocal_cell(cell: NDArray[np.float64]) -> NDArray[np.float64]:
     """Return the reciprocal lattice of ``cell`` without the 2π factor.
 
-    Matches ``ase.cell.Cell.reciprocal()``, which the legacy code used as
-    the ``bvec`` transformation matrix.
+    Rows are the reciprocal lattice vectors with the 2π factor omitted,
+    i.e. the ``bvec`` transformation matrix for :func:`crys_to_cart`.
     """
     return np.linalg.inv(cell).transpose().astype(np.float64, copy=False)
 
@@ -124,8 +107,8 @@ class HrFileContents(NamedTuple):
 def parse_hr_file_contents(content: str) -> HrFileContents:
     """Parse the contents of a Wannier90-format Hamiltonian file.
 
-    Port of the legacy ``utils.parse_wannier_hr_file_contents``. kcp.x
-    Hamiltonian files use the same format (single R-vector).
+    kcp.x Hamiltonian files use the same format (with a single
+    R-vector).
     """
     lines = content.rstrip("\n").split("\n")
     if "written on" in lines[0].lower():
@@ -162,9 +145,7 @@ def parse_hr_file_contents(content: str) -> HrFileContents:
 def parse_wout_centers_and_spreads(content: str) -> tuple[NDArray[np.float64], list[float]]:
     """Extract the final-state Wannier centres and spreads from a ``.wout`` file.
 
-    Port of the centres/spreads part of
-    ``ase_koopmans.io.wannier90.read_wannier90_out``: centres are in Å
-    (cartesian), spreads in Å².
+    Centres are in Å (cartesian), spreads in Å².
     """
     lines = content.split("\n")
     centers: list[list[float]] = []
@@ -193,7 +174,7 @@ def parse_phases(content: str) -> list[complex]:
 
 
 # ----------------------------------------------------------------------
-# Hamiltonian loaders (legacy UnfoldAndInterpolateProcess.parse_hr)
+# Hamiltonian loaders
 # ----------------------------------------------------------------------
 
 
@@ -224,9 +205,7 @@ def load_coarse_hr(
 ) -> NDArray[np.complex128]:
     """Load the coarse DFT Hamiltonian used by the smooth-interpolation method.
 
-    Returns a ``(num_wann_sc, num_wann)`` matrix. (The legacy ``nrpts == 1``
-    branch reshaped an uninitialised attribute and would crash; here the
-    parsed matrix is used — see the module docstring.)
+    Returns a ``(num_wann_sc, num_wann)`` matrix.
     """
     hr, rvect, _, nrpts = parse_hr_file_contents(content)
     if nrpts == 1:
@@ -255,7 +234,7 @@ def load_smooth_hr(
 
 
 # ----------------------------------------------------------------------
-# The map |i> --> |Rn> (legacy map_wannier)
+# The map |i> --> |Rn>
 # ----------------------------------------------------------------------
 
 
@@ -337,7 +316,7 @@ def map_wannier(
 
 
 # ----------------------------------------------------------------------
-# Interpolation core (legacy correct_phase / calc_bands)
+# Interpolation core
 # ----------------------------------------------------------------------
 
 
@@ -378,8 +357,6 @@ def correct_phase(
         distance = crys_to_cart(dist + tvec, acell, +1)
         norms = np.linalg.norm(distance, axis=1)
         t_index = np.where(norms - norms.min() < 1.0e-3)[0]
-        # Equivalent to the legacy per-(k, T) accumulation loop, vectorised
-        # over the k-path.
         phase[:, i] = np.exp(2j * pi * np.dot(kpts, tvec[t_index].transpose())).sum(axis=1) / len(
             t_index
         )
@@ -440,7 +417,7 @@ def calc_bands(
 
 
 # ----------------------------------------------------------------------
-# Top-level driver (legacy UnfoldAndInterpolateProcess._run + interpolate)
+# Top-level driver
 # ----------------------------------------------------------------------
 
 
@@ -474,7 +451,6 @@ def unfold_and_interpolate(
 ) -> NDArray[np.float64]:
     """Unfold a supercell Wannier Hamiltonian and interpolate its bands along a k-path.
 
-    Arguments mirror the legacy ``UnfoldAndInterpolateProcess`` inputs:
     ``hr_content`` (and the optional coarse/smooth DFT Hamiltonian contents,
     which switch on the smooth-interpolation method when both are given)
     are Wannier90-format ``*_hr.dat`` file contents; ``centers`` are the
@@ -535,7 +511,7 @@ def unfold_and_interpolate(
 
 
 # ----------------------------------------------------------------------
-# DOS (ase_koopmans.dft.dos.DOS as used by the legacy generate_dos)
+# DOS
 # ----------------------------------------------------------------------
 
 
@@ -548,10 +524,10 @@ def compute_dos(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Compute a Gaussian-smearing total DOS from band energies.
 
-    Port of ``ase.dft.dos.DOS`` restricted to how the legacy
-    ``generate_dos`` drove it: unit k-point weights, an explicit energy
-    window, and the *total* DOS (both spins summed for two spin channels;
-    doubled for one). ``energies_skn`` is indexed by (spin, k-point, band).
+    Unit k-point weights, an explicit energy window, and the *total* DOS
+    (both spins summed for two spin channels; doubled for one), following
+    ASE's ``ase.dft.dos.DOS``. ``energies_skn`` is indexed by
+    (spin, k-point, band).
 
     Returns ``(energy_grid, dos)``.
     """

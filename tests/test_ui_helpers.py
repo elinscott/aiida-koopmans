@@ -1,11 +1,10 @@
 """Tests for the pure-python unfold-and-interpolate helpers in ``ui_helpers.py``.
 
-The silicon regression data in ``tests/data/ui/`` comes from the legacy
-test suite (``koopmans/tests/data/ui/``); ``si_ui_reference.json`` holds
-the band energies and DOS produced by running the legacy
-``UnfoldAndInterpolateProcess`` on those files (bit-for-bit reference —
-the port reproduces legacy numerics exactly, so the comparisons use tight
-tolerances).
+The silicon data in ``tests/data/ui/`` comes from the reference (ASE-based)
+``koopmans`` package's test suite; ``si_ui_reference.json`` holds the band
+energies and DOS its unfold-and-interpolate implementation produces on
+those files. The implementations agree bit-for-bit, so the comparisons use
+tight tolerances.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ DATA_DIR = Path(__file__).parent / "data" / "ui"
 
 @pytest.fixture(scope="module")
 def si_reference() -> dict:
-    """Load the legacy-generated silicon reference data."""
+    """Load the silicon reference data."""
     with open(DATA_DIR / "si_ui_reference.json") as handle:
         return json.load(handle)
 
@@ -88,7 +87,7 @@ class TestParsers:
             ui_helpers.parse_hr_file_contents("garbage\n1\n1\n")
 
     def test_parse_wout(self, si_wout_content, si_reference):
-        """Centres and spreads match what ASE's reader extracted for legacy."""
+        """Centres and spreads match the reference parse of the same file."""
         centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         assert np.allclose(centers, si_reference["centers"])
         assert np.allclose(spreads, si_reference["spreads"])
@@ -139,12 +138,12 @@ class TestComputeDos:
 
 
 # ----------------------------------------------------------------------
-# Legacy regression: silicon
+# Silicon regression against the reference data
 # ----------------------------------------------------------------------
 
 
 class TestSiliconRegression:
-    """Reproduce the legacy UnfoldAndInterpolateProcess numbers exactly."""
+    """Reproduce the reference-implementation numbers exactly."""
 
     def test_smooth_interpolation_with_map(self, si_reference, si_wout_content):
         """Full path: Γ-only KI Hamiltonian, |Rn> mapping, smooth interpolation."""
@@ -180,8 +179,8 @@ class TestSiliconRegression:
         key = "plain_ws_energies" if use_ws_distance else "plain_nows_energies"
         assert np.allclose(energies, si_reference[key], atol=1e-10)
 
-    def test_dos_matches_legacy(self, si_reference, si_wout_content):
-        """The DOS of the smooth-interpolated bands matches the legacy ASE DOS."""
+    def test_dos_matches_reference(self, si_reference, si_wout_content):
+        """The DOS of the smooth-interpolated bands matches the reference."""
         centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "kc_ham.dat").read_text(),

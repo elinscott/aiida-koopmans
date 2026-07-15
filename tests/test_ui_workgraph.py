@@ -1,9 +1,9 @@
 """Tests for the unfold-and-interpolate workgraph in ``workgraphs/ui.py``.
 
-Everything in this graph is a pure-python ``@task.calcfunction``, so unlike
-the QE-backed workgraph tests these can execute the graph end-to-end
+Everything in this graph is a pure-python ``@task``, so unlike the
+QE-backed workgraph tests these can execute the graph end-to-end
 (``wg.run()``) against the silicon fixtures in ``tests/data/ui/`` and
-compare the stored ``BandsData`` / ``XyData`` with the legacy reference.
+compare the outputs with the reference data.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ DATA_DIR = Path(__file__).parent / "data" / "ui"
 
 @pytest.fixture(scope="module")
 def si_reference() -> dict:
-    """Load the legacy-generated silicon reference data."""
+    """Load the silicon reference data."""
     with open(DATA_DIR / "si_ui_reference.json") as handle:
         return json.load(handle)
 
@@ -54,7 +54,7 @@ class TestBuild:
     """Graph construction (no execution)."""
 
     def test_build_with_dos(self, si_ui_inputs):
-        """do_dos=True wires both calcfunctions."""
+        """do_dos=True wires both tasks."""
         from aiida_koopmans.workgraphs.ui import UnfoldAndInterpolateTask
 
         wg = UnfoldAndInterpolateTask.build(**si_ui_inputs, do_dos=True)
@@ -84,21 +84,18 @@ class TestBuild:
 
 
 class TestRun:
-    """End-to-end execution against the legacy silicon reference."""
+    """End-to-end execution against the silicon reference."""
 
-    def test_bands_and_dos_match_legacy(self, si_ui_inputs, si_reference):
-        """The stored BandsData and XyData reproduce the legacy numbers."""
+    def test_bands_and_dos_match_reference(self, si_ui_inputs, si_reference):
+        """The interpolated bands and DOS reproduce the reference numbers."""
         from aiida_koopmans.workgraphs.ui import UnfoldAndInterpolateTask
 
         wg = UnfoldAndInterpolateTask.build(**si_ui_inputs, do_dos=True)
         wg.run()
 
-        bands_node = wg.tasks.interpolate_bands.outputs.result.value
-        assert isinstance(bands_node, orm.BandsData)
-        assert np.allclose(bands_node.get_bands(), si_reference["energies"], atol=1e-10)
-        assert np.allclose(bands_node.get_kpoints(), si_reference["kpath_kpts"])
+        bands = wg.tasks.interpolate_bands.outputs.result.value
+        assert np.allclose(bands.get_list(), si_reference["energies"], atol=1e-10)
 
-        dos_node = wg.tasks.compute_dos_from_bands.outputs.result.value
-        assert isinstance(dos_node, orm.XyData)
-        assert np.allclose(dos_node.get_x()[1], si_reference["dos_energies"], atol=1e-10)
-        assert np.allclose(dos_node.get_y()[0][1], si_reference["dos_values"], atol=1e-8)
+        dos = wg.tasks.compute_dos_from_bands.outputs
+        assert np.allclose(dos.energies.value.get_list(), si_reference["dos_energies"], atol=1e-10)
+        assert np.allclose(dos.dos.value.get_list(), si_reference["dos_values"], atol=1e-8)

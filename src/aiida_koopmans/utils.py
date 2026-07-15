@@ -83,6 +83,8 @@ def passthrough_node(node):
 KOOPMANS_NODE_DESERIALIZERS = {
     "aiida.orm.nodes.data.structure.StructureData": ("aiida_koopmans.utils.passthrough_node"),
     "aiida_pseudo.data.pseudo.upf.UpfData": ("aiida_koopmans.utils.passthrough_node"),
+    "aiida.orm.nodes.data.singlefile.SinglefileData": ("aiida_koopmans.utils.passthrough_node"),
+    "aiida.orm.nodes.data.array.kpoints.KpointsData": ("aiida_koopmans.utils.passthrough_node"),
 }
 
 
