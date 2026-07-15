@@ -3,7 +3,7 @@
 Build the ``DielectricTask`` graph (no daemon, no real code execution) and
 introspect its task list / wiring, mirroring the style of
 ``test_dfpt_workgraph.py``. Also unit-tests the ``extract_dielectric_constant``
-calcfunction via its raw ``._callable`` and the ``eps_inf='auto'`` hook of
+task via its raw ``._callable`` and the ``eps_inf='auto'`` hook of
 ``SinglepointDFPTWorkflow``.
 """
 
@@ -130,19 +130,15 @@ class TestExtractDielectricConstant:
 
     def test_isotropic_average(self, aiida_profile):
         """eps_inf is the mean of the tensor diagonal (tr/3)."""
-        from aiida.orm import Dict
-
         tensor = [[2.0, 0.1, 0.0], [0.1, 3.0, 0.0], [0.0, 0.0, 4.0]]
-        outputs = extract_dielectric_constant._callable(Dict({"dielectric_constant": tensor}))
-        assert outputs["eps_inf"].value == pytest.approx(3.0)
-        assert outputs["dielectric_tensor"].get_list() == tensor
+        outputs = extract_dielectric_constant._callable({"dielectric_constant": tensor})
+        assert outputs["eps_inf"] == pytest.approx(3.0)
+        assert outputs["dielectric_tensor"] == tensor
 
     def test_missing_tensor_raises(self, aiida_profile):
         """A ph.x run without epsil produces no tensor: fail loudly."""
-        from aiida.orm import Dict
-
         with pytest.raises(ValueError, match="dielectric_constant"):
-            extract_dielectric_constant._callable(Dict({"number_of_qpoints": 1}))
+            extract_dielectric_constant._callable({"number_of_qpoints": 1})
 
 
 # ----------------------------------------------------------------------

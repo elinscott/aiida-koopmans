@@ -22,19 +22,24 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 
-class DielectricOutputs(TypedDict):
+class DielectricConstant(TypedDict):
+    """The macroscopic dielectric tensor and its isotropic average."""
+
+    eps_inf: float
+    dielectric_tensor: list[list[float]]
+
+
+class DielectricOutputs(DielectricConstant):
     """Outputs of a DielectricTask run (scf + ph.x with epsil)."""
 
-    eps_inf: orm.Float
-    dielectric_tensor: orm.List
     ph_output_parameters: dict
 
 
 PhBaseTask = task(PhBaseWorkChain)
 
 
-@task.calcfunction(outputs=["eps_inf", "dielectric_tensor"])
-def extract_dielectric_constant(ph_parameters: orm.Dict) -> dict:
+@task
+def extract_dielectric_constant(ph_parameters: dict) -> DielectricConstant:
     """Extract the dielectric tensor and its isotropic average from ph.x output.
 
     ``eps_inf`` is the mean of the diagonal of the macroscopic dielectric
@@ -51,10 +56,7 @@ def extract_dielectric_constant(ph_parameters: orm.Dict) -> dict:
             "INPUTPH epsil = .true. (and the system must be an insulator)."
         ) from exc
     eps_inf = sum(tensor[i][i] for i in range(3)) / 3.0
-    return {
-        "eps_inf": orm.Float(eps_inf),
-        "dielectric_tensor": orm.List(list=tensor),
-    }
+    return DielectricConstant(eps_inf=eps_inf, dielectric_tensor=tensor)
 
 
 @task.graph
