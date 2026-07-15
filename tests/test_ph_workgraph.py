@@ -1,10 +1,9 @@
 """Construction-level tests for the dielectric-constant (ph.x) workgraph.
 
 Build the ``DielectricTask`` graph (no daemon, no real code execution) and
-introspect its task list / wiring, mirroring the style of
-``test_dfpt_workgraph.py``. Also unit-tests the ``extract_dielectric_constant``
-task via its raw ``._callable`` and the ``eps_inf='auto'`` hook of
-``SinglepointDFPTWorkflow``.
+introspect its task list / wiring. Also unit-tests the
+``extract_dielectric_constant`` task via its raw ``._callable`` and the
+``eps_inf='auto'`` hook of ``SinglepointDFPTWorkflow``.
 """
 
 from __future__ import annotations
