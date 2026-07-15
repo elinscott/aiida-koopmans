@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from aiida import orm
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.ph.base import PhBaseWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -109,12 +110,16 @@ def DielectricTask(
     if pseudo_family is not None:
         scf_overrides.setdefault("pseudo_family", pseudo_family)
 
+    # Fixed occupations: ph.x rejects the electric-field perturbation for
+    # metallic (smeared) ground states, and the dielectric tensor is only
+    # defined for insulators.
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
         code=pw_code,
         structure=structure,
         protocol=protocol,
         overrides=scf_overrides,
         options=options or {},
+        electronic_type=ElectronicType.INSULATOR,
     )
     scf_builder.pop("clean_workdir", None)
     scf_data = get_dict_from_builder(scf_builder)
