@@ -119,11 +119,14 @@ def convert_spin1_to_spin2(
     # Both parents must agree on the computer — the output RemoteData
     # is bound to that same computer so the downstream kcp.x can pick
     # it up with its existing parent-folder symlink machinery.
-    if spin1_parent_folder.computer.pk != spin2_dummy_parent_folder.computer.pk:
+    spin1_computer = spin1_parent_folder.computer
+    spin2_computer = spin2_dummy_parent_folder.computer
+    if spin1_computer is None or spin2_computer is None:
+        raise ValueError("both parent folders must be bound to a computer.")
+    if spin1_computer.pk != spin2_computer.pk:
         raise ValueError(
             "spin1_parent_folder and spin2_dummy_parent_folder must live on the same "
-            f"computer; got {spin1_parent_folder.computer.label} and "
-            f"{spin2_dummy_parent_folder.computer.label}."
+            f"computer; got {spin1_computer.label} and {spin2_computer.label}."
         )
 
     spin1_remote_root = Path(spin1_parent_folder.get_remote_path())

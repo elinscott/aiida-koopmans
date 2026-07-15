@@ -258,15 +258,18 @@ class KcpParser(KoopmansStdoutParser):
         ``data.get_array()`` with no name) — pyfunctions consuming this output
         get a plain ``np.ndarray`` for free. Spin axis order:
         ``SpinChannel.NONE`` / ``UP`` at 0, ``SpinChannel.DOWN`` at 1
-        (matches ``SpinChannel.index``). Within each spin the matrix is
+        (matches ``SpinChannel.axis``). Within each spin the matrix is
         block-diagonal in (filled, empty) — so a global band index runs
         over all orbitals in kcp.x's natural order.
         """
         from pathlib import Path
 
+        from aiida_koopmans.calculations.kcp import KcpCalculation
         from aiida_koopmans.types import SpinChannel
 
         cls = self.node.process_class
+        if not issubclass(cls, KcpCalculation):
+            raise TypeError(f"expected a KcpCalculation node, got {cls.__name__}")
         ham_dir = (
             Path(retrieved_temporary_folder)
             / cls._OUTPUT_SUBFOLDER
@@ -276,12 +279,12 @@ class KcpParser(KoopmansStdoutParser):
 
         # kcp.x writes hamiltonian.xml (no suffix) for nspin=1 and
         # hamiltonian{1,2}.xml for nspin=2. The Fortran-style 1-based
-        # suffix is ``spin.index + 1`` (``.index`` is 0-based for ndarray use).
+        # suffix is ``spin.axis + 1`` (``.axis`` is 0-based for ndarray use).
         spins = [SpinChannel.NONE] if nspin == 1 else [SpinChannel.UP, SpinChannel.DOWN]
 
-        per_spin: list[np.ndarray | None] = [None] * nspin
+        per_spin: dict[int, np.ndarray] = {}
         for spin in spins:
-            file_tag = "" if spin is SpinChannel.NONE else str(spin.index + 1)
+            file_tag = "" if spin is SpinChannel.NONE else str(spin.axis + 1)
             prefix_token = "hamiltonian0" if bare else "hamiltonian"
             filled_path = ham_dir / f"{prefix_token}{file_tag}.xml"
             empty_path = ham_dir / f"{prefix_token}_emp{file_tag}.xml"
@@ -301,10 +304,10 @@ class KcpParser(KoopmansStdoutParser):
                 empty = _read_hamiltonian_xml(empty_content)
 
             combined = filled if empty is None else _block_diag(filled, empty)
-            per_spin[spin.index] = combined
+            per_spin[spin.axis] = combined
 
         array = orm.ArrayData()
-        array.set_array("lambdas", np.stack(per_spin, axis=0))
+        array.set_array("lambdas", np.stack([per_spin[i] for i in range(nspin)], axis=0))
         return array
 
 

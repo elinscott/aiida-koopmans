@@ -33,12 +33,12 @@ class KoopmansStdoutParser(Parser):
         except Exception:
             return self.exit_codes.ERROR_NO_RETRIEVED_FOLDER
 
-        stdout_filename = self.node.base.attributes.get("output_filename")
+        stdout_filename = str(self.node.base.attributes.get("output_filename"))
         if stdout_filename not in retrieved.base.repository.list_object_names():
             return self.exit_codes.ERROR_OUTPUT_STDOUT_MISSING
 
         try:
-            return retrieved.base.repository.get_object_content(stdout_filename)
+            return retrieved.base.repository.get_object_content(stdout_filename, mode="r")
         except OSError:
             return self.exit_codes.ERROR_OUTPUT_STDOUT_READ
 

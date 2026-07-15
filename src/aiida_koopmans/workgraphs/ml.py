@@ -93,7 +93,10 @@ def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> dict:
             "No self-Hartree data found in the kcp.x output parameters; the final KI "
             "run did not print per-orbital data"
         )
-    return ml_helpers.build_snapshot_dataset(self_hartrees, alphas)
+    # dict() at the return: the ``dict`` annotation keeps the task's single
+    # ``result`` socket (a SnapshotDataset annotation would fan it out into
+    # one socket per key).
+    return dict(ml_helpers.build_snapshot_dataset(self_hartrees, alphas))
 
 
 @task

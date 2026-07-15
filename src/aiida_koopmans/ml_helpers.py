@@ -26,11 +26,14 @@ orbital-density descriptor path.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, TypedDict
 from xml.etree import ElementTree as ET
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from aiida_koopmans.types import AlphaScreening
 
 # Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
 # written against this value.
@@ -39,7 +42,7 @@ BOHR_RADIUS_ANG = 0.5291772105638411
 ESTIMATOR_TYPES = ("ridge_regression", "linear_regression", "mean")
 
 # Spin-channel key → index into stacked-by-spin arrays (axis 0). Mirrors
-# ``aiida_koopmans.types.SpinChannel.index`` without importing AiiDA here:
+# ``aiida_koopmans.types.SpinChannel.axis`` without importing AiiDA here:
 # ``none`` (closed shell) and ``up`` share kcp.x's leading spin slot.
 _SPIN_KEY_TO_INDEX = {"none": 0, "up": 0, "down": 1}
 
@@ -49,7 +52,7 @@ _SPIN_KEY_TO_INDEX = {"none": 0, "up": 0, "down": 1}
 # ----------------------------------------------------------------------
 
 
-def phi(r: np.ndarray, l: int, alpha: float) -> np.ndarray:
+def phi(r: np.ndarray | float, l: int, alpha: float) -> Any:
     """Calculate phi_nl from eq. (24) in Himanen et al 2020."""
     return r**l * np.exp(-alpha * r**2)
 
@@ -610,18 +613,34 @@ def predict_estimator(model: dict[str, Any], X: Any) -> np.ndarray:
 # ----------------------------------------------------------------------
 
 
+class SnapshotDataset(TypedDict):
+    """Aligned per-orbital training rows for the screening-parameter model.
+
+    Row ``i`` across every list describes one orbital: its descriptor
+    vector, the screening parameter it was computed to have, whether it is
+    a filled orbital, and its ``orb_<n>`` / ``up_orb_<n>``-style label
+    (``snapshot:label`` after :func:`concatenate_datasets`).
+    """
+
+    descriptors: list[list[float]]
+    alphas: list[float]
+    filled: list[bool]
+    labels: list[str]
+
+
 def build_snapshot_dataset(
     self_hartrees: Sequence[Sequence[float]],
-    alphas: dict[str, dict[str, list[float]]],
-) -> dict[str, list]:
+    alphas: AlphaScreening,
+) -> SnapshotDataset:
     """Pair one snapshot's per-orbital descriptors with its screening parameters.
 
     :param self_hartrees: per-spin-block self-Hartree lists as parsed from
         kcp.x stdout (``parameters["orbital_data"]["self-Hartree"]``); within
         each spin block the filled orbitals come first, then the empty ones
-    :param alphas: the ``{"filled": {spin: [...]}, "empty": {spin: [...]}}``
-        screening parameters the final KI consumed (spin keys ``"none"`` for
-        closed shell, ``"up"`` / ``"down"`` for spin-polarised)
+    :param alphas: the screening parameters the final KI consumed. The spin
+        keys are ``SpinChannel`` members (``NONE`` for closed shell, ``UP``
+        / ``DOWN`` for spin-polarised); their plain string values, as an
+        AiiDA round-trip delivers them, work identically at runtime
 
     Returns a flat dataset dict with aligned per-orbital lists:
     ``descriptors`` (one row per orbital), ``alphas``, ``filled`` and
@@ -637,7 +656,7 @@ def build_snapshot_dataset(
     if not channels:
         raise ValueError("No screening parameters provided: `alphas` has no spin channels")
 
-    dataset: dict[str, list] = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
     for channel in channels:
         try:
             spin_index = _SPIN_KEY_TO_INDEX[channel]
@@ -659,7 +678,9 @@ def build_snapshot_dataset(
                 f"{len(sh_block)} self-Hartree values vs "
                 f"{len(channel_filled)} filled + {len(channel_empty)} empty alphas"
             )
-        prefix = "" if channel == "none" else f"{channel}_"
+        # ``.value`` for genuine SpinChannel keys (whose f-string form is
+        # "SpinChannel.UP" on Python 3.12+), identity for plain strings.
+        prefix = "" if channel == "none" else f"{getattr(channel, 'value', channel)}_"
         for i, (sh, alpha) in enumerate(
             zip(sh_block, [*channel_filled, *channel_empty], strict=True)
         ):
@@ -670,9 +691,9 @@ def build_snapshot_dataset(
     return dataset
 
 
-def concatenate_datasets(datasets: dict[str, dict[str, list]]) -> dict[str, list]:
+def concatenate_datasets(datasets: Mapping[str, SnapshotDataset]) -> SnapshotDataset:
     """Merge per-snapshot datasets into one, prefixing labels with the snapshot key."""
-    merged: dict[str, list] = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    merged: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
     for snapshot_label in sorted(datasets):
         dataset = datasets[snapshot_label]
         merged["descriptors"] += list(dataset["descriptors"])
@@ -683,7 +704,7 @@ def concatenate_datasets(datasets: dict[str, dict[str, list]]) -> dict[str, list
 
 
 def fit_screening_model(
-    dataset: dict[str, list],
+    dataset: SnapshotDataset,
     estimator_type: str = "ridge_regression",
     occ_and_emp_together: bool = True,
     descriptor: str = "self_hartree",
@@ -717,7 +738,7 @@ def fit_screening_model(
     }
 
 
-def predict_screening(model: dict[str, Any], dataset: dict[str, list]) -> list[float]:
+def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[float]:
     """Predict screening parameters for every orbital row of ``dataset``."""
     predictions = np.empty(len(dataset["alphas"]), dtype=float)
     if model.get("occ_and_emp_together", True):
@@ -734,9 +755,7 @@ def predict_screening(model: dict[str, Any], dataset: dict[str, list]) -> list[f
 
 def evaluate_predictions(y_true: Sequence[float], y_pred: Sequence[float]) -> dict[str, float]:
     """Compute error metrics between computed and predicted screening parameters."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
-    errors = y_pred - y_true
+    errors = np.asarray(y_pred, dtype=float) - np.asarray(y_true, dtype=float)
     return {
         "n_samples": int(errors.size),
         "mae": float(np.mean(np.abs(errors))),

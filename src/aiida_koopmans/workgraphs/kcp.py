@@ -14,7 +14,7 @@ from typing import Annotated, Any, TypedDict
 
 import numpy as np
 from aiida import orm
-from aiida.plugins import DataFactory
+from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 
@@ -38,9 +38,6 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     extract_self_hartree_from_kcp,
 )
 
-UpfData = DataFactory("pseudo.upf")
-
-
 # ----------------------------------------------------------------------
 # Output / override typing
 # ----------------------------------------------------------------------
@@ -49,7 +46,7 @@ UpfData = DataFactory("pseudo.upf")
 # auto-deserialization: ``orm.Dict → dict``, single-key ``orm.ArrayData →
 # np.ndarray``. Lambdas/bare-lambdas come from the parser as a single
 # stacked ``(nspin, n, n)`` matrix (see ``KcpParser._parse_lambdas``); index
-# axis-0 by ``SpinChannel.index``. ``remote_folder`` stays as
+# axis-0 by ``SpinChannel.axis``. ``remote_folder`` stays as
 # ``orm.RemoteData`` because downstream ``parent_folder`` sockets take the
 # node, not its payload.
 
@@ -268,11 +265,11 @@ def compute_alpha_from_dscf(
     Both energies and lambdas are in eV (the parser converts from Hartree),
     so the units cancel on division. ``error = |dE - lambda_a|`` is the
     convergence indicator the refinement loop monitors. The lambda arrays are
-    stacked ``(nspin, n, n)``; ``spin_channel.index`` selects the spin axis.
+    stacked ``(nspin, n, n)``; ``spin_channel.axis`` selects the spin axis.
     """
     trial_e = trial_output_parameters["energy"]
     perturbed_e = perturbed_output_parameters["energy"]
-    spin = spin_channel.index
+    spin = spin_channel.axis
     lambda_a = float(trial_lambdas[spin, band_index, band_index].real)
     lambda_0 = float(trial_bare_lambdas[spin, band_index, band_index].real)
     dE = trial_e - perturbed_e if filled else perturbed_e - trial_e  # noqa: N806
@@ -1354,18 +1351,18 @@ def ComputeOrbitalScreeningParameters(
     )
     empty_alphas: dict[str, Any] = {}
     empty_errors: dict[str, Any] = {}
-    for key, item in empty_items.items():
+    for key, empty_item in empty_items.items():
         empty_out = ComputeEmptyOrbitalScreeningParameter(
             code=code,
             structure=structure,
             pseudos=pseudos,
-            dummy_parameters=item["dummy_parameters"],
-            pz_parameters=item["pz_parameters"],
-            n_plus_1_parameters=item["n_plus_1_parameters"],
-            overlay=item["overlay"],
-            spin_channel=item["spin_channel"],
-            band_index=item["band_index"],
-            alpha_guess=item["alpha_guess"],
+            dummy_parameters=empty_item["dummy_parameters"],
+            pz_parameters=empty_item["pz_parameters"],
+            n_plus_1_parameters=empty_item["n_plus_1_parameters"],
+            overlay=empty_item["overlay"],
+            spin_channel=empty_item["spin_channel"],
+            band_index=empty_item["band_index"],
+            alpha_guess=empty_item["alpha_guess"],
             pz_alphas=current_alphas,
             trial_remote=trial_remote,
             trial_output_parameters=trial_output_parameters,

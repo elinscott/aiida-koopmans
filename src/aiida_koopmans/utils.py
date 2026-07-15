@@ -11,10 +11,8 @@ from pathlib import PurePosixPath
 from typing import Annotated, TypedDict
 
 from aiida import orm
-from aiida.plugins import DataFactory
+from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_workgraph import dynamic, task
-
-UpfData = DataFactory("pseudo.upf")
 
 
 def walk_remote_files(remote: orm.RemoteData, relpath: str) -> list[str]:
