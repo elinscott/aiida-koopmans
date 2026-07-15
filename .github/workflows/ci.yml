@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-version: ['3.12']
+        python-version: ['3.13', '3.12']
         aiida-version: ['stable']
 
     services:
@@ -37,7 +37,9 @@ jobs:
           - 5672:5672
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
 
     - name: Clone fork dependencies next to the checkout
       # The [tool.uv.sources] path dependencies point at sibling checkouts of
@@ -64,16 +66,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
     - name: Clone fork dependencies next to the checkout
       run: |
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
-    - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.13'
     - name: Install project manager
       run: |
         pip install hatch
@@ -85,14 +89,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: '3.13'
     - name: Install project manager
       run: |
         pip install hatch
     - name: Run formatter and linter
       run: |
         hatch fmt --check
+    - name: Run pre-commit hooks
+      run: |
+        pipx run pre-commit run --all-files --show-diff-on-failure
+
+  mypy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Clone fork dependencies next to the checkout
+      run: |
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.13'
+    - name: Install project manager
+      run: |
+        pip install hatch
+    - name: Run static type checking
+      run: |
+        hatch run mypy:check

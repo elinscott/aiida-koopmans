@@ -2,15 +2,15 @@
 
 Tests can be run in different ways
 ```
-hatch test # Run tests whith your current python version 
+hatch test # Run tests whith your current python version
 hatch test --python 3.9 # Run tests for python version 3.9
 hatch test --show # See all defined test environment
-hatch test --all # Run tests for all test environments 
+hatch test --all # Run tests for all test environments
 hatch test --coverage # Run tests with coverage
 ```
 You can add arbitrary flags to pytest at the end of the command. For example to run the tests in debug mode use
 ```
-hatch test --pdb 
+hatch test --pdb
 ```
 We use ipdb as debugger backend for autocompletion.
 
