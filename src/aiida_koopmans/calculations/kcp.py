@@ -210,11 +210,13 @@ class KcpCalculation(KoopmansStdoutCalculation):
             320,
             "ERROR_OUTPUT_HAM_MISSING",
             message="Expected hamiltonian XML file(s) missing from retrieved folder.",
+            invalidates_cache=True,
         )
         spec.exit_code(
             400,
             "ERROR_JOB_NOT_CONVERGED",
             message="kcp.x finished but the outer loop did not converge.",
+            invalidates_cache=True,
         )
 
     def prepare_for_submission(self, folder):

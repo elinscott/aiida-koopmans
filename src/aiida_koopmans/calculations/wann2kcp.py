@@ -164,7 +164,14 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         spec.inputs["metadata"]["options"]["input_filename"].default = cls._INPUT_FILE
         spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
         spec.inputs["metadata"]["options"]["withmpi"].default = True
-        spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
+        # Pin to a single rank: wann2kcp.x is an I/O-bound conversion tool
+        # whose scratch-file handling races under multiple MPI ranks (every
+        # rank ``close(status='delete')``s the same file; with the GNU
+        # runtime the losers abort with "File cannot be deleted").
+        spec.inputs["metadata"]["options"]["resources"].default = {
+            "num_machines": 1,
+            "num_mpiprocs_per_machine": 1,
+        }
 
         spec.output(
             "output_parameters",
@@ -188,6 +195,7 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             320,
             "ERROR_OUTPUT_EVC_MISSING",
             message="A completed wannier2kcp run retrieved no ``evcw*.dat`` wavefunction file.",
+            invalidates_cache=True,
         )
 
     def prepare_for_submission(self, folder):
@@ -199,6 +207,13 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         content = self._render_namelist(parameters)
         with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
             handle.write(content)
+
+        # ``TMP`` must be a real per-calculation directory (the ``.save`` is
+        # symlinked inside it, see ``_build_remote_symlink_list``): wann2kcp.x
+        # writes and deletes buffer scratch (``<prefix>.wfcx*``) in its outdir,
+        # so a directory-level symlink would put that scratch in the *shared*
+        # nscf folder where parallel per-block runs clobber each other.
+        folder.get_subfolder(self._DEFAULT_OUTDIR, create=True)
 
         calc_info = CalcInfo()
         calc_info.codes_info = [self._make_code_info()]
@@ -225,21 +240,26 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             parameters.setdefault(key, default)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
-        """Symlink the parent nscf scratch into ``./TMP/``.
+        """Symlink the parent nscf ``.save`` into ``./TMP/<prefix>.save``.
 
-        wann2kcp.x reads the Bloch wavefunctions from ``<outdir>/<prefix>.save``.
-        A directory-level symlink is sufficient here -- unlike the kcp.x case
-        there are no per-file overlays -- so this stays a single entry. The
-        parent is an aiida-quantumespresso pw.x run, whose scratch lives under
-        ``<workdir>/out/`` (``PwCalculation._OUTPUT_SUBFOLDER``), so the ``out``
-        subdirectory is what lands at ``TMP`` — combined with the owned
-        ``prefix = aiida`` this resolves to ``TMP/aiida.save``.
+        wann2kcp.x reads the Bloch wavefunctions from ``<outdir>/<prefix>.save``;
+        the parent is an aiida-quantumespresso pw.x run whose scratch lives
+        under ``<workdir>/out/`` (``PwCalculation._OUTPUT_SUBFOLDER``).
+
+        Only the ``.save`` tree is symlinked — NOT the whole ``out`` directory:
+        ``TMP`` itself is a real per-calculation directory (created in
+        ``prepare_for_submission``) because wann2kcp.x writes and deletes buffer
+        scratch (``<prefix>.wfcx*``, QE ``buffers.f90``) in its outdir. With a
+        directory-level symlink that scratch would land in the shared nscf
+        folder, where the parallel per-block wann2kcp runs delete each other's
+        files ("Fortran runtime error: File cannot be deleted").
         """
         if "parent_folder" not in self.inputs:
             return []
         parent = self.inputs.parent_folder
-        source = f"{parent.get_remote_path()}/out"
-        return [(parent.computer.uuid, source, self._DEFAULT_OUTDIR)]
+        prefix = self._DEFAULTS["prefix"]
+        source = f"{parent.get_remote_path()}/out/{prefix}.save"
+        return [(parent.computer.uuid, source, f"{self._DEFAULT_OUTDIR}/{prefix}.save")]
 
     def _build_local_copy_list(self, parameters: dict) -> list[tuple[str, str, str]]:
         """Copy the Wannier inputs (``.nnkp``, ``.chk``, ``_hr.dat``) into place.

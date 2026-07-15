@@ -148,10 +148,11 @@ def test_wannier2kcp_full_render(
     assert isinstance(calc_info, datastructures.CalcInfo)
     assert calc_info.codes_info[0].cmdline_params == ["-in", "aiida.wki"]
 
-    # The parent's pw.x scratch (its ``out`` subfolder) symlinked into ./TMP/,
-    # so ``outdir + prefix`` resolves to ``TMP/aiida.save``.
+    # Only the parent's ``.save`` is symlinked (into a real per-calc ``TMP``
+    # dir), so wann2kcp's buffer scratch stays private to this calculation
+    # while ``outdir + prefix`` still resolves to ``TMP/aiida.save``.
     assert [(item[1], item[2]) for item in calc_info.remote_symlink_list] == [
-        (f"{parent_root.as_posix()}/out", "TMP")
+        (f"{parent_root.as_posix()}/out/aiida.save", "TMP/aiida.save")
     ]
 
     # evcw files retrieved in wannier2kcp mode.

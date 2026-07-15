@@ -99,6 +99,7 @@ class MergeEvcCalculation(KoopmansCalculation):
             302,
             "ERROR_OUTPUT_FILE_MISSING",
             message="The merged evc output file was not retrieved.",
+            invalidates_cache=True,
         )
 
     def prepare_for_submission(self, folder):
