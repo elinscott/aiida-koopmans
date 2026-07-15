@@ -119,10 +119,10 @@ MIT
 edwardlinscott@gmail.com
 
 
-[ci-badge]: https://github.com/elinscott/aiida-koopmans/workflows/ci/badge.svg?branch=master
-[ci-link]: https://github.com/elinscott/aiida-koopmans/actions
-[cov-badge]: https://coveralls.io/repos/github/elinscott/aiida-koopmans/badge.svg?branch=master
-[cov-link]: https://coveralls.io/github/elinscott/aiida-koopmans?branch=master
+[ci-badge]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml/badge.svg?branch=main
+[ci-link]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml
+[cov-badge]: https://coveralls.io/repos/github/elinscott/aiida-koopmans/badge.svg?branch=main
+[cov-link]: https://coveralls.io/github/elinscott/aiida-koopmans?branch=main
 [docs-badge]: https://readthedocs.org/projects/aiida-koopmans/badge
 [docs-link]: http://aiida-koopmans.readthedocs.io/
 [pypi-badge]: https://badge.fury.io/py/aiida-koopmans.svg

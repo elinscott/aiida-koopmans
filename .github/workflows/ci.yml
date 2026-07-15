@@ -61,6 +61,14 @@ jobs:
         PYTEST_ADDOPTS: "--durations=0"
       run: |
         hatch test --cover
+    - name: Upload coverage to Coveralls
+      # One matrix leg only, so the 3.12 and 3.13 runs don't double-report.
+      if: matrix.python-version == '3.13'
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        pip install coveralls
+        coveralls --service=github
 
   docs:
     runs-on: ubuntu-latest
