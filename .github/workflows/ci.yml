@@ -61,14 +61,19 @@ jobs:
         PYTEST_ADDOPTS: "--durations=0"
       run: |
         hatch test --cover
-    - name: Upload coverage to Coveralls
+    - name: Generate the coverage report
+      if: matrix.python-version == '3.13'
+      run: |
+        pip install coverage
+        coverage xml
+    - name: Upload coverage report to codecov
+      uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
       # One matrix leg only, so the 3.12 and 3.13 runs don't double-report.
       if: matrix.python-version == '3.13'
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        pip install coveralls
-        coveralls --service=github
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        slug: elinscott/aiida-koopmans
+        file: coverage.xml
 
   docs:
     runs-on: ubuntu-latest
