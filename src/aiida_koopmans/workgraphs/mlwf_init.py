@@ -258,11 +258,21 @@ def MlwfInitialization(
     merge_groups = group_blocks_to_merge(blocks, num_occ_bands)
 
     # --- B1: block-by-block wannierisation on the primitive cell ---
+    # wannier90 / pw2wannier90 need eigenstates on the full explicit k-list
+    # (wannier90 kmesh.pl ordering, no symmetry reduction); a mesh input
+    # would let pw.x reduce the nscf to the irreducible wedge and
+    # pw2wannier90 abort with "Wrong number of k-points".
+    from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
+
+    explicit_kpoints = get_explicit_kpoints(kpoints)
     wannierize = WannierizeBlocks(
         codes=codes,
         structure=structure,
         blocks=blocks,
-        kpoints=kpoints,
+        kpoints=explicit_kpoints,
+        # wannier90 cannot re-derive the Monkhorst-Pack dimensions from an
+        # explicit k-list, so pin them from the primitive grid.
+        mp_grid=list(kgrid),
         pseudo_family=pseudo_family,
         protocol=wannier_protocol,
         overrides=wannier_overrides,
