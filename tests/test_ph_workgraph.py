@@ -8,8 +8,6 @@ introspect its task list / wiring. Also unit-tests the
 
 from __future__ import annotations
 
-import io
-
 import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -68,42 +66,6 @@ def kmesh(aiida_profile):
     kpts = KpointsData()
     kpts.set_kpoints_mesh([2, 2, 2])
     return kpts
-
-
-@pytest.fixture
-def fake_cutoffs_family(aiida_profile):
-    """Install a fake ``CutoffsPseudoPotentialFamily`` (Si and O).
-
-    ``DielectricTask``'s body calls ``get_builder_from_protocol`` eagerly at
-    build time, and the protocol machinery only accepts SSSP / PseudoDojo /
-    cutoffs families — a plain ``PseudoPotentialFamily`` is not found.
-    """
-    from aiida.common.exceptions import NotExistent
-    from aiida_pseudo.data.pseudo.upf import UpfData
-    from aiida_pseudo.groups.family import CutoffsPseudoPotentialFamily
-
-    label = "FAKE/CUTOFFS/PBE/SR"
-    try:
-        return CutoffsPseudoPotentialFamily.collection.get(label=label)
-    except NotExistent:
-        pass
-
-    family = CutoffsPseudoPotentialFamily(label=label)
-    family.store()
-    pseudos = []
-    for element, z_valence in (("Si", 4.0), ("O", 6.0)):
-        content = (
-            f'<UPF version="2.0.1"><PP_HEADER\nelement="{element}"\n'
-            f'z_valence="{z_valence}"\n/></UPF>\n'
-        )
-        upf = UpfData(io.BytesIO(content.encode("utf-8")), filename=f"{element}.upf")
-        pseudos.append(upf.store())
-    family.add_nodes(pseudos)
-    family.set_cutoffs(
-        {element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for element in ("Si", "O")},
-        stringency="normal",
-    )
-    return family
 
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:

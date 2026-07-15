@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures import (  # noqa: F401
+    fake_cutoffs_family,
     fake_upf,
     generate_upf_data,
     ozone_pseudos,
