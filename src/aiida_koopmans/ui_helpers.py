@@ -72,7 +72,7 @@ def reciprocal_cell(cell: NDArray[np.float64]) -> NDArray[np.float64]:
     Matches ``ase.cell.Cell.reciprocal()``, which the legacy code used as
     the ``bvec`` transformation matrix.
     """
-    return np.linalg.inv(cell).transpose()
+    return np.linalg.inv(cell).transpose().astype(np.float64, copy=False)
 
 
 def extract_hr(
@@ -291,7 +291,7 @@ def map_wannier(
     num_wann: int,
     num_wann_sc: int,
 ) -> MappedWannierFunctions:
-    """Build the map |i> --> |Rn> between the WFs in the supercell and in the primitive cell.
+    """Map the supercell WFs ``|i>`` onto their primitive-cell copies ``|Rn>``.
 
     ``centers`` must be in primitive-cell crystal units; they are folded
     into the supercell, the R=0 subset is identified, and the remaining WFs
@@ -436,7 +436,7 @@ def calc_bands(
         hr_smooth_w = np.transpose(hr_smooth, axes=(2, 1, 0)) / weights_smooth
         hk += np.dot(phi, np.transpose(hr_smooth_w, axes=(1, 2, 0)))
 
-    return np.linalg.eigvalsh(hk)
+    return np.linalg.eigvalsh(hk).astype(np.float64, copy=False)
 
 
 # ----------------------------------------------------------------------
