@@ -121,8 +121,8 @@ edwardlinscott@gmail.com
 
 [ci-badge]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml/badge.svg?branch=main
 [ci-link]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml
-[cov-badge]: https://coveralls.io/repos/github/elinscott/aiida-koopmans/badge.svg?branch=main
-[cov-link]: https://coveralls.io/github/elinscott/aiida-koopmans?branch=main
+[cov-badge]: https://codecov.io/gh/elinscott/aiida-koopmans/branch/main/graph/badge.svg
+[cov-link]: https://codecov.io/gh/elinscott/aiida-koopmans/branch/main
 [docs-badge]: https://readthedocs.org/projects/aiida-koopmans/badge
 [docs-link]: http://aiida-koopmans.readthedocs.io/
 [pypi-badge]: https://badge.fury.io/py/aiida-koopmans.svg
