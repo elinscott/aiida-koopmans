@@ -199,3 +199,13 @@ features = ["docs"]
 build = [
   "make -C docs"
 ]
+
+[tool.hatch.envs.mypy]
+installer = "uv"
+extra-dependencies = ["mypy~=1.19"]
+
+[tool.hatch.envs.mypy.scripts]
+check = "mypy src/ {args}"
+
+[tool.mypy]
+ignore_missing_imports = true

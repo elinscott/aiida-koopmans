@@ -269,7 +269,7 @@ def assign_orbital_groups(
             labels = [1]
         else:
             spin = subset_key[0]
-            spin_axis = 0 if spin is SpinChannel.NONE else spin.index
+            spin_axis = 0 if spin is SpinChannel.NONE else spin.axis
             data = np.array([[metric[spin_axis][o["index"] - 1]] for o in members])
             labels = _assign_groups_fcluster(data=data, default_tol=tol, revised_tol=tol)
         for o, label in zip(members, labels, strict=True):

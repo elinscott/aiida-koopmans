@@ -46,7 +46,6 @@ Current limitations:
 
 from __future__ import annotations
 
-import io
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
@@ -119,7 +118,7 @@ def derive_dfpt_manifolds(
     nbnd: int | None,
     spin_channel: SpinChannel = SpinChannel.NONE,
     nocc: int | None = None,
-) -> tuple[ProjectionBlock, ProjectionBlock | None, bool, int]:
+) -> tuple[ExplicitProjectionBlock, ExplicitProjectionBlock | None, int]:
     """Turn user projection blocks into the occupied/empty DFPT manifolds.
 
     Handles the manifold bookkeeping (nocc from the electron count, nemp from
@@ -235,14 +234,14 @@ def normalize_alpha_guess(
     """Flatten a user ``alpha_guess`` into one alpha per orbital.
 
     Accepts the three shapes the input file allows: a single float (uniform
-    guess), a flat list, or the nested per-spin list (``spin_channel.index``
+    guess), a flat list, or the nested per-spin list (``spin_channel.axis``
     selects the channel: up/none/spinor take the first entry, down the
     second).
     """
     if isinstance(raw_guess, float):
         return [raw_guess] * n_orbitals
     if raw_guess and isinstance(raw_guess[0], list):
-        return [float(a) for a in raw_guess[spin_channel.index]]
+        return [float(a) for a in raw_guess[spin_channel.axis]]
     return [float(a) for a in raw_guess]
 
 
@@ -322,7 +321,7 @@ class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
 @task.calcfunction(outputs=["wannier_files"])
 def prepare_kcw_wannier_files(
     occ_retrieved: orm.FolderData,
-    emp_retrieved: orm.FolderData = None,
+    emp_retrieved: orm.FolderData | None = None,
 ) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
@@ -348,7 +347,7 @@ def prepare_kcw_wannier_files(
                 )
             dst_name = f"{SEEDNAME}_emp{suffix}" if rename_emp else src_name
             content = src.base.repository.get_object_content(src_name, mode="rb")
-            merged.base.repository.put_object_from_filelike(io.BytesIO(content), dst_name)
+            merged.base.repository.put_object_from_bytes(content, dst_name)
 
     _copy(occ_retrieved, rename_emp=False)
     if emp_retrieved is not None:

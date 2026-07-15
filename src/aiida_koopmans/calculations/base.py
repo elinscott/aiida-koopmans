@@ -48,6 +48,11 @@ class KoopmansCalculation(CalcJob, abc.ABC):
     # messages of :class:`KoopmansStdoutCalculation`. Subclasses override.
     _TOOL_NAME: ClassVar[str] = "the QE binary"
 
+    # Set by every concrete subclass; declared here so the shared
+    # ``CodeInfo`` builder can reference them.
+    _INPUT_FILE: ClassVar[str]
+    _OUTPUT_FILE: ClassVar[str]
+
     @classmethod
     def define(cls, spec):
         """Declare the exit code shared by every Koopmans QE-fork plugin."""

@@ -489,7 +489,7 @@ class TestComputeAlphaFromDscf:
         trial = orm.Dict(dict={"energy": energy_trial})
         pert = orm.Dict(dict={"energy": energy_perturbed})
         # Stacked ``(nspin, n, n)`` matching ``KcpParser._parse_lambdas``.
-        # nspin=2 here so ``SpinChannel.UP.index == 0`` selects the up channel.
+        # nspin=2 here so ``SpinChannel.UP.axis == 0`` selects the up channel.
         lambdas = orm.ArrayData()
         lambdas.set_array(
             "lambdas",

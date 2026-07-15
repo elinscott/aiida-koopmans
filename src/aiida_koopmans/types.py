@@ -7,7 +7,7 @@ CalcJob, parser, and tests can all import a single canonical definition.
 from __future__ import annotations
 
 from enum import Enum
-from typing import NotRequired, TypedDict
+from typing import NotRequired, TypedDict, cast
 
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -75,7 +75,7 @@ class SpinChannel(str, Enum):
     SPINOR = "spinor"
 
     @property
-    def index(self) -> int:
+    def axis(self) -> int:
         """Spin index into a stacked-by-spin array (axis-0 of ``(nspin, ...)``).
 
         ``NONE`` and ``UP`` both live at index 0 (kcp.x's nspin=1 file layout
@@ -200,11 +200,14 @@ class ExplicitProjectionBlock(_ProjectionBlockBase):
     """A block whose Wannier functions come from explicit projections.
 
     ``projection_type`` is ``WannierProjectionType.ANALYTIC``.
-    ``projections`` is the resolved ``list[OrbitalDict]`` and is
-    required (``num_wann == len(projections)``).
+    ``projections`` is required: the Wannier90-format projection strings
+    (``site:ang_mtm``), written verbatim into the ``.win`` projections
+    block. Moving to resolved :class:`OrbitalDict` entries is the intended
+    end state (hence the drift guard in ``test_projection_blocks``), but no
+    route produces them yet.
     """
 
-    projections: list[OrbitalDict]
+    projections: list[str]
 
 
 class AutomaticProjectionBlock(_ProjectionBlockBase):
@@ -261,7 +264,7 @@ def block_w90_kwargs(block: ProjectionBlock) -> dict:
     if block["spin"] != SpinChannel.NONE:
         kwargs["spin"] = SpinChannel(block["spin"]).value
     if "projections" in block:
-        kwargs["projections"] = block["projections"]
+        kwargs["projections"] = cast("ExplicitProjectionBlock", block)["projections"]
     return kwargs
 
 

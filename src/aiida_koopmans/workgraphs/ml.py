@@ -34,6 +34,7 @@ from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans import ml_helpers
+from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
@@ -64,7 +65,8 @@ class TrajectoryOutputs(TypedDict):
     * ``snapshots`` — dynamic namespace keyed by snapshot label; each entry
       is the full :class:`KoopmansDSCFOutputs` of that snapshot.
     * ``datasets`` — dynamic namespace keyed by snapshot label; each entry
-      pairs per-orbital descriptors with computed alphas (empty when
+      is a :class:`~aiida_koopmans.ml_helpers.SnapshotDataset` namespace
+      pairing per-orbital descriptors with computed alphas (empty when
       ``ml_mode == "none"``).
     * ``model`` — the trained model (``train``), the supplied model
       (``test``), or ``{}``.
@@ -73,18 +75,21 @@ class TrajectoryOutputs(TypedDict):
     """
 
     snapshots: Annotated[dict, dynamic(KoopmansDSCFOutputs)]
-    datasets: Annotated[dict, dynamic(dict)]
+    datasets: Annotated[dict, dynamic(SnapshotDataset)]
     model: dict
     evaluation: dict
 
 
 @task
-def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> dict:
+def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> SnapshotDataset:
     """Pair one snapshot's self-Hartree descriptors with its screening parameters.
 
     ``parameters`` is the final KI's parsed output (its
     ``orbital_data["self-Hartree"]`` per-spin blocks list filled orbitals
     first, then empty — the same layout as the per-spin alpha lists).
+
+    The ``SnapshotDataset`` return fans out into one output socket per key
+    (``descriptors`` / ``alphas`` / ``filled`` / ``labels``).
     """
     orbital_data = parameters.get("orbital_data") or {}
     self_hartrees = orbital_data.get("self-Hartree") or []
@@ -98,7 +103,7 @@ def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> dict:
 
 @task
 def train_screening_model(
-    datasets: Annotated[dict, dynamic(dict)],
+    datasets: Annotated[dict, dynamic(SnapshotDataset)],
     estimator: str,
     occ_and_emp_together: bool,
     descriptor: str,
@@ -137,7 +142,7 @@ class EvaluateOutputs(TypedDict):
 
 @task
 def evaluate_screening_model(
-    datasets: Annotated[dict, dynamic(dict)],
+    datasets: Annotated[dict, dynamic(SnapshotDataset)],
     model: dict,
 ) -> EvaluateOutputs:
     """Gather every snapshot's dataset and score a trained model against it."""
@@ -246,11 +251,12 @@ def TrajectoryWorkflow(
         )
 
         if ml_mode != "none":
-            dataset = extract_snapshot_dataset(
+            # The whole SnapshotDataset output namespace becomes the entry
+            # (one socket per key), mirroring the channel-keyed DFPT wiring.
+            datasets[label] = extract_snapshot_dataset(
                 parameters=dscf["parameters"],
                 alphas=dscf["alphas"],
             )
-            datasets[label] = dataset.result
 
     if ml_mode == "train":
         trained = train_screening_model(
