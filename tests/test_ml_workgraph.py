@@ -114,6 +114,10 @@ class TestTrajectoryGraphBuild:
         # Per-snapshot dataset extraction (alphas come straight off the
         # DSCF outputs — no provenance-walk task anymore).
         assert sum(1 for n in names if "extract_snapshot_dataset" in n) == 2, names
+        # The SnapshotDataset return fans out into one output socket per key.
+        extract = next(t for t in wg.tasks if "extract_snapshot_dataset" in t.name)
+        socket_names = {s._name for s in extract.outputs}
+        assert {"descriptors", "alphas", "filled", "labels"} <= socket_names, socket_names
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
