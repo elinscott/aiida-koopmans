@@ -46,6 +46,7 @@ Current limitations:
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
@@ -70,6 +71,7 @@ from aiida_koopmans.types import (
 )
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
+from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
@@ -565,11 +567,16 @@ def SinglepointDFPTWorkflow(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    eps_inf: float | None = None,
+    eps_inf: float | str | None = None,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
+
+    ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
+    (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
+    ``codes["ph"]``) runs first and the isotropic average of its dielectric
+    tensor feeds the screen step.
 
     One shared scf + nscf (:func:`RunScfNscf`, with the spin-regime SYSTEM
     keys of :func:`_pw_spin_system_defaults` forced on and ``nosym`` /
@@ -612,6 +619,26 @@ def SinglepointDFPTWorkflow(
             f"spin={spin.value!r} requires manifolds keyed by "
             f"{sorted(expected_keys)}, got {sorted(channel_keys)}."
         )
+
+    if eps_inf == "auto":
+        # Run a scf + ph.x dielectric chain first and feed tr(eps)/3 into the
+        # screen step. The dielectric scf drops ``nbnd`` (no empty bands are
+        # needed for a ground-state response) and none of the kcw spin
+        # forcing — it is an independent ground state.
+        if "ph" not in codes:
+            raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
+        eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
+        eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
+        dielectric = DielectricTask(
+            pw_code=codes["pw"],
+            ph_code=codes["ph"],
+            structure=structure,
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            overrides={"scf": eps_scf_overrides},
+            metadata={"call_link_label": "dielectric"},
+        )
+        eps_inf = dielectric["eps_inf"]
 
     forced_system = _pw_spin_system_defaults(spin)
     # The domag nudge is a *default*, not a requirement: a genuinely magnetic

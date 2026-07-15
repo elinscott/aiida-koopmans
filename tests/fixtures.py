@@ -119,3 +119,34 @@ def generate_upf_data(aiida_profile):
 def ozone_real_pseudos(generate_upf_data):
     """Return ``{"O": UpfData}`` with a real (AiiDA-storable) UpfData node for oxygen."""
     return {"O": generate_upf_data("O", z_valence=6.0)}
+
+
+@pytest.fixture
+def fake_cutoffs_family(aiida_profile, generate_upf_data):
+    """Install a fake ``CutoffsPseudoPotentialFamily`` (Si and O).
+
+    For graph builders that call ``get_builder_from_protocol`` eagerly at
+    build time: the protocol machinery only accepts SSSP / PseudoDojo /
+    cutoffs families — a plain ``PseudoPotentialFamily`` is not found.
+    """
+    from aiida.common.exceptions import NotExistent
+    from aiida_pseudo.groups.family import CutoffsPseudoPotentialFamily
+
+    label = "FAKE/CUTOFFS/PBE/SR"
+    try:
+        return CutoffsPseudoPotentialFamily.collection.get(label=label)
+    except NotExistent:
+        pass
+
+    family = CutoffsPseudoPotentialFamily(label=label)
+    family.store()
+    pseudos = [
+        generate_upf_data(element, z_valence=z_valence).store()
+        for element, z_valence in (("Si", 4.0), ("O", 6.0))
+    ]
+    family.add_nodes(pseudos)
+    family.set_cutoffs(
+        {element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for element in ("Si", "O")},
+        stringency="normal",
+    )
+    return family
