@@ -219,6 +219,16 @@ class ScreeningIterationOutputs(TypedDict):
     max_error: float
 
 
+@task
+def echo_alpha_screening(alphas: AlphaScreening) -> AlphaScreening:
+    """Return the screening parameters unchanged.
+
+    Exists so a graph terminal branch can expose an *input* value as an
+    output socket (graphs cannot echo raw inputs as outputs).
+    """
+    return alphas
+
+
 class ScreeningParametersOutputs(TypedDict):
     """Outputs of ``ComputeScreeningParameters``: the converged screening alpha's.
 
@@ -1760,8 +1770,10 @@ def RefineScreeningParameters(
     1 only) — and recurses on its outputs with a decremented budget.
     """
     if remaining_steps <= 0 or prev_max_error < alpha_conv_thr:
+        # A graph cannot echo a raw input as an output; route the converged
+        # alphas through a task so the output is a socket.
         return ScreeningParametersOutputs(
-            alphas=prev_alphas,
+            alphas=echo_alpha_screening(alphas=prev_alphas),
             trial_remote=prev_trial_remote,
         )
 
