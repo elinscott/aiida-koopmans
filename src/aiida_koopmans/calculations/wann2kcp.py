@@ -97,8 +97,8 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         """Reject parallel resources at submission time.
 
         wann2kcp.x's buffer-scratch handling races under multiple MPI ranks
-        (every rank ``close(status='delete')``s the same file), so a single
-        rank is a hard requirement, not a default.
+        (every rank closes the same file with ``status='delete'``), so a
+        single rank is a hard requirement, not a default.
         """
         try:
             resources = value["metadata"]["options"]["resources"]
