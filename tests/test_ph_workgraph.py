@@ -46,28 +46,6 @@ def ph_codes(aiida_localhost):
     }
 
 
-@pytest.fixture
-def silicon_structure(aiida_profile):
-    """Return a two-atom silicon ``StructureData``."""
-    from aiida.orm import StructureData
-
-    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
-    struct = StructureData(cell=cell, pbc=True)
-    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
-    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
-    return struct
-
-
-@pytest.fixture
-def kmesh(aiida_profile):
-    """Return a 2x2x2 ``KpointsData`` mesh."""
-    from aiida.orm import KpointsData
-
-    kpts = KpointsData()
-    kpts.set_kpoints_mesh([2, 2, 2])
-    return kpts
-
-
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
     n = len(include)
     return ExplicitProjectionBlock(

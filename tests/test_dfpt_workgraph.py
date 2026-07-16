@@ -49,26 +49,6 @@ def dfpt_codes(aiida_localhost):
 
 
 @pytest.fixture
-def silicon_structure(aiida_profile):
-    from aiida.orm import StructureData
-
-    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
-    struct = StructureData(cell=cell, pbc=True)
-    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
-    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
-    return struct
-
-
-@pytest.fixture
-def kmesh(aiida_profile):
-    from aiida.orm import KpointsData
-
-    kpts = KpointsData()
-    kpts.set_kpoints_mesh([2, 2, 2])
-    return kpts
-
-
-@pytest.fixture
 def bands_path(aiida_profile):
     from aiida.orm import KpointsData
 
