@@ -36,9 +36,24 @@ class MergeEvcCalculation(KoopmansCalculation):
     _OUTPUT_FILE = "aiida.out"
 
     @classmethod
+    def _validate_serial_resources(cls, value, port_namespace):
+        """Reject parallel resources at submission time (serial concatenation tool)."""
+        try:
+            resources = value["metadata"]["options"]["resources"]
+        except (KeyError, TypeError):
+            return None
+        nprocs = resources.get("tot_num_mpiprocs") or (
+            resources.get("num_machines", 1) * resources.get("num_mpiprocs_per_machine", 1)
+        )
+        if nprocs > 1:
+            return "merge_evc.x is a serial tool; run it on a single MPI rank."
+        return None
+
+    @classmethod
     def define(cls, spec):
         """Declare the inputs, outputs, and exit codes for the CalcJob."""
         super().define(spec)
+        spec.inputs.validator = cls._validate_serial_resources
 
         spec.input(
             "kgrid",

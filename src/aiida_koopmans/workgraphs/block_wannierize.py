@@ -222,8 +222,14 @@ def WannierizeBlocks(
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks; occupied and empty manifolds
             appear as separate blocks. Each is Wannierised independently.
-        kpoints: the explicit k-mesh shared by the nscf and every block's
-            wannier90 / pw2wannier90.
+        kpoints: the explicit k-point list shared by the nscf and every
+            block's wannier90 / pw2wannier90 (one node, so the k-ordering
+            cannot drift between the steps).
+        mp_grid: the Monkhorst-Pack dimensions ``kpoints`` was generated
+            from. Carried separately because an explicit-list
+            ``KpointsData`` cannot represent its parent mesh, and
+            wannier90 requires ``mp_grid`` in the ``.win`` (it cannot
+            re-derive it from the list).
         pseudo_family: pseudopotential family label.
         protocol: protocol name passed to both builders.
         overrides: optional overrides. ``overrides["scf"]`` / ``["nscf"]``

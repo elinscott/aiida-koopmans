@@ -261,3 +261,23 @@ def test_ks2kcp_does_not_retrieve_evcw(
     assert "aiida.wko" in retrieved
     # No parent_folder => no symlinks.
     assert calc_info.remote_symlink_list == []
+
+
+def test_parallel_resources_rejected(fixture_sandbox, aiida_local_code_factory, generate_upf_data):
+    """More than one MPI rank fails input validation (buffer-scratch race)."""
+    import pytest
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "metadata": {"options": {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 4}}},
+    }
+    cls = CalculationFactory("koopmans.wann2kcp")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="single MPI rank"):
+        instantiate_process(runner, cls, **inputs)
