@@ -1,16 +1,25 @@
 """aiida-workgraph builders for kcp.x.
 
 Wraps :class:`~aiida_koopmans.calculations.kcp.KcpCalculation` as a task and
-composes it into the Koopmans DSCF workflow: DFT init → trial KI →
-per-orbital Delta-SCF alpha refinement → final KI, supporting KI/KIPZ,
-spin-polarised and closed-shell systems, and multi-iteration refinement
-with self-Hartree orbital grouping.
+composes it into higher-level workflows.
+
+**Current scope.** Two routes are implemented: the molecular Kohn-Sham-init path
+(KI/KIPZ + DSCF) and the periodic Wannier-init path (``init_orbitals``
+``'mlwfs'`` / ``'projwfs'``: wannierize → fold-to-supercell → Γ-point
+supercell kcp.x; see ``mlwf_init.py``). Unsupported combinations raise
+``NotImplementedError`` at build time with a clear message.
+
+``KoopmansDSCFWorkflow`` runs a DFT initialisation, a trial KI pass, a
+per-orbital Delta-SCF loop that refines the screening parameters, and a
+final KI with the converged alphas. Spin-symmetrisation
+(``fix_spin_contamination=True``) is not yet supported and is rejected at
+build time.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -31,6 +40,7 @@ from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
@@ -202,6 +212,16 @@ class ScreeningIterationOutputs(TypedDict):
     max_error: float
 
 
+@task
+def echo_alpha_screening(alphas: AlphaScreening) -> AlphaScreening:
+    """Return the screening parameters unchanged.
+
+    Exists so a graph terminal branch can expose an *input* value as an
+    output socket (graphs cannot echo raw inputs as outputs).
+    """
+    return alphas
+
+
 class ScreeningParametersOutputs(TypedDict):
     """Outputs of ``ComputeScreeningParameters``: the converged screening alpha's.
 
@@ -247,6 +267,8 @@ def compute_alpha_from_dscf(
     band_index: int,
     alpha_guess: float,
     filled: bool,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
 ) -> dict:
     """Compute the new alpha for one orbital from its Delta-SCF perturbed run.
 
@@ -262,6 +284,15 @@ def compute_alpha_from_dscf(
       orbital-dependent Hamiltonian at ``(band_index, band_index)``;
     - ``lambda_0`` is the same diagonal element of the **bare** Hamiltonian.
 
+    With ``mp_correction=True`` (the default for the DSCF method on
+    periodic supercells) the Makov-Payne image-interaction
+    energies reported by the perturbed N±1 run are subtracted from ``dE``
+    scaled by the macroscopic dielectric constant:
+    ``dE -= sign(charge) * (mp1 + mp2) /
+    eps_inf`` where ``sign(charge)`` is ``+1`` for a filled orbital (an
+    electron removed) and ``-1`` for an empty one (an electron added), and
+    ``mp2`` is used only when the run reports it.
+
     Both energies and lambdas are in eV (the parser converts from Hartree),
     so the units cancel on division. ``error = |dE - lambda_a|`` is the
     convergence indicator the refinement loop monitors. The lambda arrays are
@@ -273,6 +304,14 @@ def compute_alpha_from_dscf(
     lambda_a = float(trial_lambdas[spin, band_index, band_index].real)
     lambda_0 = float(trial_bare_lambdas[spin, band_index, band_index].real)
     dE = trial_e - perturbed_e if filled else perturbed_e - trial_e  # noqa: N806
+    if mp_correction:
+        mp1 = perturbed_output_parameters.get("mp1_energy")
+        mp2 = perturbed_output_parameters.get("mp2_energy")
+        if mp1 is None:
+            raise ValueError("Could not find 1st order Makov-Payne energy")
+        mp_energy = mp1 if mp2 is None else mp1 + mp2
+        sign_of_charge = 1 if filled else -1
+        dE -= sign_of_charge * mp_energy / eps_inf  # noqa: N806
     alpha_new = alpha_guess * (dE - lambda_0) / (lambda_a - lambda_0)
     error = abs(dE - lambda_a)
     return {"alpha": alpha_new, "error": error}
@@ -766,6 +805,15 @@ def KoopmansDSCFWorkflow(
     initial_alpha: float = 0.6,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
+    codes: Codes | None = None,
+    blocks: list | None = None,
+    kgrid: list[int] | None = None,
+    kpoints: orm.KpointsData | None = None,
+    gamma_only: bool = False,
+    wannier_protocol: str | None = None,
+    wannier_overrides: dict[str, Any] | None = None,
+    mp_correction: bool | None = None,
+    eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> KoopmansDSCFOutputs:
@@ -778,36 +826,133 @@ def KoopmansDSCFWorkflow(
     triplet for each empty orbital) refines every alpha; a final KI
     then re-runs with the converged alphas.
 
+    Two initialisation routes select on ``init_orbitals``:
+
+    * ``'kohn-sham'`` (molecular): the DFT init runs on ``structure``
+      directly and the trial KI receives the KS-as-variational overlay.
+    * ``'mlwfs'`` / ``'projwfs'`` (periodic): wannierise → fold to the
+      ``diag(kgrid)`` supercell → Wannier-seeded ``dft_init``
+      (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+      Every kcp.x step then runs on the Γ-point supercell, with the
+      extensive inputs (``nbnd``, ``tot_magnetization``, and — via the
+      supercell structure — the electron counts) scaled by
+      ``prod(kgrid)``. This route
+      additionally requires ``codes`` (pw / wannier90 / pw2wannier90 /
+      wann2kcp / merge_evc), ``blocks`` (projection blocks with
+      *primitive* band indices; ``nbnd`` stays the primitive per-cell
+      count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
+
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
+    from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
+    from aiida_koopmans.workgraphs.supercell import (
+        primitive_to_supercell,
+        scale_extensive,
+        supercell_size,
+    )
+
     _validate_scope(
         correction=correction,
         init_orbitals=init_orbitals,
         fix_spin_contamination=fix_spin_contamination,
         structure=structure,
+        blocks=blocks,
+        kgrid=kgrid,
+        kpoints=kpoints,
+        codes=codes,
     )
 
     dft_overrides = overrides.get("dft") if overrides else None
+    wannier_init = init_orbitals in (
+        VariationalOrbitalType.MLWFS,
+        VariationalOrbitalType.PROJWFS,
+    )
+
+    # Image-charge correction defaults: the Makov-Payne correction to the
+    # Delta-SCF energies is on for periodic supercell runs and off (indeed
+    # forbidden) for molecules; ``eps_inf`` falls back to 1.0 (vacuum — a
+    # crude default for real materials).
+    if mp_correction is None:
+        mp_correction = wannier_init
+    if eps_inf is None:
+        eps_inf = 1.0
+
+    # For the periodic Wannier route every kcp.x step runs on the Γ-point
+    # supercell; the extensive inputs scale by the primitive-cell count.
+    # ``_validate_scope`` guarantees ``kgrid`` and ``codes`` are set on
+    # this route.
+    if wannier_init:
+        ncells = supercell_size(cast("list[int]", kgrid))
+        run_structure = primitive_to_supercell(
+            structure=structure,
+            kgrid=kgrid,
+            metadata={"call_link_label": "make_supercell"},
+        ).result
+        # The supercell bands are exactly the folded Wannier manifolds:
+        # (occ + emp WFs per primitive cell) x images. Scaling the primitive
+        # ``nbnd`` instead demands more empty states than the folded
+        # ``evc0_empty`` provides — kcp.x then rejects the file
+        # ("wavefunctions dimensions changed") and silently random-initialises
+        # the empties. Reference: a Si 2x2x2 run needs nbnd=64 (4 occ + 4 emp
+        # WFs) even though the primitive wannierization used nbnd=20.
+        run_nbnd = sum(block["num_wann"] for block in cast("list", blocks)) * ncells
+        run_tot_magnetization = scale_extensive(tot_magnetization, ncells)
+    else:
+        run_structure = structure
+        run_nbnd = nbnd
+        run_tot_magnetization = tot_magnetization
 
     # Resolve pseudo family + electron counts once, at runtime, so the
     # results flow downstream as plain AiiDA-typed sockets instead of
-    # ``TaggedValue`` proxies (which break inside a nested ``@task.graph`` body).
+    # ``TaggedValue`` proxies (the failure mode of the inline plain-Python
+    # call inside a nested ``@task.graph`` body). Evaluated on the *run*
+    # structure, so the supercell's electron counts come out pre-scaled.
     pseudos = resolve_pseudo_family_task(
         family_label=pseudo_family,
-        structure=structure,
+        structure=run_structure,
     )
     counts = count_electrons_task(
-        structure=structure,
+        structure=run_structure,
         pseudos=pseudos,
         nspin=nspin,
-        tot_magnetization=tot_magnetization,
+        tot_magnetization=run_tot_magnetization,
     )
     nelec = counts["nelec"]
     nelup = counts["nelup"]
     neldw = counts["neldw"]
 
-    if spin_polarized:
+    initial_evc_occupied1 = None
+    initial_evc_occupied2 = None
+    if wannier_init:
+        init = MlwfInitialization(
+            codes={**cast("dict", codes), "kcp": code},
+            structure=structure,
+            supercell=run_structure,
+            pseudos=pseudos,
+            blocks=blocks,
+            kpoints=kpoints,
+            kgrid=kgrid,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=run_nbnd,
+            nspin=nspin,
+            tot_magnetization=run_tot_magnetization,
+            spin_polarized=spin_polarized,
+            gamma_only=gamma_only,
+            pseudo_family=pseudo_family,
+            wannier_protocol=wannier_protocol,
+            wannier_overrides=wannier_overrides,
+            options=options,
+            metadata={"call_link_label": "wannier_initialization"},
+        )
+        dft_remote = init["remote_folder"]
+        initial_evc_occupied1 = init["evc_occupied1"]
+        initial_evc_occupied2 = init["evc_occupied2"]
+    elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
         # with no pre-symmetrisation.
@@ -827,6 +972,7 @@ def KoopmansDSCFWorkflow(
             options=options,
             metadata={"call_link_label": "dft_init"},
         )
+        dft_remote = dft["remote_folder"]
     else:
         # Closed-shell spin-symmetric init chain:
         #
@@ -906,26 +1052,31 @@ def KoopmansDSCFWorkflow(
             options=options,
             metadata={"call_link_label": "dft_init_nspin2"},
         )
+        dft_remote = dft["remote_folder"]
 
     screening = ComputeScreeningParameters(
         code=code,
-        structure=structure,
+        structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
-        nbnd=nbnd,
+        nbnd=run_nbnd,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
-        tot_magnetization=tot_magnetization,
+        tot_magnetization=run_tot_magnetization,
         initial_alpha=initial_alpha,
         correction=correction,
         init_orbitals=init_orbitals,
         spin_polarized=spin_polarized,
         alpha_numsteps=alpha_numsteps,
         self_hartree_tol=orbital_groups_self_hartree_tol,
-        dft_remote=dft["remote_folder"],
+        dft_remote=dft_remote,
+        initial_evc_occupied1=initial_evc_occupied1,
+        initial_evc_occupied2=initial_evc_occupied2,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         overrides=overrides,
         options=options,
     )
@@ -950,16 +1101,16 @@ def KoopmansDSCFWorkflow(
     # ------------------------------------------------------------------
     ki_final = RunFinalKI(
         code=code,
-        structure=structure,
+        structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
-        nbnd=nbnd,
+        nbnd=run_nbnd,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
         neldw=neldw,
-        tot_magnetization=tot_magnetization,
+        tot_magnetization=run_tot_magnetization,
         correction=correction,
         alphas=screening["alphas"],
         parent_folder=screening["trial_remote"],
@@ -1064,6 +1215,8 @@ def ComputeFilledOrbitalScreeningParameter(
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     overrides: KcpNamelistOverrides | None = None,
     options: dict[str, Any] | None = None,
     correction: Correction = Correction.KI,
@@ -1128,6 +1281,8 @@ def ComputeFilledOrbitalScreeningParameter(
         band_index=band_index,
         alpha_guess=alpha_guess,
         filled=True,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
     )
 
     return OrbitalDeltaSCFOutputs(
@@ -1153,6 +1308,8 @@ def ComputeEmptyOrbitalScreeningParameter(
     trial_output_parameters: dict,
     trial_lambdas: np.ndarray,
     trial_bare_lambdas: np.ndarray,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     overrides: dict[str, KcpNamelistOverrides | None] | None = None,
     options: dict[str, Any] | None = None,
     correction: Correction = Correction.KI,
@@ -1252,6 +1409,8 @@ def ComputeEmptyOrbitalScreeningParameter(
         band_index=band_index,
         alpha_guess=alpha_guess,
         filled=False,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
     )
 
     return OrbitalDeltaSCFOutputs(
@@ -1286,6 +1445,8 @@ def ComputeOrbitalScreeningParameters(
     trial_output_parameters: dict,
     trial_lambdas: np.ndarray,
     trial_bare_lambdas: np.ndarray,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
     options: dict[str, Any] | None = None,
@@ -1334,6 +1495,8 @@ def ComputeOrbitalScreeningParameters(
             trial_output_parameters=trial_output_parameters,
             trial_lambdas=trial_lambdas,
             trial_bare_lambdas=trial_bare_lambdas,
+            mp_correction=mp_correction,
+            eps_inf=eps_inf,
             overrides=filled_overrides,
             options=options,
             correction=correction,
@@ -1368,6 +1531,8 @@ def ComputeOrbitalScreeningParameters(
             trial_output_parameters=trial_output_parameters,
             trial_lambdas=trial_lambdas,
             trial_bare_lambdas=trial_bare_lambdas,
+            mp_correction=mp_correction,
+            eps_inf=eps_inf,
             overrides=empty_overrides_dict,
             options=options,
             correction=correction,
@@ -1423,6 +1588,10 @@ def ScreeningIteration(
     is_first_iteration: bool = False,
     self_hartree_tol: float | None = None,
     variational_orbital_overlays: dict | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
@@ -1449,6 +1618,13 @@ def ScreeningIteration(
     subsequent iterations inherit the converged ``evc0N.dat`` from
     the previous iteration's trial save via the primary parent walk.
 
+    ``initial_evc_occupied{1,2}`` are the Wannier-init counterpart of
+    the KS overlay, likewise first-iteration-only: the folded
+    ``evc_occupied{n}.dat`` files re-staged into the trial's read
+    ``K00001`` with ``restart_from_wannier_pwscf`` switched on (the
+    empty-manifold ``evc0_empty{n}.dat`` flow through the ``dft_init``
+    parent save automatically).
+
     ``base`` is a frozen ``KcpBaseInputs`` dataclass and crosses this
     ``@task.graph`` boundary intact.
     """
@@ -1458,6 +1634,13 @@ def ScreeningIteration(
         correction=correction,
         is_first_iteration=is_first_iteration,
     )
+    read_wavefunctions: dict[str, Any] | None = None
+    if initial_evc_occupied1 is not None and initial_evc_occupied2 is not None:
+        ki_parameters["SYSTEM"]["restart_from_wannier_pwscf"] = True
+        read_wavefunctions = {
+            "evc_occupied1": initial_evc_occupied1,
+            "evc_occupied2": initial_evc_occupied2,
+        }
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
@@ -1470,6 +1653,7 @@ def ScreeningIteration(
         alphas=current_alphas,
         parent_folder=parent_folder,
         variational_orbital_overlays=variational_orbital_overlays,
+        read_wavefunctions=read_wavefunctions,
         name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
     )
     trial = KcpStep(**trial_inputs)
@@ -1508,6 +1692,8 @@ def ScreeningIteration(
         trial_output_parameters=trial["output_parameters"],
         trial_lambdas=trial["output_lambdas"],
         trial_bare_lambdas=trial["output_bare_lambdas"],
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         options=options,
@@ -1552,6 +1738,8 @@ def RefineScreeningParameters(
     remaining_steps: int,
     alpha_conv_thr: float,
     self_hartree_tol: float | None = None,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
@@ -1573,8 +1761,10 @@ def RefineScreeningParameters(
     1 only) — and recurses on its outputs with a decremented budget.
     """
     if remaining_steps <= 0 or prev_max_error < alpha_conv_thr:
+        # A graph cannot echo a raw input as an output; route the converged
+        # alphas through a task so the output is a socket.
         return ScreeningParametersOutputs(
-            alphas=prev_alphas,
+            alphas=echo_alpha_screening(alphas=prev_alphas),
             trial_remote=prev_trial_remote,
         )
 
@@ -1591,6 +1781,8 @@ def RefineScreeningParameters(
         is_first_iteration=False,
         self_hartree_tol=self_hartree_tol,
         variational_orbital_overlays=None,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
@@ -1612,6 +1804,8 @@ def RefineScreeningParameters(
         remaining_steps=remaining_steps - 1,
         alpha_conv_thr=alpha_conv_thr,
         self_hartree_tol=self_hartree_tol,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
@@ -1651,6 +1845,10 @@ def ComputeScreeningParameters(
     alpha_numsteps: int = 1,
     alpha_conv_thr: float = 1.0e-3,
     self_hartree_tol: float | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
+    mp_correction: bool = False,
+    eps_inf: float = 1.0,
     overrides: KoopmansDSCFOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> ScreeningParametersOutputs:
@@ -1665,10 +1863,12 @@ def ComputeScreeningParameters(
 
     The first iteration's trial KI restarts from ``dft_remote`` (the DFT
     init's ``remote_folder``) with the uniform ``initial_alpha`` guess and
-    receives the KS-as-variational overlay (for ``init_orbitals='kohn-sham'``).
-    Subsequent iterations restart from the previous iteration's trial KI
-    save and consume the previous iteration's gathered alphas — no overlay
-    needed because the converged ``evc0N.dat`` is already in place.
+    receives the KS-as-variational overlay (for ``init_orbitals='kohn-sham'``)
+    or, for the periodic Wannier init, the folded ``evc_occupied{n}.dat``
+    staging via ``initial_evc_occupied{1,2}``. Subsequent iterations restart
+    from the previous iteration's trial KI save and consume the previous
+    iteration's gathered alphas — no overlay / staging needed because the
+    converged ``evc0N.dat`` is already in place.
 
     The iteration count is bounded by ``alpha_numsteps`` and the loop also
     short-circuits when ``max |dE - lambda| < alpha_conv_thr`` (1e-3 eV).
@@ -1768,6 +1968,10 @@ def ComputeScreeningParameters(
         is_first_iteration=True,
         self_hartree_tol=self_hartree_tol,
         variational_orbital_overlays=ks_overlay,
+        initial_evc_occupied1=initial_evc_occupied1,
+        initial_evc_occupied2=initial_evc_occupied2,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
@@ -1798,6 +2002,8 @@ def ComputeScreeningParameters(
         remaining_steps=alpha_numsteps - 1,
         alpha_conv_thr=alpha_conv_thr,
         self_hartree_tol=self_hartree_tol,
+        mp_correction=mp_correction,
+        eps_inf=eps_inf,
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
@@ -1825,8 +2031,19 @@ def _validate_scope(
     init_orbitals: VariationalOrbitalType,
     fix_spin_contamination: bool,
     structure: orm.StructureData,
+    blocks: list | None = None,
+    kgrid: list[int] | None = None,
+    kpoints: orm.KpointsData | None = None,
+    codes: Codes | None = None,
 ) -> None:
-    """Fail fast on inputs the workflow cannot honour yet."""
+    """Fail fast on inputs the workflow cannot honour yet.
+
+    Two initialisation routes are supported: molecular Kohn-Sham
+    (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
+    (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
+    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` /
+    ``codes``). Everything else raises.
+    """
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
         raise NotImplementedError(
@@ -1835,23 +2052,45 @@ def _validate_scope(
             "PKIPZ requires a perturbative post-processing pass on top of a "
             "KI trial; NONE / ALL are workflow-control flags not consumed here."
         )
-    if init_orbitals != VariationalOrbitalType.KOHN_SHAM:
-        raise NotImplementedError(
-            f"init_orbitals={init_orbitals!r} not yet supported. "
-            f"Only {VariationalOrbitalType.KOHN_SHAM!r} is implemented. "
-            "MLWF / projected-WF / PZ initialisation requires a separate "
-            "wannierize + fold-to-supercell pipeline."
-        )
     if fix_spin_contamination:
         raise NotImplementedError(
             "fix_spin_contamination=True is not yet supported: it requires a "
             "spin-symmetrisation pre-pass (a dedicated SpinSymmetrizeTask) "
             "that has not been written yet."
         )
-    if any(structure.pbc):
+
+    wannier_init = init_orbitals in (
+        VariationalOrbitalType.MLWFS,
+        VariationalOrbitalType.PROJWFS,
+    )
+    periodic = any(structure.pbc)
+    if wannier_init:
+        if not periodic:
+            raise ValueError(
+                f"init_orbitals={init_orbitals!r} requires a periodic structure — "
+                "Wannierisation is only defined for extended systems."
+            )
+        required = {"blocks": blocks, "kgrid": kgrid, "kpoints": kpoints, "codes": codes}
+        missing = sorted(name for name, value in required.items() if value is None)
+        if missing:
+            raise ValueError(
+                f"init_orbitals={init_orbitals!r} needs the wannierisation inputs "
+                f"{missing} (projection blocks, the Monkhorst-Pack grid, the "
+                "explicit k-mesh, and the pw/wannier90/pw2wannier90/wann2kcp/"
+                "merge_evc codes)."
+            )
+    elif init_orbitals != VariationalOrbitalType.KOHN_SHAM:
         raise NotImplementedError(
-            "Periodic systems are not yet supported: they require supercell "
-            "folding and Wannier variational orbitals."
+            f"init_orbitals={init_orbitals!r} not yet supported. Supported: "
+            f"'kohn-sham' (molecular), 'mlwfs' / 'projwfs' (periodic). "
+            "PZ initialisation requires a pz_innerloop_init step."
+        )
+    elif periodic:
+        raise NotImplementedError(
+            "init_orbitals='kohn-sham' on a periodic structure is not yet "
+            "supported — it needs a pw.x-only wannierize pass plus a "
+            "ks2kcp folding mode. Use init_orbitals='mlwfs' / 'projwfs' "
+            "for periodic systems."
         )
 
 
@@ -1981,7 +2220,13 @@ def _build_dft_parameters(
         "ecutrho": base.ecutrho,
         "nbnd": nbnd,
         "nspin": base.nspin,
-        "do_ee": base.mt_correction,
+        # The electrostatic-embedding machinery is always on; only
+        # ``EE.which_compensation`` switches between 'tcc' (aperiodic,
+        # mt_correction) and 'none' (periodic). EE participates in the
+        # orbital self-interaction evaluation even with compensation 'none' —
+        # gating do_ee on mt_correction skews the trial-KI lambda response
+        # (verified on Si 2x2x2: filled/empty ratios off by 2.1x/5.5x).
+        "do_ee": True,
         "do_orbdep": False,
         "fixed_state": False,
         "do_wf_cmplx": True,
@@ -2027,8 +2272,9 @@ def _build_dft_parameters(
             **{f"ion_radius({i + 1})": 1.0 for i in range(base.ntyp)},
         },
     }
-    if base.mt_correction:
-        params["EE"] = {"which_compensation": "tcc"}
+    # 'tcc' countercharge for aperiodic systems, explicit 'none' for periodic
+    # ones (the &EE namelist is always written because ``do_ee`` is always on).
+    params["EE"] = {"which_compensation": "tcc" if base.mt_correction else "none"}
     return params
 
 
@@ -2315,10 +2561,11 @@ def _build_print_parameters(
 # 1. **pKIPZ.** Perturbative post-processing pass on top of a KI trial;
 #    ``_validate_scope`` rejects it.
 #
-# 2. **Makov-Payne correction** to Delta E (``mp_correction``,
-#    ``eps_inf``): a per-orbital correction term for charged-periodic
-#    systems. Omitted — the structure scope guard already rejects
-#    periodic systems.
+# 2. **eps_inf='auto'** for the Makov-Payne correction. The correction
+#    itself is implemented (``compute_alpha_from_dscf``; on by default
+#    for the periodic Wannier-init route) but ``eps_inf`` must be given
+#    numerically — the automatic ph.x-based calculation of the dielectric
+#    constant is not yet wired into this route.
 #
 # 3. **Mixing across iterations** (``alpha_mixing``).
 #
@@ -2338,6 +2585,82 @@ def _build_print_parameters(
 # ----------------------------------------------------------------------
 
 
+def _fft_dimension_allowed(nr: int) -> bool:
+    """QE's FFT-dimension rule: factors of 2/3/5 only (no 7s or 11s)."""
+    if nr < 1:
+        return False
+    remainder = nr
+    powers = {2: 0, 3: 0, 5: 0, 7: 0, 11: 0}
+    for factor in powers:
+        while remainder > 1 and remainder % factor == 0:
+            remainder //= factor
+            powers[factor] += 1
+    return remainder == 1 and powers[7] == 0 and powers[11] == 0
+
+
+def _good_fft(nr: int) -> int:
+    """Bump ``nr`` up to the next FFT-friendly dimension."""
+    while not _fft_dimension_allowed(nr) and nr <= 2049:
+        nr += 1
+    return nr
+
+
+def _autogenerate_nrb(
+    structure: orm.StructureData,
+    pseudos: dict[str, UpfData],
+    parameters: dict[str, Any],
+) -> None:
+    """Fill ``SYSTEM.nr{1,2,3}b`` when any pseudo carries core corrections.
+
+    kcp.x aborts with
+    "nr1b, nr2b, nr3b must be given for ultrasoft and core corrected pp"
+    when a pseudo has non-linear core corrections and the small-box grid is
+    unset (bites e.g. PseudoDojo; SG15 has no NLCC). The conservative
+    guess is the full density-grid dimensions scaled by
+    ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
+    cutoff radius is <= 2.6 Bohr). User-supplied values always win.
+    """
+    from qe_tools import CONSTANTS
+    from upf_to_json import upf_to_json
+
+    system = parameters.setdefault("SYSTEM", {})
+    if all(system.get(key) is not None for key in ("nr1b", "nr2b", "nr3b")):
+        return
+
+    def _core_corrected(pseudo: UpfData) -> bool:
+        try:
+            header = upf_to_json(pseudo.get_content(), pseudo.filename)["pseudo_potential"][
+                "header"
+            ]
+        except Exception:
+            # Unparseable UPF (e.g. minimal test fixtures): treat as no-NLCC.
+            # Not a silent-corruption risk — a real core-corrected pseudo that
+            # slips through makes kcp.x abort loudly with its own
+            # "nr1b, nr2b, nr3b must be given" error.
+            return False
+        return bool(header["core_correction"])
+
+    if not any(_core_corrected(pseudo) for pseudo in pseudos.values()):
+        return
+
+    angstrom_to_bohr = 1.0 / CONSTANTS.bohr_to_ang
+    cell = np.array(structure.cell, dtype=float)
+    alat_bohr = float(np.linalg.norm(cell[0])) * angstrom_to_bohr
+    # Reduced lattice vectors ("at" in QE), dimensionless in units of alat.
+    at = cell * angstrom_to_bohr / alat_bohr
+
+    ecutrho = float(system.get("ecutrho") or 4.0 * system["ecutwfc"])
+    # Density-grid dimensions, as QE derives them:
+    # nr_i = 2 * int( sqrt(ecutrho) / (2 pi / alat) * |at_i| ) + 1
+    nr = [
+        _good_fft(2 * int(np.sqrt(ecutrho) / (2.0 * np.pi / alat_bohr) * np.linalg.norm(vec)) + 1)
+        for vec in at
+    ]
+    rc_safe = 3.0
+    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr, strict=True):
+        system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
+
+
 def _build_kcp_inputs(
     code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -2349,6 +2672,7 @@ def _build_kcp_inputs(
     parent_folder: orm.RemoteData | None = None,
     parent_folder_evcfixed: orm.RemoteData | None = None,
     variational_orbital_overlays: dict[str, str] | None = None,
+    read_wavefunctions: dict[str, Any] | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpStep(**inputs)``.
@@ -2375,7 +2699,14 @@ def _build_kcp_inputs(
     ``out/<prefix>_<NDW>.save/K00001/evcfixed_empty.dat`` from that
     folder onto its read save (see
     ``KcpCalculation._build_remote_symlink_list``).
+
+    ``read_wavefunctions`` maps destination stems to the
+    ``SinglefileData`` (or socket) holding the wavefunction; the CalcJob
+    copies each into its read ``K00001`` as ``<stem>.dat`` (the MLWF-init
+    staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
+    merge outputs).
     """
+    _autogenerate_nrb(structure, pseudos, parameters)
     inputs: dict[str, Any] = {
         "code": code,
         "structure": structure,
@@ -2390,6 +2721,8 @@ def _build_kcp_inputs(
         inputs["parent_folder_evcfixed"] = parent_folder_evcfixed
     if variational_orbital_overlays:
         inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
+    if read_wavefunctions:
+        inputs["read_wavefunctions"] = read_wavefunctions
     metadata: dict[str, Any] = {}
     if options:
         metadata["options"] = options

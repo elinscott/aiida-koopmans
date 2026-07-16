@@ -199,6 +199,7 @@ def WannierizeBlocks(
     structure: orm.StructureData,
     blocks: list[ProjectionBlock],
     kpoints: orm.KpointsData,
+    mp_grid: list[int] | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -221,8 +222,14 @@ def WannierizeBlocks(
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks; occupied and empty manifolds
             appear as separate blocks. Each is Wannierised independently.
-        kpoints: the explicit k-mesh shared by the nscf and every block's
-            wannier90 / pw2wannier90.
+        kpoints: the explicit k-point list shared by the nscf and every
+            block's wannier90 / pw2wannier90 (one node, so the k-ordering
+            cannot drift between the steps).
+        mp_grid: the Monkhorst-Pack dimensions ``kpoints`` was generated
+            from. Carried separately because an explicit-list
+            ``KpointsData`` cannot represent its parent mesh, and
+            wannier90 requires ``mp_grid`` in the ``.win`` (it cannot
+            re-derive it from the list).
         pseudo_family: pseudopotential family label.
         protocol: protocol name passed to both builders.
         overrides: optional overrides. ``overrides["scf"]`` / ``["nscf"]``
@@ -249,6 +256,10 @@ def WannierizeBlocks(
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=scf_nscf_overrides or None,
+        # The blocks' wannier90 / pw2wannier90 read eigenstates on the
+        # explicit ``kpoints`` mesh, so the nscf must run on exactly that
+        # grid (not the protocol's kpoints_distance-derived one).
+        nscf_kpoints=kpoints,
         metadata={"call_link_label": "scf_nscf"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
@@ -268,6 +279,7 @@ def WannierizeBlocks(
             projection_type=block["projection_type"],
             nscf_remote_folder=nscf_remote_folder,
             kpoints=kpoints,
+            mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             protocol=protocol,
             overrides=wannier_overrides,
@@ -276,6 +288,13 @@ def WannierizeBlocks(
         )
 
     return WannierizeBlocksOutputs(
-        nscf=PwOutputs(remote_folder=nscf_remote_folder),
+        nscf=PwOutputs(
+            remote_folder=nscf_remote_folder,
+            # Exposed for the fold-to-supercell consistency check: the
+            # PW-vs-CP band-gap comparison needs the nscf eigenvalues and
+            # scalar results.
+            output_parameters=scf_nscf["nscf_output_parameters"],
+            output_band=scf_nscf["nscf_output_band"],
+        ),
         blocks=block_outputs,
     )

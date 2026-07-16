@@ -16,16 +16,17 @@ keep their trailing slash.
 Two modes are supported:
 
 * ``wannier2kcp`` (the mode the FoldToSupercell workgraph needs) -- folds
-  Wannier orbitals into the supercell. The caller must stage four inputs into
-  the work directory (see ``KcpCalculation`` for the symlink idiom): the
-  ``<seedname>_hr.dat`` Hamiltonian, the nscf ``outdir`` (recursive symlink),
-  ``<seedname>.nnkp``, and ``<seedname>.chk``. The run writes ``evcw.dat`` for
-  a spin-polarized calculation or ``evcw1.dat`` + ``evcw2.dat`` for a
-  non-spin-polarized one.
+  Wannier orbitals into the supercell. Four inputs are staged into the work
+  directory: the nscf scratch (``parent_folder``, symlinked as ``TMP`` --
+  bulk scratch, so a ``RemoteData`` like every QE post-processing parent)
+  and the three enumerated Wannier files ``nnkp_file`` / ``chk_file`` /
+  ``hr_file`` (``SinglefileData``, copied in as ``<seedname>.nnkp`` /
+  ``<seedname>.chk`` / ``<seedname>_hr.dat``). The run writes ``evcw.dat``
+  for a spin-polarized calculation or ``evcw1.dat`` + ``evcw2.dat`` for a
+  non-spin-polarized one; the parser re-emits each as a ``SinglefileData``
+  output (``evcw`` / ``evcw1`` / ``evcw2``) so the folded wavefunctions are
+  first-class nodes in the provenance graph.
 * ``ks2kcp`` -- converts plain Kohn-Sham orbitals; no Wannier inputs required.
-
-Downstream steps pick up the ``evcw*`` files from ``remote_folder`` (they are
-also retrieved into the ``retrieved`` folder for provenance / a merge step).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from aiida.common import CalcInfo
-from aiida.orm import Dict, RemoteData
+from aiida.orm import Dict, RemoteData, SinglefileData
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
 
@@ -46,8 +47,16 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     _INPUT_FILE = "aiida.wki"
     _OUTPUT_FILE = "aiida.wko"
     _DEFAULT_OUTDIR = "TMP"
-    _DEFAULT_PREFIX = "kc"
+    # ``prefix`` must match the prefix of the upstream pw.x nscf whose scratch
+    # is symlinked in as ``TMP`` — aiida-quantumespresso's ``PwCalculation``
+    # hard-codes ``_PREFIX = "aiida"``, so wann2kcp.x must look for
+    # ``TMP/aiida.save``.
+    _DEFAULT_PREFIX = "aiida"
     _DEFAULT_SEEDNAME = "wannier90"
+    # The evcw wavefunctions a ``wannier2kcp`` run can produce; retrieved and
+    # re-emitted by the parser as ``SinglefileData`` outputs of the same name
+    # (minus the extension).
+    _EVCW_FILES: ClassVar[tuple[str, ...]] = ("evcw.dat", "evcw1.dat", "evcw2.dat")
 
     # The wann2kcp input is a single Fortran namelist spelled ``&inputpp``
     # (lowercase in the file, parsed as ``data['inputpp']``).
@@ -84,9 +93,32 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     }
 
     @classmethod
+    def _validate_serial_resources(cls, value, port_namespace):
+        """Reject parallel resources at submission time.
+
+        wann2kcp.x's buffer-scratch handling races under multiple MPI ranks
+        (every rank closes the same file with ``status='delete'``), so a
+        single rank is a hard requirement, not a default.
+        """
+        try:
+            resources = value["metadata"]["options"]["resources"]
+        except (KeyError, TypeError):
+            return None
+        nprocs = resources.get("tot_num_mpiprocs") or (
+            resources.get("num_machines", 1) * resources.get("num_mpiprocs_per_machine", 1)
+        )
+        if nprocs > 1:
+            return (
+                "wann2kcp.x must run on a single MPI rank "
+                "(parallel ranks race on its buffer scratch)."
+            )
+        return None
+
+    @classmethod
     def define(cls, spec):
         """Declare the inputs, outputs, and exit codes for the CalcJob."""
         super().define(spec)
+        spec.inputs.validator = cls._validate_serial_resources
 
         spec.input(
             "parameters",
@@ -114,6 +146,36 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             ),
         )
         spec.input(
+            "nnkp_file",
+            valid_type=SinglefileData,
+            required=False,
+            help=(
+                "The ``.nnkp`` file emitted by the wannier90 post-processing "
+                "(``-pp``) run. Copied into the work directory as "
+                "``<seedname>.nnkp``. Required for ``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
+            "chk_file",
+            valid_type=SinglefileData,
+            required=False,
+            help=(
+                "The wannier90 checkpoint (holds the U matrices). Copied into "
+                "the work directory as ``<seedname>.chk``. Required for "
+                "``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
+            "hr_file",
+            valid_type=SinglefileData,
+            required=False,
+            help=(
+                "The wannier90 real-space Hamiltonian (``write_hr``). Copied "
+                "into the work directory as ``<seedname>_hr.dat``. Required "
+                "for ``wan_mode='wannier2kcp'``."
+            ),
+        )
+        spec.input(
             "settings",
             valid_type=Dict,
             required=False,
@@ -124,13 +186,38 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         spec.inputs["metadata"]["options"]["input_filename"].default = cls._INPUT_FILE
         spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
         spec.inputs["metadata"]["options"]["withmpi"].default = True
-        spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
+        # Pin to a single rank: wann2kcp.x is an I/O-bound conversion tool
+        # whose scratch-file handling races under multiple MPI ranks (every
+        # rank ``close(status='delete')``s the same file; with the GNU
+        # runtime the losers abort with "File cannot be deleted").
+        spec.inputs["metadata"]["options"]["resources"].default = {
+            "num_machines": 1,
+            "num_mpiprocs_per_machine": 1,
+        }
 
         spec.output(
             "output_parameters",
             valid_type=Dict,
             required=True,
             help="Scalar results: ``job_done`` flag and ``walltime``.",
+        )
+        # The folded wavefunctions as first-class nodes. A spin-resolved run
+        # (``spin_component`` set) writes ``evcw``; a spinless run writes
+        # ``evcw1`` + ``evcw2``. All optional at the spec level; the parser
+        # errors when a completed ``wannier2kcp`` run produced none.
+        for evcw_name in cls._EVCW_FILES:
+            spec.output(
+                evcw_name.removesuffix(".dat"),
+                valid_type=SinglefileData,
+                required=False,
+                help=f"The folded ``{evcw_name}`` wavefunction (``wannier2kcp`` mode).",
+            )
+
+        spec.exit_code(
+            320,
+            "ERROR_OUTPUT_EVC_MISSING",
+            message="A completed wannier2kcp run retrieved no ``evcw*.dat`` wavefunction file.",
+            invalidates_cache=True,
         )
 
     def prepare_for_submission(self, folder):
@@ -143,9 +230,17 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
         with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
             handle.write(content)
 
+        # ``TMP`` must be a real per-calculation directory (the ``.save`` is
+        # symlinked inside it, see ``_build_remote_symlink_list``): wann2kcp.x
+        # writes and deletes buffer scratch (``<prefix>.wfcx*``) in its outdir,
+        # so a directory-level symlink would put that scratch in the *shared*
+        # nscf folder where parallel per-block runs clobber each other.
+        folder.get_subfolder(self._DEFAULT_OUTDIR, create=True)
+
         calc_info = CalcInfo()
         calc_info.codes_info = [self._make_code_info()]
         calc_info.remote_symlink_list = self._build_remote_symlink_list()
+        calc_info.local_copy_list = self._build_local_copy_list(parameters)
         calc_info.retrieve_list = self._build_retrieve_list(parameters)
 
         return calc_info
@@ -167,20 +262,47 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             parameters.setdefault(key, default)
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
-        """Recursively symlink the parent nscf ``outdir`` into ``./TMP/``.
+        """Symlink the parent nscf ``.save`` into ``./TMP/<prefix>.save``.
 
-        wann2kcp.x reads the Bloch wavefunctions from its ``outdir``. A
-        directory-level symlink is sufficient here -- unlike the kcp.x case
-        there are no per-file overlays -- so this stays a single entry. The
-        ``<seedname>.nnkp``, ``<seedname>.chk`` and ``*_hr.dat`` inputs are
-        staged by the consuming workgraph, not by this CalcJob, because their
-        provenance lives on different upstream nodes.
+        wann2kcp.x reads the Bloch wavefunctions from ``<outdir>/<prefix>.save``;
+        the parent is an aiida-quantumespresso pw.x run whose scratch lives
+        under ``<workdir>/out/`` (``PwCalculation._OUTPUT_SUBFOLDER``).
+
+        Only the ``.save`` tree is symlinked — NOT the whole ``out`` directory:
+        ``TMP`` itself is a real per-calculation directory (created in
+        ``prepare_for_submission``) because wann2kcp.x writes and deletes buffer
+        scratch (``<prefix>.wfcx*``, QE ``buffers.f90``) in its outdir. With a
+        directory-level symlink that scratch would land in the shared nscf
+        folder, where the parallel per-block wann2kcp runs delete each other's
+        files ("Fortran runtime error: File cannot be deleted").
         """
         if "parent_folder" not in self.inputs:
             return []
         parent = self.inputs.parent_folder
-        source = parent.get_remote_path()
-        return [(parent.computer.uuid, source, self._DEFAULT_OUTDIR)]
+        prefix = self._DEFAULTS["prefix"]
+        source = f"{parent.get_remote_path()}/out/{prefix}.save"
+        return [(parent.computer.uuid, source, f"{self._DEFAULT_OUTDIR}/{prefix}.save")]
+
+    def _build_local_copy_list(self, parameters: dict) -> list[tuple[str, str, str]]:
+        """Copy the Wannier inputs (``.nnkp``, ``.chk``, ``_hr.dat``) into place.
+
+        The three files are separate enumerated ``SinglefileData`` inputs
+        (their provenance lives on different upstream nodes: the ``-pp``
+        run's ``nnkp_file`` output vs the wannier90 checkpoint / Hamiltonian).
+        Destination names follow the ``seedname`` the namelist declares.
+        """
+        seedname = parameters.get("seedname", self._DEFAULT_SEEDNAME)
+        destinations = {
+            "nnkp_file": f"{seedname}.nnkp",
+            "chk_file": f"{seedname}.chk",
+            "hr_file": f"{seedname}_hr.dat",
+        }
+        copy_list: list[tuple[str, str, str]] = []
+        for input_name, destination in destinations.items():
+            if input_name in self.inputs:
+                node = self.inputs[input_name]
+                copy_list.append((node.uuid, node.filename, destination))
+        return copy_list
 
     def _build_retrieve_list(self, parameters: dict) -> list[str]:
         """Retrieve stdout plus the ``evcw`` wavefunction files for provenance.

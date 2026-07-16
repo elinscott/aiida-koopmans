@@ -56,15 +56,48 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
-    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs", "pz"])
-    def test_non_kohn_sham_init_raises(self, ozone_structure, init_orbitals):
+    def test_pz_init_raises(self, ozone_structure):
         with pytest.raises(NotImplementedError, match="init_orbitals="):
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals="pz",
+                fix_spin_contamination=False,
+                structure=ozone_structure,
+            )
+
+    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
+    def test_wannier_init_on_molecule_raises(self, ozone_structure, init_orbitals):
+        with pytest.raises(ValueError, match="periodic structure"):
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=init_orbitals,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
             )
+
+    @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
+    def test_wannier_init_missing_inputs_raises(self, periodic_ozone_structure, init_orbitals):
+        with pytest.raises(ValueError, match=r"\['blocks', 'kgrid'\]"):
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals=init_orbitals,
+                fix_spin_contamination=False,
+                structure=periodic_ozone_structure,
+                kpoints=object(),
+                codes=object(),
+            )
+
+    def test_wannier_init_with_all_inputs_passes(self, periodic_ozone_structure):
+        _validate_scope(
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            fix_spin_contamination=False,
+            structure=periodic_ozone_structure,
+            blocks=[object()],
+            kgrid=[2, 2, 2],
+            kpoints=object(),
+            codes=object(),
+        )
 
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
         # ``alpha_numsteps`` is range-checked by the koopmans2 Pydantic
@@ -87,8 +120,8 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
-    def test_periodic_structure_raises(self, periodic_ozone_structure):
-        with pytest.raises(NotImplementedError, match="Periodic systems"):
+    def test_periodic_kohn_sham_raises(self, periodic_ozone_structure):
+        with pytest.raises(NotImplementedError, match="periodic structure"):
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=VariationalOrbitalType.KOHN_SHAM,
@@ -118,9 +151,10 @@ _OZONE_BASE = KcpBaseInputs(
 class TestBuildDftParameters:
     def test_has_expected_namelists(self):
         params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
-        assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS"}
+        assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS", "EE"}
         assert "NKSIC" not in params
-        assert "EE" not in params
+        # EE machinery always on; periodic systems compensate with 'none'.
+        assert params["EE"]["which_compensation"] == "none"
 
     def test_dft_control_is_from_scratch(self):
         # ndr/ndw are owned by ``KcpCalculation._inject_owned_keys`` (universal
@@ -194,12 +228,12 @@ class TestBuildKiParameters:
         assert params["ELECTRONS"]["do_outerloop"] is False
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
 
-    def test_periodic_omits_ee_namelist(self):
-        # Periodic systems (mt_correction=False) emit no &EE block; do_ee=False
-        # in &SYSTEM keeps kcp.x from trying to read it.
+    def test_periodic_uses_no_compensation(self):
+        # The EE machinery is always on; periodic systems select
+        # which_compensation='none' rather than dropping &EE.
         params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
-        assert "EE" not in params
-        assert params["SYSTEM"]["do_ee"] is False
+        assert params["EE"]["which_compensation"] == "none"
+        assert params["SYSTEM"]["do_ee"] is True
 
     def test_aperiodic_emits_tcc(self):
         base = replace(_OZONE_BASE, mt_correction=True)

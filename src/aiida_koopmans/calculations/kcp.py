@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from typing import ClassVar
 
 from aiida.common import CalcInfo
-from aiida.orm import ArrayData, Dict, RemoteData, StructureData
+from aiida.orm import ArrayData, Dict, RemoteData, SinglefileData, StructureData
 from aiida.plugins import DataFactory
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
@@ -140,6 +140,24 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 "to a different canonical KI basis."
             ),
         )
+        spec.input_namespace(
+            "read_wavefunctions",
+            valid_type=SinglefileData,
+            dynamic=True,
+            required=False,
+            help=(
+                "Externally-produced wavefunction files to stage into this "
+                "calc's read save (``out/<prefix>_<NDR>.save/K00001/``). Keyed "
+                "by destination stem (``.dat`` filenames *without* the "
+                "extension — namespace keys cannot contain ``.``); each value "
+                "is copied in as ``<stem>.dat``. Used by the periodic MLWF "
+                "initialisation to stage the folded ``evc_occupied{n}.dat`` / "
+                "``evc0_empty{n}.dat`` merge_evc.x outputs into the "
+                "``dft_init`` (and first trial KI) read directory. Matching "
+                "destinations are skipped during the primary parent walk so "
+                "these files are the only entries at those paths."
+            ),
+        )
         spec.input(
             "settings",
             valid_type=Dict,
@@ -191,11 +209,13 @@ class KcpCalculation(KoopmansStdoutCalculation):
             320,
             "ERROR_OUTPUT_HAM_MISSING",
             message="Expected hamiltonian XML file(s) missing from retrieved folder.",
+            invalidates_cache=True,
         )
         spec.exit_code(
             400,
             "ERROR_JOB_NOT_CONVERGED",
             message="kcp.x finished but the outer loop did not converge.",
+            invalidates_cache=True,
         )
 
     def prepare_for_submission(self, folder):
@@ -269,7 +289,7 @@ class KcpCalculation(KoopmansStdoutCalculation):
     def _build_local_copy_list(
         self, structure: StructureData, pseudos: dict
     ) -> list[tuple[str, str, str]]:
-        """Assemble ``local_copy_list`` for the pseudopotential files."""
+        """Assemble ``local_copy_list``: pseudopotentials + staged read wavefunctions."""
         local_copy_list: list[tuple[str, str, str]] = []
         seen_filenames: dict[str, str] = {}
         for kind in structure.kinds:
@@ -285,7 +305,21 @@ class KcpCalculation(KoopmansStdoutCalculation):
                     f"Two different UpfData nodes were provided that share the filename "
                     f"``{upf.filename}``. Rename one before resubmission."
                 )
+
+        # ``read_wavefunctions`` entries land in the read K00001 under their
+        # stem names; the primary parent walk skips those destinations (see
+        # ``_build_remote_symlink_list``) so these copies are authoritative.
+        read_k = f"{self._OUTPUT_SUBFOLDER}/{self._PREFIX}_{self._NDR}.save/K00001"
+        for stem, wavefunction in sorted(self._read_wavefunction_inputs().items()):
+            local_copy_list.append(
+                (wavefunction.uuid, wavefunction.filename, f"{read_k}/{stem}.dat")
+            )
+
         return local_copy_list
+
+    def _read_wavefunction_inputs(self) -> dict[str, SinglefileData]:
+        """Return the ``read_wavefunctions`` namespace as a plain dict (may be empty)."""
+        return dict(self.inputs.get("read_wavefunctions", None) or {})
 
     def _write_alpha_files(self, folder, *, do_orbdep: bool, odd_nkscalfact: bool) -> None:
         """Emit ``file_alpharef[_empty].txt`` when orbital-dependent screening is requested."""
@@ -386,6 +420,13 @@ class KcpCalculation(KoopmansStdoutCalculation):
             else {}
         )
         overlay_skip |= {f"{self._K_SUBDIR}/{dest}.dat" for dest in overlays_map.values()}
+        # ``read_wavefunctions`` entries land in the read K00001 as local
+        # copies (see ``_build_local_copy_list``) — exclude their
+        # destinations from the primary parent walk so the staged files are
+        # authoritative.
+        overlay_skip |= {
+            f"{self._K_SUBDIR}/{stem}.dat" for stem in self._read_wavefunction_inputs()
+        }
 
         if "parent_folder" in self.inputs:
             parent = self.inputs.parent_folder

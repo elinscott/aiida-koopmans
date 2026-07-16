@@ -348,3 +348,86 @@ def test_full_ozone_input_rendering_has_expected_sections(ozone_structure, ozone
     assert "7.0869000000" in content
     assert "8.1738000000" in content
     assert "6.0000000000" in content
+
+
+def test_read_wavefunctions_staging_and_parent_walk_skip(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    fixture_localhost,
+    aiida_local_code_factory,
+    ozone_structure,
+    ozone_real_pseudos,
+    tmp_path_factory,
+):
+    """Stage external evc files into the read save via ``read_wavefunctions``.
+
+    The MLWF-init ``dft_init`` staging: the folded ``evc_occupied{n}.dat`` /
+    ``evc0_empty{n}.dat`` wavefunctions (``SinglefileData``, the merge_evc.x
+    ``merged_file`` outputs) are copied into the read ``K00001`` under their
+    stem names, and any same-named entry in the primary parent's save is
+    skipped during the walk so the staged file is authoritative.
+    """
+    import io
+
+    from aiida import orm
+    from aiida.common import LinkType
+
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_dft_parameters
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
+
+    # The dft_dummy parent carries a stale evc_occupied1.dat that must lose
+    # to the staged merge output.
+    creator = orm.CalcJobNode(computer=fixture_localhost, process_type="")
+    creator.set_option("resources", {"num_machines": 1, "num_mpiprocs_per_machine": 1})
+    creator.store()
+    parent_root = tmp_path_factory.mktemp("kcp-dummy-parent")
+    for name in (
+        "out/aiida_60.save/data-file-schema.xml",
+        "out/aiida_60.save/K00001/evc1.dat",
+        "out/aiida_60.save/K00001/evc_occupied1.dat",
+    ):
+        path = parent_root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    parent = orm.RemoteData(computer=fixture_localhost, remote_path=parent_root.as_posix())
+    parent.base.links.add_incoming(creator, link_type=LinkType.CREATE, link_label="remote_folder")
+    parent.store()
+
+    merge_occ = orm.SinglefileData(io.BytesIO(b"occ"), filename="evc_occupied1.dat")
+    merge_emp = orm.SinglefileData(io.BytesIO(b"emp"), filename="evc0_empty1.dat")
+
+    base = KcpBaseInputs(
+        ecutwfc=65.0,
+        ecutrho=260.0,
+        nspin=2,
+        nelec=18,
+        ntyp=len(ozone_structure.kinds),
+        mt_correction=not any(ozone_structure.pbc),
+        nelup=9,
+        neldw=9,
+        tot_magnetization=None,
+    )
+    inputs = {
+        "code": code,
+        "structure": ozone_structure,
+        "parameters": orm.Dict(dict=_build_dft_parameters(base, nbnd=10, restart_mode="restart")),
+        "pseudos": ozone_real_pseudos,
+        "parent_folder": parent,
+        "read_wavefunctions": {"evc_occupied1": merge_occ, "evc0_empty1": merge_emp},
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.kcp", inputs)
+    read_k = "out/aiida_50.save/K00001"
+
+    # The staged wavefunctions are local copies into the read K00001.
+    copies = {dest: (uuid, src) for uuid, src, dest in calc_info.local_copy_list}
+    assert copies[f"{read_k}/evc_occupied1.dat"] == (merge_occ.uuid, "evc_occupied1.dat")
+    assert copies[f"{read_k}/evc0_empty1.dat"] == (merge_emp.uuid, "evc0_empty1.dat")
+
+    # The parent's same-named entry was skipped; other parent files walked.
+    symlink_dests = [dest for _, _, dest in calc_info.remote_symlink_list]
+    assert f"{read_k}/evc_occupied1.dat" not in symlink_dests
+    assert f"{read_k}/evc1.dat" in symlink_dests

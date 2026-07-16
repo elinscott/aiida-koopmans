@@ -60,7 +60,9 @@ class TestInjectOwnedKeys:
         params: dict = {}
         calc._inject_owned_keys(params)
         assert params["outdir"] == "./TMP/"
-        assert params["prefix"] == "kc"
+        # Matches aiida-quantumespresso's fixed pw.x prefix (the nscf scratch
+        # symlinked in as TMP is always an ``aiida.save`` tree).
+        assert params["prefix"] == "aiida"
         assert params["seedname"] == "wannier90"
         assert params["wan_mode"] == "wannier2kcp"
 
@@ -146,9 +148,12 @@ def test_wannier2kcp_full_render(
     assert isinstance(calc_info, datastructures.CalcInfo)
     assert calc_info.codes_info[0].cmdline_params == ["-in", "aiida.wki"]
 
-    # Parent outdir symlinked into ./TMP/.
-    symlink_dests = [item[2] for item in calc_info.remote_symlink_list]
-    assert symlink_dests == ["TMP"]
+    # Only the parent's ``.save`` is symlinked (into a real per-calc ``TMP``
+    # dir), so wann2kcp's buffer scratch stays private to this calculation
+    # while ``outdir + prefix`` still resolves to ``TMP/aiida.save``.
+    assert [(item[1], item[2]) for item in calc_info.remote_symlink_list] == [
+        (f"{parent_root.as_posix()}/out/aiida.save", "TMP/aiida.save")
+    ]
 
     # evcw files retrieved in wannier2kcp mode.
     retrieved = set(calc_info.retrieve_list)
@@ -159,10 +164,79 @@ def test_wannier2kcp_full_render(
         rendered = handle.read()
     assert rendered.startswith("&INPUTPP\n")
     assert "outdir = './TMP/'" in rendered
-    assert "prefix = 'kc'" in rendered
+    # ``prefix`` must match aiida-quantumespresso's fixed pw.x prefix.
+    assert "prefix = 'aiida'" in rendered
     assert "seedname = 'wannier90'" in rendered
     assert "spin_component = 'up'" in rendered
     assert "wan_mode = 'wannier2kcp'" in rendered
+
+
+def test_wannier2kcp_stages_nnkp_chk_and_hr(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    aiida_local_code_factory,
+):
+    """Stage ``.nnkp`` / ``.chk`` / ``_hr.dat`` via the enumerated file inputs.
+
+    Each ``SinglefileData`` lands under a destination name derived from the
+    namelist ``seedname``, regardless of the node's own filename.
+    """
+    import io
+
+    from aiida import orm
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp", "seedname": "aiida"}),
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp"),
+        "chk_file": orm.SinglefileData(io.BytesIO(b"chk"), filename="aiida.chk"),
+        "hr_file": orm.SinglefileData(io.BytesIO(b"hr"), filename="aiida_hr.dat"),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.wann2kcp", inputs)
+
+    copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
+    assert copies == {
+        ("pp.nnkp", "aiida.nnkp"),
+        ("aiida.chk", "aiida.chk"),
+        ("aiida_hr.dat", "aiida_hr.dat"),
+    }
+
+
+def test_wannier2kcp_staging_follows_default_seedname(
+    aiida_profile,
+    fixture_sandbox,
+    generate_calc_job,
+    aiida_local_code_factory,
+):
+    """Without an explicit seedname the files land under ``wannier90.*``."""
+    import io
+
+    from aiida import orm
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"nnkp"), filename="pp.nnkp"),
+        "chk_file": orm.SinglefileData(io.BytesIO(b"chk"), filename="w90.chk"),
+        "hr_file": orm.SinglefileData(io.BytesIO(b"hr"), filename="w90_hr.dat"),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.wann2kcp", inputs)
+
+    copies = {(src, dest) for _, src, dest in calc_info.local_copy_list}
+    assert copies == {
+        ("pp.nnkp", "wannier90.nnkp"),
+        ("w90.chk", "wannier90.chk"),
+        ("w90_hr.dat", "wannier90_hr.dat"),
+    }
 
 
 def test_ks2kcp_does_not_retrieve_evcw(
@@ -187,3 +261,23 @@ def test_ks2kcp_does_not_retrieve_evcw(
     assert "aiida.wko" in retrieved
     # No parent_folder => no symlinks.
     assert calc_info.remote_symlink_list == []
+
+
+def test_parallel_resources_rejected(fixture_sandbox, aiida_local_code_factory, generate_upf_data):
+    """More than one MPI rank fails input validation (buffer-scratch race)."""
+    import pytest
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.wann2kcp")
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "metadata": {"options": {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 4}}},
+    }
+    cls = CalculationFactory("koopmans.wann2kcp")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="single MPI rank"):
+        instantiate_process(runner, cls, **inputs)

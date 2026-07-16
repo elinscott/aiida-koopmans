@@ -57,7 +57,12 @@ class KoopmansCalculation(CalcJob, abc.ABC):
     def define(cls, spec):
         """Declare the exit code shared by every Koopmans QE-fork plugin."""
         super().define(spec)
-        spec.exit_code(301, "ERROR_NO_RETRIEVED_FOLDER", message="The retrieved folder is missing.")
+        spec.exit_code(
+            301,
+            "ERROR_NO_RETRIEVED_FOLDER",
+            message="The retrieved folder is missing.",
+            invalidates_cache=True,
+        )
 
     def _make_code_info(self, cmdline_params: list[str] | None = None) -> CodeInfo:
         """Build the single-code ``CodeInfo`` for this calc.
@@ -108,16 +113,19 @@ class KoopmansStdoutCalculation(KoopmansCalculation):
             302,
             "ERROR_OUTPUT_STDOUT_MISSING",
             message=f"The {cls._TOOL_NAME} stdout file was not retrieved.",
+            invalidates_cache=True,
         )
         spec.exit_code(
             303,
             "ERROR_OUTPUT_STDOUT_READ",
             message=f"The {cls._TOOL_NAME} stdout could not be read.",
+            invalidates_cache=True,
         )
         spec.exit_code(
             310,
             "ERROR_OUTPUT_STDOUT_INCOMPLETE",
             message=f"The {cls._TOOL_NAME} stdout ends before ``JOB DONE``.",
+            invalidates_cache=True,
         )
 
     @staticmethod

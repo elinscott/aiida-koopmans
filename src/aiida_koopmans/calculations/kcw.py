@@ -351,6 +351,7 @@ class KcwScreenCalculation(KcwCalculation):
             320,
             "ERROR_OUTPUT_ALPHAS_MISSING",
             message="No screening parameters found in the kcw.x screen output.",
+            invalidates_cache=True,
         )
 
 
@@ -405,6 +406,7 @@ class KcwHamCalculation(KcwCalculation):
             320,
             "ERROR_OUTPUT_BANDS_MISSING",
             message="``do_bands`` was requested but no interpolated eigenvalues were found.",
+            invalidates_cache=True,
         )
 
     def _render_extra_cards(self, parameters: dict) -> str:

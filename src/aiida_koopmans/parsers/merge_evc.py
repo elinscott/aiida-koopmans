@@ -1,10 +1,11 @@
 """Parser for Quantum ESPRESSO's ``merge_evc.x`` output.
 
 ``merge_evc.x`` produces essentially no structured stdout -- its sole product
-is the merged ``evc`` file. The parser therefore just confirms that the
-expected output file landed in the retrieved folder and emits a minimal
-``output_parameters`` Dict with a ``merged`` flag, mirroring the "did it
-finish" style of the kcp / wann2kcp parsers.
+is the merged ``evc`` file. The parser confirms that file landed in the
+retrieved folder, re-emits it as the ``merged_file`` ``SinglefileData``
+output (making the merged wavefunction a first-class node for the downstream
+kcp.x staging), and records a minimal ``output_parameters`` Dict with a
+``merged`` flag.
 """
 
 from __future__ import annotations
@@ -38,5 +39,8 @@ class MergeEvcParser(Parser):
 
         if not merged:
             return self.exit_codes.ERROR_OUTPUT_FILE_MISSING
+
+        with retrieved.base.repository.open(dest_filename, "rb") as handle:
+            self.out("merged_file", orm.SinglefileData(handle, filename=dest_filename))
 
         return None
