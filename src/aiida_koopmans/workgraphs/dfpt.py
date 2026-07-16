@@ -7,13 +7,19 @@ The three steps are backed by the CalcJobs in
 Two graphs are exposed:
 
 * :func:`RunDFPT` -- the kcw.x chain proper. It *consumes*
-  wannierization outputs (the shared nscf scratch plus the per-manifold
-  wannier90 ``retrieved`` folders) and runs wann2kcw → screen → ham. When
-  ``alpha_guess`` is provided the screen step is skipped and the guess is
-  fed straight to ham.
-* :func:`SinglepointDFPTWorkflow` -- the end-to-end workflow: one shared scf + nscf,
-  one :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock`
-  per manifold (occupied / empty), then :func:`RunDFPT`.
+  wannierization outputs (the shared nscf scratch plus the per-block
+  wannier90 ``retrieved`` folders, merged per manifold) and runs
+  wann2kcw → screen → ham. When ``alpha_guess`` is provided the screen
+  step is skipped and the guess is fed straight to ham.
+* :func:`SinglepointDFPTWorkflow` -- the end-to-end workflow: one shared
+  scf + nscf, one
+  :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock` per
+  projection block, then :func:`RunDFPT`.
+
+Multi-block manifolds are supported: each projection block is Wannierised
+independently and the per-block products are merged per manifold
+(block-diagonal u / hr, concatenated centres, identity-extended u_dis --
+see :mod:`aiida_koopmans.wannier_merge`) before kcw.x consumes them.
 
 Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 ``aiida_quantumespresso`` ``SpinType``):
@@ -34,10 +40,6 @@ Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 
 Current limitations:
 
-* One occupied block + at most one empty block per spin channel. Merging
-  multiple occupied sub-blocks (u / hr / centres merge steps) before
-  kcw.x is not yet implemented, so multi-block inputs must be rejected
-  upstream.
 * No per-orbital screening fan-out (kcw.x ``i_orb`` grouping): one screen
   calculation solves all orbitals.
 * No coarse-grid pre-screening (``dfpt_coarse_grid``) and no
@@ -68,6 +70,13 @@ from aiida_koopmans.types import (
     ExplicitProjectionBlock,
     ProjectionBlock,
     SpinChannel,
+)
+from aiida_koopmans.wannier_merge import (
+    extend_wannier_u_dis_file_content,
+    merge_wannier_centres_file_contents,
+    merge_wannier_hr_file_contents,
+    merge_wannier_u_file_contents,
+    parse_wannier_u_file_shape,
 )
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
@@ -113,6 +122,50 @@ def _split_manifolds(
     return occupied, empty
 
 
+def _manifold_projection_blocks(
+    manifold: list[tuple[Any, int]],
+    name: str,
+    label_suffix: str,
+    spin_channel: SpinChannel,
+    first_band: int,
+    nbnd: int,
+    extra_bands: int,
+) -> list[ExplicitProjectionBlock]:
+    """Materialise one manifold's per-block :class:`ExplicitProjectionBlock` list.
+
+    Blocks cover consecutive band windows starting at ``first_band``. Only
+    the *last* block absorbs the manifold's ``extra_bands`` disentanglement
+    bands (``num_bands > num_wann``), the band layout the u_dis merge in
+    :func:`prepare_kcw_wannier_files` relies on. A single-block manifold
+    keeps the bare ``occ`` / ``emp`` label; multi-block manifolds are
+    numbered (``occ_1``, ``occ_up_1``, ...).
+    """
+    from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+    blocks: list[ExplicitProjectionBlock] = []
+    cursor = first_band - 1
+    for i, (projections, num_wann) in enumerate(manifold):
+        is_last = i == len(manifold) - 1
+        num_bands = num_wann + (extra_bands if is_last else 0)
+        start = cursor + 1
+        end = start + num_bands - 1
+        label = f"{name}{label_suffix}" if len(manifold) == 1 else f"{name}{label_suffix}_{i + 1}"
+        blocks.append(
+            ExplicitProjectionBlock(
+                label=label,
+                spin=spin_channel,
+                num_wann=num_wann,
+                num_bands=num_bands,
+                include_bands=list(range(start, end + 1)),
+                exclude_bands=band_range_complement(start, end, nbnd),
+                projection_type=WannierProjectionType.ANALYTIC,
+                projections=[projection_win_string(p) for p in projections],
+            )
+        )
+        cursor += num_wann
+    return blocks
+
+
 def derive_dfpt_manifolds(
     structure: orm.StructureData,
     projection_blocks: list,
@@ -120,18 +173,20 @@ def derive_dfpt_manifolds(
     nbnd: int | None,
     spin_channel: SpinChannel = SpinChannel.NONE,
     nocc: int | None = None,
-) -> tuple[ExplicitProjectionBlock, ExplicitProjectionBlock | None, int]:
+) -> tuple[list[ExplicitProjectionBlock], list[ExplicitProjectionBlock], bool, int]:
     """Turn user projection blocks into the occupied/empty DFPT manifolds.
 
-    Handles the manifold bookkeeping (nocc from the electron count, nemp from
-    the projections, disentanglement when the empty manifold has more bands
-    than Wannier functions) for one spin channel: exactly one occupied block,
-    at most one empty block.
+    Handles the manifold bookkeeping (nocc from the electron count, per-block
+    consecutive band windows, disentanglement bands attached to the last
+    block of the empty manifold) for one spin channel. Any number of blocks
+    per manifold is allowed; a manifold Wannierised as several blocks is
+    merged again before kcw.x by :func:`prepare_kcw_wannier_files`.
 
     Args:
         structure: the periodic structure (for per-site projection counting).
         projection_blocks: list of projection blocks *for this channel*, each
-            a list of ``wannier90_input`` ``Projection``-like objects.
+            a list of ``wannier90_input`` ``Projection``-like objects, in
+            band order.
         nelec: total electron count (from the pseudopotential valences).
         nbnd: number of bands of the nscf, or None to default to nocc.
         spin_channel: which channel these blocks describe. ``NONE`` (default)
@@ -144,12 +199,12 @@ def derive_dfpt_manifolds(
             default. Required for ``UP`` / ``DOWN``.
 
     Returns:
-        ``(occ_block, emp_block, n_orbitals)`` where the
-        blocks are :class:`ExplicitProjectionBlock` (``emp_block`` may be
-        None) and ``n_orbitals = num_wann_occ + num_wann_emp``.
+        ``(occ_blocks, emp_blocks, has_disentangle, n_orbitals)`` where the
+        block lists hold :class:`ExplicitProjectionBlock` entries in band
+        order (``emp_blocks`` may be empty), ``has_disentangle`` says whether
+        the empty manifold has more bands than Wannier functions, and
+        ``n_orbitals = num_wann_occ + num_wann_emp``.
     """
-    from aiida_wannier90_workflows.common.types import WannierProjectionType
-
     spinor = spin_channel == SpinChannel.SPINOR
     if nocc is None:
         nocc = default_channel_nocc(spin_channel, nelec)
@@ -171,61 +226,42 @@ def derive_dfpt_manifolds(
     ]
     occupied, empty = _split_manifolds(blocks_with_counts, nocc)
 
-    if len(occupied) != 1 or len(empty) > 1:
-        raise NotImplementedError(
-            f"DFPT screening currently supports exactly one occupied projection block "
-            f"and at most one empty block (got {len(occupied)} occupied / {len(empty)} "
-            "empty). Multi-block manifolds need the u/hr/centres merge machinery, "
-            "which is not yet supported."
-        )
-    num_wann_occ = occupied[0][1]
+    num_wann_occ = sum(num_wann for _, num_wann in occupied)
     if num_wann_occ != nocc:
         raise ValueError(
-            f"The occupied projection block spans {num_wann_occ} Wannier functions but "
+            f"The occupied projection blocks span {num_wann_occ} Wannier functions but "
             f"the system has {nocc} occupied bands."
         )
-
-    def _projection_strings(block: list) -> list[str]:
-        # Wannier90-format projection lines; aiida-wannier90 writes orm.List
-        # entries verbatim into the .win projections block.
-        return [projection_win_string(p) for p in block]
 
     label_suffix = (
         f"_{spin_channel.value}" if spin_channel in (SpinChannel.UP, SpinChannel.DOWN) else ""
     )
-    occ_block = ExplicitProjectionBlock(
-        label=f"occ{label_suffix}",
-        spin=spin_channel,
-        num_wann=num_wann_occ,
-        num_bands=num_wann_occ,
-        include_bands=list(range(1, nocc + 1)),
-        exclude_bands=band_range_complement(1, nocc, nbnd),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=_projection_strings(occupied[0][0]),
+    occ_blocks = _manifold_projection_blocks(
+        occupied, "occ", label_suffix, spin_channel, 1, nbnd, 0
     )
 
-    emp_block = None
-    num_wann_emp = 0
+    emp_blocks: list[ExplicitProjectionBlock] = []
+    has_disentangle = False
+    num_wann_emp = sum(num_wann for _, num_wann in empty)
     if empty:
-        num_wann_emp = empty[0][1]
         num_bands_emp = nbnd - nocc
         if num_bands_emp < num_wann_emp:
             raise ValueError(
                 f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
-                f"projection block requires {num_wann_emp} Wannier functions."
+                f"projection blocks require {num_wann_emp} Wannier functions."
             )
-        emp_block = ExplicitProjectionBlock(
-            label=f"emp{label_suffix}",
-            spin=spin_channel,
-            num_wann=num_wann_emp,
-            num_bands=num_bands_emp,
-            include_bands=list(range(nocc + 1, nbnd + 1)),
-            exclude_bands=band_range_complement(nocc + 1, nbnd, nbnd),
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=_projection_strings(empty[0][0]),
+        has_disentangle = num_bands_emp != num_wann_emp
+        emp_blocks = _manifold_projection_blocks(
+            empty,
+            "emp",
+            label_suffix,
+            spin_channel,
+            nocc + 1,
+            nbnd,
+            num_bands_emp - num_wann_emp,
         )
 
-    return occ_block, emp_block, num_wann_occ + num_wann_emp
+    return occ_blocks, emp_blocks, has_disentangle, num_wann_occ + num_wann_emp
 
 
 def normalize_alpha_guess(
@@ -304,56 +340,141 @@ class KoopmansDFPTOutputs(TypedDict):
 class _ManifoldBlocksRequired(TypedDict):
     """Required part of :class:`ManifoldBlocks` (split so the rest can be optional)."""
 
-    occ: ProjectionBlock
+    occ: list[ProjectionBlock]
 
 
 class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
     """Per-spin-channel manifold description consumed by :func:`SinglepointDFPTWorkflow`.
 
-    * ``occ`` -- the occupied projection block (required).
-    * ``emp`` -- the empty projection block, when the channel has one.
+    * ``occ`` -- the occupied projection blocks in band order (at least one;
+      several when the occupied manifold spans multiple projection blocks).
+    * ``emp`` -- the empty projection blocks, when the channel has any.
     * ``alpha_guess`` -- per-orbital screening-parameter guess for this
       channel; when given the channel's screen step is skipped.
+
+    A manifold Wannierised as several blocks has its per-block Wannier
+    products merged back into one file set by :func:`prepare_kcw_wannier_files`.
     """
 
-    emp: ProjectionBlock | None
+    emp: list[ProjectionBlock]
     alpha_guess: list[float] | None
 
 
+def _read_block_files(folder: orm.FolderData, manifold: str) -> dict[str, bytes]:
+    """Read one block's Wannier90 products out of its ``retrieved`` folder.
+
+    Returns the file contents keyed by suffix (``_u.mat`` etc.).
+    ``_u_dis.mat`` is included when present; the required products raise
+    when absent.
+    """
+    names = set(folder.base.repository.list_object_names())
+    contents: dict[str, bytes] = {}
+    for suffix in _REQUIRED_SUFFIXES + _OPTIONAL_SUFFIXES:
+        src_name = f"{SEEDNAME}{suffix}"
+        if src_name not in names:
+            if suffix in _OPTIONAL_SUFFIXES:
+                continue
+            raise ValueError(
+                f"``{src_name}`` is missing from a {manifold}-manifold wannier90 "
+                "retrieved folder. The wannier90 runs feeding a DFPT chain must set "
+                "``write_u_matrices = True`` and ``write_xyz = True``."
+            )
+        contents[suffix] = folder.base.repository.get_object_content(src_name, mode="rb")
+    return contents
+
+
+def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: str) -> None:
+    """Attach the merged manifold's ``_u_dis.mat`` to ``blocks[-1]``, in place.
+
+    Only the last block of a manifold is disentangled (the band layout
+    :func:`_manifold_projection_blocks` fixes). When the manifold has more
+    bands than Wannier functions its ``u_dis`` is required: a single-block
+    manifold stages the file unchanged, a merged one extends it with an
+    identity for the preceding blocks
+    (:func:`~aiida_koopmans.wannier_merge.extend_wannier_u_dis_file_content`).
+    """
+    if nbnd is None:
+        return
+    num_wann = sum(parse_wannier_u_file_shape(b["_u.mat"].decode())[1] for b in blocks)
+    if nbnd <= num_wann:
+        return
+    if "_u_dis.mat" not in blocks[-1]:
+        raise ValueError(
+            f"The {manifold} manifold is disentangled ({nbnd} bands for {num_wann} "
+            "Wannier functions) but its last block's wannier90 retrieved folder holds "
+            f"no ``{SEEDNAME}_u_dis.mat``."
+        )
+    if len(blocks) > 1:
+        blocks[-1]["_u_dis.mat"] = extend_wannier_u_dis_file_content(
+            blocks[-1]["_u_dis.mat"].decode(), nbnd=nbnd, nwann=num_wann
+        ).encode()
+
+
+def _merged_manifold_files(
+    blocks: list[dict[str, bytes]], nbnd: int | None, manifold: str
+) -> dict[str, bytes]:
+    """Combine per-block product files into one manifold-wide file set.
+
+    A single block passes through byte-identical (plus its optional
+    ``_u_dis.mat``); several blocks are merged block-diagonally (u / hr),
+    by concatenation (centres), and by identity extension of the last
+    block's ``_u_dis.mat`` when ``nbnd`` exceeds the manifold's Wannier
+    count.
+    """
+    _manifold_u_dis(blocks, nbnd, manifold)
+    if len(blocks) == 1:
+        return blocks[0]
+    merged = {
+        "_hr.dat": merge_wannier_hr_file_contents([b["_hr.dat"].decode() for b in blocks]).encode(),
+        "_u.mat": merge_wannier_u_file_contents([b["_u.mat"].decode() for b in blocks]).encode(),
+        "_centres.xyz": merge_wannier_centres_file_contents(
+            [b["_centres.xyz"].decode() for b in blocks]
+        ).encode(),
+    }
+    if "_u_dis.mat" in blocks[-1]:
+        merged["_u_dis.mat"] = blocks[-1]["_u_dis.mat"]
+    return merged
+
+
 @task.calcfunction(outputs=["wannier_files"])
-def prepare_kcw_wannier_files(
-    occ_retrieved: orm.FolderData,
-    emp_retrieved: orm.FolderData | None = None,
-) -> dict:
+def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.FolderData) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
-    Collects the Wannier90 products out of the per-manifold ``retrieved``
-    folders (requires the wannier90 runs to have set ``write_u_matrices``
-    and ``write_xyz``) and renames the empty-manifold files to kcw.x's
-    hard-coded ``<seedname>_emp_*`` convention.
+    Collects the Wannier90 products (``aiida_u.mat`` / ``aiida_hr.dat`` /
+    ``aiida_centres.xyz``, requiring the wannier90 runs to have set
+    ``write_u_matrices`` and ``write_xyz``) out of the per-block
+    ``retrieved`` folders, merges multi-block manifolds into one file set,
+    and renames the empty-manifold files to kcw.x's hard-coded
+    ``<seedname>_emp_*`` convention.
+
+    Args:
+        nbnd_emp: total number of empty bands (``nbnd - nocc``). Required to
+            stage a merged ``aiida_emp_u_dis.mat`` when the empty manifold is
+            disentangled; ignored otherwise.
+        retrieved: the per-block wannier90 ``retrieved`` folders, keyed
+            ``occ_*`` / ``emp_*`` with the *lexicographic* key order matching
+            the band order within each manifold (e.g. ``occ_b00``,
+            ``occ_b01``, ...).
     """
+    occ_folders = [retrieved[key] for key in sorted(retrieved) if key.startswith("occ")]
+    emp_folders = [retrieved[key] for key in sorted(retrieved) if key.startswith("emp")]
+    if not occ_folders:
+        raise ValueError(
+            "prepare_kcw_wannier_files needs at least one occupied-manifold retrieved "
+            "folder (an ``occ_*``-keyed input)."
+        )
+
     merged = orm.FolderData()
-
-    def _copy(src: orm.FolderData, rename_emp: bool) -> None:
-        names = set(src.base.repository.list_object_names())
-        manifold = "empty" if rename_emp else "occupied"
-        for suffix in _REQUIRED_SUFFIXES + _OPTIONAL_SUFFIXES:
-            src_name = f"{SEEDNAME}{suffix}"
-            if src_name not in names:
-                if suffix in _OPTIONAL_SUFFIXES:
-                    continue
-                raise ValueError(
-                    f"``{src_name}`` is missing from the {manifold}-manifold wannier90 "
-                    "retrieved folder. The wannier90 runs feeding a DFPT chain must set "
-                    "``write_u_matrices = True`` and ``write_xyz = True``."
-                )
-            dst_name = f"{SEEDNAME}_emp{suffix}" if rename_emp else src_name
-            content = src.base.repository.get_object_content(src_name, mode="rb")
-            merged.base.repository.put_object_from_bytes(content, dst_name)
-
-    _copy(occ_retrieved, rename_emp=False)
-    if emp_retrieved is not None:
-        _copy(emp_retrieved, rename_emp=True)
+    manifolds: list[tuple[str, str, list[orm.FolderData], int | None]] = [
+        ("", "occupied", occ_folders, None)
+    ]
+    if emp_folders:
+        nbnd = None if nbnd_emp is None else int(nbnd_emp)
+        manifolds.append(("_emp", "empty", emp_folders, nbnd))
+    for rename, manifold, folders, nbnd in manifolds:
+        blocks = [_read_block_files(folder, manifold) for folder in folders]
+        for suffix, content in _merged_manifold_files(blocks, nbnd, manifold).items():
+            merged.base.repository.put_object_from_bytes(content, f"{SEEDNAME}{rename}{suffix}")
 
     return {"wannier_files": merged}
 
@@ -362,11 +483,12 @@ def prepare_kcw_wannier_files(
 def RunDFPT(
     codes: Codes,
     nscf_remote_folder: orm.RemoteData,
-    occ_retrieved: orm.FolderData,
+    occ_retrieved: Annotated[dict, dynamic(orm.FolderData)],
     num_wann_occ: int,
     num_wann_emp: int,
     kgrid: list[int],
-    emp_retrieved: orm.FolderData | None = None,
+    emp_retrieved: Annotated[dict | None, dynamic(orm.FolderData)] = None,
+    nbnd_emp: int | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
@@ -383,13 +505,19 @@ def RunDFPT(
             be an ``nspin = 2`` run even for closed-shell systems -- the DFPT
             perturbations are spin-dependent; the kcw chain reads the up
             channel (``CONTROL.spin_component = 1``).
-        occ_retrieved: the occupied-manifold wannier90 ``retrieved`` folder
-            (must hold ``aiida_u.mat`` / ``aiida_hr.dat`` /
-            ``aiida_centres.xyz``).
-        num_wann_occ / num_wann_emp: Wannier function counts per manifold
-            (``num_wann_emp = 0`` for an occupied-only run).
+        occ_retrieved: the occupied-manifold wannier90 ``retrieved`` folders
+            (each must hold ``aiida_u.mat`` / ``aiida_hr.dat`` /
+            ``aiida_centres.xyz``), keyed so lexicographic key order matches
+            the band order of the manifold's blocks; multi-block manifolds
+            are merged by :func:`prepare_kcw_wannier_files`.
+        num_wann_occ / num_wann_emp: *total* Wannier function counts per
+            manifold (``num_wann_emp = 0`` for an occupied-only run).
         kgrid: the Monkhorst-Pack grid of the nscf, for ``CONTROL.mp1-3``.
-        emp_retrieved: the empty-manifold wannier90 ``retrieved`` folder.
+        emp_retrieved: the empty-manifold wannier90 ``retrieved`` folders
+            (same keying convention as ``occ_retrieved``).
+        nbnd_emp: total number of empty bands (``nbnd - nocc``); needed to
+            extend the ``u_dis`` matrix when a merged empty manifold is
+            disentangled.
         bands_kpoints: explicit k-path; when given, the ham step interpolates
             the Koopmans Hamiltonian along it (``HAM.do_bands``).
         eps_inf: macroscopic dielectric constant for the screen step's
@@ -429,9 +557,12 @@ def RunDFPT(
         "has_disentangle": has_disentangle,
     }
 
-    prep_inputs: dict[str, Any] = {"occ_retrieved": occ_retrieved}
+    prep_inputs: dict[str, Any] = {f"occ_{key}": folder for key, folder in occ_retrieved.items()}
     if emp_retrieved is not None:
-        prep_inputs["emp_retrieved"] = emp_retrieved
+        for key, folder in emp_retrieved.items():
+            prep_inputs[f"emp_{key}"] = folder
+        if nbnd_emp is not None:
+            prep_inputs["nbnd_emp"] = nbnd_emp
     wannier_files = prepare_kcw_wannier_files(
         **prep_inputs,
         metadata={"call_link_label": "prepare_kcw_wannier_files"},
@@ -581,9 +712,11 @@ def SinglepointDFPTWorkflow(
     One shared scf + nscf (:func:`RunScfNscf`, with the spin-regime SYSTEM
     keys of :func:`_pw_spin_system_defaults` forced on and ``nosym`` /
     ``noinv`` on the nscf so kcw.x sees the full k-point set), then one
-    :func:`WannierizeBlock` per manifold and one :func:`RunDFPT` per entry
-    of ``manifolds`` — a dict keyed by spin channel (:class:`SpinChannel`
-    values as strings) whose values are :class:`ManifoldBlocks`:
+    :func:`WannierizeBlock` per projection block (a manifold may span
+    several blocks, whose Wannier products :func:`RunDFPT` merges back into
+    one file set) and one :func:`RunDFPT` per entry of ``manifolds`` — a
+    dict keyed by spin channel (:class:`SpinChannel` values as strings)
+    whose values are :class:`ManifoldBlocks`:
 
     * ``spin = NONE`` — ``manifolds = {"none": ...}``: one chain on the up
       channel of the closed-shell nspin=2 scratch.
@@ -683,6 +816,31 @@ def SinglepointDFPTWorkflow(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
+    def _wannierize_manifold(blocks: list, wannier_overrides: dict[str, Any]) -> dict[str, Any]:
+        """Wannierise each of a manifold's blocks (native for-loop fan-out).
+
+        Returns the per-block wannier90 ``retrieved`` sockets keyed so
+        lexicographic order matches band order — the keying convention
+        :func:`prepare_kcw_wannier_files` merges by.
+        """
+        retrieved: dict[str, Any] = {}
+        for i, block in enumerate(blocks):
+            wannierized = WannierizeBlock(
+                codes=codes,
+                structure=structure,
+                block=block,
+                projection_type=block["projection_type"],
+                nscf_remote_folder=nscf_remote_folder,
+                kpoints=explicit_kpoints,
+                mp_grid=mp_grid,
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                overrides=wannier_overrides,
+                metadata={"call_link_label": f"wannierize_{block['label']}"},
+            )
+            retrieved[f"b{i:02d}"] = wannierized["hr_retrieved"]
+        return retrieved
+
     channel_results: dict[str, ChannelResults] = {}
     for channel_key, manifold in manifolds.items():
         channel_key = str(channel_key)
@@ -710,27 +868,13 @@ def SinglepointDFPTWorkflow(
             _channel_w90_defaults(spin, channel),
         )
 
-        occ_block = manifold["occ"]
-        occ = WannierizeBlock(
-            codes=codes,
-            structure=structure,
-            block=occ_block,
-            projection_type=occ_block["projection_type"],
-            nscf_remote_folder=nscf_remote_folder,
-            kpoints=explicit_kpoints,
-            mp_grid=mp_grid,
-            pseudo_family=pseudo_family,
-            protocol=protocol,
-            overrides=wannier_overrides,
-            metadata={"call_link_label": f"wannierize_occ{suffix}"},
-        )
-
+        occ_blocks = manifold["occ"]
         alpha_guess = manifold.get("alpha_guess")
         dfpt_inputs: dict[str, Any] = {
             "codes": codes,
             "nscf_remote_folder": nscf_remote_folder,
-            "occ_retrieved": occ["hr_retrieved"],
-            "num_wann_occ": occ_block["num_wann"],
+            "occ_retrieved": _wannierize_manifold(occ_blocks, wannier_overrides),
+            "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
             "kgrid": kgrid,
             "bands_kpoints": bands_kpoints,
@@ -741,28 +885,19 @@ def SinglepointDFPTWorkflow(
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
 
-        emp_block = manifold.get("emp")
-        # Disentanglement is a property of the empty block, not caller state:
-        # extra bands beyond the Wannier count mean the manifold disentangles.
-        dfpt_inputs["has_disentangle"] = (
-            emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
-        )
-        if emp_block is not None:
-            emp = WannierizeBlock(
-                codes=codes,
-                structure=structure,
-                block=emp_block,
-                projection_type=emp_block["projection_type"],
-                nscf_remote_folder=nscf_remote_folder,
-                kpoints=explicit_kpoints,
-                mp_grid=mp_grid,
-                pseudo_family=pseudo_family,
-                protocol=protocol,
-                overrides=wannier_overrides,
-                metadata={"call_link_label": f"wannierize_emp{suffix}"},
-            )
-            dfpt_inputs["emp_retrieved"] = emp["hr_retrieved"]
-            dfpt_inputs["num_wann_emp"] = emp_block["num_wann"]
+        emp_blocks = manifold.get("emp") or []
+        if emp_blocks:
+            num_wann_emp = sum(block["num_wann"] for block in emp_blocks)
+            # Every block has num_bands == num_wann except the last, which
+            # absorbs the manifold's disentanglement bands, so the sum is the
+            # total empty-band count (nbnd - nocc).
+            nbnd_emp = sum(block["num_bands"] for block in emp_blocks)
+            dfpt_inputs["emp_retrieved"] = _wannierize_manifold(emp_blocks, wannier_overrides)
+            dfpt_inputs["num_wann_emp"] = num_wann_emp
+            dfpt_inputs["nbnd_emp"] = nbnd_emp
+            # Disentanglement is a property of the empty manifold, not caller
+            # state: extra bands beyond the Wannier count mean it disentangles.
+            dfpt_inputs["has_disentangle"] = nbnd_emp != num_wann_emp
 
         dfpt = RunDFPT(**dfpt_inputs)
 
