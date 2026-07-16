@@ -14,8 +14,8 @@ is a standalone ``CalcJob``.
 The source ``evc`` files arrive as a dynamic ``source_files`` namespace of
 ``SinglefileData`` nodes — the enumerated ``evcw`` outputs of the upstream
 ``wann2kcp.x`` runs. Each is copied into the work directory as
-``input_{i}.dat`` in the namespace's sorted-key order, matching the legacy
-``input_{i}.dat`` naming. The merged file is written to ``dest_filename``,
+``input_{i}.dat`` in the namespace's sorted-key order. The merged file is
+written to ``dest_filename``,
 retrieved, and re-emitted by the parser as the ``merged_file``
 ``SinglefileData`` output so the whole fold pipeline is explicit dataflow.
 """

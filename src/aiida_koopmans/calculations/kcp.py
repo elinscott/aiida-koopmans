@@ -153,8 +153,7 @@ class KcpCalculation(KoopmansStdoutCalculation):
                 "is copied in as ``<stem>.dat``. Used by the periodic MLWF "
                 "initialisation to stage the folded ``evc_occupied{n}.dat`` / "
                 "``evc0_empty{n}.dat`` merge_evc.x outputs into the "
-                "``dft_init`` (and first trial KI) read directory — legacy "
-                "``_koopmans_dscf.py:1244-1245`` and ``:521-522``. Matching "
+                "``dft_init`` (and first trial KI) read directory. Matching "
                 "destinations are skipped during the primary parent walk so "
                 "these files are the only entries at those paths."
             ),

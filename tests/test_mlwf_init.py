@@ -3,7 +3,7 @@
 Three layers, none of which run a daemon:
 
 * unit tests for the consistency check (invoked via the task's raw
-  callable) against the legacy thresholds;
+  callable) against the gap/energy thresholds;
 * unit tests for the ``dft_dummy`` / Wannier-seeded ``dft_init`` kcp.x
   parameter builders;
 * construction-level graph builds of ``MlwfInitialization`` and of a
@@ -31,7 +31,7 @@ from aiida_koopmans.workgraphs.mlwf_init import (
 )
 
 # ----------------------------------------------------------------------
-# Consistency check (legacy ``_koopmans_dscf.py:1250-1262``)
+# Consistency check
 # ----------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ class TestDftDummyParameters:
     def test_plain_dft(self):
         params = _build_dft_dummy_parameters(_SUPERCELL_BASE)
         assert params["SYSTEM"]["do_orbdep"] is False
-        # EE machinery always on (legacy default); periodic -> no countercharge.
+        # EE machinery always on; periodic -> no countercharge.
         assert params["EE"]["which_compensation"] == "none"
 
 
@@ -154,9 +154,8 @@ class TestDftInitFromWannierParameters:
         assert params["SYSTEM"]["nbnd"] == 20
 
     def test_outer_loop_on_but_no_empty_minimisation(self):
-        # Legacy solids rule (``_koopmans_dscf.py:1123-1126``): the filled
-        # manifold is minimised, the empty manifold stays the folded
-        # Wannier functions.
+        # Solids rule: the filled manifold is minimised, the empty manifold
+        # stays the folded Wannier functions.
         params = _build_dft_init_from_wannier_parameters(_SUPERCELL_BASE, nbnd=20)
         assert params["ELECTRONS"]["do_outerloop"] is True
         assert params["ELECTRONS"]["do_outerloop_empty"] is False

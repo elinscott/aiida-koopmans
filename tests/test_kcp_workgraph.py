@@ -229,8 +229,8 @@ class TestBuildKiParameters:
         assert params["ELECTRONS"]["do_outerloop_empty"] is False
 
     def test_periodic_uses_no_compensation(self):
-        # The EE machinery is always on (legacy calculator default); periodic
-        # systems select which_compensation='none' rather than dropping &EE.
+        # The EE machinery is always on; periodic systems select
+        # which_compensation='none' rather than dropping &EE.
         params = _build_orbdep_parameters(_OZONE_BASE, nbnd=10, correction=Correction.KI)
         assert params["EE"]["which_compensation"] == "none"
         assert params["SYSTEM"]["do_ee"] is True

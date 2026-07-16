@@ -1,7 +1,6 @@
 """Fold per-block Wannier orbitals into supercell kcp.x wavefunctions.
 
-Step "B2" of the periodic MLWF / projwfs Koopmans port — the AiiDA port of
-legacy ``FoldToSupercellWorkflow`` (``koopmans/workflows/_folding.py``).
+Step "B2" of the periodic MLWF / projwfs Koopmans route.
 Consumes the per-block outputs of
 :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` and
 produces the ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat`` files that seed
@@ -25,8 +24,7 @@ Every wavefunction is an enumerated input/output of some task — the only
 ``RemoteData`` in the pipeline is the nscf scratch (bulk QE outdir, chained
 the standard aiida-quantumespresso way).
 
-Deviation from legacy: single-block groups also run through ``merge_evc.x``
-(legacy passes the lone ``evcw`` file along and renames it via symlinks).
+Single-block groups also run through ``merge_evc.x``.
 Concatenating one file is a plain copy, and it normalises the output
 contract — every folded manifold file is a ``merged_file`` node under its
 final kcp.x name, which ``KcpCalculation.read_wavefunctions`` stages as-is.
@@ -117,8 +115,7 @@ def enumerate_fold_targets(
 ) -> list[FoldTarget]:
     """List the merge_evc.x runs (and their file names) for a set of merge groups.
 
-    Ports the file-naming walk of legacy ``FoldToSupercellWorkflow._run``
-    (``_folding.py:80-109``): a spin-polarized group folds its single
+    A spin-polarized group folds its single
     ``evcw`` wavefunction into the kcp spin slot matching the group's spin
     channel, while a spinless group emits both kcp spin slots from ``evcw1``
     / ``evcw2``. Shared between :func:`FoldToSupercell` (which creates the
@@ -166,8 +163,7 @@ def FoldToSupercell(
         kgrid: the primitive Monkhorst-Pack grid; its product is the
             ``-nr`` real-space fold count of ``merge_evc.x``.
         gamma_only: whether the primitive sampling is Γ-only. Forwarded as
-            wann2kcp.x's ``gamma_trick`` — legacy enforces the two to be
-            equal (``_folding.py:49-55``).
+            wann2kcp.x's ``gamma_trick``; the two must be equal.
         spin_polarized: spin-resolved Wannierisation. Each block then runs
             wann2kcp.x with its own ``spin_component`` and writes a single
             ``evcw.dat``; spinless blocks write ``evcw1.dat`` + ``evcw2.dat``.

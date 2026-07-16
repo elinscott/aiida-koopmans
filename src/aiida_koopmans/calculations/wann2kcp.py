@@ -50,8 +50,7 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
     # ``prefix`` must match the prefix of the upstream pw.x nscf whose scratch
     # is symlinked in as ``TMP`` — aiida-quantumespresso's ``PwCalculation``
     # hard-codes ``_PREFIX = "aiida"``, so wann2kcp.x must look for
-    # ``TMP/aiida.save``. (Legacy koopmans used ``kc`` because its pw.x runs
-    # used that prefix.)
+    # ``TMP/aiida.save``.
     _DEFAULT_PREFIX = "aiida"
     _DEFAULT_SEEDNAME = "wannier90"
     # The evcw wavefunctions a ``wannier2kcp`` run can produce; retrieved and

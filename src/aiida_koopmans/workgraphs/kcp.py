@@ -9,18 +9,11 @@ composes it into higher-level workflows.
 supercell kcp.x; see ``mlwf_init.py``). Unsupported combinations raise
 ``NotImplementedError`` at build time with a clear message.
 
-The MVP ``KoopmansDSCFWorkflow`` executes **two** kcp.x calls:
-
-1. DFT initialization (``do_orbdep=False``, nspin=2, from scratch)
-2. KI final (``do_orbdep=True``, ``which_orbdep='nki'``, restart from step 1,
-   initial alphas = ``initial_alpha`` for every orbital)
-
-The legacy implementation for the same inputs executes 20 kcp.x calls
-including spin-symmetrization (7), a trial KI pass (1), a Delta SCF loop to
-compute the alphas (12), and a final KI (1). Porting the Delta SCF alpha loop
-and spin-symmetrization is deferred to later phases — the code below is
-structured so those extensions can slot in as additional ``@task.graph``
-helpers without reshaping the public ``KoopmansDSCFWorkflow`` signature.
+``KoopmansDSCFWorkflow`` runs a DFT initialisation, a trial KI pass, a
+per-orbital Delta-SCF loop that refines the screening parameters, and a
+final KI with the converged alphas. Spin-symmetrisation
+(``fix_spin_contamination=True``) is not yet supported and is rejected at
+build time.
 """
 
 from __future__ import annotations
@@ -291,11 +284,11 @@ def compute_alpha_from_dscf(
       orbital-dependent Hamiltonian at ``(band_index, band_index)``;
     - ``lambda_0`` is the same diagonal element of the **bare** Hamiltonian.
 
-    With ``mp_correction=True`` (periodic supercells; legacy default for
-    the DSCF method on periodic systems) the Makov-Payne image-interaction
+    With ``mp_correction=True`` (the default for the DSCF method on
+    periodic supercells) the Makov-Payne image-interaction
     energies reported by the perturbed N±1 run are subtracted from ``dE``
-    scaled by the macroscopic dielectric constant — legacy
-    ``_koopmans_dscf.py:932-942``: ``dE -= sign(charge) * (mp1 + mp2) /
+    scaled by the macroscopic dielectric constant:
+    ``dE -= sign(charge) * (mp1 + mp2) /
     eps_inf`` where ``sign(charge)`` is ``+1`` for a filled orbital (an
     electron removed) and ``-1`` for an empty one (an electron added), and
     ``mp2`` is used only when the run reports it.
@@ -843,7 +836,7 @@ def KoopmansDSCFWorkflow(
       Every kcp.x step then runs on the Γ-point supercell, with the
       extensive inputs (``nbnd``, ``tot_magnetization``, and — via the
       supercell structure — the electron counts) scaled by
-      ``prod(kgrid)`` (legacy ``convert_kcp_to_supercell``). This route
+      ``prod(kgrid)``. This route
       additionally requires ``codes`` (pw / wannier90 / pw2wannier90 /
       wann2kcp / merge_evc), ``blocks`` (projection blocks with
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
@@ -876,10 +869,9 @@ def KoopmansDSCFWorkflow(
         VariationalOrbitalType.PROJWFS,
     )
 
-    # Image-charge correction defaults (legacy ``_workflow.py:582-593``):
-    # the Makov-Payne correction to the Delta-SCF energies is on for
-    # periodic supercell runs and off (indeed forbidden) for molecules;
-    # ``eps_inf`` falls back to 1.0 (vacuum — legacy warns that this is a
+    # Image-charge correction defaults: the Makov-Payne correction to the
+    # Delta-SCF energies is on for periodic supercell runs and off (indeed
+    # forbidden) for molecules; ``eps_inf`` falls back to 1.0 (vacuum — a
     # crude default for real materials).
     if mp_correction is None:
         mp_correction = wannier_init
@@ -902,7 +894,7 @@ def KoopmansDSCFWorkflow(
         # ``nbnd`` instead demands more empty states than the folded
         # ``evc0_empty`` provides — kcp.x then rejects the file
         # ("wavefunctions dimensions changed") and silently random-initialises
-        # the empties. Legacy reference: Si 2x2x2 runs nbnd=64 (4 occ + 4 emp
+        # the empties. Reference: a Si 2x2x2 run needs nbnd=64 (4 occ + 4 emp
         # WFs) even though the primitive wannierization used nbnd=20.
         run_nbnd = sum(block["num_wann"] for block in cast("list", blocks)) * ncells
         run_tot_magnetization = scale_extensive(tot_magnetization, ncells)
@@ -1629,10 +1621,9 @@ def ScreeningIteration(
     ``initial_evc_occupied{1,2}`` are the Wannier-init counterpart of
     the KS overlay, likewise first-iteration-only: the folded
     ``evc_occupied{n}.dat`` files re-staged into the trial's read
-    ``K00001`` with ``restart_from_wannier_pwscf`` switched on (legacy
-    ``DeltaSCFIterationWorkflow``, ``_koopmans_dscf.py:505+521-522``;
-    the empty-manifold ``evc0_empty{n}.dat`` flow through the
-    ``dft_init`` parent save automatically).
+    ``K00001`` with ``restart_from_wannier_pwscf`` switched on (the
+    empty-manifold ``evc0_empty{n}.dat`` flow through the ``dft_init``
+    parent save automatically).
 
     ``base`` is a frozen ``KcpBaseInputs`` dataclass and crosses this
     ``@task.graph`` boundary intact.
@@ -2229,8 +2220,7 @@ def _build_dft_parameters(
         "ecutrho": base.ecutrho,
         "nbnd": nbnd,
         "nspin": base.nspin,
-        # Legacy calculator default: the electrostatic-embedding machinery is
-        # ALWAYS on (``do_ee: True`` in ``settings/_koopmans_cp.py``); only
+        # The electrostatic-embedding machinery is always on; only
         # ``EE.which_compensation`` switches between 'tcc' (aperiodic,
         # mt_correction) and 'none' (periodic). EE participates in the
         # orbital self-interaction evaluation even with compensation 'none' —
@@ -2282,9 +2272,8 @@ def _build_dft_parameters(
             **{f"ion_radius({i + 1})": 1.0 for i in range(base.ntyp)},
         },
     }
-    # Legacy ``internal_new_kcp_calculator``: 'tcc' countercharge for
-    # aperiodic systems, explicit 'none' for periodic ones (the &EE namelist
-    # is always written because ``do_ee`` is always on).
+    # 'tcc' countercharge for aperiodic systems, explicit 'none' for periodic
+    # ones (the &EE namelist is always written because ``do_ee`` is always on).
     params["EE"] = {"which_compensation": "tcc" if base.mt_correction else "none"}
     return params
 
@@ -2610,7 +2599,7 @@ def _fft_dimension_allowed(nr: int) -> bool:
 
 
 def _good_fft(nr: int) -> int:
-    """Bump ``nr`` up to the next FFT-friendly dimension (legacy ``good_fft``)."""
+    """Bump ``nr`` up to the next FFT-friendly dimension."""
     while not _fft_dimension_allowed(nr) and nr <= 2049:
         nr += 1
     return nr
@@ -2623,11 +2612,11 @@ def _autogenerate_nrb(
 ) -> None:
     """Fill ``SYSTEM.nr{1,2,3}b`` when any pseudo carries core corrections.
 
-    Port of legacy ``_koopmans_cp.py:_autogenerate_nr``: kcp.x aborts with
+    kcp.x aborts with
     "nr1b, nr2b, nr3b must be given for ultrasoft and core corrected pp"
     when a pseudo has non-linear core corrections and the small-box grid is
-    unset (bites e.g. PseudoDojo; SG15 has no NLCC). Same conservative
-    guess as legacy: the full density-grid dimensions scaled by
+    unset (bites e.g. PseudoDojo; SG15 has no NLCC). The conservative
+    guess is the full density-grid dimensions scaled by
     ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
     cutoff radius is <= 2.6 Bohr). User-supplied values always win.
     """

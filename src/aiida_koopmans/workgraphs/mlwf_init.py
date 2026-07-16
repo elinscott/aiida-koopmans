@@ -1,8 +1,7 @@
 """MLWF / projected-WF initialisation of the variational orbitals.
 
-Ports the ``init_orbitals in ('mlwfs', 'projwfs')`` branch of legacy
-``InitializationWorkflow`` (``koopmans/workflows/_koopmans_dscf.py:1186-1262``)
-for periodic systems:
+Handles the ``init_orbitals in ('mlwfs', 'projwfs')`` case for periodic
+systems:
 
 1. Wannierise every projection block off one shared scf + nscf
    (:func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`);
@@ -19,13 +18,11 @@ for periodic systems:
 A failing check fails this graph, and because a ``@task.graph`` runs as its
 own sub-process whose outputs only resolve on successful termination, the
 downstream screening pipeline (which consumes ``remote_folder``) never
-launches off a broken initialisation — matching the legacy workflow, which
-raises before proceeding.
+launches off a broken initialisation.
 
 The graph returns the ``dft_init`` save (parent of the first trial KI) plus
 the folded occupied-manifold files, which the trial KI re-stages into its
-own read directory (legacy ``DeltaSCFIterationWorkflow`` links every
-``variational_orbital_file``; the ``evc0_empty{n}.dat`` entries flow through
+own read directory (the ``evc0_empty{n}.dat`` entries flow through
 the ``dft_init`` save automatically, so only the ``evc_occupied{n}.dat``
 pair needs explicit re-staging).
 """
@@ -52,7 +49,7 @@ from aiida_koopmans.workgraphs.kcp import (
 )
 from aiida_koopmans.workgraphs.supercell import supercell_size
 
-# Legacy consistency thresholds (``_koopmans_dscf.py:1250-1262``).
+# Consistency-check thresholds for the initialisation.
 _GAP_RELATIVE_TOLERANCE = 2.0e-2
 _ENERGY_RELATIVE_TOLERANCE = 1.0e-6
 
@@ -89,7 +86,7 @@ def check_wannier_initialization(
 ) -> dict:
     """Check the Wannier-seeded ``dft_init`` against the PW reference.
 
-    Two legacy guards (``_koopmans_dscf.py:1250-1262``), both fatal:
+    Two guards, both fatal:
 
     * the kcp.x (CP) band gap must match the pw.x nscf gap to within 2% of
       the PW gap — a mismatch means the folded Wannier orbitals do not span
@@ -164,8 +161,7 @@ def _build_dft_dummy_parameters(base) -> dict[str, Any]:
     """kcp.x parameters for the ``dft_dummy`` step.
 
     A from-scratch DFT run whose only purpose is to write a save-directory
-    skeleton for ``dft_init`` to restart from — legacy
-    ``internal_new_kcp_calculator('dft_dummy')``: outer loops off and no
+    skeleton for ``dft_init`` to restart from: outer loops off and no
     ``nbnd`` (the empty states will come from the folded Wannier files, so
     the dummy needn't allocate them).
     """
@@ -177,11 +173,10 @@ def _build_dft_dummy_parameters(base) -> dict[str, Any]:
 def _build_dft_init_from_wannier_parameters(base, *, nbnd: int) -> dict[str, Any]:
     """kcp.x parameters for the Wannier-seeded ``dft_init`` step.
 
-    Legacy ``internal_new_kcp_calculator('dft_init', restart_mode='restart',
-    restart_from_wannier_pwscf=True, do_outerloop=True)``
-    (``_koopmans_dscf.py:1241-1242``), plus the blanket solids rule that
-    the empty manifold is never minimised (``_koopmans_dscf.py:1123-1126``)
-    — the empty variational orbitals stay the folded Wannier functions.
+    Restarts from the dummy save with ``restart_from_wannier_pwscf=True``
+    and the occupied outer loop on, while the empty manifold is never
+    minimised (the blanket solids rule) — the empty variational orbitals
+    stay the folded Wannier functions.
     """
     parameters = _build_dft_parameters(base, nbnd=nbnd, restart_mode="restart", outerloop=True)
     parameters["SYSTEM"]["restart_from_wannier_pwscf"] = True
@@ -316,9 +311,8 @@ def MlwfInitialization(
     dummy = KcpStep(**dummy_inputs)
 
     # --- B4: dft_init — restart from the dummy save with the folded
-    # Wannier wavefunctions staged into the read K00001 (legacy
-    # ``_koopmans_dscf.py:1243-1245``). The staged stems mirror exactly
-    # what the fold produced.
+    # Wannier wavefunctions staged into the read K00001. The staged stems
+    # mirror exactly what the fold produced.
     staged = {
         target["stem"]: fold[target["stem"]]
         for target in enumerate_fold_targets(merge_groups, spin_polarized)

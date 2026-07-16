@@ -2,13 +2,11 @@
 
 kcp.x has no k-point sampling: a periodic Koopmans DSCF calculation runs on
 the Γ-point of a supercell whose repeat counts equal the primitive-cell
-Monkhorst-Pack grid (legacy ``Workflow.primitive_to_supercell`` in
-``koopmans/src/koopmans/workflows/_workflow.py:797-806``). This module owns
+Monkhorst-Pack grid. This module owns
 that conversion plus the plain-Python scaling helpers for the *extensive*
-kcp.x parameters (legacy ``convert_kcp_to_supercell``,
-``_koopmans_dscf.py:221-231``).
+kcp.x parameters.
 
-Of the legacy list (``nelec``, ``nelup``, ``neldw``, ``nbnd``, ``conv_thr``,
+Of the extensive parameters (``nelec``, ``nelup``, ``neldw``, ``nbnd``, ``conv_thr``,
 ``esic_conv_thr``, ``tot_charge``, ``tot_magnetization``) only ``nbnd`` and
 ``tot_magnetization`` need explicit scaling here: the electron counts come
 out of :func:`~aiida_koopmans.utils.count_electrons_task` evaluated on the
@@ -53,8 +51,7 @@ def primitive_to_supercell(
     diagonal, the repeat is a plain site replication (no ASE round-trip
     needed, so custom kind names survive): sites are emitted cell-major —
     the full primitive basis for translation (0,0,0) first, then for
-    (0,0,1), and so on — matching ASE ``make_supercell``'s default order
-    that the legacy conversion relied on.
+    (0,0,1), and so on — matching ASE ``make_supercell``'s default order.
 
     A ``@task.calcfunction`` so the derived ``StructureData`` carries
     provenance back to the primitive structure. Single-output convention:

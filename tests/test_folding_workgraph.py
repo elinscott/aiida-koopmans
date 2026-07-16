@@ -4,7 +4,7 @@ Mirrors ``test_block_wannierize.py``: the graphs are built (no daemon, no
 real codes) and their task lists inspected, so a wiring regression surfaces
 without a QE install. The merge-target bookkeeping
 (:func:`enumerate_fold_targets`) is additionally unit-tested against the
-legacy file-naming rules of ``koopmans/workflows/_folding.py``.
+expected wavefunction file-naming rules.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _spin_polarized_blocks():
 
 
 # ----------------------------------------------------------------------
-# enumerate_fold_targets — legacy _construct_dest_filename semantics
+# enumerate_fold_targets — destination-filename semantics
 # ----------------------------------------------------------------------
 
 
