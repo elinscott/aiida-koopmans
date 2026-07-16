@@ -44,6 +44,30 @@ from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
 
+class WannierizeOverrides(TypedDict, total=False):
+    """Flat, semantic overrides for :func:`WannierizeBlocks` / :func:`WannierizeBlock`.
+
+    Deliberately NOT the upstream namespace-mirroring override shape
+    (``wannier90.wannier90.parameters...``): that nesting stutters, is easy
+    to mis-wrap, and a wrong depth is silently ignored by
+    ``recursive_merge``. The upstream builder shape is produced in exactly
+    one place — the builder call inside :func:`WannierizeBlock`.
+
+    * ``scf`` / ``nscf`` — ``PwBaseWorkChain``-protocol override dicts for
+      the shared scf/nscf pair (upstream shape, consumed verbatim by
+      :func:`RunScfNscf`).
+    * ``w90_keywords`` — a flat ``.win`` keyword dict (e.g.
+      ``{"dis_froz_max": 10.6}``) applied to every block's wannier90.
+    * ``pw2wannier90_keywords`` — a flat ``INPUTPP`` keyword dict (e.g.
+      ``{"write_unk": True}``) applied to every block's pw2wannier90.
+    """
+
+    scf: dict[str, Any]
+    nscf: dict[str, Any]
+    w90_keywords: dict[str, Any]
+    pw2wannier90_keywords: dict[str, Any]
+
+
 class WannierizeBlockOutputs(TypedDict):
     """Per-block Wannierisation outputs that the supercell fold reads.
 
@@ -84,11 +108,18 @@ def WannierizeBlock(
     mp_grid: list[int] | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
+    overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
 ) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
+
+    ``overrides`` is the flat :class:`WannierizeOverrides`; this block-level
+    graph consumes its ``w90_keywords`` / ``pw2wannier90_keywords`` entries
+    (the ``scf`` / ``nscf`` entries belong to the shared scf+nscf pair and
+    are ignored here). This function is the single place the flat keyword
+    dicts are wrapped into the upstream builder's namespace-mirroring
+    override shape.
 
     Seeds a ``Wannier90WorkChain`` builder via ``get_builder_from_protocol``
     for this block's ``projection_type``, then:
@@ -104,12 +135,29 @@ def WannierizeBlock(
     * forces ``write_hr=True`` and ``aiida.chk`` retrieval.
     """
     overrides = overrides or {}
+    w90_keywords = overrides.get("w90_keywords")
+    pw2wannier90_keywords = overrides.get("pw2wannier90_keywords")
+
+    # The ONLY place the upstream override nesting is produced. The protocol
+    # overrides mirror the workchain's input namespace tree: base-workchain
+    # namespace -> calculation namespace -> ``parameters`` — hence
+    # ``wannier90.wannier90.parameters`` for ``.win`` keywords and
+    # ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
+    # namelist. Callers supply the flat :class:`WannierizeOverrides` and
+    # never touch this shape.
+    builder_overrides: dict[str, Any] = {}
+    if w90_keywords:
+        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(w90_keywords)}}
+    if pw2wannier90_keywords:
+        builder_overrides["pw2wannier90"] = {
+            "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90_keywords)}}
+        }
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         protocol=protocol,
-        overrides=overrides,
+        overrides=builder_overrides or None,
         pseudo_family=pseudo_family,
         electronic_type=electronic_type,
         spin_type=spin_type,
@@ -136,9 +184,8 @@ def WannierizeBlock(
     # freezes the initial projection subspace); a block with
     # num_bands == num_wann cannot disentangle, so strip the (globally
     # supplied) windows outright.
-    user_w90_params = overrides.get("wannier90", {}).get("wannier90", {}).get("parameters", {})
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
-        if "dis_num_iter" not in user_w90_params:
+        if "dis_num_iter" not in (w90_keywords or {}):
             w90_params["dis_num_iter"] = 5000
     else:
         for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
@@ -202,7 +249,7 @@ def WannierizeBlocks(
     mp_grid: list[int] | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
+    overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
 ) -> WannierizeBlocksOutputs:
@@ -232,9 +279,11 @@ def WannierizeBlocks(
             re-derive it from the list).
         pseudo_family: pseudopotential family label.
         protocol: protocol name passed to both builders.
-        overrides: optional overrides. ``overrides["scf"]`` / ``["nscf"]``
-            feed :func:`RunScfNscf`; ``overrides["wannier90"]`` feeds every
-            per-block wannier builder.
+        overrides: optional :class:`WannierizeOverrides` — flat, semantic
+            keys (``scf`` / ``nscf`` pw-protocol dicts feed
+            :func:`RunScfNscf`; ``w90_keywords`` / ``pw2wannier90_keywords``
+            flat keyword dicts feed every per-block wannier builder). Never
+            the upstream namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
 
     Returns:
@@ -264,8 +313,6 @@ def WannierizeBlocks(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
-    wannier_overrides = overrides.get("wannier90")
-
     # --- per-block Wannierisation: native for-loop fan-out ---
     # Each iteration adds an independent ``WannierizeBlock`` (they share only
     # the read-only nscf scratch, so they run in parallel), collected into a
@@ -282,7 +329,7 @@ def WannierizeBlocks(
             mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             protocol=protocol,
-            overrides=wannier_overrides,
+            overrides=overrides or None,
             electronic_type=electronic_type,
             spin_type=spin_type,
         )

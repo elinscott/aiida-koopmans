@@ -70,7 +70,7 @@ from aiida_koopmans.types import (
     SpinChannel,
 )
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeOverrides
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
 
@@ -523,7 +523,7 @@ def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
     return {"nspin": 2, "tot_magnetization": 0}
 
 
-def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any]:
+def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> WannierizeOverrides:
     """Return the per-channel wannierization overrides a DFPT chain forces on.
 
     kcw.x reads the U matrices and Wannier centres from files the wannier90
@@ -533,25 +533,25 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> dict[str, Any
     nspin2); a spinor scratch instead needs ``spinors = .true.`` and no
     channel selection (nspin4 variants).
 
+    Returned as the flat :class:`WannierizeOverrides` shape (``w90_keywords``
+    / ``pw2wannier90_keywords``); :func:`WannierizeBlock` wraps these into
+    the upstream builder namespace.
+
     These must be explicit overrides rather than upstream's
     ``spin_type`` machinery: ``Wannier90WorkChain`` injects
     ``spin_component`` at runtime by detecting nspin=2 from its *own*
     scf/nscf inputs, which :func:`WannierizeBlock` deliberately omits
     (shared-nscf pattern), so the upstream path can never fire here.
     """
-    w90_params: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}
-    defaults: dict[str, Any] = {"wannier90": {"wannier90": {"parameters": w90_params}}}
+    w90_keywords: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}
+    defaults: WannierizeOverrides = {"w90_keywords": w90_keywords}
     if spin in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
-        w90_params["spinors"] = True
+        w90_keywords["spinors"] = True
         return defaults
     if spin == SpinType.COLLINEAR:
-        w90_params["spin"] = channel.value
-    defaults["pw2wannier90"] = {
-        "pw2wannier90": {
-            "parameters": {
-                "INPUTPP": {"spin_component": "down" if channel == SpinChannel.DOWN else "up"}
-            }
-        },
+        w90_keywords["spin"] = channel.value
+    defaults["pw2wannier90_keywords"] = {
+        "spin_component": "down" if channel == SpinChannel.DOWN else "up"
     }
     return defaults
 
@@ -566,7 +566,7 @@ def SinglepointDFPTWorkflow(
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
+    overrides: WannierizeOverrides | None = None,
     eps_inf: float | str | None = None,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
@@ -599,9 +599,10 @@ def SinglepointDFPTWorkflow(
     Each channel's results land under its key in the ``channels`` output
     namespace.
 
-    ``overrides`` namespaces: ``"scf"`` / ``"nscf"`` feed the shared PW
-    steps, ``"wannier90"`` feeds every per-manifold wannier builder (its
-    ``"pw2wannier90"`` sub-namespace reaches the pw2wannier90 step).
+    ``overrides`` is the flat :class:`WannierizeOverrides`: ``"scf"`` /
+    ``"nscf"`` feed the shared PW steps, and ``"w90_keywords"`` /
+    ``"pw2wannier90_keywords"`` feed every per-manifold wannier builder (the
+    channel staging keys are force-merged on top per channel).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -692,23 +693,27 @@ def SinglepointDFPTWorkflow(
         # minimisation near the projection guess so the Wannier functions
         # land in a reproducible minimum. The caller's overrides win over
         # these; the channel staging/selection keys below are requirements
-        # of the kcw chain and are force-merged on top.
+        # of the kcw chain and are force-merged on top. All flat
+        # (:class:`WannierizeOverrides`) — :func:`WannierizeBlock` wraps the
+        # keyword dicts into the upstream builder namespace.
         wannier_defaults: dict[str, Any] = {
-            "wannier90": {
-                "wannier90": {
-                    "parameters": {
-                        "guiding_centres": True,
-                        "num_iter": 10000,
-                        "conv_tol": 1.0e-10,
-                        "conv_window": 5,
-                    }
-                }
-            }
+            "guiding_centres": True,
+            "num_iter": 10000,
+            "conv_tol": 1.0e-10,
+            "conv_window": 5,
         }
-        wannier_overrides = recursive_merge(
-            recursive_merge(wannier_defaults, overrides.get("wannier90", {})),
-            _channel_w90_defaults(spin, channel),
+        channel_defaults = _channel_w90_defaults(spin, channel)
+        w90_keywords = recursive_merge(
+            recursive_merge(wannier_defaults, dict(overrides.get("w90_keywords", {}))),
+            channel_defaults.get("w90_keywords", {}),
         )
+        wannier_overrides: WannierizeOverrides = {"w90_keywords": w90_keywords}
+        pw2wannier90_keywords = recursive_merge(
+            dict(overrides.get("pw2wannier90_keywords", {})),
+            channel_defaults.get("pw2wannier90_keywords", {}),
+        )
+        if pw2wannier90_keywords:
+            wannier_overrides["pw2wannier90_keywords"] = pw2wannier90_keywords
 
         occ_block = manifold["occ"]
         occ = WannierizeBlock(
