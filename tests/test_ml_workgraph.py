@@ -59,22 +59,6 @@ def _all_task_names(wg) -> list[str]:
 
 
 class TestTrajectoryGraphBuild:
-    @pytest.fixture
-    def kcp_code(self, aiida_local_code_factory):
-        return aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
-
-    @pytest.fixture
-    def ozone_pseudo_family(self, ozone_real_pseudos):
-        from aiida_pseudo.groups.family import PseudoPotentialFamily
-
-        family, _ = PseudoPotentialFamily.collection.get_or_create(label="test-ozone-family")
-        if family.count() == 0:
-            pseudo = ozone_real_pseudos["O"]
-            if not pseudo.is_stored:
-                pseudo.store()
-            family.add_nodes([pseudo])
-        return family.label
-
     def _build_wg(
         self, *, ozone_structure, kcp_code, ozone_pseudo_family, n_snapshots=2, **ml_kwargs
     ):

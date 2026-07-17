@@ -49,18 +49,6 @@ def wannier_codes(aiida_localhost):
 
 
 @pytest.fixture
-def silicon_structure(aiida_profile):
-    """Return a 2-atom periodic silicon ``StructureData``."""
-    from aiida.orm import StructureData
-
-    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
-    struct = StructureData(cell=cell, pbc=True)
-    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
-    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
-    return struct
-
-
-@pytest.fixture
 def zno_structure(aiida_profile):
     """Return a 4-atom periodic wurtzite-ish ZnO ``StructureData``."""
     from aiida.orm import StructureData
@@ -72,16 +60,6 @@ def zno_structure(aiida_profile):
     struct.append_atom(position=(0.0, 0.0, 1.95), symbols="O", name="O")
     struct.append_atom(position=(1.625, 0.938, 4.55), symbols="O", name="O")
     return struct
-
-
-@pytest.fixture
-def kmesh(aiida_profile):
-    """Return a coarse explicit k-mesh shared by nscf and every block."""
-    from aiida.orm import KpointsData
-
-    kpts = KpointsData()
-    kpts.set_kpoints_mesh([2, 2, 2])
-    return kpts
 
 
 def _explicit_block(label: str, include: range) -> ExplicitProjectionBlock:

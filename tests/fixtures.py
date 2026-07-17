@@ -6,6 +6,8 @@ pytest's collection machinery picks them up for every test module.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -150,3 +152,52 @@ def fake_cutoffs_family(aiida_profile, generate_upf_data):
         stringency="normal",
     )
     return family
+
+
+@pytest.fixture
+def silicon_structure(aiida_profile):
+    """Return a 2-atom periodic silicon ``StructureData``."""
+    from aiida.orm import StructureData
+
+    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
+    struct = StructureData(cell=cell, pbc=True)
+    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
+    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
+    return struct
+
+
+@pytest.fixture
+def kmesh(aiida_profile):
+    """Return a 2x2x2 ``KpointsData`` mesh."""
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints_mesh([2, 2, 2])
+    return kpts
+
+
+@pytest.fixture
+def kcp_code(aiida_local_code_factory):
+    """Return a mock ``koopmans.kcp`` code backed by the ``true`` executable."""
+    return aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
+
+
+@pytest.fixture
+def ozone_pseudo_family(ozone_real_pseudos):
+    """Register (or fetch) a one-pseudo family covering ozone's O kind."""
+    from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+    family, _ = PseudoPotentialFamily.collection.get_or_create(label="test-ozone-family")
+    if family.count() == 0:
+        pseudo = ozone_real_pseudos["O"]
+        if not pseudo.is_stored:
+            pseudo.store()
+        family.add_nodes([pseudo])
+    return family.label
+
+
+@pytest.fixture(scope="module")
+def si_reference() -> dict:
+    """Load the silicon reference data."""
+    with open(Path(__file__).parent / "data" / "ui" / "si_ui_reference.json") as handle:
+        return json.load(handle)
