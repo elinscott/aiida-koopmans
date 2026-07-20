@@ -703,6 +703,11 @@ def _manifold_wannier_overrides(
     wannier_defaults: dict[str, Any] = {
         "guiding_centres": True,
         "num_iter": 10000,
+        # The aiida-wannier90-workflows protocol raises num_cg_steps to 200;
+        # on the ZnO live validation that setting left the spread
+        # minimisation oscillating without convergence on matrices where the
+        # wannier90 default (5) converges in ~400 iterations.
+        "num_cg_steps": 5,
         "conv_tol": 1.0e-10,
         "conv_window": 5,
         # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
