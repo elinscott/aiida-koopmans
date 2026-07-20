@@ -705,6 +705,10 @@ def _manifold_wannier_overrides(
         "num_iter": 10000,
         "conv_tol": 1.0e-10,
         "conv_window": 5,
+        # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
+        # pin wannier90's own default (1e-10, what legacy runs with) so the
+        # disentanglement is converged as tightly as the legacy reference.
+        "dis_conv_tol": 1.0e-10,
     }
     channel_defaults = _channel_w90_defaults(spin, channel)
     wannier90 = recursive_merge(
