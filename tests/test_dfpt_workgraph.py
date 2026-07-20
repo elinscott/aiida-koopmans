@@ -251,9 +251,9 @@ class TestSinglepointDFPTBuild:
         # the wannier90 runs must write the files kcw.x consumes.
         for wannierize in ("wannierize_occ", "wannierize_emp"):
             w90_overrides = wg.tasks[wannierize].inputs["overrides"]
-            inputpp = w90_overrides["pw2wannier90_keywords"].value
+            inputpp = w90_overrides["pw2wannier90"].value
             assert inputpp["spin_component"] == "up"
-            w90_params = w90_overrides["w90_keywords"].value
+            w90_params = w90_overrides["wannier90"].value
             assert w90_params["write_u_matrices"] is True
             assert w90_params["write_xyz"] is True
 
@@ -338,9 +338,9 @@ class TestSinglepointDFPTBuild:
         # and pw2wannier90, and each kcw chain reads its channel.
         for suffix, channel, component in (("_up", "up", 1), ("_down", "down", 2)):
             w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"]
-            w90_params = w90_overrides["w90_keywords"].value
+            w90_params = w90_overrides["wannier90"].value
             assert w90_params["spin"] == channel
-            inputpp = w90_overrides["pw2wannier90_keywords"].value
+            inputpp = w90_overrides["pw2wannier90"].value
             assert inputpp["spin_component"] == channel
             assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
 
@@ -386,10 +386,10 @@ class TestSinglepointDFPTBuild:
 
         # Spinor wannierization: spinors on, no channel selection anywhere.
         w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"]
-        w90_params = w90_overrides["w90_keywords"].value
+        w90_params = w90_overrides["wannier90"].value
         assert w90_params["spinors"] is True
         assert "spin" not in w90_params
-        assert not w90_overrides["pw2wannier90_keywords"].value
+        assert not w90_overrides["pw2wannier90"].value
 
     def test_spinor_user_magnetization_wins(self, dfpt_codes, silicon_structure, kmesh):
         """A caller-supplied starting_magnetization survives the domag nudge."""

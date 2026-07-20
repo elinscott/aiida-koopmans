@@ -56,16 +56,16 @@ class WannierizeOverrides(TypedDict, total=False):
     * ``scf`` / ``nscf`` — ``PwBaseWorkChain``-protocol override dicts for
       the shared scf/nscf pair (upstream shape, consumed verbatim by
       :func:`RunScfNscf`).
-    * ``w90_keywords`` — a flat ``.win`` keyword dict (e.g.
+    * ``wannier90`` — a flat ``.win`` keyword dict (e.g.
       ``{"dis_froz_max": 10.6}``) applied to every block's wannier90.
-    * ``pw2wannier90_keywords`` — a flat ``INPUTPP`` keyword dict (e.g.
+    * ``pw2wannier90`` — a flat ``INPUTPP`` keyword dict (e.g.
       ``{"write_unk": True}``) applied to every block's pw2wannier90.
     """
 
     scf: dict[str, Any]
     nscf: dict[str, Any]
-    w90_keywords: dict[str, Any]
-    pw2wannier90_keywords: dict[str, Any]
+    wannier90: dict[str, Any]
+    pw2wannier90: dict[str, Any]
 
 
 class WannierizeBlockOutputs(TypedDict):
@@ -115,7 +115,7 @@ def WannierizeBlock(
     """Wannierise a single projection block off the shared nscf scratch.
 
     ``overrides`` is the flat :class:`WannierizeOverrides`; this block-level
-    graph consumes its ``w90_keywords`` / ``pw2wannier90_keywords`` entries
+    graph consumes its ``wannier90`` / ``pw2wannier90`` entries
     (the ``scf`` / ``nscf`` entries belong to the shared scf+nscf pair and
     are ignored here). This function is the single place the flat keyword
     dicts are wrapped into the upstream builder's namespace-mirroring
@@ -135,8 +135,8 @@ def WannierizeBlock(
     * forces ``write_hr=True`` and ``aiida.chk`` retrieval.
     """
     overrides = overrides or {}
-    w90_keywords = overrides.get("w90_keywords")
-    pw2wannier90_keywords = overrides.get("pw2wannier90_keywords")
+    wannier90 = overrides.get("wannier90")
+    pw2wannier90 = overrides.get("pw2wannier90")
 
     # The ONLY place the upstream override nesting is produced. The protocol
     # overrides mirror the workchain's input namespace tree: base-workchain
@@ -146,11 +146,11 @@ def WannierizeBlock(
     # namelist. Callers supply the flat :class:`WannierizeOverrides` and
     # never touch this shape.
     builder_overrides: dict[str, Any] = {}
-    if w90_keywords:
-        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(w90_keywords)}}
-    if pw2wannier90_keywords:
+    if wannier90:
+        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
+    if pw2wannier90:
         builder_overrides["pw2wannier90"] = {
-            "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90_keywords)}}
+            "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}
         }
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
@@ -185,7 +185,7 @@ def WannierizeBlock(
     # num_bands == num_wann cannot disentangle, so strip the (globally
     # supplied) windows outright.
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
-        if "dis_num_iter" not in (w90_keywords or {}):
+        if "dis_num_iter" not in (wannier90 or {}):
             w90_params["dis_num_iter"] = 5000
     else:
         for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
@@ -281,7 +281,7 @@ def WannierizeBlocks(
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
             keys (``scf`` / ``nscf`` pw-protocol dicts feed
-            :func:`RunScfNscf`; ``w90_keywords`` / ``pw2wannier90_keywords``
+            :func:`RunScfNscf`; ``wannier90`` / ``pw2wannier90``
             flat keyword dicts feed every per-block wannier builder). Never
             the upstream namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
