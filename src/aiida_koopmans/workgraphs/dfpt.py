@@ -851,7 +851,9 @@ def SinglepointDFPTWorkflow(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
-    def _wannierize_manifold(blocks: list, wannier_overrides: dict[str, Any]) -> dict[str, Any]:
+    def _wannierize_manifold(
+        blocks: list, wannier_overrides: WannierizeOverrides
+    ) -> dict[str, Any]:
         """Wannierise each of a manifold's blocks (native for-loop fan-out).
 
         Returns the per-block wannier90 ``retrieved`` sockets keyed so
