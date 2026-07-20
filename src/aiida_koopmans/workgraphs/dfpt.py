@@ -685,6 +685,42 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> WannierizeOve
     return defaults
 
 
+def _manifold_wannier_overrides(
+    spin: SpinType, channel: SpinChannel, overrides: WannierizeOverrides
+) -> WannierizeOverrides:
+    """Assemble the flat wannier overrides for one channel's manifolds.
+
+    Tight wannier90 convergence defaults (guiding centres keep the
+    minimisation near the projection guess so the Wannier functions land in a
+    reproducible minimum), the caller's ``overrides`` on top, and the channel
+    staging/selection keys (:func:`_channel_w90_defaults`, kcw-chain
+    requirements) force-merged last. All flat :class:`WannierizeOverrides` —
+    :func:`WannierizeBlock` wraps the keyword dicts into the upstream builder
+    namespace.
+    """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    wannier_defaults: dict[str, Any] = {
+        "guiding_centres": True,
+        "num_iter": 10000,
+        "conv_tol": 1.0e-10,
+        "conv_window": 5,
+    }
+    channel_defaults = _channel_w90_defaults(spin, channel)
+    wannier90 = recursive_merge(
+        recursive_merge(wannier_defaults, dict(overrides.get("wannier90", {}))),
+        channel_defaults.get("wannier90", {}),
+    )
+    wannier_overrides: WannierizeOverrides = {"wannier90": wannier90}
+    pw2wannier90 = recursive_merge(
+        dict(overrides.get("pw2wannier90", {})),
+        channel_defaults.get("pw2wannier90", {}),
+    )
+    if pw2wannier90:
+        wannier_overrides["pw2wannier90"] = pw2wannier90
+    return wannier_overrides
+
+
 @task.graph
 def SinglepointDFPTWorkflow(
     codes: Codes,
@@ -845,31 +881,7 @@ def SinglepointDFPTWorkflow(
         channel_key = str(channel_key)
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
-        # Tight wannier90 convergence defaults: guiding centres keep the
-        # minimisation near the projection guess so the Wannier functions
-        # land in a reproducible minimum. The caller's overrides win over
-        # these; the channel staging/selection keys below are requirements
-        # of the kcw chain and are force-merged on top. All flat
-        # (:class:`WannierizeOverrides`) — :func:`WannierizeBlock` wraps the
-        # keyword dicts into the upstream builder namespace.
-        wannier_defaults: dict[str, Any] = {
-            "guiding_centres": True,
-            "num_iter": 10000,
-            "conv_tol": 1.0e-10,
-            "conv_window": 5,
-        }
-        channel_defaults = _channel_w90_defaults(spin, channel)
-        wannier90 = recursive_merge(
-            recursive_merge(wannier_defaults, dict(overrides.get("wannier90", {}))),
-            channel_defaults.get("wannier90", {}),
-        )
-        wannier_overrides: WannierizeOverrides = {"wannier90": wannier90}
-        pw2wannier90 = recursive_merge(
-            dict(overrides.get("pw2wannier90", {})),
-            channel_defaults.get("pw2wannier90", {}),
-        )
-        if pw2wannier90:
-            wannier_overrides["pw2wannier90"] = pw2wannier90
+        wannier_overrides = _manifold_wannier_overrides(spin, channel, overrides)
 
         occ_blocks = manifold["occ"]
         alpha_guess = manifold.get("alpha_guess")
