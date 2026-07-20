@@ -105,9 +105,19 @@ def generate_upf_data(aiida_profile):
     from aiida_pseudo.data.pseudo.upf import UpfData
 
     def _generate_upf_data(element: str, z_valence: float = 6.0) -> UpfData:
+        # Shaped for the line-based block extractors in
+        # aiida-wannier90-workflows' pseudo utilities: ``<PP_HEADER`` and its
+        # ``/>`` sit on their own lines (sharing a line with the ``<UPF>``
+        # root tag loses the attributes), ``has_so`` is required, and
+        # ``PP_PSWFC`` provides an s+p valence so projection counting works.
         content = (
-            f'<UPF version="2.0.1"><PP_HEADER\nelement="{element}"\n'
-            f'z_valence="{z_valence}"\n/></UPF>\n'
+            f'<UPF version="2.0.1">\n'
+            f'<PP_HEADER\nelement="{element}"\n'
+            f'z_valence="{z_valence}"\nhas_so="F"\n/>\n'
+            f"<PP_PSWFC>\n"
+            f'<PP_CHI.1 l="0"/>\n<PP_CHI.2 l="1"/>\n'
+            f"</PP_PSWFC>\n"
+            f"</UPF>\n"
         )
         stream = io.BytesIO(content.encode("utf-8"))
         return UpfData(stream, filename=f"{element}.upf")

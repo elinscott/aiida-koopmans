@@ -97,6 +97,29 @@ class WannierizeBlocksOutputs(TypedDict):
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
+def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
+    """Wrap the flat keyword dicts into the upstream builder override shape.
+
+    The ONLY place the upstream override nesting is produced. The protocol
+    overrides mirror the workchain's input namespace tree: base-workchain
+    namespace -> calculation namespace -> ``parameters`` — hence
+    ``wannier90.wannier90.parameters`` for ``.win`` keywords and
+    ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
+    namelist. Callers supply the flat :class:`WannierizeOverrides` and never
+    touch this shape.
+    """
+    wannier90 = overrides.get("wannier90")
+    pw2wannier90 = overrides.get("pw2wannier90")
+    builder_overrides: dict[str, Any] = {}
+    if wannier90:
+        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
+    if pw2wannier90:
+        builder_overrides["pw2wannier90"] = {
+            "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}
+        }
+    return builder_overrides or None
+
+
 @task.graph
 def WannierizeBlock(
     codes: Codes,
@@ -136,28 +159,17 @@ def WannierizeBlock(
     """
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
-    pw2wannier90 = overrides.get("pw2wannier90")
 
-    # The ONLY place the upstream override nesting is produced. The protocol
-    # overrides mirror the workchain's input namespace tree: base-workchain
-    # namespace -> calculation namespace -> ``parameters`` — hence
-    # ``wannier90.wannier90.parameters`` for ``.win`` keywords and
-    # ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
-    # namelist. Callers supply the flat :class:`WannierizeOverrides` and
-    # never touch this shape.
-    builder_overrides: dict[str, Any] = {}
-    if wannier90:
-        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
-    if pw2wannier90:
-        builder_overrides["pw2wannier90"] = {
-            "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}
-        }
+    # ``.build()`` executes this body eagerly, where graph inputs arrive as
+    # provenance-tagged proxies; the family label ends up bound as an SQL
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         protocol=protocol,
-        overrides=builder_overrides or None,
+        overrides=_builder_overrides(overrides),
         pseudo_family=pseudo_family,
         electronic_type=electronic_type,
         spin_type=spin_type,
