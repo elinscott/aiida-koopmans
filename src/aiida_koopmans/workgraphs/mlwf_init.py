@@ -38,7 +38,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.types import ProjectionBlock, SpinChannel, group_blocks_to_merge
 from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks, WannierizeOverrides
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
 from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
@@ -207,7 +207,7 @@ def MlwfInitialization(
     gamma_only: bool = False,
     pseudo_family: str | None = None,
     wannier_protocol: str | None = None,
-    wannier_overrides: dict[str, Any] | None = None,
+    wannier_overrides: WannierizeOverrides | None = None,
     options: dict[str, Any] | None = None,
 ) -> MlwfInitializationOutputs:
     """Initialise the variational orbitals from (projected) Wannier functions.

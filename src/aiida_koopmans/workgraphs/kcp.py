@@ -41,6 +41,7 @@ from aiida_koopmans.utils import (
     resolve_pseudo_family_task,
 )
 from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
@@ -811,7 +812,7 @@ def KoopmansDSCFWorkflow(
     kpoints: orm.KpointsData | None = None,
     gamma_only: bool = False,
     wannier_protocol: str | None = None,
-    wannier_overrides: dict[str, Any] | None = None,
+    wannier_overrides: WannierizeOverrides | None = None,
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
