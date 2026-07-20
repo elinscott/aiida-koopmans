@@ -9,7 +9,6 @@ tight tolerances.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -18,13 +17,6 @@ import pytest
 from aiida_koopmans import ui_helpers
 
 DATA_DIR = Path(__file__).parent / "data" / "ui"
-
-
-@pytest.fixture(scope="module")
-def si_reference() -> dict:
-    """Load the silicon reference data."""
-    with open(DATA_DIR / "si_ui_reference.json") as handle:
-        return json.load(handle)
 
 
 @pytest.fixture(scope="module")

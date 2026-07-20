@@ -49,26 +49,6 @@ def dfpt_codes(aiida_localhost):
 
 
 @pytest.fixture
-def silicon_structure(aiida_profile):
-    from aiida.orm import StructureData
-
-    cell = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
-    struct = StructureData(cell=cell, pbc=True)
-    struct.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
-    struct.append_atom(position=(1.3575, 1.3575, 1.3575), symbols="Si", name="Si")
-    return struct
-
-
-@pytest.fixture
-def kmesh(aiida_profile):
-    from aiida.orm import KpointsData
-
-    kpts = KpointsData()
-    kpts.set_kpoints_mesh([2, 2, 2])
-    return kpts
-
-
-@pytest.fixture
 def bands_path(aiida_profile):
     from aiida.orm import KpointsData
 
@@ -353,10 +333,10 @@ class TestSinglepointDFPTBuild:
         # pw2wannier90 must read the up channel of the nspin=2 scratch, and
         # the wannier90 runs must write the files kcw.x consumes.
         for wannierize in ("wannierize_occ", "wannierize_emp"):
-            w90_overrides = wg.tasks[wannierize].inputs["overrides"].value
-            inputpp = w90_overrides["pw2wannier90"]["pw2wannier90"]["parameters"]["INPUTPP"]
+            w90_overrides = wg.tasks[wannierize].inputs["overrides"]
+            inputpp = w90_overrides["pw2wannier90"].value
             assert inputpp["spin_component"] == "up"
-            w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+            w90_params = w90_overrides["wannier90"].value
             assert w90_params["write_u_matrices"] is True
             assert w90_params["write_xyz"] is True
 
@@ -471,10 +451,10 @@ class TestSinglepointDFPTBuild:
         # Each channel's wannierization selects its spin in both wannier90
         # and pw2wannier90, and each kcw chain reads its channel.
         for suffix, channel, component in (("_up", "up", 1), ("_down", "down", 2)):
-            w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"].value
-            w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+            w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"]
+            w90_params = w90_overrides["wannier90"].value
             assert w90_params["spin"] == channel
-            inputpp = w90_overrides["pw2wannier90"]["pw2wannier90"]["parameters"]["INPUTPP"]
+            inputpp = w90_overrides["pw2wannier90"].value
             assert inputpp["spin_component"] == channel
             assert wg.tasks[f"dfpt{suffix}"].inputs["spin_component"].value == component
 
@@ -519,11 +499,11 @@ class TestSinglepointDFPTBuild:
         assert "tot_magnetization" not in scf_system
 
         # Spinor wannierization: spinors on, no channel selection anywhere.
-        w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"].value
-        w90_params = w90_overrides["wannier90"]["wannier90"]["parameters"]
+        w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"]
+        w90_params = w90_overrides["wannier90"].value
         assert w90_params["spinors"] is True
         assert "spin" not in w90_params
-        assert "pw2wannier90" not in w90_overrides
+        assert not w90_overrides["pw2wannier90"].value
 
     def test_spinor_user_magnetization_wins(self, dfpt_codes, silicon_structure, kmesh):
         """A caller-supplied starting_magnetization survives the domag nudge."""

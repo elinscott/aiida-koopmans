@@ -23,10 +23,15 @@ from tests.fixtures import (  # noqa: F401
     fake_cutoffs_family,
     fake_upf,
     generate_upf_data,
+    kcp_code,
+    kmesh,
+    ozone_pseudo_family,
     ozone_pseudos,
     ozone_real_pseudos,
     ozone_structure,
     periodic_ozone_structure,
+    si_reference,
+    silicon_structure,
 )
 
 pytest_plugins = ["aiida.tools.pytest_fixtures"]

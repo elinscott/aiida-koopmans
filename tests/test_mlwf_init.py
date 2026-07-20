@@ -213,20 +213,6 @@ def mlwf_codes(aiida_localhost):
 
 
 @pytest.fixture
-def ozone_pseudo_family(ozone_real_pseudos):
-    """Register (or fetch) a one-pseudo family covering ozone's O kind."""
-    from aiida_pseudo.groups.family import PseudoPotentialFamily
-
-    family, _ = PseudoPotentialFamily.collection.get_or_create(label="test-ozone-family")
-    if family.count() == 0:
-        pseudo = ozone_real_pseudos["O"]
-        if not pseudo.is_stored:
-            pseudo.store()
-        family.add_nodes([pseudo])
-    return family.label
-
-
-@pytest.fixture
 def kmesh(aiida_profile):
     """Return the explicit k-mesh matching the [2, 1, 1] test kgrid."""
     from aiida.orm import KpointsData
@@ -273,10 +259,6 @@ class TestMlwfInitializationGraphBuild:
 
 
 class TestKoopmansDSCFPeriodicMlwfsBuild:
-    @pytest.fixture
-    def kcp_code(self, aiida_local_code_factory):
-        return aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
-
     def test_outer_graph_takes_the_wannier_init_route(
         self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh
     ):
