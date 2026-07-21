@@ -463,3 +463,98 @@ class TestDecomposeCrossPower:
             ml_helpers.build_orbital_density_dataset(
                 descriptors=[[1.0]], alphas=[0.5, 0.6], filled=[True], labels=["a"]
             )
+
+
+class TestAssembleOrbitalDensityDataset:
+    """Block-to-alpha alignment for the orbital_density (decompose) route.
+
+    These tests are the discriminators the live-daemon regression will later
+    corroborate: blocks carry distinguishable descriptor values so a wrong
+    concatenation order (empty-before-filled, down-before-up, or block
+    reordering within a slot) changes the asserted row order.
+    """
+
+    def test_filled_before_empty_single_channel(self):
+        """Discriminator: occ rows must precede emp rows, with matching alphas."""
+        block_descriptors = {"occ": [[1.0], [2.0]], "emp": [[10.0], [20.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5, 0.6]}}
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert ds["descriptors"] == [[1.0], [2.0], [10.0], [20.0]]
+        assert ds["alphas"] == [0.1, 0.2, 0.5, 0.6]
+        assert ds["filled"] == [True, True, False, False]
+        assert ds["labels"] == ["orb_1", "orb_2", "orb_3", "orb_4"]
+
+    def test_multi_block_within_slot_keeps_group_order(self):
+        """Two occupied blocks concatenate in MergeGroup ``blocks`` order."""
+        block_descriptors = {"a": [[1.0]], "b": [[2.0], [3.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "a"}, {"label": "b"}]},
+        ]
+        alphas = {"filled": {"none": [0.1, 0.2, 0.3]}, "empty": {}}
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert ds["descriptors"] == [[1.0], [2.0], [3.0]]
+        assert ds["filled"] == [True, True, True]
+
+    def test_spin_channels_up_before_down(self):
+        """Discriminator: the up channel's orbitals precede the down channel's."""
+        block_descriptors = {
+            "up_occ": [[1.0]],
+            "up_emp": [[2.0]],
+            "down_occ": [[11.0]],
+            "down_emp": [[12.0]],
+        }
+        merge_groups = [
+            {"filled": True, "spin": "down", "blocks": [{"label": "down_occ"}]},
+            {"filled": False, "spin": "up", "blocks": [{"label": "up_emp"}]},
+            {"filled": True, "spin": "up", "blocks": [{"label": "up_occ"}]},
+            {"filled": False, "spin": "down", "blocks": [{"label": "down_emp"}]},
+        ]
+        alphas = {
+            "filled": {"up": [0.1], "down": [0.3]},
+            "empty": {"up": [0.2], "down": [0.4]},
+        }
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        # up (filled, empty) then down (filled, empty), regardless of group list order.
+        assert ds["descriptors"] == [[1.0], [2.0], [11.0], [12.0]]
+        assert ds["alphas"] == [0.1, 0.2, 0.3, 0.4]
+        assert ds["filled"] == [True, False, True, False]
+        assert ds["labels"] == ["up_orb_1", "up_orb_2", "down_orb_1", "down_orb_2"]
+
+    def test_length_mismatch_raises(self):
+        """A block-WF / alpha count mismatch is a hard error, not silent truncation."""
+        block_descriptors = {"occ": [[1.0], [2.0]]}
+        merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+        alphas = {"filled": {"none": [0.1]}, "empty": {}}  # 2 WFs vs 1 alpha
+        with pytest.raises(ValueError, match="Filled Wannier-function / alpha mismatch"):
+            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+
+    def test_missing_block_descriptors_raises(self):
+        merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+        alphas = {"filled": {"none": [0.1]}, "empty": {}}
+        with pytest.raises(ValueError, match="No descriptors for block `occ`"):
+            ml_helpers.assemble_orbital_density_dataset({}, merge_groups, alphas)
+
+    def test_row_layout_matches_self_hartree_route(self):
+        """Parity: labels/filled/alpha order match build_snapshot_dataset exactly.
+
+        For a closed-shell 2-filled/1-empty case the two routes must produce
+        identical ``labels`` / ``filled`` / ``alphas`` (only the descriptor
+        values differ), so a model trained on either is row-compatible.
+        """
+        alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5]}}
+        # self_hartree reference (descriptors are the per-orbital SH scalars).
+        sh_ref = ml_helpers.build_snapshot_dataset([[7.0, 8.0, 9.0]], alphas)
+        # orbital_density: one occ block (2 WFs) + one emp block (1 WF).
+        block_descriptors = {"occ": [[1.0], [2.0]], "emp": [[3.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        od = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert od["labels"] == sh_ref["labels"]
+        assert od["filled"] == sh_ref["filled"]
+        assert od["alphas"] == sh_ref["alphas"]

@@ -660,6 +660,103 @@ def build_orbital_density_dataset(
     }
 
 
+def _gather_channel_rows(
+    merge_groups: Sequence[Mapping[str, Any]],
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    want_filled: bool,
+    channel: Any,
+) -> list[list[float]]:
+    """Concatenate the descriptor rows of one ``(filled, spin)`` slot.
+
+    Iterates ``merge_groups`` (and each group's ``blocks``) in order, so the
+    row order matches the band order the alphas were gathered in.
+    """
+    rows: list[list[float]] = []
+    for group in merge_groups:
+        if bool(group["filled"]) != want_filled or group["spin"] != channel:
+            continue
+        for block in group["blocks"]:
+            block_rows = block_descriptors.get(block["label"])
+            if block_rows is None:
+                raise ValueError(
+                    f"No descriptors for block `{block['label']}` "
+                    "(present in a merge group but absent from block_descriptors)"
+                )
+            rows.extend([float(x) for x in row] for row in block_rows)
+    return rows
+
+
+def assemble_orbital_density_dataset(
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    merge_groups: Sequence[Mapping[str, Any]],
+    alphas: AlphaScreening,
+) -> SnapshotDataset:
+    """Align per-block Wannier-function descriptors with the screening parameters.
+
+    The decompose route produces descriptors per *projection block* (each
+    block's Wannier functions), whereas the screening parameters live in the
+    per-spin :class:`~aiida_koopmans.types.AlphaScreening` shape. This joins
+    them into a :class:`SnapshotDataset` whose row order is IDENTICAL to
+    :func:`build_snapshot_dataset` (the ``self_hartree`` route), so a model is
+    agnostic to which descriptor produced the training rows:
+
+    * outer loop over spin channels, ordered by spin index (``up`` before
+      ``down``; ``none`` for closed shell);
+    * within a channel, the filled orbitals first, then the empty ones;
+    * within a (channel, filling) slot, the member blocks in
+      :class:`~aiida_koopmans.types.MergeGroup` order, each block's Wannier
+      functions in their own row order.
+
+    :param block_descriptors: ``{block_label: rows}`` where ``rows`` is the
+        block's ``(num_wann, descriptor_dim)`` descriptor matrix (e.g. the
+        output of :func:`cross_power_spectra`).
+    :param merge_groups: the ``(filled, spin, blocks)`` groups (see
+        :class:`~aiida_koopmans.types.MergeGroup`); ``blocks`` entries need a
+        ``label`` (and their row count must match the descriptor matrix).
+    :param alphas: the screening parameters, in ``AlphaScreening`` shape.
+
+    Raises ``ValueError`` on any per-channel length mismatch between the
+    concatenated block Wannier functions and the alpha list — the guard that
+    a silent misordering would otherwise slip past.
+    """
+    filled_alphas = alphas.get("filled", {})
+    empty_alphas = alphas.get("empty", {})
+    channels = sorted(
+        set(filled_alphas) | set(empty_alphas),
+        key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), str(ch)),
+    )
+    if not channels:
+        raise ValueError("No screening parameters provided: `alphas` has no spin channels")
+
+    dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    for channel in channels:
+        filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
+        empty_rows = _gather_channel_rows(merge_groups, block_descriptors, False, channel)
+        channel_filled = [float(a) for a in filled_alphas.get(channel, [])]
+        channel_empty = [float(a) for a in empty_alphas.get(channel, [])]
+        if len(filled_rows) != len(channel_filled):
+            raise ValueError(
+                f"Filled Wannier-function / alpha mismatch for spin channel `{channel}`: "
+                f"{len(filled_rows)} descriptor rows vs {len(channel_filled)} filled alphas"
+            )
+        if len(empty_rows) != len(channel_empty):
+            raise ValueError(
+                f"Empty Wannier-function / alpha mismatch for spin channel `{channel}`: "
+                f"{len(empty_rows)} descriptor rows vs {len(channel_empty)} empty alphas"
+            )
+        # ``.value`` for genuine SpinChannel keys, identity for plain strings;
+        # matches the label convention of :func:`build_snapshot_dataset`.
+        prefix = "" if channel == "none" else f"{getattr(channel, 'value', channel)}_"
+        rows = filled_rows + empty_rows
+        channel_alphas = channel_filled + channel_empty
+        for i, (row, alpha) in enumerate(zip(rows, channel_alphas, strict=True)):
+            dataset["descriptors"].append(row)
+            dataset["alphas"].append(alpha)
+            dataset["filled"].append(i < len(filled_rows))
+            dataset["labels"].append(f"{prefix}orb_{i + 1}")
+    return dataset
+
+
 # ----------------------------------------------------------------------
 # Estimators (sklearn replaced with closed forms)
 # ----------------------------------------------------------------------

@@ -29,7 +29,7 @@ Scope notes:
 from __future__ import annotations
 
 import io
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, TypedDict, cast
 
 from aiida import orm
 from aiida_workgraph import dynamic, task
@@ -38,6 +38,7 @@ from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
@@ -313,6 +314,114 @@ def DecomposeDescriptorsWorkflow(
     )
 
 
+class OrbitalDensityDatasetOutputs(TypedDict):
+    """Outputs of :func:`OrbitalDensityDatasetWorkflow`.
+
+    * ``dataset`` — the per-orbital :class:`SnapshotDataset` for one snapshot,
+      its rows aligned with the snapshot's screening parameters across every
+      projection block.
+    """
+
+    dataset: SnapshotDataset
+
+
+@task
+def compute_block_descriptors(
+    coefficients: orm.ArrayData,
+    group_coefficients: orm.ArrayData,
+    output_parameters: dict,
+) -> orm.ArrayData:
+    """Cross-power descriptor matrix for one block's Wannier functions.
+
+    Wraps :func:`ml_helpers.cross_power_spectra` on the block's decompose
+    parser arrays; the ``(num_wann, descriptor_dim)`` result is stored under
+    the ``descriptors`` array so the gather step can stack blocks by label.
+    """
+    n_max = int(output_parameters["n_max"])
+    l_max = int(output_parameters["l_max"])
+    coeff = coefficients.get_array("coefficients")
+    group = group_coefficients.get_array("group_coefficients")
+    power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+    out = orm.ArrayData()
+    out.set_array("descriptors", power)
+    return out
+
+
+@task
+def align_block_descriptors(
+    block_descriptors: Annotated[dict, dynamic(orm.ArrayData)],
+    merge_groups: list,
+    alphas: dict,
+) -> SnapshotDataset:
+    """Gather the per-block descriptors and align them with the alphas.
+
+    The single gather point of the orbital-density route: consumes the
+    per-block descriptor namespace and returns a :class:`SnapshotDataset`
+    whose row order matches the ``AlphaScreening`` convention (see
+    :func:`ml_helpers.assemble_orbital_density_dataset`).
+    """
+    descriptors_by_label = {
+        label: node.get_array("descriptors").tolist() for label, node in block_descriptors.items()
+    }
+    return ml_helpers.assemble_orbital_density_dataset(
+        descriptors_by_label, merge_groups, cast("AlphaScreening", alphas)
+    )
+
+
+@task.graph
+def OrbitalDensityDatasetWorkflow(
+    code: orm.AbstractCode,
+    nscf_remote_folder: orm.RemoteData,
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    merge_groups: list,
+    alphas: dict,
+    decompose_parameters: dict | None = None,
+    options: dict[str, Any] | None = None,
+) -> OrbitalDensityDatasetOutputs:
+    """Build one snapshot's orbital-density dataset from its Wannierisation.
+
+    Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
+    projection block (each block's ``hr_retrieved`` folder from
+    ``block_wannierizations``, all against the shared ``nscf_remote_folder``),
+    then gathers the per-block power-spectrum descriptors and aligns them with
+    ``alphas`` in ``merge_groups`` order.
+
+    ``merge_groups`` is the ``(filled, spin, blocks)`` partition (each block a
+    ``{"label": ...}`` mapping); ``alphas`` is the snapshot's screening
+    parameters in ``AlphaScreening`` shape.
+    """
+    block_descriptors: dict[str, orm.ArrayData] = {}
+    for group in merge_groups:
+        for block in group["blocks"]:
+            label = block["label"]
+            products = extract_decompose_inputs(block_wannierizations[label]["hr_retrieved"])
+            decompose_inputs: dict[str, Any] = {
+                "code": code,
+                "parent_folder": nscf_remote_folder,
+                "u_mat": products["u_mat"],
+                "centres_xyz": products["centres_xyz"],
+                "centres_file": products["centres_file"],
+                "metadata": {"call_link_label": f"decompose_{label}"},
+            }
+            if decompose_parameters is not None:
+                decompose_inputs["parameters"] = decompose_parameters
+            if options is not None:
+                decompose_inputs["metadata"]["options"] = options
+            decompose = DecomposeTask(**decompose_inputs)
+            block_descriptors[label] = compute_block_descriptors(
+                coefficients=decompose["coefficients"],
+                group_coefficients=decompose["group_coefficients"],
+                output_parameters=decompose["output_parameters"],
+            ).result
+
+    dataset = align_block_descriptors(
+        block_descriptors=block_descriptors,
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+    return OrbitalDensityDatasetOutputs(dataset=dataset)
+
+
 @task.graph
 def TrajectoryWorkflow(
     code: orm.AbstractCode,
@@ -362,14 +471,18 @@ def TrajectoryWorkflow(
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
         if descriptor != "self_hartree":
             raise NotImplementedError(
-                "The `orbital_density` (power-spectrum) descriptor is computed by "
-                "`DecomposeDescriptorsWorkflow` (pw2wannier90 wan_mode='decompose'), "
-                "but the per-snapshot fan-out cannot reach the inputs it needs: "
-                "`KoopmansDSCFWorkflow` exposes only the final-KI supercell "
-                "`remote_folder`, not the primitive-cell nscf scratch or the "
-                "per-block wannierization `hr_retrieved` folders. Splicing the "
-                "descriptor route in requires `KoopmansDSCFOutputs` to additionally "
-                "surface those two sockets. Use `descriptor='self_hartree'`."
+                "The `orbital_density` (power-spectrum) descriptor is implemented "
+                "but gated pending live alignment validation. The full route is "
+                "built and unit-tested — `OrbitalDensityDatasetWorkflow` fans a "
+                "pw2wannier90 wan_mode='decompose' pass out over the per-block "
+                "wannierizations now exposed on `KoopmansDSCFOutputs` "
+                "(`nscf_remote_folder` / `block_wannierizations`), and "
+                "`ml_helpers.assemble_orbital_density_dataset` aligns the per-block "
+                "descriptors with the alphas. The decompose math is reproduced to "
+                "machine precision, but the per-block Wannier-function-to-alpha "
+                "ordering has not yet been confirmed by a live daemon regression "
+                "against the legacy reference, so the guard stays until it is. Use "
+                "`descriptor='self_hartree'` in the meantime."
             )
     if ml_mode == "test" and ml_model is None:
         raise ValueError("ml_mode='test' requires a trained `ml_model`")

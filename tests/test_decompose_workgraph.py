@@ -49,3 +49,52 @@ def test_extract_decompose_inputs_missing_file_raises(aiida_profile):
 
     with pytest.raises(FileNotFoundError, match=r"aiida_u\.mat"):
         extract_decompose_inputs._callable.run_get_node(hr_retrieved=folder)
+
+
+def test_orbital_density_dataset_workflow_fans_out_per_block(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """The multi-block segment builds a decompose pass per block plus a gather.
+
+    Construction-level (nothing runs): mirrors the ``self_hartree`` route's
+    graph-build tests. The end-to-end WF-to-alpha alignment is exercised by
+    the pure-python `assemble_orbital_density_dataset` discriminator tests in
+    `test_ml_helpers.py`; running the graph awaits a daemon regression.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+    blocks = {}
+    for label in ("occ", "emp"):
+        folder = orm.FolderData()
+        folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
+        folder.base.repository.put_object_from_filelike(
+            io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
+        )
+        folder.store()
+        blocks[label] = {
+            "hr_retrieved": folder,
+            "remote_folder": nscf,
+            "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
+        }
+    merge_groups = [
+        {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+        {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+    ]
+    alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
+
+    wg = OrbitalDensityDatasetWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations=blocks,
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+    names = [t.name for t in wg.tasks]
+    # One decompose pass per block, plus the gather/align step.
+    assert "decompose_occ" in names
+    assert "decompose_emp" in names
+    assert any("align_block_descriptors" in n for n in names)

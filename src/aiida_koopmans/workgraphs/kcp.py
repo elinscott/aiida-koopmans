@@ -41,7 +41,10 @@ from aiida_koopmans.utils import (
     resolve_pseudo_family_task,
 )
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
@@ -80,8 +83,8 @@ class KIFinalOutputs(TypedDict):
     remote_folder: orm.RemoteData
 
 
-class KoopmansDSCFOutputs(TypedDict):
-    """Outputs of a full KI-DSCF workflow.
+class _KoopmansDSCFOutputsRequired(TypedDict):
+    """The always-present outputs of a full KI-DSCF workflow.
 
     :class:`KIFinalOutputs` plus ``alphas`` — the converged per-orbital
     screening parameters the final KI consumed (in the
@@ -100,6 +103,30 @@ class KoopmansDSCFOutputs(TypedDict):
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
     alphas: AlphaScreening
+
+
+class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
+    """A full KI-DSCF workflow's outputs, with the Wannier-route-only extras.
+
+    Adds two sockets that only the periodic Wannier-initialisation route
+    (``init_orbitals`` in ``mlwfs`` / ``projwfs``) produces — hence the
+    ``total=False`` split so the molecular Kohn-Sham route can omit them
+    without a graph-output type mismatch:
+
+    * ``nscf_remote_folder`` — the primitive-cell nscf scratch every block
+      was Wannierised off; the ``parent_folder`` a pw2wannier90
+      ``wan_mode='decompose'`` pass reads.
+    * ``block_wannierizations`` — the per-block Wannierisation outputs
+      (keyed by block label), each holding the ``hr_retrieved`` folder with
+      the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
+
+    Together these are the inputs the ``orbital_density`` ML descriptor route
+    (:func:`~aiida_koopmans.workgraphs.ml.DecomposeDescriptorsWorkflow`)
+    consumes.
+    """
+
+    nscf_remote_folder: orm.RemoteData
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 @dataclass(frozen=True)
@@ -925,6 +952,11 @@ def KoopmansDSCFWorkflow(
 
     initial_evc_occupied1 = None
     initial_evc_occupied2 = None
+    # The primitive nscf scratch + per-block Wannierisation outputs the
+    # orbital_density ML descriptor route consumes; only the Wannier route
+    # produces them (see the ``total=False`` KoopmansDSCFOutputs split).
+    nscf_remote_folder = None
+    block_wannierizations = None
     if wannier_init:
         init = MlwfInitialization(
             codes={**cast("dict", codes), "kcp": code},
@@ -953,6 +985,8 @@ def KoopmansDSCFWorkflow(
         dft_remote = init["remote_folder"]
         initial_evc_occupied1 = init["evc_occupied1"]
         initial_evc_occupied2 = init["evc_occupied2"]
+        nscf_remote_folder = init["nscf_remote_folder"]
+        block_wannierizations = init["block_wannierizations"]
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -1118,7 +1152,7 @@ def KoopmansDSCFWorkflow(
         overrides=overrides.get("ki") if overrides else None,
         options=options,
     )
-    return KoopmansDSCFOutputs(
+    outputs = KoopmansDSCFOutputs(
         parameters=ki_final["parameters"],
         eigenvalues=ki_final["eigenvalues"],
         lambdas=ki_final["lambdas"],
@@ -1126,6 +1160,12 @@ def KoopmansDSCFWorkflow(
         remote_folder=ki_final["remote_folder"],
         alphas=screening["alphas"],
     )
+    # The Wannier-route-only sockets: present only when the descriptor route
+    # can be fed (the molecular Kohn-Sham route runs no wannierization).
+    if wannier_init:
+        outputs["nscf_remote_folder"] = cast("orm.RemoteData", nscf_remote_folder)
+        outputs["block_wannierizations"] = cast("dict", block_wannierizations)
+    return outputs
 
 
 @task.graph
