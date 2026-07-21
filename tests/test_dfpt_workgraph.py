@@ -267,6 +267,22 @@ class TestKoopmansDFPTTaskBuild:
         assert "screen" in names
         assert "ham" in names
 
+    @pytest.mark.parametrize("check_spread", [True, False])
+    def test_check_spread_input_controls_the_namelist(
+        self, dfpt_codes, nscf_remote, occ_retrieved, check_spread
+    ):
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            check_spread=check_spread,
+        )
+        screen_params = wg.tasks["screen"].inputs["parameters"].value
+        assert screen_params["SCREEN"]["check_spread"] is check_spread
+
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
@@ -384,6 +400,18 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
+        assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
+
+    def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            check_spread=False,
+        )
+        assert wg.tasks["dfpt"].inputs["check_spread"].value == False  # noqa: E712 — TaggedValue breaks `is`
 
     def test_user_overrides_cannot_disable_nspin2(self, dfpt_codes, silicon_structure, kmesh):
         """The nspin=2 forcing is physics, so it wins over caller overrides."""
