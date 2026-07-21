@@ -267,19 +267,21 @@ class TestKoopmansDFPTTaskBuild:
         assert "screen" in names
         assert "ham" in names
 
-    def test_check_spread_input_controls_the_namelist(self, dfpt_codes, nscf_remote, occ_retrieved):
-        common = {
-            "codes": dfpt_codes,
-            "nscf_remote_folder": nscf_remote,
-            "occ_retrieved": {"b00": occ_retrieved},
-            "num_wann_occ": 4,
-            "num_wann_emp": 0,
-            "kgrid": [2, 2, 2],
-        }
-        for check_spread in (True, False):
-            wg = RunDFPT.build(**common, check_spread=check_spread)
-            screen_params = wg.tasks["screen"].inputs["parameters"].value
-            assert screen_params["SCREEN"]["check_spread"] is check_spread
+    @pytest.mark.parametrize("check_spread", [True, False])
+    def test_check_spread_input_controls_the_namelist(
+        self, dfpt_codes, nscf_remote, occ_retrieved, check_spread
+    ):
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            check_spread=check_spread,
+        )
+        screen_params = wg.tasks["screen"].inputs["parameters"].value
+        assert screen_params["SCREEN"]["check_spread"] is check_spread
 
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
