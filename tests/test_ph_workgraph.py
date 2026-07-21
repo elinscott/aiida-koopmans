@@ -136,7 +136,7 @@ class TestSinglepointDFPTAutoEps:
         wg = SinglepointDFPTWorkflow.build(
             codes=ph_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -151,7 +151,7 @@ class TestSinglepointDFPTAutoEps:
         wg = SinglepointDFPTWorkflow.build(
             codes=ph_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -166,7 +166,7 @@ class TestSinglepointDFPTAutoEps:
             SinglepointDFPTWorkflow.build(
                 codes=codes,
                 structure=silicon_structure,
-                manifolds={"none": {"occ": _block("occ", range(1, 5))}},
+                manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
                 kpoints=kmesh,
                 kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",

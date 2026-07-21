@@ -85,6 +85,46 @@ def _retrieved_folder(names):
     return folder.store()
 
 
+def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
+    """Build a stored FolderData mimicking one block's wannier90 ``retrieved``.
+
+    The files hold synthetic but *parseable* Wannier90 products (the merge
+    path re-reads them), sharing one R-vector list / k-point set across all
+    blocks so they are mergeable. ``u_dis=True`` adds a ``num_wann x
+    num_bands`` disentanglement matrix.
+    """
+    import numpy as np
+    from aiida.orm import FolderData
+
+    from aiida_koopmans.wannier_merge import (
+        generate_wannier_centres_file_contents,
+        generate_wannier_hr_file_contents,
+        generate_wannier_u_file_contents,
+    )
+
+    rng = np.random.default_rng(100 * num_wann + num_bands)
+    rvect = np.array([[0, 0, 0], [1, 0, 0]])
+    weights = [1, 1]
+    kpts = np.array([[0.0, 0.0, 0.0]])
+    ham = rng.random((2, num_wann, num_wann)) + 1j * rng.random((2, num_wann, num_wann))
+    umat = rng.random((1, num_wann, num_wann)) + 1j * rng.random((1, num_wann, num_wann))
+    centres = [[float(i), 0.0, 0.0] for i in range(num_wann)]
+    atom_lines = [
+        "Si       0.00000000      0.00000000      0.00000000",
+        "Si       1.35750000      1.35750000      1.35750000",
+    ]
+
+    folder = FolderData()
+    put = folder.base.repository.put_object_from_bytes
+    put(generate_wannier_hr_file_contents(ham, rvect, weights).encode(), "aiida_hr.dat")
+    put(generate_wannier_u_file_contents(umat, kpts).encode(), "aiida_u.mat")
+    put(generate_wannier_centres_file_contents(centres, atom_lines).encode(), "aiida_centres.xyz")
+    if u_dis:
+        udis = rng.random((1, num_wann, num_bands)) + 1j * rng.random((1, num_wann, num_bands))
+        put(generate_wannier_u_file_contents(udis, kpts).encode(), "aiida_u_dis.mat")
+    return folder.store()
+
+
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
     n = len(include)
     return ExplicitProjectionBlock(
@@ -105,12 +145,12 @@ def _block(label: str, include: range) -> ExplicitProjectionBlock:
 
 class TestPrepareKcwWannierFiles:
     def test_occ_only(self, aiida_profile, occ_retrieved):
-        outputs = prepare_kcw_wannier_files._callable(occ_retrieved)
+        outputs = prepare_kcw_wannier_files._callable(occ_b00=occ_retrieved)
         names = sorted(outputs["wannier_files"].base.repository.list_object_names())
         assert names == ["aiida_centres.xyz", "aiida_hr.dat", "aiida_u.mat"]
 
     def test_emp_files_are_renamed(self, aiida_profile, occ_retrieved, emp_retrieved):
-        outputs = prepare_kcw_wannier_files._callable(occ_retrieved, emp_retrieved)
+        outputs = prepare_kcw_wannier_files._callable(occ_b00=occ_retrieved, emp_b00=emp_retrieved)
         merged = outputs["wannier_files"]
         names = sorted(merged.base.repository.list_object_names())
         assert names == [
@@ -133,7 +173,70 @@ class TestPrepareKcwWannierFiles:
         incomplete.base.repository.put_object_from_bytes(b"x", "aiida_hr.dat")
         incomplete.store()
         with pytest.raises(ValueError, match="write_u_matrices"):
-            prepare_kcw_wannier_files._callable(incomplete)
+            prepare_kcw_wannier_files._callable(occ_b00=incomplete)
+
+    def test_no_occupied_folder_raises(self, aiida_profile, emp_retrieved):
+        with pytest.raises(ValueError, match="at least one occupied"):
+            prepare_kcw_wannier_files._callable(emp_b00=emp_retrieved)
+
+
+class TestPrepareKcwWannierFilesMultiBlock:
+    """Multi-block manifolds are merged before staging (see test_wannier_merge)."""
+
+    def test_occ_blocks_are_merged(self, aiida_profile):
+        from aiida_koopmans.wannier_merge import (
+            parse_wannier_centres_file_contents,
+            parse_wannier_hr_file_contents,
+            parse_wannier_u_file_shape,
+        )
+
+        outputs = prepare_kcw_wannier_files._callable(
+            occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
+            occ_b01=_wannier_block_folder(num_wann=3, num_bands=3),
+        )
+        merged = outputs["wannier_files"]
+        assert sorted(merged.base.repository.list_object_names()) == [
+            "aiida_centres.xyz",
+            "aiida_hr.dat",
+            "aiida_u.mat",
+        ]
+        ham, _, _ = parse_wannier_hr_file_contents(
+            merged.base.repository.get_object_content("aiida_hr.dat")
+        )
+        assert ham.shape[1:] == (5, 5)
+        assert parse_wannier_u_file_shape(
+            merged.base.repository.get_object_content("aiida_u.mat")
+        ) == (1, 5, 5)
+        centres, atom_lines = parse_wannier_centres_file_contents(
+            merged.base.repository.get_object_content("aiida_centres.xyz")
+        )
+        assert len(centres) == 5
+        assert len(atom_lines) == 2
+
+    def test_disentangled_emp_blocks_extend_u_dis(self, aiida_profile):
+        from aiida_koopmans.wannier_merge import parse_wannier_u_file_shape
+
+        # Empty manifold: 2 + 2 Wannier functions over 6 empty bands; only
+        # the last block is disentangled (u_dis 2 x 4).
+        outputs = prepare_kcw_wannier_files._callable(
+            nbnd_emp=6,
+            occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
+            emp_b00=_wannier_block_folder(num_wann=2, num_bands=2),
+            emp_b01=_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True),
+        )
+        merged = outputs["wannier_files"]
+        assert parse_wannier_u_file_shape(
+            merged.base.repository.get_object_content("aiida_emp_u_dis.mat")
+        ) == (1, 4, 6)
+
+    def test_disentangled_emp_blocks_without_u_dis_raise(self, aiida_profile):
+        with pytest.raises(ValueError, match="u_dis"):
+            prepare_kcw_wannier_files._callable(
+                nbnd_emp=6,
+                occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
+                emp_b00=_wannier_block_folder(num_wann=2, num_bands=2),
+                emp_b01=_wannier_block_folder(num_wann=2, num_bands=4, u_dis=False),
+            )
 
 
 # ----------------------------------------------------------------------
@@ -148,8 +251,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved=occ_retrieved,
-            emp_retrieved=emp_retrieved,
+            occ_retrieved={"b00": occ_retrieved},
+            emp_retrieved={"b00": emp_retrieved},
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -170,8 +273,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved=occ_retrieved,
-            emp_retrieved=emp_retrieved,
+            occ_retrieved={"b00": occ_retrieved},
+            emp_retrieved={"b00": emp_retrieved},
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -190,8 +293,8 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={
                 "none": {
-                    "occ": _block("occ", range(1, 5)),
-                    "emp": _block("emp", range(5, 9)),
+                    "occ": [_block("occ", range(1, 5))],
+                    "emp": [_block("emp", range(5, 9))],
                 }
             },
             kpoints=kmesh,
@@ -241,7 +344,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -251,12 +354,43 @@ class TestSinglepointDFPTBuild:
         assert "wannierize_emp" not in names
         assert "dfpt" in names
 
+    def test_multi_block_manifolds_fan_out_per_block(self, dfpt_codes, silicon_structure, kmesh):
+        """Each block is wannierized separately; the kcw chain sees the totals."""
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={
+                "none": {
+                    "occ": [_block("occ_1", range(1, 3)), _block("occ_2", range(3, 5))],
+                    "emp": [_block("emp_1", range(5, 7)), _block("emp_2", range(7, 9))],
+                }
+            },
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        names = [t.name for t in wg.tasks]
+        for expected in (
+            "wannierize_occ_1",
+            "wannierize_occ_2",
+            "wannierize_emp_1",
+            "wannierize_emp_2",
+            "dfpt",
+        ):
+            assert expected in names, names
+        assert names.count("scf_nscf") == 1
+
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert dfpt_inputs["num_wann_occ"].value == 4
+        assert dfpt_inputs["num_wann_emp"].value == 4
+        assert dfpt_inputs["nbnd_emp"].value == 4
+
     def test_user_overrides_cannot_disable_nspin2(self, dfpt_codes, silicon_structure, kmesh):
         """The nspin=2 forcing is physics, so it wins over caller overrides."""
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": _block("occ", range(1, 5))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -274,12 +408,12 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={
                 "up": {
-                    "occ": _block("occ_up", range(1, 6)),
-                    "emp": _block("emp_up", range(6, 9)),
+                    "occ": [_block("occ_up", range(1, 6))],
+                    "emp": [_block("emp_up", range(6, 9))],
                 },
                 "down": {
-                    "occ": _block("occ_down", range(1, 4)),
-                    "emp": _block("emp_down", range(4, 9)),
+                    "occ": [_block("occ_down", range(1, 4))],
+                    "emp": [_block("emp_down", range(4, 9))],
                 },
             },
             kpoints=kmesh,
@@ -331,7 +465,7 @@ class TestSinglepointDFPTBuild:
             SinglepointDFPTWorkflow.build(
                 codes=dfpt_codes,
                 structure=silicon_structure,
-                manifolds={"up": {"occ": _block("occ_up", range(1, 5))}},
+                manifolds={"up": {"occ": [_block("occ_up", range(1, 5))]}},
                 kpoints=kmesh,
                 kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -345,7 +479,7 @@ class TestSinglepointDFPTBuild:
             codes=dfpt_codes,
             structure=silicon_structure,
             # Spinor manifold: counts doubled; single "none" channel.
-            manifolds={"none": {"occ": _block("occ", range(1, 9))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 9))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -378,7 +512,7 @@ class TestSinglepointDFPTBuild:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": _block("occ", range(1, 9))}},
+            manifolds={"none": {"occ": [_block("occ", range(1, 9))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -425,21 +559,24 @@ class TestDeriveDfptManifolds:
         # l=0 -> 1 orbital) = 8 Wannier functions; nelec=16 makes them all filled.
         occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 0, m_r=[1])]
         emp = [_FakeProjection("Si", 0)]
-        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
+        occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
             nelec=16,
             nbnd=12,
         )
+        (occ_block,) = occ_blocks
+        assert occ_block["label"] == "occ"
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
         assert occ_block["exclude_bands"] == [9, 10, 11, 12]
         assert occ_block["projections"] == ["Si:l=1", "Si:l=0"]
-        assert emp_block is not None
+        (emp_block,) = emp_blocks
+        assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
         assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
-        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
+        assert has_disentangle is True
         assert n_orbitals == 10
 
     def test_hybrid_multiplicity_and_no_empty(self, silicon_structure):
@@ -447,15 +584,17 @@ class TestDeriveDfptManifolds:
 
         # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
         occ = [_FakeProjection("Si", -3)]
-        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
+        occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ],
             nelec=16,
             nbnd=None,
         )
+        (occ_block,) = occ_blocks
         assert occ_block["num_wann"] == 8
         assert occ_block["exclude_bands"] is None
-        assert emp_block is None
+        assert emp_blocks == []
+        assert has_disentangle is False
         assert n_orbitals == 8
 
     def test_straddling_block_raises(self, silicon_structure):
@@ -469,13 +608,45 @@ class TestDeriveDfptManifolds:
                 nbnd=8,
             )
 
-    def test_multi_occupied_blocks_raise(self, silicon_structure):
+    def test_multi_block_manifolds(self, silicon_structure):
+        """Multi-block band layout: consecutive windows, extras on the last block."""
+        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+
+        blocks = [
+            [_FakeProjection("Si", 0)],  # 2 wann: bands 1-2 (occ)
+            [_FakeProjection("Si", 1)],  # 6 wann: bands 3-8 (occ)
+            [_FakeProjection("Si", 0, m_r=[1])],  # 2 wann: bands 9-10 (emp)
+            [_FakeProjection("Si", 0, m_r=[1])],  # 2 wann: bands 11-14 (emp + 2 extra)
+        ]
+        occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
+            structure=silicon_structure,
+            projection_blocks=blocks,
+            nelec=16,
+            nbnd=14,
+        )
+        assert [b["label"] for b in occ_blocks] == ["occ_1", "occ_2"]
+        assert [b["label"] for b in emp_blocks] == ["emp_1", "emp_2"]
+        assert [b["num_wann"] for b in occ_blocks + emp_blocks] == [2, 6, 2, 2]
+        # Every block spans its own window out of 1..nbnd, except the last
+        # empty block, which absorbs the extra disentanglement bands and
+        # only excludes the bands below it.
+        assert occ_blocks[0]["exclude_bands"] == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+        assert occ_blocks[1]["exclude_bands"] == [1, 2, 9, 10, 11, 12, 13, 14]
+        assert emp_blocks[0]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14]
+        assert emp_blocks[0]["num_bands"] == 2
+        assert emp_blocks[1]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert emp_blocks[1]["num_bands"] == 4
+        assert emp_blocks[1]["include_bands"] == [11, 12, 13, 14]
+        assert has_disentangle is True
+        assert n_orbitals == 12
+
+    def test_incomplete_occupied_coverage_raises(self, silicon_structure):
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
         blocks = [[_FakeProjection("Si", 0)], [_FakeProjection("Si", 0)]]  # 2 + 2 occ
-        with pytest.raises(NotImplementedError, match="merge machinery"):
+        with pytest.raises(ValueError, match="occupied projection blocks span"):
             derive_dfpt_manifolds(
-                structure=silicon_structure, projection_blocks=blocks, nelec=8, nbnd=4
+                structure=silicon_structure, projection_blocks=blocks, nelec=12, nbnd=6
             )
 
     def test_odd_electron_count_raises(self, silicon_structure):
@@ -509,7 +680,7 @@ class TestDeriveDfptManifolds:
         # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
         up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
         dn_blocks = [[_FakeProjection("Si", 1)]]  # 6 wann
-        occ_up, emp_up, n_up = derive_dfpt_manifolds(
+        occ_up_blocks, emp_up_blocks, _, n_up = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=up_blocks,
             nelec=14,
@@ -517,7 +688,7 @@ class TestDeriveDfptManifolds:
             spin_channel=SpinChannel.UP,
             nocc=8,
         )
-        occ_dn, emp_dn, n_dn = derive_dfpt_manifolds(
+        occ_dn_blocks, emp_dn_blocks, _, n_dn = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=dn_blocks,
             nelec=14,
@@ -525,13 +696,15 @@ class TestDeriveDfptManifolds:
             spin_channel=SpinChannel.DOWN,
             nocc=6,
         )
+        (occ_up,) = occ_up_blocks
+        (occ_dn,) = occ_dn_blocks
         assert occ_up["label"] == "occ_up"
         assert occ_up["spin"] == SpinChannel.UP
         assert (occ_up["num_wann"], n_up) == (8, 8)
         assert occ_dn["label"] == "occ_down"
         assert occ_dn["spin"] == SpinChannel.DOWN
         assert (occ_dn["num_wann"], n_dn) == (6, 6)
-        assert emp_up is None and emp_dn is None
+        assert emp_up_blocks == [] and emp_dn_blocks == []
 
     def test_spinor_doubles_num_wann_and_uses_nelec_occupations(self, silicon_structure):
         from aiida_koopmans.types import SpinChannel
@@ -542,22 +715,23 @@ class TestDeriveDfptManifolds:
         # nelec=16 bands are singly occupied.
         occ = [_FakeProjection("Si", -3)]  # 8 orbitals -> 16 spinor WFs
         emp = [_FakeProjection("Si", 0)]  # 2 orbitals -> 4 spinor WFs
-        occ_block, emp_block, n_orbitals = derive_dfpt_manifolds(
+        occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
             nelec=16,
             nbnd=22,
             spin_channel=SpinChannel.SPINOR,
         )
+        (occ_block,) = occ_blocks
         assert occ_block["label"] == "occ"
         assert occ_block["spin"] == SpinChannel.SPINOR
         assert occ_block["num_wann"] == 16
         assert occ_block["num_bands"] == 16
         assert occ_block["exclude_bands"] == list(range(17, 23))
-        assert emp_block is not None
+        (emp_block,) = emp_blocks
         assert emp_block["num_wann"] == 4
         assert emp_block["num_bands"] == 6
-        assert emp_block is not None and emp_block["num_bands"] != emp_block["num_wann"]
+        assert has_disentangle is True
         assert n_orbitals == 20
 
 
