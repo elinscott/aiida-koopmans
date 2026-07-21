@@ -28,6 +28,7 @@ dependencies = [
     "aiida-wannier90-workflows>=2.5.0",
     "pydantic-espresso>=0.0.1",
     "node-graph>=0.6.5",
+    "aiida-wannierjl",
 ]
 
 [project.optional-dependencies]
@@ -188,6 +189,7 @@ lint-fix = "ruff check --config pyproject.toml --fix --exit-non-zero-on-fix --sh
 
 [tool.uv.sources]
 aiida-workgraph = { path = "../aiida-workgraph", editable = true }
+aiida-wannierjl = { path = "../aiida-wannierjl", editable = true }
 aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = true }
 node-graph = { path = "../node-graph", editable = true }
 
