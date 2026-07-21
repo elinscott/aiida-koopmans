@@ -38,10 +38,15 @@ Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
   ``num_wann``, one kcw chain. QE reference:
   ``KCW/examples/example05.1`` nspin4 variants.
 
+Screening comes in three mutually exclusive flavours per channel (see
+:func:`RunDFPT`): a caller ``alpha_guess`` (no screen step at all),
+workflow-level orbital grouping (``group_orbitals_tol`` set: cluster the
+Wannier functions by spread and run one ``SCREEN.i_orb`` screen
+calculation per group representative, in parallel), or the default single
+screen calculation solving every orbital.
+
 Current limitations:
 
-* No per-orbital screening fan-out (kcw.x ``i_orb`` grouping): one screen
-  calculation solves all orbitals.
 * No coarse-grid pre-screening (``dfpt_coarse_grid``) and no
   unfold-and-interpolate postprocessing.
 """
@@ -70,6 +75,8 @@ from aiida_koopmans.types import (
     ExplicitProjectionBlock,
     ProjectionBlock,
     SpinChannel,
+    VariationalOrbital,
+    map_key_for,
 )
 from aiida_koopmans.wannier_merge import (
     extend_wannier_u_dis_file_content,
@@ -82,6 +89,11 @@ from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeOverrides
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.variational_orbitals import (
+    assign_orbital_groups,
+    expand_alphas_by_group,
+    extract_spreads_from_wannier90,
+)
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
 # working directory. The wannier90 CalcJob writes its products with the
@@ -284,6 +296,130 @@ def normalize_alpha_guess(
 
 
 @task
+def single_orbital_alpha(alphas: list) -> float:
+    """Extract the one alpha an ``SCREEN.i_orb`` screen run computed.
+
+    A single-orbital kcw.x run prints exactly one ``iwann ... alpha ...``
+    line, so its ``alphas`` output is a one-entry list; anything else means
+    the run did not honour ``i_orb`` and must not be broadcast to a group.
+    """
+    if len(alphas) != 1:
+        raise ValueError(
+            f"An ``i_orb`` screen run must yield exactly one alpha, got {len(alphas)}."
+        )
+    return float(alphas[0])
+
+
+@task
+def alphas_in_orbital_order(
+    *,
+    orbitals: list[VariationalOrbital],
+    filled_alphas: dict | None = None,
+    empty_alphas: dict | None = None,
+) -> list:
+    """Flatten per-orbital alpha dicts into kcw.x orbital order.
+
+    ``filled_alphas`` / ``empty_alphas`` are the broadcast
+    ``{map_key: alpha}`` dicts of :func:`expand_alphas_by_group` — one
+    entry per orbital. The ham step's ``alphas`` input (and kcw.x's
+    ``i_orb`` numbering) wants a flat list, occupied orbitals first, then
+    empty, each in ascending index order.
+    """
+    filled_alphas = filled_alphas or {}
+    empty_alphas = empty_alphas or {}
+    ordered: list[float] = []
+    for filled, source in ((True, filled_alphas), (False, empty_alphas)):
+        subset = sorted((o for o in orbitals if o["filled"] == filled), key=lambda o: o["index"])
+        ordered += [float(source[map_key_for(o)]) for o in subset]
+    return ordered
+
+
+class GroupedScreeningOutputs(TypedDict):
+    """Outputs of :func:`GroupedDFPTScreening`.
+
+    ``alphas`` is the full per-orbital screening-parameter list (occupied
+    then empty, group representatives broadcast onto their members), ready
+    for the ham step.
+    """
+
+    alphas: list
+
+
+@task.graph
+def GroupedDFPTScreening(
+    *,
+    code: orm.AbstractCode,
+    control: dict,
+    wannier: dict,
+    screen_namelist: dict,
+    parent_folder: orm.RemoteData,
+    wannier_files: orm.FolderData,
+    orbitals: list[VariationalOrbital],
+) -> GroupedScreeningOutputs:
+    """Per-group screening fan-out: one ``SCREEN.i_orb`` run per representative.
+
+    A separate ``@task.graph`` (rather than inline in :func:`RunDFPT`)
+    because the fan-out cardinality depends on ``orbitals`` — a *runtime*
+    output of :func:`assign_orbital_groups` (it clusters the wannier90
+    spreads). Inside this deferred body ``orbitals`` is concrete, so the
+    scatter is a native ``for`` loop and the gather a plain dict of
+    per-representative alpha sockets (same shape as
+    ``ComputeOrbitalScreeningParameters`` on the kcp.x route).
+
+    Each representative runs a screen calculation with ``SCREEN.i_orb``
+    set to its (1-based, occupied-then-empty) orbital index off the shared
+    wann2kcw ``parent_folder``; the runs are independent and execute in
+    parallel. ``check_spread`` is forced off: kcw.x's internal self-Hartree
+    grouping is meaningless for a single-orbital solve, and the
+    workflow-level grouping has already decided who shares an alpha.
+
+    ``control`` / ``wannier`` / ``screen_namelist`` are the namelist dicts
+    :func:`RunDFPT` assembled (``screen_namelist`` without ``i_orb`` /
+    ``check_spread``, which this graph owns).
+    """
+    filled_alphas: dict[str, Any] = {}
+    empty_alphas: dict[str, Any] = {}
+    for orbital in orbitals:
+        if not orbital["representative"]:
+            continue
+        key = map_key_for(orbital)
+        namelist = {
+            **dict(screen_namelist),
+            "i_orb": int(orbital["index"]),
+            "check_spread": False,
+        }
+        screen = KcwScreenStep(
+            code=code,
+            parameters={"CONTROL": control, "WANNIER": wannier, "SCREEN": namelist},
+            parent_folder=parent_folder,
+            wannier_files=wannier_files,
+            metadata={"call_link_label": f"screen_{key}"},
+        )
+        alpha = single_orbital_alpha(
+            alphas=screen["alphas"],
+            metadata={"call_link_label": f"alpha_{key}"},
+        )
+        if orbital["filled"]:
+            filled_alphas[key] = alpha.result
+        else:
+            empty_alphas[key] = alpha.result
+
+    expanded = expand_alphas_by_group(
+        filled_rep_alphas=filled_alphas or None,
+        empty_rep_alphas=empty_alphas or None,
+        orbitals=orbitals,
+        metadata={"call_link_label": "expand_alphas_by_group"},
+    )
+    ordered = alphas_in_orbital_order(
+        orbitals=orbitals,
+        filled_alphas=expanded["filled_alphas"],
+        empty_alphas=expanded["empty_alphas"],
+        metadata={"call_link_label": "alphas_in_orbital_order"},
+    )
+    return GroupedScreeningOutputs(alphas=ordered.result)
+
+
+@task
 def alphas_from_guess(alpha_guess: list) -> list:
     """Materialise a caller-provided screening-parameter guess.
 
@@ -301,7 +437,8 @@ class ChannelResults(TypedDict, total=False):
     * ``alphas`` -- the screening parameters fed to the ham step (computed by
       screen, or the caller's guess when screening was skipped).
     * ``screen_parameters`` -- screen-step scalars (:class:`KcwScreenParameters`;
-      absent when screening was skipped).
+      absent when screening was skipped via ``alpha_guess`` or fanned out
+      into per-representative ``i_orb`` runs via ``group_orbitals_tol``).
     * ``ham_parameters`` -- ham-step scalars (:class:`KcwHamParameters`),
       including the KS / KI eigenvalues on the k-grid.
     * ``bands`` -- interpolated Koopmans band structure (present only when a
@@ -492,6 +629,7 @@ def RunDFPT(
     bands_kpoints: orm.KpointsData | None = None,
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
+    group_orbitals_tol: float | None = None,
     has_disentangle: bool = False,
     l_vcut: bool | None = None,
     spin_component: int = 1,
@@ -524,7 +662,17 @@ def RunDFPT(
         eps_inf: macroscopic dielectric constant for the screen step's
             long-range corrections.
         alpha_guess: when given, skip the screen step and feed these alphas
-            straight to ham.
+            straight to ham (takes precedence over ``group_orbitals_tol`` —
+            no screening runs at all).
+        group_orbitals_tol: when set, workflow-level orbital grouping:
+            cluster the Wannier functions by their wannier90 spread (Å²,
+            complete linkage within this tolerance, never across the
+            occupied/empty boundary — :func:`assign_orbital_groups`), run
+            one ``SCREEN.i_orb`` screen calculation per group representative
+            in parallel (:func:`GroupedDFPTScreening`), and broadcast each
+            representative's alpha onto its group before the ham step.
+            ``None`` (default) keeps the single all-orbital screen
+            calculation.
         has_disentangle: whether the empty manifold was disentangled
             (``num_bands != num_wann``).
         l_vcut: Gygi-Baldereschi long-range cutoff (the ``gb_correction``
@@ -538,9 +686,9 @@ def RunDFPT(
             groups orbitals *inside a single kcw.x run* by their self-Hartree
             energy (tolerance hardcoded to 1e-4 in kcw.x) and solves the
             linear-response problem once per group. Distinct from workflow-
-            level orbital grouping (python-side grouping with one per-orbital
-            ``SCREEN.i_orb`` screen calculation per group), which is not yet
-            ported. Only affects the screen step.
+            level orbital grouping (``group_orbitals_tol``). Only affects
+            the single all-orbital screen step; the grouped
+            per-representative ``i_orb`` runs force it off.
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
@@ -586,16 +734,53 @@ def RunDFPT(
 
     outputs = ChannelResults(wann2kc_remote_folder=wann2kc["remote_folder"])
 
-    if alpha_guess is None:
-        screen_namelist: dict[str, Any] = {
-            "tr2": 1.0e-18,
-            "nmix": 4,
-            "niter": 33,
-            # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
-            "check_spread": bool(check_spread),
-        }
-        if eps_inf is not None:
-            screen_namelist["eps_inf"] = eps_inf
+    screen_namelist: dict[str, Any] = {
+        "tr2": 1.0e-18,
+        "nmix": 4,
+        "niter": 33,
+    }
+    if eps_inf is not None:
+        screen_namelist["eps_inf"] = eps_inf
+
+    if alpha_guess is not None:
+        alphas = alphas_from_guess(
+            alpha_guess=list(alpha_guess),
+            metadata={"call_link_label": "alphas_from_guess"},
+        ).result
+    elif group_orbitals_tol is not None:
+        # Workflow-level orbital grouping: cluster the Wannier functions by
+        # their wannier90 spread, then screen one representative per group
+        # with ``SCREEN.i_orb`` (embarrassingly parallel) and broadcast the
+        # alphas. The fan-out cardinality depends on the runtime clustering,
+        # hence the nested deferred graph.
+        spreads = extract_spreads_from_wannier90(
+            occ_retrieved=occ_retrieved,
+            emp_retrieved=emp_retrieved,
+            metadata={"call_link_label": "extract_spreads"},
+        )
+        orbitals = assign_orbital_groups(
+            metric=spreads.result,
+            nelup=int(num_wann_occ),
+            neldw=0,
+            nbnd=int(num_wann_occ) + int(num_wann_emp),
+            spin_polarized=False,
+            tol=group_orbitals_tol,
+            metadata={"call_link_label": "assign_orbital_groups"},
+        )
+        grouped = GroupedDFPTScreening(
+            code=codes["kcw"],
+            control=control,
+            wannier=wannier,
+            screen_namelist=screen_namelist,
+            parent_folder=wann2kc["remote_folder"],
+            wannier_files=wannier_files,
+            orbitals=orbitals.result,
+            metadata={"call_link_label": "grouped_screen"},
+        )
+        alphas = grouped["alphas"]
+    else:
+        # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
+        screen_namelist["check_spread"] = bool(check_spread)
         screen = KcwScreenStep(
             code=codes["kcw"],
             parameters={"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
@@ -605,11 +790,6 @@ def RunDFPT(
         )
         alphas = screen["alphas"]
         outputs["screen_parameters"] = screen["output_parameters"]
-    else:
-        alphas = alphas_from_guess(
-            alpha_guess=list(alpha_guess),
-            metadata={"call_link_label": "alphas_from_guess"},
-        ).result
 
     do_bands = bands_kpoints is not None
     ham_namelist = {
@@ -753,6 +933,7 @@ def SinglepointDFPTWorkflow(
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
     check_spread: bool = True,
+    group_orbitals_tol: float | None = None,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
@@ -791,6 +972,13 @@ def SinglepointDFPTWorkflow(
 
     ``check_spread`` reaches every channel's screen step unchanged (kcw.x's
     internal self-Hartree grouping — see :func:`RunDFPT`).
+
+    ``group_orbitals_tol`` reaches every channel's :func:`RunDFPT`:
+    workflow-level orbital grouping by wannier90 spread with one
+    ``SCREEN.i_orb`` screen calculation per group representative. Each
+    channel clusters its own Wannier functions independently (a channel
+    running from its ``alpha_guess`` skips screening entirely, grouping
+    included).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -918,6 +1106,7 @@ def SinglepointDFPTWorkflow(
             "bands_kpoints": bands_kpoints,
             "eps_inf": eps_inf,
             "alpha_guess": alpha_guess,
+            "group_orbitals_tol": group_orbitals_tol,
             "l_vcut": l_vcut,
             "spin_component": 2 if channel == SpinChannel.DOWN else 1,
             "check_spread": check_spread,

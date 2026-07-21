@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, TypedDict
 
+from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.types import SpinChannel, VariationalOrbital, map_key_for
@@ -211,6 +212,70 @@ def extract_self_hartree_from_kcp(output_parameters: dict) -> list[list[float]]:
     itself is metric-agnostic.
     """
     return output_parameters["orbital_data"]["self-Hartree"]
+
+
+@task
+def extract_spreads_from_wannier90(
+    occ_retrieved: Annotated[dict, dynamic(orm.FolderData)],
+    emp_retrieved: Annotated[dict | None, dynamic(orm.FolderData)] = None,
+) -> list[list[float]]:
+    """Pull per-Wannier-function spreads out of wannier90 ``retrieved`` folders.
+
+    Sibling of :func:`extract_self_hartree_from_kcp` for the DFPT route:
+    reads each block's ``.wout`` (always in the wannier90 ``retrieved``
+    ``FolderData``) with ``aiida_wannier90``'s ``raw_wout_parser`` — the
+    same routine upstream's ``output_parameters`` come from — and
+    concatenates the final-state spreads (Å²) into one row.
+
+    Ordering contract: within each manifold the folders are walked in
+    lexicographic key order (the band-order keying convention of
+    ``prepare_kcw_wannier_files``), occupied manifold first, then empty —
+    exactly the order kcw.x counts its 1-based ``SCREEN.i_orb`` orbital
+    index in.
+
+    Returned as a single-row ``[nspin=1][n_orbitals]`` array so it plugs
+    into :func:`assign_orbital_groups`'s ``metric`` with
+    ``spin_polarized=False`` (a spin-polarized DFPT chain runs one
+    extraction per channel on that channel's folders).
+    """
+    from aiida_wannier90.parsers.wannier90 import raw_wout_parser
+
+    def block_spreads(folder: orm.FolderData, manifold: str) -> list[float]:
+        names = folder.base.repository.list_object_names()
+        wouts = [name for name in names if name.endswith(".wout")]
+        if len(wouts) != 1:
+            raise ValueError(
+                f"Expected exactly one ``.wout`` in a {manifold}-manifold wannier90 "
+                f"retrieved folder, found {wouts or 'none'}."
+            )
+        # Pad the tail: the raw parser reads a few lines past the final-state
+        # WF table (the Omega summary) and would IndexError on a file
+        # truncated right after it, masking the clearer count check below.
+        lines = (
+            folder.base.repository.get_object_content(wouts[0], mode="r").splitlines() + [""] * 6
+        )
+        try:
+            parsed = raw_wout_parser(lines)
+        except (ValueError, IndexError, KeyError) as exc:
+            raise ValueError(
+                f"Failed to parse the {manifold}-manifold ``{wouts[0]}`` for the "
+                f"final-state Wannier spreads: {exc}"
+            ) from exc
+        wfs = parsed.get("wannier_functions_output") or []
+        if len(wfs) != parsed.get("number_wfs"):
+            raise ValueError(
+                f"Parsed {len(wfs)} final-state Wannier functions from ``{wouts[0]}`` "
+                f"but the run declares {parsed.get('number_wfs')}."
+            )
+        return [float(wf["wf_spreads"]) for wf in sorted(wfs, key=lambda wf: wf["wf_ids"])]
+
+    spreads: list[float] = []
+    for key in sorted(occ_retrieved):
+        spreads += block_spreads(occ_retrieved[key], "occupied")
+    emp = emp_retrieved or {}
+    for key in sorted(emp):
+        spreads += block_spreads(emp[key], "empty")
+    return [spreads]
 
 
 @task

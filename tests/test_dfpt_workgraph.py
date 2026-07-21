@@ -786,3 +786,263 @@ class TestNormalizeAlphaGuess:
         nested = [[0.1, 0.2], [0.3, 0.4]]
         assert normalize_alpha_guess(nested, 2, SpinChannel.UP) == [0.1, 0.2]
         assert normalize_alpha_guess(nested, 2, SpinChannel.DOWN) == [0.3, 0.4]
+
+
+# ----------------------------------------------------------------------
+# Workflow-level orbital grouping (group_orbitals_tol)
+# ----------------------------------------------------------------------
+
+
+def _wout_folder(spreads: list[float]):
+    """Build a stored FolderData holding a minimal parseable ``aiida.wout``."""
+    from aiida.orm import FolderData
+
+    n = len(spreads)
+    lines = [
+        " *---------------------------------- MAIN ------------------------------------*",
+        f" |  Number of Wannier Functions               :                 {n}             |",
+        " *----------------------------------------------------------------------------*",
+        " Final State",
+    ]
+    for i, spread in enumerate(spreads, start=1):
+        lines.append(
+            f"  WF centre and spread {i:5d}  (  0.000000,  0.000000,  0.000000 )    {spread:12.8f}"
+        )
+    lines.append(
+        "     Sum of centres and spreads (  0.000000,  0.000000,  0.000000 )"
+        f"    {sum(spreads):12.8f}"
+    )
+    # The upstream raw parser reads a few lines past the WF table (the
+    # Omega summary); pad so a synthetic file does not run off the end.
+    lines += ["", "", "", ""]
+
+    folder = FolderData()
+    folder.base.repository.put_object_from_bytes("\n".join(lines).encode(), "aiida.wout")
+    return folder.store()
+
+
+def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -> dict:
+    return {
+        "spin": SpinChannel.NONE.value,
+        "index": index,
+        "filled": filled,
+        "group_id": group_id,
+        "representative": representative,
+    }
+
+
+class TestExtractSpreadsFromWannier90:
+    """Unit tests of the spread extractor via its raw ``._callable``."""
+
+    def test_manifold_and_key_order(self, aiida_profile):
+        """Occ blocks (lexicographic key order) come before emp blocks."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_wannier90,
+        )
+
+        metric = extract_spreads_from_wannier90._callable(
+            occ_retrieved={
+                "b01": _wout_folder([3.3]),
+                "b00": _wout_folder([1.1, 2.2]),
+            },
+            emp_retrieved={"b00": _wout_folder([4.4])},
+        )
+        assert metric == [[1.1, 2.2, 3.3, 4.4]]
+
+    def test_occ_only(self, aiida_profile):
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_wannier90,
+        )
+
+        metric = extract_spreads_from_wannier90._callable(
+            occ_retrieved={"b00": _wout_folder([1.5, 0.5])}
+        )
+        assert metric == [[1.5, 0.5]]
+
+    def test_missing_wout_raises(self, aiida_profile, occ_retrieved):
+        """The plain retrieved fixture holds no ``.wout``."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_wannier90,
+        )
+
+        with pytest.raises(ValueError, match=r"exactly one ``\.wout``"):
+            extract_spreads_from_wannier90._callable(occ_retrieved={"b00": occ_retrieved})
+
+    def test_truncated_wf_table_raises(self, aiida_profile):
+        """A ``.wout`` whose declared WF count disagrees with the table is rejected."""
+        from aiida.orm import FolderData
+
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_wannier90,
+        )
+
+        # Declares 2 WFs but the Final State table (and hence the parsed
+        # entries) only holds spreads for a single one.
+        lines = [
+            " *---------------------------------- MAIN ------------------------------------*",
+            " |  Number of Wannier Functions               :                 2             |",
+            " *----------------------------------------------------------------------------*",
+            " Final State",
+            "  WF centre and spread     1  (  0.000000,  0.000000,  0.000000 )      1.10000000",
+            "     Sum of centres and spreads (  0.000000,  0.000000,  0.000000 )      1.10000000",
+            "",
+            "",
+            "",
+            "",
+        ]
+        folder = FolderData()
+        folder.base.repository.put_object_from_bytes("\n".join(lines).encode(), "aiida.wout")
+        with pytest.raises(ValueError, match="Failed to parse"):
+            extract_spreads_from_wannier90._callable(occ_retrieved={"b00": folder.store()})
+
+
+class TestSingleOrbitalAlpha:
+    def test_unwraps_the_single_entry(self):
+        from aiida_koopmans.workgraphs.dfpt import single_orbital_alpha
+
+        assert single_orbital_alpha._callable([0.25]) == 0.25
+
+    def test_multi_entry_list_raises(self):
+        from aiida_koopmans.workgraphs.dfpt import single_orbital_alpha
+
+        with pytest.raises(ValueError, match="exactly one alpha"):
+            single_orbital_alpha._callable([0.25, 0.3])
+
+
+class TestAlphasInOrbitalOrder:
+    def test_occupied_then_empty_ascending(self):
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [
+            _orbital(2, filled=True, group_id=1, representative=False),
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(3, filled=False, group_id=2, representative=True),
+        ]
+        ordered = alphas_in_orbital_order._callable(
+            orbitals=orbitals,
+            filled_alphas={"orb_1": 0.1, "orb_2": 0.2},
+            empty_alphas={"orb_3": 0.3},
+        )
+        assert ordered == [0.1, 0.2, 0.3]
+
+    def test_no_empty_manifold(self):
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [_orbital(1, filled=True, group_id=1, representative=True)]
+        assert alphas_in_orbital_order._callable(
+            orbitals=orbitals, filled_alphas={"orb_1": 0.4}
+        ) == [0.4]
+
+
+class TestGroupedDFPTScreeningBuild:
+    """Eager build of the fan-out graph on concrete (synthetic) orbitals."""
+
+    def _build(self, dfpt_codes, nscf_remote, occ_retrieved, orbitals):
+        from aiida_koopmans.workgraphs.dfpt import GroupedDFPTScreening
+
+        return GroupedDFPTScreening.build(
+            code=dfpt_codes["kcw"],
+            control={"kcw_iverbosity": 1},
+            wannier={"seedname": "aiida"},
+            screen_namelist={"tr2": 1.0e-18},
+            parent_folder=nscf_remote,
+            wannier_files=occ_retrieved,
+            orbitals=orbitals,
+        )
+
+    def test_one_screen_per_representative(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Representatives fan out; group members don't run."""
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=1, representative=False),
+            _orbital(3, filled=True, group_id=2, representative=True),
+            _orbital(4, filled=False, group_id=3, representative=True),
+        ]
+        wg = self._build(dfpt_codes, nscf_remote, occ_retrieved, orbitals)
+        names = [t.name for t in wg.tasks]
+        for expected in ("screen_orb_1", "screen_orb_3", "screen_orb_4"):
+            assert expected in names, names
+        assert "screen_orb_2" not in names
+        assert "expand_alphas_by_group" in names
+        assert "alphas_in_orbital_order" in names
+
+    def test_i_orb_and_check_spread_in_the_namelist(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Each representative's run solves only its orbital, without kcw's internal grouping."""
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=2, representative=True),
+        ]
+        wg = self._build(dfpt_codes, nscf_remote, occ_retrieved, orbitals)
+        for index in (1, 2):
+            screen_params = wg.tasks[f"screen_orb_{index}"].inputs["parameters"].value
+            assert screen_params["SCREEN"]["i_orb"] == index
+            assert screen_params["SCREEN"]["check_spread"] == False  # noqa: E712 — TaggedValue breaks `is`
+            assert screen_params["SCREEN"]["tr2"] == 1.0e-18
+
+
+class TestRunDFPTGrouping:
+    def test_grouping_replaces_the_single_screen(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """With a tolerance set: spread extraction + clustering + deferred fan-out."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            emp_retrieved={"b00": emp_retrieved},
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+            group_orbitals_tol=0.05,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "screen" not in names
+        for expected in ("extract_spreads", "assign_orbital_groups", "grouped_screen", "ham"):
+            assert expected in names, names
+        # The clustering sees one metric row covering occ + emp.
+        group_inputs = wg.tasks["assign_orbital_groups"].inputs
+        assert group_inputs["nelup"].value == 4
+        assert group_inputs["nbnd"].value == 8
+        assert group_inputs["tol"].value == 0.05
+        assert group_inputs["spin_polarized"].value == False  # noqa: E712 — TaggedValue breaks `is`
+
+    def test_alpha_guess_wins_over_grouping(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """A caller guess skips screening entirely, grouping included."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            alpha_guess=[0.3] * 4,
+            group_orbitals_tol=0.05,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "alphas_from_guess" in names
+        for absent in ("screen", "extract_spreads", "grouped_screen"):
+            assert absent not in names, names
+
+
+class TestSinglepointDFPTGrouping:
+    def test_tol_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            group_orbitals_tol=0.05,
+        )
+        assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value == 0.05
+
+    def test_default_keeps_the_single_screen(self, dfpt_codes, silicon_structure, kmesh):
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+        )
+        assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
