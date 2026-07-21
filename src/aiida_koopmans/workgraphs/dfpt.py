@@ -495,7 +495,7 @@ def RunDFPT(
     has_disentangle: bool = False,
     l_vcut: bool | None = None,
     spin_component: int = 1,
-    group_orbitals: bool = True,
+    check_spread: bool = True,
 ) -> ChannelResults:
     """Run the kcw.x chain off provided wannierization outputs.
 
@@ -534,10 +534,13 @@ def RunDFPT(
             scratch's channels are identical); a spin-polarized workflow
             calls this task once per channel. Ignored by kcw.x for
             noncollinear scratches.
-        group_orbitals: kcw.x's ``SCREEN.check_spread`` — despite the name it
-            groups orbitals by their self-Hartree energy (tolerance hardcoded
-            to 1e-4 in kcw.x) and runs the linear-response calculation once
-            per group. Only affects the screen step.
+        check_spread: kcw.x's ``SCREEN.check_spread`` — despite the name it
+            groups orbitals *inside a single kcw.x run* by their self-Hartree
+            energy (tolerance hardcoded to 1e-4 in kcw.x) and solves the
+            linear-response problem once per group. Distinct from workflow-
+            level orbital grouping (python-side grouping with one per-orbital
+            ``SCREEN.i_orb`` screen calculation per group), which is not yet
+            ported. Only affects the screen step.
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
@@ -589,7 +592,7 @@ def RunDFPT(
             "nmix": 4,
             "niter": 33,
             # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
-            "check_spread": bool(group_orbitals),
+            "check_spread": bool(check_spread),
         }
         if eps_inf is not None:
             screen_namelist["eps_inf"] = eps_inf
@@ -749,7 +752,7 @@ def SinglepointDFPTWorkflow(
     eps_inf: float | str | None = None,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
-    group_orbitals: bool = True,
+    check_spread: bool = True,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 
@@ -786,8 +789,8 @@ def SinglepointDFPTWorkflow(
     ``"pw2wannier90"`` feed every per-manifold wannier builder (the
     channel staging keys are force-merged on top per channel).
 
-    ``group_orbitals`` reaches every channel's screen step as
-    ``SCREEN.check_spread`` (self-Hartree grouping — see :func:`RunDFPT`).
+    ``check_spread`` reaches every channel's screen step unchanged (kcw.x's
+    internal self-Hartree grouping — see :func:`RunDFPT`).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -917,7 +920,7 @@ def SinglepointDFPTWorkflow(
             "alpha_guess": alpha_guess,
             "l_vcut": l_vcut,
             "spin_component": 2 if channel == SpinChannel.DOWN else 1,
-            "group_orbitals": group_orbitals,
+            "check_spread": check_spread,
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
 

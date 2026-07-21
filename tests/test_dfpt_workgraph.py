@@ -267,7 +267,7 @@ class TestKoopmansDFPTTaskBuild:
         assert "screen" in names
         assert "ham" in names
 
-    def test_group_orbitals_controls_check_spread(self, dfpt_codes, nscf_remote, occ_retrieved):
+    def test_check_spread_input_controls_the_namelist(self, dfpt_codes, nscf_remote, occ_retrieved):
         common = {
             "codes": dfpt_codes,
             "nscf_remote_folder": nscf_remote,
@@ -276,10 +276,10 @@ class TestKoopmansDFPTTaskBuild:
             "num_wann_emp": 0,
             "kgrid": [2, 2, 2],
         }
-        for group_orbitals in (True, False):
-            wg = RunDFPT.build(**common, group_orbitals=group_orbitals)
+        for check_spread in (True, False):
+            wg = RunDFPT.build(**common, check_spread=check_spread)
             screen_params = wg.tasks["screen"].inputs["parameters"].value
-            assert screen_params["SCREEN"]["check_spread"] is group_orbitals
+            assert screen_params["SCREEN"]["check_spread"] is check_spread
 
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
@@ -398,18 +398,18 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
-        assert dfpt_inputs["group_orbitals"].value == True  # noqa: E712 — TaggedValue breaks `is`
+        assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
 
-    def test_group_orbitals_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
+    def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             kgrid=[2, 2, 2],
-            group_orbitals=False,
+            check_spread=False,
         )
-        assert wg.tasks["dfpt"].inputs["group_orbitals"].value == False  # noqa: E712 — TaggedValue breaks `is`
+        assert wg.tasks["dfpt"].inputs["check_spread"].value == False  # noqa: E712 — TaggedValue breaks `is`
 
     def test_user_overrides_cannot_disable_nspin2(self, dfpt_codes, silicon_structure, kmesh):
         """The nspin=2 forcing is physics, so it wins over caller overrides."""
