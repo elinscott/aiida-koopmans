@@ -28,12 +28,14 @@ Scope notes:
 
 from __future__ import annotations
 
+import io
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans import ml_helpers
+from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import (
@@ -41,6 +43,9 @@ from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
 )
+
+# pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
+DecomposeTask = task(Pw2wannierDecomposeCalculation)
 
 ML_DESCRIPTOR_TYPES = ("self_hartree", "orbital_density")
 ML_MODES = ("none", "train", "test")
@@ -159,6 +164,155 @@ def evaluate_screening_model(
     return EvaluateOutputs(evaluation=evaluation, model=model)
 
 
+# ----------------------------------------------------------------------
+# Orbital-density descriptor via pw2wannier90 ``wan_mode='decompose'``
+# ----------------------------------------------------------------------
+#
+# The ``orbital_density`` power-spectrum descriptor is built from a second
+# pw2wannier90.x pass that decomposes each Wannier-function density (and the
+# group density about each Wannier centre) onto a Gaussian x spherical-harmonic
+# basis. The segment below turns a per-snapshot wannierization's retrieved
+# folder plus the shared nscf scratch into per-orbital descriptors and a
+# :class:`SnapshotDataset`. The alpha source stays route-generic (the dataset
+# builder takes ``alphas`` as an input): kcp.x's converged alphas for the DSCF
+# route today, kcw.x ``screen_parameters`` for the DFPT route later.
+
+
+class DecomposeDescriptorOutputs(TypedDict):
+    """Outputs of :func:`DecomposeDescriptorsWorkflow`.
+
+    * ``dataset`` — a :class:`SnapshotDataset` pairing the per-orbital
+      power-spectrum descriptors with the supplied screening parameters.
+    * ``coefficients`` / ``group_coefficients`` — the raw ``ArrayData`` from
+      the decompose parser, retained so the descriptors can be recomputed or
+      audited from provenance.
+    """
+
+    dataset: SnapshotDataset
+    coefficients: orm.ArrayData
+    group_coefficients: orm.ArrayData
+
+
+@task.calcfunction(outputs=["u_mat", "centres_xyz", "centres_file"])
+def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
+    """Lift the wannier90 read-back files out of a block's retrieved folder.
+
+    The per-block wannierization (with the ``wannier-product-retrieval``
+    settings) forces ``aiida_u.mat`` and ``aiida_centres.xyz`` into the
+    ``retrieved`` ``FolderData``. This calcfunction re-emits them as
+    ``SinglefileData`` and, from the Wannier centres, synthesises the
+    group-density ``centres_file`` (every Wannier centre) so the group
+    density is decomposed about each orbital's own centre.
+    """
+    names = hr_retrieved.base.repository.list_object_names()
+    for filename in ("aiida_u.mat", "aiida_centres.xyz"):
+        if filename not in names:
+            raise FileNotFoundError(
+                f"``{filename}`` is missing from the wannier90 retrieved folder — check "
+                "that the block wannierization forced its retrieval "
+                "(write_u_matrices / write_xyz)."
+            )
+
+    with hr_retrieved.base.repository.open("aiida_u.mat", "rb") as handle:
+        u_mat = orm.SinglefileData(handle, filename="aiida_u.mat")
+    with hr_retrieved.base.repository.open("aiida_centres.xyz", "rb") as handle:
+        centres_xyz = orm.SinglefileData(handle, filename="aiida_centres.xyz")
+
+    xyz_content = hr_retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
+    centres = ml_helpers.parse_wannier_centres_xyz(xyz_content)
+    if not centres:
+        raise ValueError(
+            "No Wannier centres (``X`` rows) found in aiida_centres.xyz; cannot build "
+            "the group-density centres file."
+        )
+    centres_content = ml_helpers.format_group_centres_file(centres)
+    centres_file = orm.SinglefileData(
+        io.BytesIO(centres_content.encode()), filename="gc_centres.dat"
+    )
+
+    return {"u_mat": u_mat, "centres_xyz": centres_xyz, "centres_file": centres_file}
+
+
+@task
+def build_decompose_dataset(
+    coefficients: orm.ArrayData,
+    group_coefficients: orm.ArrayData,
+    output_parameters: dict,
+    alphas: list,
+    filled: list,
+    labels: list,
+) -> SnapshotDataset:
+    """Assemble a :class:`SnapshotDataset` from the decompose parser arrays.
+
+    ``coefficients`` / ``group_coefficients`` are the ``ArrayData`` the
+    :class:`Pw2wannierDecomposeParser` emits; ``alphas`` / ``filled`` /
+    ``labels`` are the per-orbital screening parameters, filled mask and
+    labels, aligned with the Wannier-function order (row order of the
+    coefficient arrays). Keeping the alignment lists as inputs keeps the
+    descriptor source (decompose) and the alpha source (kcp.x / kcw.x)
+    decoupled.
+    """
+    n_max = int(output_parameters["n_max"])
+    l_max = int(output_parameters["l_max"])
+    coeff = coefficients.get_array("coefficients")
+    group = group_coefficients.get_array("group_coefficients")
+    power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+    return ml_helpers.build_orbital_density_dataset(
+        power.tolist(), list(alphas), list(filled), list(labels)
+    )
+
+
+@task.graph
+def DecomposeDescriptorsWorkflow(
+    code: orm.AbstractCode,
+    nscf_remote_folder: orm.RemoteData,
+    hr_retrieved: orm.FolderData,
+    alphas: list,
+    filled: list,
+    labels: list,
+    decompose_parameters: dict | None = None,
+    options: dict[str, Any] | None = None,
+) -> DecomposeDescriptorOutputs:
+    """Turn a wannierization's products into orbital-density descriptors.
+
+    Extracts the wannier90 read-back files from ``hr_retrieved``, runs the
+    ``wan_mode='decompose'`` pw2wannier90.x pass against the shared
+    ``nscf_remote_folder`` scratch, and assembles the per-orbital
+    power-spectrum descriptors into a :class:`SnapshotDataset` paired with the
+    supplied ``alphas`` / ``filled`` / ``labels``.
+    """
+    products = extract_decompose_inputs(hr_retrieved)
+
+    decompose_inputs: dict[str, Any] = {
+        "code": code,
+        "parent_folder": nscf_remote_folder,
+        "u_mat": products["u_mat"],
+        "centres_xyz": products["centres_xyz"],
+        "centres_file": products["centres_file"],
+        "metadata": {"call_link_label": "decompose"},
+    }
+    if decompose_parameters is not None:
+        decompose_inputs["parameters"] = decompose_parameters
+    if options is not None:
+        decompose_inputs["metadata"]["options"] = options
+    decompose = DecomposeTask(**decompose_inputs)
+
+    dataset = build_decompose_dataset(
+        coefficients=decompose["coefficients"],
+        group_coefficients=decompose["group_coefficients"],
+        output_parameters=decompose["output_parameters"],
+        alphas=alphas,
+        filled=filled,
+        labels=labels,
+    )
+
+    return DecomposeDescriptorOutputs(
+        dataset=dataset,
+        coefficients=decompose["coefficients"],
+        group_coefficients=decompose["group_coefficients"],
+    )
+
+
 @task.graph
 def TrajectoryWorkflow(
     code: orm.AbstractCode,
@@ -208,10 +362,14 @@ def TrajectoryWorkflow(
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
         if descriptor != "self_hartree":
             raise NotImplementedError(
-                "The `orbital_density` (power-spectrum) descriptor is not wired up yet: "
-                "the kcp.x CalcJob does not retrieve the trial KI's real-space "
-                "orbital-density files. The descriptor math is available in "
-                "`aiida_koopmans.ml_helpers`. Use `descriptor='self_hartree'`."
+                "The `orbital_density` (power-spectrum) descriptor is computed by "
+                "`DecomposeDescriptorsWorkflow` (pw2wannier90 wan_mode='decompose'), "
+                "but the per-snapshot fan-out cannot reach the inputs it needs: "
+                "`KoopmansDSCFWorkflow` exposes only the final-KI supercell "
+                "`remote_folder`, not the primitive-cell nscf scratch or the "
+                "per-block wannierization `hr_retrieved` folders. Splicing the "
+                "descriptor route in requires `KoopmansDSCFOutputs` to additionally "
+                "surface those two sockets. Use `descriptor='self_hartree'`."
             )
     if ml_mode == "test" and ml_model is None:
         raise ValueError("ml_mode='test' requires a trained `ml_model`")

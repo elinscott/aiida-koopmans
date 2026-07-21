@@ -530,6 +530,137 @@ def compute_power_spectrum(
 
 
 # ----------------------------------------------------------------------
+# Power spectra from pw2wannier90 ``wan_mode='decompose'`` coefficients
+# ----------------------------------------------------------------------
+#
+# The reciprocal-space decompose feature of pw2wannier90.x writes, per
+# Wannier function, an orbital-density coefficient vector (``<seed>_N.coeff``)
+# and, about the same centre, a group-density coefficient vector
+# (``<seed>_gc_N.coeff``). These two vectors play exactly the roles of the
+# legacy "orbital density" and "total density" channels, so the cross-power
+# assembly reuses :func:`compute_power_spectrum` unchanged (orbital = channel
+# 0, group = channel 1) — the resulting descriptor has the same orb-orb,
+# orb-group, group-group block layout as legacy ``compute_power_mat``.
+
+
+def orbital_power_block_length(n_max: int, l_max: int) -> int:
+    """Return the orbital-only power length ``(l_max+1)*n_max*(n_max+1)/2``.
+
+    Matches the length of the QE ``<seed>_N.power`` file and the first block
+    of :func:`compute_power_mat` (the ``orb-orb`` channel).
+    """
+    return (l_max + 1) * n_max * (n_max + 1) // 2
+
+
+def orbital_power_from_coefficients(
+    orbital_coefficients: np.ndarray, n_max: int, l_max: int
+) -> np.ndarray:
+    """Orbital-only power spectrum from a single ``.coeff`` vector.
+
+    Equals the QE ``<seed>_N.power`` file (and the leading ``orb-orb`` block
+    of :func:`compute_power_spectrum`): ``p_{n1 n2 l} = sum_m c(n1,l,m)
+    c(n2,l,m)`` for ``n1 <= n2``. Used as the internal-consistency check
+    against the binary's own ``.power`` output.
+    """
+    full = compute_power_spectrum(orbital_coefficients, orbital_coefficients, n_max, l_max)
+    return full[: orbital_power_block_length(n_max, l_max)]
+
+
+def cross_power_spectra(
+    coefficients: np.ndarray,
+    group_coefficients: np.ndarray,
+    n_max: int,
+    l_max: int,
+) -> np.ndarray:
+    """Assemble the per-WF cross-power descriptor from decompose coefficients.
+
+    :param coefficients: ``(num_wann, n_coeff)`` orbital-density coefficients
+        (row ``i`` is Wannier function ``i``), the ``coefficients`` array of
+        :class:`Pw2wannierDecomposeParser`.
+    :param group_coefficients: ``(num_wann, n_coeff)`` group-density
+        coefficients about each Wannier centre (the ``group_coefficients``
+        array); row ``i`` must be the group density about WF ``i``'s centre.
+
+    Returns a ``(num_wann, n_power_full)`` array whose row ``i`` is the
+    orb-orb / orb-group / group-group power spectrum of WF ``i`` in legacy
+    ``compute_power_mat`` order.
+    """
+    coefficients = np.asarray(coefficients, dtype=float)
+    group_coefficients = np.asarray(group_coefficients, dtype=float)
+    if coefficients.shape != group_coefficients.shape:
+        raise ValueError(
+            f"orbital and group coefficient arrays must have the same shape, got "
+            f"{coefficients.shape} vs {group_coefficients.shape}"
+        )
+    return np.array(
+        [
+            compute_power_spectrum(coefficients[i], group_coefficients[i], n_max, l_max)
+            for i in range(coefficients.shape[0])
+        ],
+        dtype=float,
+    )
+
+
+def parse_wannier_centres_xyz(xyz_content: str) -> list[list[float]]:
+    """Extract the Wannier-centre coordinates from a wannier90 ``_centres.xyz`` file.
+
+    wannier90's ``write_xyz`` labels the Wannier-function centres with the
+    ``X`` pseudo-species (the real atoms follow with their element symbols).
+    Returns the ``X`` rows as ``[x, y, z]`` Cartesian-Angstrom triples, in
+    file order (i.e. Wannier-function order).
+    """
+    centres: list[list[float]] = []
+    for line in xyz_content.splitlines():
+        tokens = line.split()
+        if len(tokens) >= 4 and tokens[0] == "X":
+            centres.append([float(t) for t in tokens[1:4]])
+    return centres
+
+
+def format_group_centres_file(centres: Sequence[Sequence[float]]) -> str:
+    """Render centres for pw2wannier90's ``decompose_centres_file``.
+
+    One Cartesian-Angstrom triple per line; the leading ``#`` line is a
+    comment the QE reader skips. Passing every Wannier centre here makes the
+    group (total) density be decomposed about each orbital's own centre, so
+    the resulting ``_gc_N.coeff`` aligns with the orbital ``_N.coeff`` for the
+    legacy-comparable cross-power.
+    """
+    header = "# Wannier centres for the group-density decomposition (Cartesian, Angstrom)\n"
+    return header + "".join(f"{c[0]:.10f} {c[1]:.10f} {c[2]:.10f}\n" for c in centres)
+
+
+def build_orbital_density_dataset(
+    descriptors: Sequence[Sequence[float]],
+    alphas: Sequence[float],
+    filled: Sequence[bool],
+    labels: Sequence[str],
+) -> SnapshotDataset:
+    """Assemble a :class:`SnapshotDataset` from aligned per-orbital rows.
+
+    Route-agnostic: the caller supplies aligned per-orbital ``descriptors``
+    (e.g. the rows of :func:`cross_power_spectra`), the screening parameters
+    ``alphas`` those orbitals were computed to have (kcp.x for DSCF today,
+    kcw.x ``screen_parameters`` for DFPT later), the ``filled`` mask, and the
+    ``labels``. This keeps the descriptor source and the alpha source
+    decoupled, mirroring :func:`build_snapshot_dataset` for the
+    ``self_hartree`` route.
+    """
+    n = len(descriptors)
+    if not (len(alphas) == len(filled) == len(labels) == n):
+        raise ValueError(
+            "descriptors, alphas, filled and labels must be the same length "
+            f"({n}, {len(alphas)}, {len(filled)}, {len(labels)})"
+        )
+    return {
+        "descriptors": [[float(x) for x in row] for row in descriptors],
+        "alphas": [float(a) for a in alphas],
+        "filled": [bool(f) for f in filled],
+        "labels": [str(label) for label in labels],
+    }
+
+
+# ----------------------------------------------------------------------
 # Estimators (sklearn replaced with closed forms)
 # ----------------------------------------------------------------------
 

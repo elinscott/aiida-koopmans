@@ -376,3 +376,90 @@ class TestScreeningModel:
         assert metrics["mae"] == pytest.approx(0.5)
         assert metrics["max_abs_error"] == pytest.approx(1.0)
         assert metrics["rmse"] == pytest.approx(np.sqrt((0.0 + 0.25 + 1.0) / 3))
+
+
+class TestDecomposeCrossPower:
+    """Cross-power assembly from pw2wannier90 ``wan_mode='decompose'`` output."""
+
+    @staticmethod
+    def _qe_orbital_power(coeff, n_max, l_max):
+        """Compute the reference orbital-only power, mirroring QE ``wdcp_power_orb``.
+
+        Ordering: outer n1, then n2>=n1, then l; entry = sum_m c(n1,l,m) c(n2,l,m)
+        with the flat index ``(n-1)*(l_max+1)^2 + l^2 + m``.
+        """
+        out = []
+        for n1 in range(n_max):
+            for n2 in range(n1, n_max):
+                for l in range(l_max + 1):
+                    ib1 = n1 * (l_max + 1) ** 2 + l**2
+                    ib2 = n2 * (l_max + 1) ** 2 + l**2
+                    out.append(sum(coeff[ib1 + m] * coeff[ib2 + m] for m in range(2 * l + 1)))
+        return np.array(out)
+
+    def test_block_length(self):
+        assert ml_helpers.orbital_power_block_length(4, 4) == 5 * 4 * 5 // 2
+        assert ml_helpers.orbital_power_block_length(2, 1) == 2 * 2 * 3 // 2
+
+    def test_orbital_power_matches_qe_formula(self):
+        """The strongest correctness evidence: our orbital power == QE ``.power``."""
+        n_max, l_max = 3, 2
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(0)
+        coeff = rng.standard_normal(n_coeff)
+        got = ml_helpers.orbital_power_from_coefficients(coeff, n_max, l_max)
+        ref = self._qe_orbital_power(coeff, n_max, l_max)
+        assert got.shape == (ml_helpers.orbital_power_block_length(n_max, l_max),)
+        assert np.allclose(got, ref)
+
+    def test_cross_power_orb_block_equals_orbital_power(self):
+        n_max, l_max = 2, 2
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(2)
+        coeff = rng.standard_normal((3, n_coeff))
+        group = rng.standard_normal((3, n_coeff))
+        power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+        block = ml_helpers.orbital_power_block_length(n_max, l_max)
+        # Full descriptor has three blocks (orb-orb, orb-group, group-group).
+        assert power.shape == (3, 3 * block)
+        for i in range(3):
+            assert np.allclose(
+                power[i, :block],
+                ml_helpers.orbital_power_from_coefficients(coeff[i], n_max, l_max),
+            )
+
+    def test_cross_power_group_block_matches_manual(self):
+        """The group-group block is the orbital power of the group coefficients."""
+        n_max, l_max = 2, 1
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(5)
+        coeff = rng.standard_normal((1, n_coeff))
+        group = rng.standard_normal((1, n_coeff))
+        power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+        block = ml_helpers.orbital_power_block_length(n_max, l_max)
+        assert np.allclose(
+            power[0, 2 * block :],
+            self._qe_orbital_power(group[0], n_max, l_max),
+        )
+
+    def test_cross_power_shape_mismatch_raises(self):
+        with pytest.raises(ValueError, match="same shape"):
+            ml_helpers.cross_power_spectra(np.zeros((2, 8)), np.zeros((2, 9)), 2, 1)
+
+    def test_build_orbital_density_dataset(self):
+        ds = ml_helpers.build_orbital_density_dataset(
+            descriptors=[[1.0, 2.0], [3.0, 4.0]],
+            alphas=[0.5, 0.6],
+            filled=[True, False],
+            labels=["orb_1", "emp_orb_1"],
+        )
+        assert ds["descriptors"] == [[1.0, 2.0], [3.0, 4.0]]
+        assert ds["alphas"] == [0.5, 0.6]
+        assert ds["filled"] == [True, False]
+        assert ds["labels"] == ["orb_1", "emp_orb_1"]
+
+    def test_build_orbital_density_dataset_length_mismatch(self):
+        with pytest.raises(ValueError, match="same length"):
+            ml_helpers.build_orbital_density_dataset(
+                descriptors=[[1.0]], alphas=[0.5, 0.6], filled=[True], labels=["a"]
+            )

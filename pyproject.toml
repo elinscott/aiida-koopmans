@@ -63,6 +63,7 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 "koopmans.kcw_wann2kc" = "aiida_koopmans.calculations.kcw:Wann2kcCalculation"
 "koopmans.kcw_screen" = "aiida_koopmans.calculations.kcw:KcwScreenCalculation"
 "koopmans.kcw_ham" = "aiida_koopmans.calculations.kcw:KcwHamCalculation"
+"koopmans.pw2wannier_decompose" = "aiida_koopmans.calculations.pw2wannier_decompose:Pw2wannierDecomposeCalculation"
 
 [project.entry-points."aiida.parsers"]
 "koopmans.kcp" = "aiida_koopmans.parsers.kcp:KcpParser"
@@ -71,6 +72,7 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 "koopmans.kcw_wann2kc" = "aiida_koopmans.parsers.kcw:Wann2kcParser"
 "koopmans.kcw_screen" = "aiida_koopmans.parsers.kcw:KcwScreenParser"
 "koopmans.kcw_ham" = "aiida_koopmans.parsers.kcw:KcwHamParser"
+"koopmans.pw2wannier_decompose" = "aiida_koopmans.parsers.pw2wannier_decompose:Pw2wannierDecomposeParser"
 
 [tool.pytest.ini_options]
 # Configuration for [pytest](https://docs.pytest.org)
