@@ -242,6 +242,8 @@ class TestWannierizeBlockBuild:
         assert params["num_wann"] == 4
         assert params["num_bands"] == 6
         assert params["write_hr"] is True
+        assert params["write_u_matrices"] is True
+        assert params["write_xyz"] is True
         assert params["mp_grid"] == [2, 2, 2]
 
         inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
@@ -258,9 +260,11 @@ class TestWannierizeBlockBuild:
         parent = task.inputs["pw2wannier90"]["pw2wannier90"]["parent_folder"].value
         assert parent.uuid == nscf_scratch.uuid
 
-        # aiida.chk is forced into the wannier90 retrieve list.
+        # Only aiida.chk is force-retrieved; the U matrices, centres and hr file
+        # ride upstream's default retrieve suffixes once the write_* pins above
+        # cause them to be written.
         settings = task.inputs["wannier90"]["wannier90"]["settings"].value.get_dict()
-        assert "aiida.chk" in settings["additional_retrieve_list"]
+        assert settings["additional_retrieve_list"] == ["aiida.chk"]
 
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
@@ -288,6 +292,8 @@ class TestWannierizeBlockBuild:
         for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
             assert key not in params
         assert params["write_hr"] is True
+        assert params["write_u_matrices"] is True
+        assert params["write_xyz"] is True
         assert "mp_grid" not in params
 
     def test_disentangling_block_gets_the_default_iteration_budget(

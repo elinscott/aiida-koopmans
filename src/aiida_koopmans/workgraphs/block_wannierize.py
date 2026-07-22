@@ -13,10 +13,13 @@ Per-block file staging that the supercell fold consumes:
 
 * ``hr_retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
   which holds ``aiida_hr.dat`` (the real-space Hamiltonian, written because
-  ``write_hr=True``).
-* ``remote_folder`` -- the wannier90 ``RemoteData`` scratch, which holds
-  ``aiida.chk`` (forced into the retrieve list, since wannier90 does not
-  retrieve the checkpoint by default).
+  ``write_hr=True``) plus ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
+  and, for disentangling blocks, ``aiida_u_dis.mat``. All but ``aiida.chk``
+  are retrieved by upstream's default suffix list once written (the ``write_*``
+  pins are what guarantee they exist); ``aiida.chk`` is force-retrieved.
+  Downstream consumers such as pw2wannier90 ``wan_mode='decompose'`` and the
+  wannierjl split read them.
+* ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
 * ``nnkp_file`` -- the ``aiida.nnkp`` :class:`~aiida.orm.SinglefileData`
   emitted by the wannier90 post-processing (``-pp``) run.
 """
@@ -37,10 +40,14 @@ from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
-# Force retrieval of the wannier90 checkpoint: ``aiida.chk`` is not in the
-# default retrieve list, but the supercell fold needs it to unitarily
-# rotate the per-block manifolds. ``aiida_hr.dat`` lands in ``retrieved``
-# automatically once ``write_hr=True``.
+# ``aiida.chk`` is the only wannier90 product upstream excludes from its
+# retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
+# aiida-wannier90's ``Wannier90Calculation`` already covers ``_u.mat`` /
+# ``_u_dis.mat`` / ``_centres.xyz`` / ``_hr.dat``, so once those files are
+# written they land in ``retrieved`` automatically. What guarantees the
+# product set is therefore the ``write_hr`` / ``write_u_matrices`` /
+# ``write_xyz`` pins below, not this list. The supercell fold needs
+# ``aiida.chk`` to unitarily rotate the per-block manifolds, so force it.
 _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
 
@@ -72,9 +79,9 @@ class WannierizeBlockOutputs(TypedDict):
     """Per-block Wannierisation outputs that the supercell fold reads.
 
     * ``hr_retrieved`` -- wannier90 ``retrieved`` FolderData (holds
-      ``aiida_hr.dat``).
-    * ``remote_folder`` -- wannier90 ``RemoteData`` scratch (holds
-      ``aiida.chk``).
+      ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
+      and, when the block disentangles, ``aiida_u_dis.mat``).
+    * ``remote_folder`` -- wannier90 ``RemoteData`` scratch.
     * ``nnkp_file`` -- ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
     """
 
@@ -155,7 +162,11 @@ def WannierizeBlock(
     * overrides the per-block ``num_wann`` / ``num_bands`` / ``exclude_bands``
       (and ``projections`` for explicit blocks) from
       :func:`block_w90_kwargs`;
-    * forces ``write_hr=True`` and ``aiida.chk`` retrieval.
+    * forces ``write_hr`` / ``write_u_matrices`` / ``write_xyz`` so
+      ``aiida_hr.dat`` / ``aiida_u.mat`` / ``aiida_u_dis.mat`` /
+      ``aiida_centres.xyz`` are written (upstream's default retrieve list then
+      picks them up), and force-retrieves ``aiida.chk``, which upstream
+      excludes by default.
     """
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
@@ -204,7 +215,12 @@ def WannierizeBlock(
             w90_params.pop(key, None)
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
+    # ``write_u_matrices`` / ``write_xyz`` produce the U matrices and Wannier
+    # centres that pw2wannier90 ``wan_mode='decompose'`` and the wannierjl
+    # split consume.
     w90_params["write_hr"] = True
+    w90_params["write_u_matrices"] = True
+    w90_params["write_xyz"] = True
     # The protocol builder froze ``mp_grid`` from its own distance-derived
     # mesh, which goes stale once the shared k-list is substituted below.
     # Pin the real mesh dimensions when given (wannier90 cannot re-derive
@@ -225,9 +241,9 @@ def WannierizeBlock(
     # eigenstates on the exact grid the shared nscf produced.
     w90["kpoints"] = kpoints
 
-    # Force ``aiida.chk`` into the wannier90 retrieve list (merged on top of
-    # whatever ``settings`` the protocol set; the workchain only adds its own
-    # ``postproc_setup`` key on top of this).
+    # Force-retrieve ``aiida.chk`` (upstream's only non-default product), merged
+    # on top of whatever ``settings`` the protocol set; the workchain only adds
+    # its own ``postproc_setup`` key on top of this.
     existing_settings: dict = {}
     if "settings" in w90:
         existing_settings = w90["settings"].get_dict()
