@@ -576,6 +576,13 @@ class TestAssembleOrbitalDensityDataset:
         with pytest.raises(ValueError, match="Empty Wannier-function / alpha mismatch"):
             ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
 
+    def test_non_string_channel_key_raises(self):
+        """A non-string spin-channel key is rejected before it corrupts labels."""
+        # A stray integer key would otherwise produce a ``"123_orb_1"`` label.
+        alphas = {"filled": {123: [0.1]}, "empty": {}}
+        with pytest.raises(ValueError, match="Unrecognized spin-channel key"):
+            ml_helpers.assemble_orbital_density_dataset({"occ": [[1.0]]}, [], alphas)
+
 
 class TestCentresHelpers:
     """``parse_wannier_centres_xyz`` / ``format_group_centres_file`` round-trip."""

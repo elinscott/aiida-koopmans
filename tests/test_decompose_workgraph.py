@@ -154,3 +154,30 @@ def test_align_block_descriptors_orders_by_alphascreening(aiida_profile):
     assert ds["descriptors"] == [[1.0], [2.0], [10.0]]
     assert ds["alphas"] == [0.1, 0.2, 0.5]
     assert ds["filled"] == [True, True, False]
+
+
+def test_require_wannier_route_inputs_missing_scratch_raises():
+    """The orbital_density route names the requirement when the nscf scratch is absent."""
+    from aiida_koopmans.workgraphs.ml import require_wannier_route_inputs
+
+    # Molecular (KS-init) route: KoopmansDSCFOutputs omits nscf_remote_folder.
+    with pytest.raises(ValueError, match=r"requires `nscf_remote_folder`"):
+        require_wannier_route_inputs(None, {}, [])
+
+
+def test_require_wannier_route_inputs_missing_block_raises():
+    """A merge-group block with no wannierization is named, not a bare KeyError."""
+    from aiida_koopmans.workgraphs.ml import require_wannier_route_inputs
+
+    merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+    with pytest.raises(ValueError, match="occ"):
+        # Non-None scratch clears the first guard; the empty namespace trips the block guard.
+        require_wannier_route_inputs(object(), {}, merge_groups)
+
+
+def test_require_wannier_route_inputs_accepts_complete_inputs():
+    """With scratch and every block present the guard is a no-op (returns None)."""
+    from aiida_koopmans.workgraphs.ml import require_wannier_route_inputs
+
+    merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+    assert require_wannier_route_inputs(object(), {"occ": object()}, merge_groups) is None

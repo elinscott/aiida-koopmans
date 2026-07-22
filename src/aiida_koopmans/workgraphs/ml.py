@@ -273,6 +273,45 @@ def align_block_descriptors(
     )
 
 
+def require_wannier_route_inputs(
+    nscf_remote_folder: Any,
+    block_wannierizations: dict,
+    merge_groups: list,
+) -> None:
+    """Guard the orbital_density route's Wannier-initialised-route requirement.
+
+    The decompose descriptor route consumes the shared nscf scratch
+    (``nscf_remote_folder``) and the per-block wannierizations
+    (``block_wannierizations``) that :class:`KoopmansDSCFOutputs` carries **only**
+    on the Wannier-initialised DSCF route; on the molecular (KS-init) route those
+    keys are absent (see the KoopmansDSCFOutputs docstring). Raise a ValueError
+    that names the requirement rather than letting a bare ``KeyError`` (or a
+    ``None`` ``parent_folder`` downstream) surface. Kept as a plain function so
+    the failure path is unit-testable without building the graph.
+    """
+    if nscf_remote_folder is None:
+        raise ValueError(
+            "The orbital_density descriptor route requires `nscf_remote_folder`, "
+            "the shared nscf scratch that KoopmansDSCFOutputs exposes only on the "
+            "Wannier-initialised DSCF route; it is absent on the molecular "
+            "(KS-init) route. Use descriptor='self_hartree' for such snapshots."
+        )
+    missing = [
+        block["label"]
+        for group in merge_groups
+        for block in group["blocks"]
+        if block["label"] not in block_wannierizations
+    ]
+    if missing:
+        raise ValueError(
+            "The orbital_density descriptor route requires a per-block "
+            f"wannierization for every merge-group block, but {missing} "
+            "are absent from `block_wannierizations`. These are produced only by "
+            "the Wannier-initialised DSCF route; the molecular (KS-init) route "
+            "does not wannierize. Use descriptor='self_hartree'."
+        )
+
+
 @task.graph
 def OrbitalDensityDatasetWorkflow(
     code: orm.AbstractCode,
@@ -294,7 +333,12 @@ def OrbitalDensityDatasetWorkflow(
     ``merge_groups`` is the ``(filled, spin, blocks)`` partition (each block a
     ``{"label": ...}`` mapping); ``alphas`` is the snapshot's screening
     parameters in ``AlphaScreening`` shape.
+
+    Raises ``ValueError`` at graph-build time if the Wannier-initialised-route
+    inputs (``nscf_remote_folder`` / ``block_wannierizations``) are missing —
+    i.e. this descriptor route was requested for a molecular (KS-init) snapshot.
     """
+    require_wannier_route_inputs(nscf_remote_folder, block_wannierizations, merge_groups)
     block_descriptors: dict[str, orm.ArrayData] = {}
     for group in merge_groups:
         for block in group["blocks"]:

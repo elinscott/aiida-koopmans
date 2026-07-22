@@ -123,6 +123,14 @@ class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
     Together these are the inputs the ``orbital_density`` ML descriptor route
     (:func:`~aiida_koopmans.workgraphs.ml.OrbitalDensityDatasetWorkflow`)
     consumes.
+
+    Contract for consumers: these two keys are present **only** on the
+    Wannier-initialised route. On the molecular (KS-init) route they are absent,
+    so ``outputs["nscf_remote_folder"]`` / ``outputs["block_wannierizations"]``
+    raise ``KeyError``. Guard with ``.get`` or a route check before indexing;
+    ``OrbitalDensityDatasetWorkflow`` does this via
+    :func:`~aiida_koopmans.workgraphs.ml.require_wannier_route_inputs`, which
+    raises a descriptive ``ValueError`` when the route requirement is unmet.
     """
 
     nscf_remote_folder: orm.RemoteData

@@ -728,6 +728,16 @@ def assemble_orbital_density_dataset(
     if not channels:
         raise ValueError("No screening parameters provided: `alphas` has no spin channels")
 
+    # A ``SpinChannel`` is a ``str`` subclass, so genuine keys pass ``isinstance``;
+    # a stray non-string key (e.g. an integer) would otherwise coerce to a
+    # garbage label like ``"123_orb_1"`` further down.
+    bad_keys = [ch for ch in channels if not isinstance(ch, str)]
+    if bad_keys:
+        raise ValueError(
+            f"Unrecognized spin-channel key(s) {bad_keys} in `alphas`: expected "
+            "`SpinChannel` members or the strings 'none'/'up'/'down'."
+        )
+
     dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
     for channel in channels:
         filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
