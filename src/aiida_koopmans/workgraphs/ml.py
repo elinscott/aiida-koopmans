@@ -179,21 +179,6 @@ def evaluate_screening_model(
 # route today, kcw.x ``screen_parameters`` for the DFPT route later.
 
 
-class DecomposeDescriptorOutputs(TypedDict):
-    """Outputs of :func:`DecomposeDescriptorsWorkflow`.
-
-    * ``dataset`` — a :class:`SnapshotDataset` pairing the per-orbital
-      power-spectrum descriptors with the supplied screening parameters.
-    * ``coefficients`` / ``group_coefficients`` — the raw ``ArrayData`` from
-      the decompose parser, retained so the descriptors can be recomputed or
-      audited from provenance.
-    """
-
-    dataset: SnapshotDataset
-    coefficients: orm.ArrayData
-    group_coefficients: orm.ArrayData
-
-
 @task.calcfunction(outputs=["u_mat", "centres_xyz", "centres_file"])
 def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
     """Lift the wannier90 read-back files out of a block's retrieved folder.
@@ -232,86 +217,6 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
     )
 
     return {"u_mat": u_mat, "centres_xyz": centres_xyz, "centres_file": centres_file}
-
-
-@task
-def build_decompose_dataset(
-    coefficients: orm.ArrayData,
-    group_coefficients: orm.ArrayData,
-    output_parameters: dict,
-    alphas: list,
-    filled: list,
-    labels: list,
-) -> SnapshotDataset:
-    """Assemble a :class:`SnapshotDataset` from the decompose parser arrays.
-
-    ``coefficients`` / ``group_coefficients`` are the ``ArrayData`` the
-    :class:`Pw2wannierDecomposeParser` emits; ``alphas`` / ``filled`` /
-    ``labels`` are the per-orbital screening parameters, filled mask and
-    labels, aligned with the Wannier-function order (row order of the
-    coefficient arrays). Keeping the alignment lists as inputs keeps the
-    descriptor source (decompose) and the alpha source (kcp.x / kcw.x)
-    decoupled.
-    """
-    n_max = int(output_parameters["n_max"])
-    l_max = int(output_parameters["l_max"])
-    coeff = coefficients.get_array("coefficients")
-    group = group_coefficients.get_array("group_coefficients")
-    power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
-    return ml_helpers.build_orbital_density_dataset(
-        power.tolist(), list(alphas), list(filled), list(labels)
-    )
-
-
-@task.graph
-def DecomposeDescriptorsWorkflow(
-    code: orm.AbstractCode,
-    nscf_remote_folder: orm.RemoteData,
-    hr_retrieved: orm.FolderData,
-    alphas: list,
-    filled: list,
-    labels: list,
-    decompose_parameters: dict | None = None,
-    options: dict[str, Any] | None = None,
-) -> DecomposeDescriptorOutputs:
-    """Turn a wannierization's products into orbital-density descriptors.
-
-    Extracts the wannier90 read-back files from ``hr_retrieved``, runs the
-    ``wan_mode='decompose'`` pw2wannier90.x pass against the shared
-    ``nscf_remote_folder`` scratch, and assembles the per-orbital
-    power-spectrum descriptors into a :class:`SnapshotDataset` paired with the
-    supplied ``alphas`` / ``filled`` / ``labels``.
-    """
-    products = extract_decompose_inputs(hr_retrieved)
-
-    decompose_inputs: dict[str, Any] = {
-        "code": code,
-        "parent_folder": nscf_remote_folder,
-        "u_mat": products["u_mat"],
-        "centres_xyz": products["centres_xyz"],
-        "centres_file": products["centres_file"],
-        "metadata": {"call_link_label": "decompose"},
-    }
-    if decompose_parameters is not None:
-        decompose_inputs["parameters"] = decompose_parameters
-    if options is not None:
-        decompose_inputs["metadata"]["options"] = options
-    decompose = DecomposeTask(**decompose_inputs)
-
-    dataset = build_decompose_dataset(
-        coefficients=decompose["coefficients"],
-        group_coefficients=decompose["group_coefficients"],
-        output_parameters=decompose["output_parameters"],
-        alphas=alphas,
-        filled=filled,
-        labels=labels,
-    )
-
-    return DecomposeDescriptorOutputs(
-        dataset=dataset,
-        coefficients=decompose["coefficients"],
-        group_coefficients=decompose["group_coefficients"],
-    )
 
 
 class OrbitalDensityDatasetOutputs(TypedDict):

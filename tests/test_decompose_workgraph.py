@@ -98,3 +98,59 @@ def test_orbital_density_dataset_workflow_fans_out_per_block(
     assert "decompose_occ" in names
     assert "decompose_emp" in names
     assert any("align_block_descriptors" in n for n in names)
+
+
+def test_compute_block_descriptors_returns_cross_power(aiida_profile):
+    """`compute_block_descriptors` cross-powers a block's decompose arrays."""
+    import numpy as np
+    from aiida import orm
+
+    from aiida_koopmans import ml_helpers
+    from aiida_koopmans.workgraphs.ml import compute_block_descriptors
+
+    n_max, l_max = 2, 1
+    n_coeff = n_max * (l_max + 1) ** 2
+    rng = np.random.default_rng(7)
+    coeff = rng.standard_normal((2, n_coeff))
+    group = rng.standard_normal((2, n_coeff))
+    coeff_node = orm.ArrayData()
+    coeff_node.set_array("coefficients", coeff)
+    group_node = orm.ArrayData()
+    group_node.set_array("group_coefficients", group)
+
+    out = compute_block_descriptors._callable(
+        coefficients=coeff_node,
+        group_coefficients=group_node,
+        output_parameters={"n_max": n_max, "l_max": l_max},
+    )
+    descriptors = out.get_array("descriptors")
+    expected = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+    assert descriptors.shape == expected.shape
+    assert np.allclose(descriptors, expected)
+
+
+def test_align_block_descriptors_orders_by_alphascreening(aiida_profile):
+    """`align_block_descriptors` gathers block arrays into an aligned dataset."""
+    import numpy as np
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import align_block_descriptors
+
+    occ = orm.ArrayData()
+    occ.set_array("descriptors", np.array([[1.0], [2.0]]))
+    emp = orm.ArrayData()
+    emp.set_array("descriptors", np.array([[10.0]]))
+    merge_groups = [
+        {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+        {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+    ]
+    alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5]}}
+
+    ds = align_block_descriptors._callable(
+        block_descriptors={"occ": occ, "emp": emp},
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+    assert ds["descriptors"] == [[1.0], [2.0], [10.0]]
+    assert ds["alphas"] == [0.1, 0.2, 0.5]
+    assert ds["filled"] == [True, True, False]

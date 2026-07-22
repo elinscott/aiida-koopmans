@@ -121,7 +121,7 @@ class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
       the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
 
     Together these are the inputs the ``orbital_density`` ML descriptor route
-    (:func:`~aiida_koopmans.workgraphs.ml.DecomposeDescriptorsWorkflow`)
+    (:func:`~aiida_koopmans.workgraphs.ml.OrbitalDensityDatasetWorkflow`)
     consumes.
     """
 

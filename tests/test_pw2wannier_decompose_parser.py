@@ -62,6 +62,12 @@ class TestParseValueFile:
         with pytest.raises(ValueError, match="non-numeric line"):
             Pw2wannierDecomposeParser._parse_value_file(content, "bad.coeff")
 
+    def test_skips_blank_body_lines(self):
+        """Blank lines in the body are skipped, not parsed as values."""
+        content = "# n_max = 4\n1.0\n\n2.0\n   \n"
+        values, _ = Pw2wannierDecomposeParser._parse_value_file(content, "aiida_00001.coeff")
+        assert np.allclose(values, [1.0, 2.0])
+
 
 class TestFilenamePatterns:
     """Orbital / group / power filename discrimination."""
@@ -96,6 +102,14 @@ class TestParseStdout:
     def test_detects_job_done(self):
         assert Pw2wannierDecomposeParser._parse_stdout("...\n JOB DONE.\n")["job_done"] is True
         assert Pw2wannierDecomposeParser._parse_stdout("crashed early")["job_done"] is False
+
+    def test_ignores_unparseable_walltime(self):
+        """A ``PW2WANNIER`` line whose time token is junk leaves walltime unset."""
+        stdout = "     PW2WANNIER    :     garbage WALL\n JOB DONE.\n"
+        parsed = Pw2wannierDecomposeParser._parse_stdout(stdout)
+        assert parsed["job_done"] is True
+        # The unparseable token is swallowed, leaving the base-scalar default in place.
+        assert parsed["walltime"] is None
 
     def test_extracts_walltime(self):
         stdout = "JOB DONE.\nPW2WANNIER    :      0.12s CPU      0.15s WALL\n"
@@ -221,3 +235,130 @@ class TestRealSiFixtures:
         block = ml_helpers.orbital_power_block_length(n_max, l_max)
         assert power.shape == (1, 3 * block)
         assert np.allclose(power[0, :block], qe_power, rtol=1e-10, atol=1e-12)
+
+
+@pytest.fixture
+def _register_decompose_ep(entry_points):
+    """Register the decompose calc/parser entry points for the plugin factories."""
+    from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
+
+    entry_points.add(
+        Pw2wannierDecomposeCalculation, "aiida.calculations:koopmans.pw2wannier_decompose"
+    )
+    entry_points.add(Pw2wannierDecomposeParser, "aiida.parsers:koopmans.pw2wannier_decompose")
+
+
+def _parse_folder(generate_calc_job_node, generate_parser, files: dict[str, bytes]):
+    """Run the parser against a retrieved folder holding ``files``."""
+    import io
+
+    from aiida import orm
+    from aiida.common import LinkType
+
+    node = generate_calc_job_node(
+        entry_point_name="koopmans.pw2wannier_decompose",
+        input_filename="aiida.decompose.in",
+        output_filename="aiida.decompose.out",
+    )
+    retrieved = orm.FolderData()
+    for name, content in files.items():
+        retrieved.base.repository.put_object_from_filelike(io.BytesIO(content), name)
+    retrieved.base.links.add_incoming(node, link_type=LinkType.CREATE, link_label="retrieved")
+    retrieved.store()
+    parser = generate_parser("koopmans.pw2wannier_decompose")
+    return parser.parse_from_node(node, store_provenance=False)
+
+
+_JOB_DONE = b"     Program PW2WANNIER\n JOB DONE.\n"
+
+
+class TestParseFullFlow:
+    """End-to-end ``parse()`` against a retrieved folder (real Si fixtures)."""
+
+    @staticmethod
+    def _real(name: str) -> bytes:
+        return (_SI_FIXTURES / name).read_bytes()
+
+    def test_success_emits_arrays_and_parameters(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        from aiida import orm
+
+        files = {"aiida.decompose.out": _JOB_DONE}
+        for i in (1, 2):
+            files[f"si_{i:05d}.coeff"] = self._real(f"si_{i:05d}.coeff")
+            files[f"si_{i:05d}.power"] = self._real(f"si_{i:05d}.power")
+            files[f"si_gc_{i:05d}.coeff"] = self._real(f"si_gc_{i:05d}.coeff")
+
+        results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.is_finished_ok, calc.exit_message
+        assert isinstance(results["coefficients"], orm.ArrayData)
+        assert isinstance(results["power"], orm.ArrayData)
+        assert isinstance(results["group_coefficients"], orm.ArrayData)
+        assert results["coefficients"].get_array("coefficients").shape == (2, 100)
+        params = results["output_parameters"].get_dict()
+        assert params["job_done"] is True
+        assert params["num_wann"] == 2
+        assert params["n_max"] == 4
+        assert params["l_max"] == 4
+        assert params["num_group_centres"] == 2
+
+    def test_absent_group_channel_omits_output(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        files = {
+            "aiida.decompose.out": _JOB_DONE,
+            "si_00001.coeff": self._real("si_00001.coeff"),
+            "si_00001.power": self._real("si_00001.power"),
+        }
+        results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.is_finished_ok, calc.exit_message
+        assert "group_coefficients" not in results
+        assert results["output_parameters"]["num_group_centres"] == 0
+
+    def test_incomplete_stdout_exit_code(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        files = {"aiida.decompose.out": b"crashed before the end\n"}
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 310  # ERROR_OUTPUT_STDOUT_INCOMPLETE
+
+    def test_no_coeff_files_exit_code(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        files = {"aiida.decompose.out": _JOB_DONE}
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 330  # ERROR_OUTPUT_COEFF_MISSING
+
+    def test_malformed_coeff_exit_code(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        files = {
+            "aiida.decompose.out": _JOB_DONE,
+            "si_00001.coeff": b"# n_max = 4\n# l_max = 4\nnot_a_number\n",
+        }
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 331  # ERROR_OUTPUT_COEFF_MALFORMED
+
+    def test_missing_stdout_exit_code(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        """No stdout file: the parser returns early with the read exit code."""
+        files = {
+            "si_00001.coeff": self._real("si_00001.coeff"),
+            "si_00001.power": self._real("si_00001.power"),
+        }
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 302  # ERROR_OUTPUT_STDOUT_MISSING
+
+    def test_inconsistent_coeff_lengths_exit_code(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        """Two well-formed .coeff files of different lengths cannot be stacked."""
+        files = {
+            "aiida.decompose.out": _JOB_DONE,
+            "si_00001.coeff": b"# n_max = 4\n# l_max = 4\n1.0\n2.0\n",
+            "si_00002.coeff": b"# n_max = 4\n# l_max = 4\n1.0\n2.0\n3.0\n",
+        }
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 331  # ERROR_OUTPUT_COEFF_MALFORMED

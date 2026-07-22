@@ -558,3 +558,54 @@ class TestAssembleOrbitalDensityDataset:
         assert od["labels"] == sh_ref["labels"]
         assert od["filled"] == sh_ref["filled"]
         assert od["alphas"] == sh_ref["alphas"]
+
+    def test_no_channels_raises(self):
+        """Empty alphas (no spin channels) is a hard error."""
+        with pytest.raises(ValueError, match="no spin channels"):
+            ml_helpers.assemble_orbital_density_dataset({}, [], {"filled": {}, "empty": {}})
+
+    def test_empty_channel_mismatch_raises(self):
+        """An empty-orbital / alpha mismatch is caught after the filled check passes."""
+        block_descriptors = {"occ": [[1.0]], "emp": [[10.0], [20.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        # filled matches (1 WF / 1 alpha) so the empty guard (2 WFs / 1 alpha) is what fires.
+        alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
+        with pytest.raises(ValueError, match="Empty Wannier-function / alpha mismatch"):
+            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+
+
+class TestCentresHelpers:
+    """``parse_wannier_centres_xyz`` / ``format_group_centres_file`` round-trip."""
+
+    def test_parse_extracts_only_x_pseudospecies_rows(self):
+        """Only the ``X`` (Wannier-centre) rows are returned, in file order."""
+        xyz = (
+            "4\n"
+            "comment line\n"
+            "X   0.10000000   0.20000000   0.30000000\n"
+            "Si  1.00000000   1.00000000   1.00000000\n"
+            "X   0.40000000   0.50000000   0.60000000\n"
+            "O   2.00000000   2.00000000   2.00000000\n"
+        )
+        centres = ml_helpers.parse_wannier_centres_xyz(xyz)
+        assert centres == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+    def test_format_renders_one_triple_per_line_after_comment(self):
+        """Each centre becomes one Cartesian triple; the first line is a comment."""
+        text = ml_helpers.format_group_centres_file([[0.1, 0.2, 0.3], [4.0, 5.0, 6.0]])
+        lines = text.splitlines()
+        assert lines[0].startswith("#")
+        assert len(lines) == 3
+        assert [float(t) for t in lines[1].split()] == [0.1, 0.2, 0.3]
+        assert [float(t) for t in lines[2].split()] == [4.0, 5.0, 6.0]
+
+    def test_parse_format_round_trip(self):
+        """Formatting then re-parsing (with an ``X`` label) recovers the centres."""
+        centres = [[0.123456789, 1.0, -2.5], [3.3, 4.4, 5.5]]
+        formatted = ml_helpers.format_group_centres_file(centres)
+        xyz = "n\ncomment\n" + "".join(f"X {ln}\n" for ln in formatted.splitlines()[1:])
+        recovered = ml_helpers.parse_wannier_centres_xyz(xyz)
+        assert np.allclose(recovered, centres)

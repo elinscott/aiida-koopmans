@@ -40,7 +40,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 from aiida.common import CalcInfo
-from aiida.orm import Dict, RemoteData, SinglefileData
+from aiida.orm import ArrayData, Dict, RemoteData, SinglefileData
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
 
@@ -189,7 +189,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         )
         spec.output(
             "coefficients",
-            valid_type="core.array",
+            valid_type=ArrayData,
             required=True,
             help=(
                 "Per-Wannier-function orbital-density expansion coefficients, "
@@ -199,7 +199,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         )
         spec.output(
             "power",
-            valid_type="core.array",
+            valid_type=ArrayData,
             required=True,
             help=(
                 "Per-Wannier-function orbital-only power spectrum as written by "
@@ -209,7 +209,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         )
         spec.output(
             "group_coefficients",
-            valid_type="core.array",
+            valid_type=ArrayData,
             required=False,
             help=(
                 "Group-density expansion coefficients about each external "
