@@ -330,7 +330,13 @@ def alphas_in_orbital_order(
     ordered: list[float] = []
     for filled, source in ((True, filled_alphas), (False, empty_alphas)):
         subset = sorted((o for o in orbitals if o["filled"] == filled), key=lambda o: o["index"])
-        ordered += [float(source[map_key_for(o)]) for o in subset]
+        for o in subset:
+            key = map_key_for(o)
+            if key not in source:
+                raise ValueError(
+                    f"No alpha for orbital {key} — the group broadcast upstream did not cover it."
+                )
+            ordered.append(float(source[key]))
     return ordered
 
 
@@ -384,7 +390,10 @@ def GroupedDFPTScreening(
             continue
         key = map_key_for(orbital)
         namelist = {
-            **dict(screen_namelist),
+            # Explicitly unwrap the (possibly TaggedValue-proxied) namelist by
+            # iterating its ``.items()`` into a plain dict before extending it,
+            # rather than relying on ``dict(proxy)`` to coerce the proxy.
+            **dict((screen_namelist or {}).items()),
             "i_orb": int(orbital["index"]),
             "check_spread": False,
         }

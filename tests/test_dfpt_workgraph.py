@@ -895,6 +895,17 @@ class TestExtractSpreadsFromWannier90:
         with pytest.raises(ValueError, match="Failed to parse"):
             extract_spreads_from_wannier90._callable(occ_retrieved={"b00": folder.store()})
 
+    def test_noncontiguous_block_keys_raise(self, aiida_profile):
+        """A gap in the ``bNN`` block numbering is rejected before spreads are read."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_wannier90,
+        )
+
+        with pytest.raises(ValueError, match=r"contiguous zero-based ``bNN``.*b02"):
+            extract_spreads_from_wannier90._callable(
+                occ_retrieved={"b00": _wout_folder([1.1]), "b02": _wout_folder([2.2])},
+            )
+
 
 class TestSingleOrbitalAlpha:
     def test_unwraps_the_single_entry(self):
@@ -932,6 +943,17 @@ class TestAlphasInOrbitalOrder:
         assert alphas_in_orbital_order._callable(
             orbitals=orbitals, filled_alphas={"orb_1": 0.4}
         ) == [0.4]
+
+    def test_uncovered_orbital_raises(self):
+        """An orbital the group broadcast never populated raises a named error."""
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=1, representative=False),
+        ]
+        with pytest.raises(ValueError, match=r"No alpha for orbital orb_2 .* did not cover it"):
+            alphas_in_orbital_order._callable(orbitals=orbitals, filled_alphas={"orb_1": 0.1})
 
 
 class TestGroupedDFPTScreeningBuild:

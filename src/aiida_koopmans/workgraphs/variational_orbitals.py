@@ -214,6 +214,28 @@ def extract_self_hartree_from_kcp(output_parameters: dict) -> list[list[float]]:
     return output_parameters["orbital_data"]["self-Hartree"]
 
 
+def _ordered_manifold_keys(retrieved: dict, manifold: str) -> list[str]:
+    """Validate a manifold's block keys and return them in band order.
+
+    ``_wannierize_manifold`` in ``dfpt.py`` keys each block's retrieved
+    folder ``b{i:02d}`` with ``i`` a contiguous zero-based block index,
+    so lexicographic key order *is* band order — the convention
+    :func:`prepare_kcw_wannier_files` merges by and kcw.x's 1-based
+    ``SCREEN.i_orb`` counts in. Guard that invariant explicitly rather
+    than trusting a bare ``sorted()`` walk: a refactor of the keying (or
+    a dropped block) would otherwise silently reorder or truncate the
+    spreads and misalign every downstream alpha.
+    """
+    keys = sorted(retrieved)
+    expected = [f"b{i:02d}" for i in range(len(keys))]
+    if keys != expected:
+        raise ValueError(
+            f"{manifold}-manifold wannier90 folders must be keyed as a contiguous "
+            f"zero-based ``bNN`` sequence ({expected or ['b00', '...']}); got {keys}."
+        )
+    return keys
+
+
 @task
 def extract_spreads_from_wannier90(
     occ_retrieved: Annotated[dict, dynamic(orm.FolderData)],
@@ -270,10 +292,10 @@ def extract_spreads_from_wannier90(
         return [float(wf["wf_spreads"]) for wf in sorted(wfs, key=lambda wf: wf["wf_ids"])]
 
     spreads: list[float] = []
-    for key in sorted(occ_retrieved):
+    for key in _ordered_manifold_keys(occ_retrieved, "occupied"):
         spreads += block_spreads(occ_retrieved[key], "occupied")
     emp = emp_retrieved or {}
-    for key in sorted(emp):
+    for key in _ordered_manifold_keys(emp, "empty"):
         spreads += block_spreads(emp[key], "empty")
     return [spreads]
 
