@@ -956,13 +956,13 @@ class TestAlphasInOrbitalOrder:
             alphas_in_orbital_order._callable(orbitals=orbitals, filled_alphas={"orb_1": 0.1})
 
 
-class TestGroupedDFPTScreeningBuild:
+class TestGroupedKcwScreeningBuild:
     """Eager build of the fan-out graph on concrete (synthetic) orbitals."""
 
     def _build(self, dfpt_codes, nscf_remote, occ_retrieved, orbitals):
-        from aiida_koopmans.workgraphs.dfpt import GroupedDFPTScreening
+        from aiida_koopmans.workgraphs.dfpt import GroupedKcwScreening
 
-        return GroupedDFPTScreening.build(
+        return GroupedKcwScreening.build(
             code=dfpt_codes["kcw"],
             control={"kcw_iverbosity": 1},
             wannier={"seedname": "aiida"},

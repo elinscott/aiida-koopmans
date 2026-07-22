@@ -341,7 +341,7 @@ def alphas_in_orbital_order(
 
 
 class GroupedScreeningOutputs(TypedDict):
-    """Outputs of :func:`GroupedDFPTScreening`.
+    """Outputs of :func:`GroupedKcwScreening`.
 
     ``alphas`` is the full per-orbital screening-parameter list (occupied
     then empty, group representatives broadcast onto their members), ready
@@ -352,7 +352,7 @@ class GroupedScreeningOutputs(TypedDict):
 
 
 @task.graph
-def GroupedDFPTScreening(
+def GroupedKcwScreening(
     *,
     code: orm.AbstractCode,
     control: dict,
@@ -678,7 +678,7 @@ def RunDFPT(
             complete linkage within this tolerance, never across the
             occupied/empty boundary — :func:`assign_orbital_groups`), run
             one ``SCREEN.i_orb`` screen calculation per group representative
-            in parallel (:func:`GroupedDFPTScreening`), and broadcast each
+            in parallel (:func:`GroupedKcwScreening`), and broadcast each
             representative's alpha onto its group before the ham step.
             ``None`` (default) keeps the single all-orbital screen
             calculation.
@@ -776,7 +776,7 @@ def RunDFPT(
             tol=group_orbitals_tol,
             metadata={"call_link_label": "assign_orbital_groups"},
         )
-        grouped = GroupedDFPTScreening(
+        grouped = GroupedKcwScreening(
             code=codes["kcw"],
             control=control,
             wannier=wannier,
