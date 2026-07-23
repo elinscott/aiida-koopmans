@@ -89,7 +89,7 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_u_file_contents,
     parse_wannier_u_file_shape,
 )
-from aiida_koopmans.workgraphs import Codes, apply_parallelization
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -413,7 +413,7 @@ def GroupedKcwScreening(
             "wannier_files": wannier_files,
             "metadata": {"call_link_label": f"screen_{key}"},
         }
-        apply_parallelization(screen_inputs, parallelization, "kcw")
+        merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
         alpha = single_orbital_alpha(
             alphas=screen["alphas"],
@@ -775,7 +775,7 @@ def RunDFPT(
         "wannier_files": wannier_files,
         "metadata": {"call_link_label": "wann2kc"},
     }
-    apply_parallelization(wann2kc_inputs, parallelization, "kcw")
+    merge_parallelization_into_inputs(wann2kc_inputs, parallelization, "kcw")
     wann2kc = Wann2kcStep(**wann2kc_inputs)
 
     outputs = ChannelResults(wann2kc_remote_folder=wann2kc["remote_folder"])
@@ -841,7 +841,7 @@ def RunDFPT(
             "wannier_files": wannier_files,
             "metadata": {"call_link_label": "screen"},
         }
-        apply_parallelization(screen_inputs, parallelization, "kcw")
+        merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
         alphas = screen["alphas"]
         outputs["screen_parameters"] = screen["output_parameters"]
@@ -865,7 +865,7 @@ def RunDFPT(
         ham_inputs["kpoints"] = bands_kpoints
     # The kcw.x ham step takes no -npool (legacy KCWHamConfig has no pool
     # option), only -pd; wann2kc and screen above take both.
-    apply_parallelization(ham_inputs, parallelization, "kcw", pools=False)
+    merge_parallelization_into_inputs(ham_inputs, parallelization, "kcw", pools=False)
     ham = KcwHamStep(**ham_inputs)
 
     outputs["alphas"] = alphas

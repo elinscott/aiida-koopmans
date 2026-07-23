@@ -41,7 +41,7 @@ from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
-from aiida_koopmans.workgraphs import Codes, apply_parallelization
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -2775,5 +2775,5 @@ def _build_kcp_inputs(
         inputs["read_wavefunctions"] = read_wavefunctions
     if name:
         inputs["metadata"] = {"call_link_label": name}
-    apply_parallelization(inputs, parallelization, "kcp")
+    merge_parallelization_into_inputs(inputs, parallelization, "kcp")
     return inputs

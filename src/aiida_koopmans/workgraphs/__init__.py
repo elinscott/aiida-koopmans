@@ -133,7 +133,7 @@ def _merge_into_namespace(
         namespace["settings"] = merged
 
 
-def apply_parallelization(
+def merge_parallelization_into_inputs(
     step_inputs: dict[str, Any],
     parallelization: ParallelizationDict | None,
     code: str,
@@ -150,7 +150,7 @@ def apply_parallelization(
     _merge_into_namespace(step_inputs, options, settings)
 
 
-def inject_parallelization(
+def merge_parallelization_into_overrides(
     overrides: dict[str, Any],
     parallelization: ParallelizationDict | None,
     mapping: Iterable[tuple[tuple[str, ...], str]],
@@ -174,14 +174,14 @@ def inject_parallelization(
         _merge_into_namespace(namespace, options, settings)
 
 
-def apply_parallelization_present(
+def merge_parallelization_into_existing_namespaces(
     data: dict[str, Any],
     parallelization: ParallelizationDict | None,
     mapping: Iterable[tuple[tuple[str, ...], str]],
 ) -> None:
     """Merge per-code parallelization into ``data`` namespaces that already exist.
 
-    Like :func:`inject_parallelization` but never creates a namespace: a path
+    Like :func:`merge_parallelization_into_overrides` but never creates a namespace: a path
     absent from ``data`` (e.g. the ``projwfc`` step the workchain isn't running)
     is skipped. For post-builder ``data`` dicts where the present namespaces
     depend on the run.

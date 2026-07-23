@@ -8,9 +8,9 @@ from __future__ import annotations
 import pytest
 
 from aiida_koopmans.workgraphs import (
-    apply_parallelization,
-    apply_parallelization_present,
-    inject_parallelization,
+    merge_parallelization_into_existing_namespaces,
+    merge_parallelization_into_inputs,
+    merge_parallelization_into_overrides,
     resolve_parallelization,
 )
 
@@ -70,26 +70,28 @@ class TestResolve:
 class TestApplyToCalcJob:
     def test_merges_and_preserves_existing(self):
         inputs = {"metadata": {"call_link_label": "screen"}, "settings": {"a": 1}}
-        apply_parallelization(inputs, {"kcw": {"ntasks": 2, "npool": 4}}, "kcw")
+        merge_parallelization_into_inputs(inputs, {"kcw": {"ntasks": 2, "npool": 4}}, "kcw")
         assert inputs["metadata"]["call_link_label"] == "screen"
         assert inputs["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
         assert inputs["settings"] == {"a": 1, "cmdline": ["-npool", "4"]}
 
     def test_pools_false_drops_npool(self):
         inputs = {"metadata": {"call_link_label": "ham"}}
-        apply_parallelization(inputs, {"kcw": {"npool": 4, "pd": True}}, "kcw", pools=False)
+        merge_parallelization_into_inputs(
+            inputs, {"kcw": {"npool": 4, "pd": True}}, "kcw", pools=False
+        )
         assert inputs["settings"]["cmdline"] == ["-pd", "true"]
 
     def test_no_config_is_a_noop(self):
         inputs = {"metadata": {"call_link_label": "x"}}
-        apply_parallelization(inputs, None, "kcw")
+        merge_parallelization_into_inputs(inputs, None, "kcw")
         assert inputs == {"metadata": {"call_link_label": "x"}}
 
 
 class TestInjectOverrides:
     def test_nested_and_direct_namespaces(self):
         overrides: dict = {}
-        inject_parallelization(
+        merge_parallelization_into_overrides(
             overrides,
             {"pw": {"npool": 4}, "projwfc": {"ntasks": 2}},
             [(("scf", "pw"), "pw"), (("projwfc",), "projwfc")],
@@ -101,7 +103,7 @@ class TestInjectOverrides:
 class TestApplyPresent:
     def test_only_existing_namespaces(self):
         data = {"wannier90": {"wannier90": {"parameters": {}}}}
-        apply_parallelization_present(
+        merge_parallelization_into_existing_namespaces(
             data,
             {"wannier90": {"ntasks": 4}, "projwfc": {"ntasks": 2}},
             [(("wannier90", "wannier90"), "wannier90"), (("projwfc", "projwfc"), "projwfc")],

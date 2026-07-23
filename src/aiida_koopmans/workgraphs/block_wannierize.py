@@ -51,7 +51,7 @@ from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
-from aiida_koopmans.workgraphs import Codes, apply_parallelization
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
@@ -314,8 +314,10 @@ def WannierizeBlock(
     # concept); pw2wannier90.x takes ntasks plus -npool / -pd. QE rejects
     # pw2wannier90 pools under gamma_only, but this block wannierization is a
     # periodic (full-grid nscf) path, so no schema guard is needed here.
-    apply_parallelization(data["wannier90"]["wannier90"], parallelization, "wannier90")
-    apply_parallelization(data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90")
+    merge_parallelization_into_inputs(data["wannier90"]["wannier90"], parallelization, "wannier90")
+    merge_parallelization_into_inputs(
+        data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90"
+    )
 
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)

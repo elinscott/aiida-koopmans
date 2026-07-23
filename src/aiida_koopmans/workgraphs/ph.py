@@ -21,7 +21,7 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import inject_parallelization
+from aiida_koopmans.workgraphs import merge_parallelization_into_overrides
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 
@@ -113,7 +113,7 @@ def DielectricTask(
     scf_overrides = overrides.get("scf", {})
     if pseudo_family is not None:
         scf_overrides.setdefault("pseudo_family", pseudo_family)
-    inject_parallelization(scf_overrides, parallelization, [(("pw",), "pw")])
+    merge_parallelization_into_overrides(scf_overrides, parallelization, [(("pw",), "pw")])
 
     # Fixed occupations: ph.x rejects the electric-field perturbation for
     # metallic (smeared) ground states, and the dielectric tensor is only
@@ -137,7 +137,7 @@ def DielectricTask(
     ph_overrides = recursive_merge(overrides.get("ph", {}), ph_defaults)
     # ph.x accepts -npool / -pd; QE only rejects ph pools for the
     # electron-phonon-wannier path, not this epsil (dielectric) run.
-    inject_parallelization(ph_overrides, parallelization, [(("ph",), "ph")])
+    merge_parallelization_into_overrides(ph_overrides, parallelization, [(("ph",), "ph")])
 
     ph_builder = PhBaseWorkChain.get_builder_from_protocol(
         code=ph_code,

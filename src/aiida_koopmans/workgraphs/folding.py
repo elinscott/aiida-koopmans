@@ -46,7 +46,7 @@ from aiida_koopmans.types import (
     SpinChannel,
     merge_dest_filename,
 )
-from aiida_koopmans.workgraphs import Codes, apply_parallelization
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 
 Wann2kcpTask = task(Wann2kcpCalculation)
@@ -210,7 +210,7 @@ def FoldToSupercell(
             "hr_file": wannier_files["hr_file"],
             "metadata": {"call_link_label": f"fold_{label}"},
         }
-        apply_parallelization(w2k_inputs, parallelization, "wann2kcp")
+        merge_parallelization_into_inputs(w2k_inputs, parallelization, "wann2kcp")
         w2k_outputs[label] = Wann2kcpTask(**w2k_inputs)
 
     # --- per-(manifold, spin slot) merge_evc.x ---

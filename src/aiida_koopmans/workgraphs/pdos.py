@@ -12,9 +12,9 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
     Codes,
-    apply_parallelization_present,
-    inject_parallelization,
     inject_pseudo_family,
+    merge_parallelization_into_existing_namespaces,
+    merge_parallelization_into_overrides,
 )
 
 
@@ -72,7 +72,7 @@ def RunPdos(
 
     # Inject pseudo_family into scf and nscf overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
-    inject_parallelization(
+    merge_parallelization_into_overrides(
         overrides,
         parallelization,
         [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")],
@@ -93,7 +93,9 @@ def RunPdos(
     # metadata but never projwfc.settings, so a projwfc entry threaded through
     # ``overrides`` is silently dropped. Apply it to the built ``data`` dict
     # instead (dos.x has no pool/pd flags, so it is not threaded).
-    apply_parallelization_present(data, parallelization, [(("projwfc",), "projwfc")])
+    merge_parallelization_into_existing_namespaces(
+        data, parallelization, [(("projwfc",), "projwfc")]
+    )
 
     output = PdosStep(**data)
 

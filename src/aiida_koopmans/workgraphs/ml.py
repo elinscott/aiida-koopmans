@@ -43,7 +43,7 @@ from aiida_koopmans.types import (
     ParallelizationDict,
     VariationalOrbitalType,
 )
-from aiida_koopmans.workgraphs import apply_parallelization
+from aiida_koopmans.workgraphs import merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
@@ -360,7 +360,7 @@ def OrbitalDensityDatasetWorkflow(
             }
             if decompose_parameters is not None:
                 decompose_inputs["parameters"] = decompose_parameters
-            apply_parallelization(decompose_inputs, parallelization, "pw2wannier90")
+            merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(
                 coefficients=decompose["coefficients"],

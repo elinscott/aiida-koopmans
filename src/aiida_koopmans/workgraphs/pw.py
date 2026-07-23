@@ -12,7 +12,7 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import inject_parallelization, inject_pseudo_family
+from aiida_koopmans.workgraphs import inject_pseudo_family, merge_parallelization_into_overrides
 
 
 class PwOutputs(TypedDict, total=False):
@@ -87,7 +87,7 @@ def RunPwBands(
 
     # Inject pseudo_family into both scf and bands overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "bands"))
-    inject_parallelization(
+    merge_parallelization_into_overrides(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("bands", "pw"), "pw")]
     )
 
@@ -165,7 +165,7 @@ def RunScfNscf(
 
     # Inject pseudo_family as a top-level override for both steps
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
-    inject_parallelization(
+    merge_parallelization_into_overrides(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
     scf_overrides = overrides.get("scf", {})
