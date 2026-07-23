@@ -24,7 +24,11 @@ from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.auto_wannierize import (
     WannierizeAndSplitBlock,
     WannierizeAndSplitBlocks,
+    _plain_options,
     _subblock_w90_parameters,
+    detect_band_groups,
+    extract_win_file,
+    merge_split_block_products,
 )
 
 # ----------------------------------------------------------------------
@@ -376,3 +380,180 @@ class TestRewannierizeSplitBlocksBuild:
             assert not any(key.startswith("dis_") for key in params)
             folder = w90_task.inputs["local_input_folder"].value
             assert folder.uuid == split_blocks[f"block_{i}"].uuid
+
+
+# ----------------------------------------------------------------------
+# Leaf calcfunctions (run in-process via ._callable) and helpers
+# ----------------------------------------------------------------------
+
+
+def _bands_data(array):
+    """Wrap an eigenvalue array (2D or 3D) in a ``BandsData``."""
+    from aiida.orm import BandsData, KpointsData
+
+    array = np.asarray(array, dtype=float)
+    nkpts = array.shape[-2]
+    kpts = KpointsData()
+    kpts.set_kpoints([[i / max(nkpts, 1), 0.0, 0.0] for i in range(nkpts)])
+    bands = BandsData()
+    bands.set_kpointsdata(kpts)
+    bands.set_bands(array)
+    return bands
+
+
+class TestDetectBandGroupsCalcfunction:
+    """The runtime wrapper reshapes the eigenvalues before grouping."""
+
+    def test_truncates_to_the_wannierised_manifold(self, aiida_profile):
+        """``num_bands_total`` drops the disentanglement pool above the manifold."""
+        # Band 5 sits far above the manifold; it must not influence the groups.
+        bands = _bands_data([[0.0, 0.1, 5.0, 5.1, 20.0]])
+        groups = detect_band_groups._callable(
+            bands=bands, num_occ_bands=2, threshold=2.0, num_bands_total=4
+        )
+        assert groups.get_list() == [[1, 2], [3, 4]]
+
+    def test_selects_the_requested_spin_channel(self, aiida_profile):
+        """A 3D (spin-resolved) bands array is indexed by ``spin_channel_index``."""
+        spin_up = [[0.0, 0.5, 4.0, 4.6], [0.4, 0.9, 4.5, 4.9]]  # 2 eV gap -> two groups
+        spin_down = [[0.0, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7]]  # no gap -> one group
+        bands = _bands_data([spin_up, spin_down])
+        assert detect_band_groups._callable(
+            bands=bands, threshold=2.0, spin_channel_index=0
+        ).get_list() == [[1, 2], [3, 4]]
+        assert detect_band_groups._callable(
+            bands=bands, threshold=2.0, spin_channel_index=1
+        ).get_list() == [[1, 2, 3, 4]]
+
+
+class TestExtractWinFile:
+    """Recovering the ``.win`` from the wannier90 calculation that wrote it."""
+
+    def test_missing_creator_raises(self, aiida_profile):
+        """A folder with no creating calculation cannot yield its ``.win``."""
+        from aiida.orm import FolderData
+
+        with pytest.raises(ValueError, match="no creating calculation"):
+            extract_win_file._callable(retrieved=FolderData().store())
+
+    def test_reads_the_win_from_the_creator(self, aiida_localhost):
+        """The ``.win`` is read back off the creating calculation's repository."""
+        from aiida.common.links import LinkType
+        from aiida.orm import CalcJobNode, FolderData
+
+        calc = CalcJobNode(
+            computer=aiida_localhost,
+            process_type="aiida.calculations:core.arithmetic.add",
+        )
+        calc.set_option("resources", {"num_machines": 1})
+        calc.set_option("input_filename", "aiida.win")
+        calc.base.repository.put_object_from_bytes(b"num_wann = 4\n", "aiida.win")
+        calc.store()
+        retrieved = FolderData()
+        retrieved.base.links.add_incoming(calc, link_type=LinkType.CREATE, link_label="retrieved")
+        retrieved.store()
+        calc.seal()
+
+        win = extract_win_file._callable(retrieved=retrieved)
+        assert win.filename == "aiida.win"
+        assert win.get_content() == "num_wann = 4\n"
+
+
+class TestMergeSplitBlockProducts:
+    """Per-sub-block products merge block-diagonally in band order."""
+
+    def test_block_diagonal_merge(self, aiida_profile):
+        """Two 2-WF sub-blocks merge into one 4-WF block-diagonal product set."""
+        from aiida.orm import FolderData
+
+        from aiida_koopmans.wannier_merge import (
+            generate_wannier_centres_file_contents,
+            generate_wannier_hr_file_contents,
+            generate_wannier_u_file_contents,
+            parse_wannier_centres_file_contents,
+            parse_wannier_hr_file_contents,
+            parse_wannier_u_file_contents,
+        )
+
+        rvect = np.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]])
+        weights = [1, 2, 2]
+        kpts = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]])
+        atom_lines = ["Si       0.00000000      0.00000000      0.00000000"]
+
+        def _folder(seed):
+            rng = np.random.default_rng(seed)
+            umat = rng.random((2, 2, 2)) + 1j * rng.random((2, 2, 2))
+            ham = rng.random((3, 2, 2)) + 1j * rng.random((3, 2, 2))
+            centres = [[0.1 * seed, 0.0, 0.0], [0.2 * seed, 0.0, 0.0]]
+            folder = FolderData()
+            folder.base.repository.put_object_from_bytes(
+                generate_wannier_u_file_contents(umat, kpts).encode(), "aiida_u.mat"
+            )
+            folder.base.repository.put_object_from_bytes(
+                generate_wannier_hr_file_contents(ham, rvect, weights).encode(), "aiida_hr.dat"
+            )
+            folder.base.repository.put_object_from_bytes(
+                generate_wannier_centres_file_contents(centres, atom_lines).encode(),
+                "aiida_centres.xyz",
+            )
+            return folder.store()
+
+        merged = merge_split_block_products._callable(b00=_folder(1), b01=_folder(2))
+
+        umat, _ = parse_wannier_u_file_contents(merged["u_file"].get_content())
+        assert umat.shape == (2, 4, 4)
+        # The two sub-blocks occupy the diagonal 2x2 blocks; the off-diagonal
+        # blocks are exactly zero.
+        np.testing.assert_allclose(umat[:, :2, 2:], 0.0)
+        np.testing.assert_allclose(umat[:, 2:, :2], 0.0)
+
+        ham, _, _ = parse_wannier_hr_file_contents(merged["hr_file"].get_content())
+        assert ham.shape == (3, 4, 4)
+
+        centres, atom_back = parse_wannier_centres_file_contents(
+            merged["centres_file"].get_content()
+        )
+        assert len(centres) == 4  # 2 + 2 concatenated
+        assert len(atom_back) == 1
+
+
+class TestPlainOptions:
+    """Rebuilding CalcJob ``metadata.options`` free of provenance proxies."""
+
+    def test_defaults_when_absent(self):
+        assert _plain_options(None) == {"resources": {"num_machines": 1}}
+        assert _plain_options({}) == {"resources": {"num_machines": 1}}
+
+    def test_rebuilds_nested_mapping_into_a_fresh_dict(self):
+        opts = {"resources": {"num_machines": 2}, "max_wallclock_seconds": 60}
+        rebuilt = _plain_options(opts)
+        assert rebuilt == opts
+        assert rebuilt is not opts
+        assert rebuilt["resources"] is not opts["resources"]
+
+
+class TestOverridesForwarding:
+    """The scf/nscf override entries are split out to the shared pair."""
+
+    def test_scf_and_nscf_overrides_reach_the_shared_pair(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """``overrides['scf']`` / ``overrides['nscf']`` forward to RunScfNscf."""
+        blocks = [_explicit_block("block_1", range(1, 5), ["Si: sp3"])]
+        overrides = {
+            "scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 30.0}}}},
+            "nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}},
+        }
+        wg = WannierizeAndSplitBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=blocks,
+            kpoints=kmesh,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            pseudo_family=fake_cutoffs_family.label,
+            overrides=overrides,
+        )
+        forwarded = wg.tasks["scf_nscf"].inputs["overrides"].value
+        assert forwarded["scf"]["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 30.0
+        assert forwarded["nscf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 12
