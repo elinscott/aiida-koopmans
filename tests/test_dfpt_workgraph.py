@@ -793,32 +793,31 @@ class TestNormalizeAlphaGuess:
 # ----------------------------------------------------------------------
 
 
-def _wout_folder(spreads: list[float]):
-    """Build a stored FolderData holding a minimal parseable ``aiida.wout``."""
-    from aiida.orm import FolderData
+def _w90_output_parameters(spreads: list[float]) -> dict:
+    """Build a synthetic wannier90 ``output_parameters`` payload.
 
-    n = len(spreads)
-    lines = [
-        " *---------------------------------- MAIN ------------------------------------*",
-        f" |  Number of Wannier Functions               :                 {n}             |",
-        " *----------------------------------------------------------------------------*",
-        " Final State",
-    ]
-    for i, spread in enumerate(spreads, start=1):
-        lines.append(
-            f"  WF centre and spread {i:5d}  (  0.000000,  0.000000,  0.000000 )    {spread:12.8f}"
-        )
-    lines.append(
-        "     Sum of centres and spreads (  0.000000,  0.000000,  0.000000 )"
-        f"    {sum(spreads):12.8f}"
-    )
-    # The upstream raw parser reads a few lines past the WF table (the
-    # Omega summary); pad so a synthetic file does not run off the end.
-    lines += ["", "", "", ""]
+    Shape-faithful to aiida-wannier90's parser
+    (``aiida_wannier90/parsers/wannier90.py``): the final-state WF table
+    lands in ``wannier_functions_output`` as a per-WF list of
+    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``,
+    ``number_wfs`` comes from the MAIN table, and the manifold-total
+    Omega decomposition sits in separate ``Omega_*`` scalars.
+    """
+    return {
+        "number_wfs": len(spreads),
+        "wannier_functions_output": [
+            {"wf_ids": i, "wf_centres": (0.0, 0.0, 0.0), "wf_spreads": spread}
+            for i, spread in enumerate(spreads, start=1)
+        ],
+        "Omega_total": sum(spreads),
+    }
 
-    folder = FolderData()
-    folder.base.repository.put_object_from_bytes("\n".join(lines).encode(), "aiida.wout")
-    return folder.store()
+
+def _w90_output_dict(spreads: list[float]):
+    """Store the synthetic payload as the ``orm.Dict`` the parser emits."""
+    from aiida.orm import Dict
+
+    return Dict(dict=_w90_output_parameters(spreads)).store()
 
 
 def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -> dict:
@@ -831,79 +830,103 @@ def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -
     }
 
 
-class TestExtractSpreadsFromWannier90:
-    """Unit tests of the spread extractor via its raw ``._callable``."""
+class TestExtractSpreadsFromOutputParameters:
+    """Unit tests of the spread extractor via its raw ``._callable``.
 
-    def test_manifold_and_key_order(self, aiida_profile):
+    The inputs are plain dicts because that is what the task body sees at
+    runtime: aiida-pythonjob's built-in ``Dict`` deserializer hands
+    ``orm.Dict`` inputs over as their ``get_dict()`` payload.
+    """
+
+    def test_manifold_and_key_order(self):
         """Occ blocks (lexicographic key order) come before emp blocks."""
         from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_wannier90,
+            extract_spreads_from_output_parameters,
         )
 
-        metric = extract_spreads_from_wannier90._callable(
-            occ_retrieved={
-                "b01": _wout_folder([3.3]),
-                "b00": _wout_folder([1.1, 2.2]),
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={
+                "b01": _w90_output_parameters([3.3]),
+                "b00": _w90_output_parameters([1.1, 2.2]),
             },
-            emp_retrieved={"b00": _wout_folder([4.4])},
+            emp_output_parameters={"b00": _w90_output_parameters([4.4])},
         )
         assert metric == [[1.1, 2.2, 3.3, 4.4]]
 
-    def test_occ_only(self, aiida_profile):
+    def test_occ_only(self):
         from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_wannier90,
+            extract_spreads_from_output_parameters,
         )
 
-        metric = extract_spreads_from_wannier90._callable(
-            occ_retrieved={"b00": _wout_folder([1.5, 0.5])}
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={"b00": _w90_output_parameters([1.5, 0.5])}
         )
         assert metric == [[1.5, 0.5]]
 
-    def test_missing_wout_raises(self, aiida_profile, occ_retrieved):
-        """The plain retrieved fixture holds no ``.wout``."""
+    def test_entries_are_ordered_by_wf_ids(self):
+        """Out-of-order ``wannier_functions_output`` entries are re-sorted."""
         from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_wannier90,
+            extract_spreads_from_output_parameters,
         )
 
-        with pytest.raises(ValueError, match=r"exactly one ``\.wout``"):
-            extract_spreads_from_wannier90._callable(occ_retrieved={"b00": occ_retrieved})
+        parameters = _w90_output_parameters([1.1, 2.2, 3.3])
+        parameters["wannier_functions_output"].reverse()
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={"b00": parameters}
+        )
+        assert metric == [[1.1, 2.2, 3.3]]
 
-    def test_truncated_wf_table_raises(self, aiida_profile):
-        """A ``.wout`` whose declared WF count disagrees with the table is rejected."""
-        from aiida.orm import FolderData
-
+    def test_missing_wf_table_raises(self):
+        """Parameters without ``wannier_functions_output`` (e.g. a -pp run) raise."""
         from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_wannier90,
+            extract_spreads_from_output_parameters,
         )
 
-        # Declares 2 WFs but the Final State table (and hence the parsed
-        # entries) only holds spreads for a single one.
-        lines = [
-            " *---------------------------------- MAIN ------------------------------------*",
-            " |  Number of Wannier Functions               :                 2             |",
-            " *----------------------------------------------------------------------------*",
-            " Final State",
-            "  WF centre and spread     1  (  0.000000,  0.000000,  0.000000 )      1.10000000",
-            "     Sum of centres and spreads (  0.000000,  0.000000,  0.000000 )      1.10000000",
-            "",
-            "",
-            "",
-            "",
-        ]
-        folder = FolderData()
-        folder.base.repository.put_object_from_bytes("\n".join(lines).encode(), "aiida.wout")
-        with pytest.raises(ValueError, match="Failed to parse"):
-            extract_spreads_from_wannier90._callable(occ_retrieved={"b00": folder.store()})
+        with pytest.raises(ValueError, match="lists 0 final-state Wannier functions"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": {"number_wfs": 2}}
+            )
 
-    def test_noncontiguous_block_keys_raise(self, aiida_profile):
+    def test_wf_count_mismatch_raises(self):
+        """A WF table shorter than the declared ``number_wfs`` is rejected."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        parameters = _w90_output_parameters([1.1])
+        parameters["number_wfs"] = 2
+        with pytest.raises(ValueError, match="declares number_wfs = 2"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": parameters}
+            )
+
+    def test_entries_without_spreads_raise(self):
+        """Restart-for-plotting entries (only wf_ids + im_re_ratio) are rejected."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        parameters = {
+            "number_wfs": 1,
+            "wannier_functions_output": [{"wf_ids": 1, "im_re_ratio": 1.0}],
+        }
+        with pytest.raises(ValueError, match="no ``wf_spreads``"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": parameters}
+            )
+
+    def test_noncontiguous_block_keys_raise(self):
         """A gap in the ``bNN`` block numbering is rejected before spreads are read."""
         from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_wannier90,
+            extract_spreads_from_output_parameters,
         )
 
         with pytest.raises(ValueError, match=r"contiguous zero-based ``bNN``.*b02"):
-            extract_spreads_from_wannier90._callable(
-                occ_retrieved={"b00": _wout_folder([1.1]), "b02": _wout_folder([2.2])},
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={
+                    "b00": _w90_output_parameters([1.1]),
+                    "b02": _w90_output_parameters([2.2]),
+                },
             )
 
 
@@ -1012,6 +1035,8 @@ class TestRunDFPTGrouping:
             nscf_remote_folder=nscf_remote,
             occ_retrieved={"b00": occ_retrieved},
             emp_retrieved={"b00": emp_retrieved},
+            occ_output_parameters={"b00": _w90_output_dict([0.5] * 4)},
+            emp_output_parameters={"b00": _w90_output_dict([0.7] * 4)},
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -1028,6 +1053,40 @@ class TestRunDFPTGrouping:
         assert group_inputs["nbnd"].value == 8
         assert group_inputs["tol"].value == 0.05
         assert group_inputs["spin_polarized"].value == False  # noqa: E712 — TaggedValue breaks `is`
+
+    def test_grouping_without_output_parameters_raises(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """The spread clustering depends on the parsed wannier90 outputs."""
+        with pytest.raises(ValueError, match="requires the per-block wannier90"):
+            RunDFPT.build(
+                codes=dfpt_codes,
+                nscf_remote_folder=nscf_remote,
+                occ_retrieved={"b00": occ_retrieved},
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                group_orbitals_tol=0.05,
+            )
+
+    def test_grouping_with_mismatched_block_keys_raises(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """The output_parameters must cover exactly the retrieved blocks."""
+        with pytest.raises(ValueError, match="keyed identically"):
+            RunDFPT.build(
+                codes=dfpt_codes,
+                nscf_remote_folder=nscf_remote,
+                occ_retrieved={"b00": occ_retrieved},
+                occ_output_parameters={
+                    "b00": _w90_output_dict([0.5] * 2),
+                    "b01": _w90_output_dict([0.5] * 2),
+                },
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                group_orbitals_tol=0.05,
+            )
 
     def test_alpha_guess_wins_over_grouping(self, dfpt_codes, nscf_remote, occ_retrieved):
         """A caller guess skips screening entirely, grouping included."""
@@ -1052,12 +1111,22 @@ class TestSinglepointDFPTGrouping:
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            manifolds={
+                "none": {
+                    "occ": [_block("occ", range(1, 5))],
+                    "emp": [_block("emp", range(5, 9))],
+                }
+            },
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             group_orbitals_tol=0.05,
         )
-        assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value == 0.05
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert dfpt_inputs["group_orbitals_tol"].value == 0.05
+        # The parsed per-block wannier90 outputs are threaded alongside the
+        # retrieved folders (the spread clustering consumes the former).
+        for namespace in ("occ_output_parameters", "emp_output_parameters"):
+            assert [socket._name for socket in dfpt_inputs[namespace]] == ["b00"]
 
     def test_default_keeps_the_single_screen(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(

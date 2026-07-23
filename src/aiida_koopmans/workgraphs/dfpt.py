@@ -41,9 +41,10 @@ Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 Screening comes in three mutually exclusive flavours per channel (see
 :func:`RunDFPT`): a caller ``alpha_guess`` (no screen step at all),
 workflow-level orbital grouping (``group_orbitals_tol`` set: cluster the
-Wannier functions by spread and run one ``SCREEN.i_orb`` screen
-calculation per group representative, in parallel), or the default single
-screen calculation solving every orbital.
+Wannier functions by their spreads — read from the parsed per-block
+wannier90 ``output_parameters``, not the raw retrieved folders — and run
+one ``SCREEN.i_orb`` screen calculation per group representative, in
+parallel), or the default single screen calculation solving every orbital.
 
 Current limitations:
 
@@ -92,7 +93,7 @@ from aiida_koopmans.workgraphs.pw import RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
-    extract_spreads_from_wannier90,
+    extract_spreads_from_output_parameters,
 )
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
@@ -625,6 +626,38 @@ def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.Fold
     return {"wannier_files": merged}
 
 
+def _check_grouping_output_parameters(
+    occ_retrieved: dict,
+    occ_output_parameters: dict | None,
+    emp_retrieved: dict | None,
+    emp_output_parameters: dict | None,
+) -> None:
+    """Validate the parsed-output namespaces the grouping path consumes.
+
+    The spread clustering reads the per-block wannier90 ``output_parameters``,
+    so with ``group_orbitals_tol`` set they must be present and keyed
+    identically to the ``*_retrieved`` namespaces (one entry per block, band
+    order = lexicographic key order).
+    """
+    if occ_output_parameters is None or (
+        emp_retrieved is not None and emp_output_parameters is None
+    ):
+        raise ValueError(
+            "group_orbitals_tol requires the per-block wannier90 "
+            "``output_parameters`` (``occ_output_parameters``, plus "
+            "``emp_output_parameters`` when an empty manifold is given): "
+            "the spread clustering depends on the parsed spreads."
+        )
+    if set(occ_output_parameters) != set(occ_retrieved) or set(emp_output_parameters or {}) != set(
+        emp_retrieved or {}
+    ):
+        raise ValueError(
+            "The wannier90 ``*_output_parameters`` namespaces must be keyed "
+            "identically to their ``*_retrieved`` counterparts (one entry "
+            "per block, band order = lexicographic key order)."
+        )
+
+
 @task.graph
 def RunDFPT(
     codes: Codes,
@@ -635,6 +668,8 @@ def RunDFPT(
     kgrid: list[int],
     emp_retrieved: Annotated[dict | None, dynamic(orm.FolderData)] = None,
     nbnd_emp: int | None = None,
+    occ_output_parameters: Annotated[dict | None, dynamic(orm.Dict)] = None,
+    emp_output_parameters: Annotated[dict | None, dynamic(orm.Dict)] = None,
     bands_kpoints: orm.KpointsData | None = None,
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
@@ -666,6 +701,12 @@ def RunDFPT(
         nbnd_emp: total number of empty bands (``nbnd - nocc``); needed to
             extend the ``u_dis`` matrix when a merged empty manifold is
             disentangled.
+        occ_output_parameters / emp_output_parameters: the per-block parsed
+            wannier90 ``output_parameters`` Dicts, keyed identically to the
+            corresponding ``*_retrieved`` namespaces. Consumed only by the
+            ``group_orbitals_tol`` path (the spread clustering depends on
+            the parsed spreads, not on the raw retrieved files) and required
+            when it is active.
         bands_kpoints: explicit k-path; when given, the ham step interpolates
             the Koopmans Hamiltonian along it (``HAM.do_bands``).
         eps_inf: macroscopic dielectric constant for the screen step's
@@ -675,6 +716,7 @@ def RunDFPT(
             no screening runs at all).
         group_orbitals_tol: when set, workflow-level orbital grouping:
             cluster the Wannier functions by their wannier90 spread (Å²,
+            read from the parsed per-block ``*_output_parameters``;
             complete linkage within this tolerance, never across the
             occupied/empty boundary — :func:`assign_orbital_groups`), run
             one ``SCREEN.i_orb`` screen calculation per group representative
@@ -758,13 +800,17 @@ def RunDFPT(
         ).result
     elif group_orbitals_tol is not None:
         # Workflow-level orbital grouping: cluster the Wannier functions by
-        # their wannier90 spread, then screen one representative per group
+        # their wannier90 spread (read from the parsed per-block
+        # ``output_parameters``), then screen one representative per group
         # with ``SCREEN.i_orb`` (embarrassingly parallel) and broadcast the
         # alphas. The fan-out cardinality depends on the runtime clustering,
         # hence the nested deferred graph.
-        spreads = extract_spreads_from_wannier90(
-            occ_retrieved=occ_retrieved,
-            emp_retrieved=emp_retrieved,
+        _check_grouping_output_parameters(
+            occ_retrieved, occ_output_parameters, emp_retrieved, emp_output_parameters
+        )
+        spreads = extract_spreads_from_output_parameters(
+            occ_output_parameters=occ_output_parameters,
+            emp_output_parameters=emp_output_parameters,
             metadata={"call_link_label": "extract_spreads"},
         )
         orbitals = assign_orbital_groups(
@@ -984,10 +1030,12 @@ def SinglepointDFPTWorkflow(
 
     ``group_orbitals_tol`` reaches every channel's :func:`RunDFPT`:
     workflow-level orbital grouping by wannier90 spread with one
-    ``SCREEN.i_orb`` screen calculation per group representative. Each
-    channel clusters its own Wannier functions independently (a channel
-    running from its ``alpha_guess`` skips screening entirely, grouping
-    included).
+    ``SCREEN.i_orb`` screen calculation per group representative. The
+    spreads are read from the per-block wannier90 ``output_parameters``,
+    which this workflow threads to :func:`RunDFPT` alongside the retrieved
+    folders. Each channel clusters its own Wannier functions independently
+    (a channel running from its ``alpha_guess`` skips screening entirely,
+    grouping included).
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -1071,14 +1119,17 @@ def SinglepointDFPTWorkflow(
 
     def _wannierize_manifold(
         blocks: list, wannier_overrides: WannierizeOverrides
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Wannierise each of a manifold's blocks (native for-loop fan-out).
 
-        Returns the per-block wannier90 ``retrieved`` sockets keyed so
-        lexicographic order matches band order — the keying convention
-        :func:`prepare_kcw_wannier_files` merges by.
+        Returns the per-block wannier90 ``retrieved`` and parsed
+        ``output_parameters`` socket dicts, each keyed so lexicographic
+        order matches band order — the keying convention
+        :func:`prepare_kcw_wannier_files` merges by and the spread
+        extraction walks.
         """
         retrieved: dict[str, Any] = {}
+        output_parameters: dict[str, Any] = {}
         for i, block in enumerate(blocks):
             wannierized = WannierizeBlock(
                 codes=codes,
@@ -1094,7 +1145,8 @@ def SinglepointDFPTWorkflow(
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
             retrieved[f"b{i:02d}"] = wannierized["hr_retrieved"]
-        return retrieved
+            output_parameters[f"b{i:02d}"] = wannierized["output_parameters"]
+        return retrieved, output_parameters
 
     channel_results: dict[str, ChannelResults] = {}
     for channel_key, manifold in manifolds.items():
@@ -1105,10 +1157,12 @@ def SinglepointDFPTWorkflow(
 
         occ_blocks = manifold["occ"]
         alpha_guess = manifold.get("alpha_guess")
+        occ_retrieved, occ_output_parameters = _wannierize_manifold(occ_blocks, wannier_overrides)
         dfpt_inputs: dict[str, Any] = {
             "codes": codes,
             "nscf_remote_folder": nscf_remote_folder,
-            "occ_retrieved": _wannierize_manifold(occ_blocks, wannier_overrides),
+            "occ_retrieved": occ_retrieved,
+            "occ_output_parameters": occ_output_parameters,
             "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
             "kgrid": kgrid,
@@ -1129,7 +1183,11 @@ def SinglepointDFPTWorkflow(
             # absorbs the manifold's disentanglement bands, so the sum is the
             # total empty-band count (nbnd - nocc).
             nbnd_emp = sum(block["num_bands"] for block in emp_blocks)
-            dfpt_inputs["emp_retrieved"] = _wannierize_manifold(emp_blocks, wannier_overrides)
+            emp_retrieved, emp_output_parameters = _wannierize_manifold(
+                emp_blocks, wannier_overrides
+            )
+            dfpt_inputs["emp_retrieved"] = emp_retrieved
+            dfpt_inputs["emp_output_parameters"] = emp_output_parameters
             dfpt_inputs["num_wann_emp"] = num_wann_emp
             dfpt_inputs["nbnd_emp"] = nbnd_emp
             # Disentanglement is a property of the empty manifold, not caller

@@ -19,6 +19,12 @@ Per-block file staging that the supercell fold consumes:
   retrieve the checkpoint by default).
 * ``nnkp_file`` -- the ``aiida.nnkp`` :class:`~aiida.orm.SinglefileData`
   emitted by the wannier90 post-processing (``-pp``) run.
+
+Alongside the file staging, each block also exposes the parsed wannier90
+``output_parameters`` :class:`~aiida.orm.Dict` (per-WF spreads / centres,
+Omega decomposition), so downstream consumers that depend on parsed
+quantities — e.g. the DFPT spread-based orbital grouping — read them from
+the parser output rather than re-parsing the raw ``.wout``.
 """
 
 from __future__ import annotations
@@ -76,11 +82,16 @@ class WannierizeBlockOutputs(TypedDict):
     * ``remote_folder`` -- wannier90 ``RemoteData`` scratch (holds
       ``aiida.chk``).
     * ``nnkp_file`` -- ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
+    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
+      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
+      the ``Omega_*`` decomposition), for consumers that depend on parsed
+      quantities rather than the raw retrieved files.
     """
 
     hr_retrieved: orm.FolderData
     remote_folder: orm.RemoteData
     nnkp_file: orm.SinglefileData
+    output_parameters: orm.Dict
 
 
 class WannierizeBlocksOutputs(TypedDict):
@@ -249,6 +260,7 @@ def WannierizeBlock(
         hr_retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
+        output_parameters=outputs["wannier90"]["output_parameters"],
     )
 
 

@@ -214,11 +214,11 @@ def extract_self_hartree_from_kcp(output_parameters: dict) -> list[list[float]]:
     return output_parameters["orbital_data"]["self-Hartree"]
 
 
-def _ordered_manifold_keys(retrieved: dict, manifold: str) -> list[str]:
+def _ordered_manifold_keys(entries: dict, manifold: str) -> list[str]:
     """Validate a manifold's block keys and return them in band order.
 
-    ``_wannierize_manifold`` in ``dfpt.py`` keys each block's retrieved
-    folder ``b{i:02d}`` with ``i`` a contiguous zero-based block index,
+    ``_wannierize_manifold`` in ``dfpt.py`` keys each block's products
+    ``b{i:02d}`` with ``i`` a contiguous zero-based block index,
     so lexicographic key order *is* band order — the convention
     :func:`prepare_kcw_wannier_files` merges by and kcw.x's 1-based
     ``SCREEN.i_orb`` counts in. Guard that invariant explicitly rather
@@ -226,75 +226,68 @@ def _ordered_manifold_keys(retrieved: dict, manifold: str) -> list[str]:
     a dropped block) would otherwise silently reorder or truncate the
     spreads and misalign every downstream alpha.
     """
-    keys = sorted(retrieved)
+    keys = sorted(entries)
     expected = [f"b{i:02d}" for i in range(len(keys))]
     if keys != expected:
         raise ValueError(
-            f"{manifold}-manifold wannier90 folders must be keyed as a contiguous "
+            f"{manifold}-manifold wannier90 outputs must be keyed as a contiguous "
             f"zero-based ``bNN`` sequence ({expected or ['b00', '...']}); got {keys}."
         )
     return keys
 
 
 @task
-def extract_spreads_from_wannier90(
-    occ_retrieved: Annotated[dict, dynamic(orm.FolderData)],
-    emp_retrieved: Annotated[dict | None, dynamic(orm.FolderData)] = None,
+def extract_spreads_from_output_parameters(
+    occ_output_parameters: Annotated[dict, dynamic(orm.Dict)],
+    emp_output_parameters: Annotated[dict | None, dynamic(orm.Dict)] = None,
 ) -> list[list[float]]:
-    """Pull per-Wannier-function spreads out of wannier90 ``retrieved`` folders.
+    """Pull per-Wannier-function spreads out of parsed wannier90 outputs.
 
     Sibling of :func:`extract_self_hartree_from_kcp` for the DFPT route:
-    reads each block's ``.wout`` (always in the wannier90 ``retrieved``
-    ``FolderData``) with ``aiida_wannier90``'s ``raw_wout_parser`` — the
-    same routine upstream's ``output_parameters`` come from — and
-    concatenates the final-state spreads (Å²) into one row.
+    consumes each block's wannier90 ``output_parameters`` (the parsed
+    socket ``aiida-wannier90``'s parser always emits — the spread
+    clustering depends on the spreads, not on the raw retrieved folder)
+    and concatenates the final-state spreads into one row. The per-WF
+    entries live under ``wannier_functions_output`` — a list of
+    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``
+    and ``wf_spreads`` in Å² (final state; distinct from the
+    manifold-total ``Omega_*`` scalars). ``orm.Dict`` inputs arrive as
+    plain dicts (aiida-pythonjob's built-in ``Dict`` deserializer).
 
-    Ordering contract: within each manifold the folders are walked in
+    Ordering contract: within each manifold the blocks are walked in
     lexicographic key order (the band-order keying convention of
     ``prepare_kcw_wannier_files``), occupied manifold first, then empty —
     exactly the order kcw.x counts its 1-based ``SCREEN.i_orb`` orbital
-    index in.
+    index in. Within a block the entries are ordered by ``wf_ids``.
 
     Returned as a single-row ``[nspin=1][n_orbitals]`` array so it plugs
     into :func:`assign_orbital_groups`'s ``metric`` with
     ``spin_polarized=False`` (a spin-polarized DFPT chain runs one
-    extraction per channel on that channel's folders).
+    extraction per channel on that channel's outputs).
     """
-    from aiida_wannier90.parsers.wannier90 import raw_wout_parser
 
-    def block_spreads(folder: orm.FolderData, manifold: str) -> list[float]:
-        names = folder.base.repository.list_object_names()
-        wouts = [name for name in names if name.endswith(".wout")]
-        if len(wouts) != 1:
+    def block_spreads(parameters: dict, manifold: str) -> list[float]:
+        wfs = parameters.get("wannier_functions_output") or []
+        if len(wfs) != parameters.get("number_wfs"):
             raise ValueError(
-                f"Expected exactly one ``.wout`` in a {manifold}-manifold wannier90 "
-                f"retrieved folder, found {wouts or 'none'}."
+                f"A {manifold}-manifold wannier90 ``output_parameters`` lists "
+                f"{len(wfs)} final-state Wannier functions but the run declares "
+                f"number_wfs = {parameters.get('number_wfs')}."
             )
-        # Pad the tail: the raw parser reads a few lines past the final-state
-        # WF table (the Omega summary) and would IndexError on a file
-        # truncated right after it, masking the clearer count check below.
-        lines = (
-            folder.base.repository.get_object_content(wouts[0], mode="r").splitlines() + [""] * 6
-        )
-        try:
-            parsed = raw_wout_parser(lines)
-        except (ValueError, IndexError, KeyError) as exc:
+        if any("wf_spreads" not in wf for wf in wfs):
+            # A wannier90 restart-for-plotting run parses only wf_ids +
+            # im_re_ratio per WF (no final-state spread table).
             raise ValueError(
-                f"Failed to parse the {manifold}-manifold ``{wouts[0]}`` for the "
-                f"final-state Wannier spreads: {exc}"
-            ) from exc
-        wfs = parsed.get("wannier_functions_output") or []
-        if len(wfs) != parsed.get("number_wfs"):
-            raise ValueError(
-                f"Parsed {len(wfs)} final-state Wannier functions from ``{wouts[0]}`` "
-                f"but the run declares {parsed.get('number_wfs')}."
+                f"A {manifold}-manifold ``wannier_functions_output`` entry carries "
+                "no ``wf_spreads`` — the run did not minimise to a final state "
+                "(e.g. a restart-for-plotting run)."
             )
-        return [float(wf["wf_spreads"]) for wf in sorted(wfs, key=lambda wf: wf["wf_ids"])]
+        return [float(wf["wf_spreads"]) for wf in sorted(wfs, key=lambda wf: int(wf["wf_ids"]))]
 
     spreads: list[float] = []
-    for key in _ordered_manifold_keys(occ_retrieved, "occupied"):
-        spreads += block_spreads(occ_retrieved[key], "occupied")
-    emp = emp_retrieved or {}
+    for key in _ordered_manifold_keys(occ_output_parameters, "occupied"):
+        spreads += block_spreads(occ_output_parameters[key], "occupied")
+    emp = emp_output_parameters or {}
     for key in _ordered_manifold_keys(emp, "empty"):
         spreads += block_spreads(emp[key], "empty")
     return [spreads]
