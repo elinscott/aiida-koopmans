@@ -786,3 +786,354 @@ class TestNormalizeAlphaGuess:
         nested = [[0.1, 0.2], [0.3, 0.4]]
         assert normalize_alpha_guess(nested, 2, SpinChannel.UP) == [0.1, 0.2]
         assert normalize_alpha_guess(nested, 2, SpinChannel.DOWN) == [0.3, 0.4]
+
+
+# ----------------------------------------------------------------------
+# Workflow-level orbital grouping (group_orbitals_tol)
+# ----------------------------------------------------------------------
+
+
+def _w90_output_parameters(spreads: list[float]) -> dict:
+    """Build a synthetic wannier90 ``output_parameters`` payload.
+
+    Shape-faithful to aiida-wannier90's parser
+    (``aiida_wannier90/parsers/wannier90.py``): the final-state WF table
+    lands in ``wannier_functions_output`` as a per-WF list of
+    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``,
+    ``number_wfs`` comes from the MAIN table, and the manifold-total
+    Omega decomposition sits in separate ``Omega_*`` scalars.
+    """
+    return {
+        "number_wfs": len(spreads),
+        "wannier_functions_output": [
+            {"wf_ids": i, "wf_centres": (0.0, 0.0, 0.0), "wf_spreads": spread}
+            for i, spread in enumerate(spreads, start=1)
+        ],
+        "Omega_total": sum(spreads),
+    }
+
+
+def _w90_output_dict(spreads: list[float]):
+    """Store the synthetic payload as the ``orm.Dict`` the parser emits."""
+    from aiida.orm import Dict
+
+    return Dict(dict=_w90_output_parameters(spreads)).store()
+
+
+def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -> dict:
+    return {
+        "spin": SpinChannel.NONE.value,
+        "index": index,
+        "filled": filled,
+        "group_id": group_id,
+        "representative": representative,
+    }
+
+
+class TestExtractSpreadsFromOutputParameters:
+    """Unit tests of the spread extractor via its raw ``._callable``.
+
+    The inputs are plain dicts because that is what the task body sees at
+    runtime: aiida-pythonjob's built-in ``Dict`` deserializer hands
+    ``orm.Dict`` inputs over as their ``get_dict()`` payload.
+    """
+
+    def test_manifold_and_key_order(self):
+        """Occ blocks (lexicographic key order) come before emp blocks."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={
+                "b01": _w90_output_parameters([3.3]),
+                "b00": _w90_output_parameters([1.1, 2.2]),
+            },
+            emp_output_parameters={"b00": _w90_output_parameters([4.4])},
+        )
+        assert metric == [[1.1, 2.2, 3.3, 4.4]]
+
+    def test_occ_only(self):
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={"b00": _w90_output_parameters([1.5, 0.5])}
+        )
+        assert metric == [[1.5, 0.5]]
+
+    def test_entries_are_ordered_by_wf_ids(self):
+        """Out-of-order ``wannier_functions_output`` entries are re-sorted."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        parameters = _w90_output_parameters([1.1, 2.2, 3.3])
+        parameters["wannier_functions_output"].reverse()
+        metric = extract_spreads_from_output_parameters._callable(
+            occ_output_parameters={"b00": parameters}
+        )
+        assert metric == [[1.1, 2.2, 3.3]]
+
+    def test_missing_wf_table_raises(self):
+        """Parameters without ``wannier_functions_output`` (e.g. a -pp run) raise."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        with pytest.raises(ValueError, match="lists 0 final-state Wannier functions"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": {"number_wfs": 2}}
+            )
+
+    def test_wf_count_mismatch_raises(self):
+        """A WF table shorter than the declared ``number_wfs`` is rejected."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        parameters = _w90_output_parameters([1.1])
+        parameters["number_wfs"] = 2
+        with pytest.raises(ValueError, match="declares number_wfs = 2"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": parameters}
+            )
+
+    def test_entries_without_spreads_raise(self):
+        """Restart-for-plotting entries (only wf_ids + im_re_ratio) are rejected."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        parameters = {
+            "number_wfs": 1,
+            "wannier_functions_output": [{"wf_ids": 1, "im_re_ratio": 1.0}],
+        }
+        with pytest.raises(ValueError, match="no ``wf_spreads``"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={"b00": parameters}
+            )
+
+    def test_noncontiguous_block_keys_raise(self):
+        """A gap in the ``bNN`` block numbering is rejected before spreads are read."""
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            extract_spreads_from_output_parameters,
+        )
+
+        with pytest.raises(ValueError, match=r"contiguous zero-based ``bNN``.*b02"):
+            extract_spreads_from_output_parameters._callable(
+                occ_output_parameters={
+                    "b00": _w90_output_parameters([1.1]),
+                    "b02": _w90_output_parameters([2.2]),
+                },
+            )
+
+
+class TestSingleOrbitalAlpha:
+    def test_unwraps_the_single_entry(self):
+        from aiida_koopmans.workgraphs.dfpt import single_orbital_alpha
+
+        assert single_orbital_alpha._callable([0.25]) == 0.25
+
+    def test_multi_entry_list_raises(self):
+        from aiida_koopmans.workgraphs.dfpt import single_orbital_alpha
+
+        with pytest.raises(ValueError, match="exactly one alpha"):
+            single_orbital_alpha._callable([0.25, 0.3])
+
+
+class TestAlphasInOrbitalOrder:
+    def test_occupied_then_empty_ascending(self):
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [
+            _orbital(2, filled=True, group_id=1, representative=False),
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(3, filled=False, group_id=2, representative=True),
+        ]
+        ordered = alphas_in_orbital_order._callable(
+            orbitals=orbitals,
+            filled_alphas={"orb_1": 0.1, "orb_2": 0.2},
+            empty_alphas={"orb_3": 0.3},
+        )
+        assert ordered == [0.1, 0.2, 0.3]
+
+    def test_no_empty_manifold(self):
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [_orbital(1, filled=True, group_id=1, representative=True)]
+        assert alphas_in_orbital_order._callable(
+            orbitals=orbitals, filled_alphas={"orb_1": 0.4}
+        ) == [0.4]
+
+    def test_uncovered_orbital_raises(self):
+        """An orbital the group broadcast never populated raises a named error."""
+        from aiida_koopmans.workgraphs.dfpt import alphas_in_orbital_order
+
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=1, representative=False),
+        ]
+        with pytest.raises(ValueError, match=r"No alpha for orbital orb_2 .* did not cover it"):
+            alphas_in_orbital_order._callable(orbitals=orbitals, filled_alphas={"orb_1": 0.1})
+
+
+class TestGroupedKcwScreeningBuild:
+    """Eager build of the fan-out graph on concrete (synthetic) orbitals."""
+
+    def _build(self, dfpt_codes, nscf_remote, occ_retrieved, orbitals):
+        from aiida_koopmans.workgraphs.dfpt import GroupedKcwScreening
+
+        return GroupedKcwScreening.build(
+            code=dfpt_codes["kcw"],
+            control={"kcw_iverbosity": 1},
+            wannier={"seedname": "aiida"},
+            screen_namelist={"tr2": 1.0e-18},
+            parent_folder=nscf_remote,
+            wannier_files=occ_retrieved,
+            orbitals=orbitals,
+        )
+
+    def test_one_screen_per_representative(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Representatives fan out; group members don't run."""
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=1, representative=False),
+            _orbital(3, filled=True, group_id=2, representative=True),
+            _orbital(4, filled=False, group_id=3, representative=True),
+        ]
+        wg = self._build(dfpt_codes, nscf_remote, occ_retrieved, orbitals)
+        names = [t.name for t in wg.tasks]
+        for expected in ("screen_orb_1", "screen_orb_3", "screen_orb_4"):
+            assert expected in names, names
+        assert "screen_orb_2" not in names
+        assert "expand_alphas_by_group" in names
+        assert "alphas_in_orbital_order" in names
+
+    def test_i_orb_and_check_spread_in_the_namelist(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Each representative's run solves only its orbital, without kcw's internal grouping."""
+        orbitals = [
+            _orbital(1, filled=True, group_id=1, representative=True),
+            _orbital(2, filled=True, group_id=2, representative=True),
+        ]
+        wg = self._build(dfpt_codes, nscf_remote, occ_retrieved, orbitals)
+        for index in (1, 2):
+            screen_params = wg.tasks[f"screen_orb_{index}"].inputs["parameters"].value
+            assert screen_params["SCREEN"]["i_orb"] == index
+            assert screen_params["SCREEN"]["check_spread"] == False  # noqa: E712 — TaggedValue breaks `is`
+            assert screen_params["SCREEN"]["tr2"] == 1.0e-18
+
+
+class TestRunDFPTGrouping:
+    def test_grouping_replaces_the_single_screen(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """With a tolerance set: spread extraction + clustering + deferred fan-out."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            emp_retrieved={"b00": emp_retrieved},
+            occ_output_parameters={"b00": _w90_output_dict([0.5] * 4)},
+            emp_output_parameters={"b00": _w90_output_dict([0.7] * 4)},
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+            group_orbitals_tol=0.05,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "screen" not in names
+        for expected in ("extract_spreads", "assign_orbital_groups", "grouped_screen", "ham"):
+            assert expected in names, names
+        # The clustering sees one metric row covering occ + emp.
+        group_inputs = wg.tasks["assign_orbital_groups"].inputs
+        assert group_inputs["nelup"].value == 4
+        assert group_inputs["nbnd"].value == 8
+        assert group_inputs["tol"].value == 0.05
+        assert group_inputs["spin_polarized"].value == False  # noqa: E712 — TaggedValue breaks `is`
+
+    def test_grouping_without_output_parameters_raises(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """The spread clustering depends on the parsed wannier90 outputs."""
+        with pytest.raises(ValueError, match="requires the per-block wannier90"):
+            RunDFPT.build(
+                codes=dfpt_codes,
+                nscf_remote_folder=nscf_remote,
+                occ_retrieved={"b00": occ_retrieved},
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                group_orbitals_tol=0.05,
+            )
+
+    def test_grouping_with_mismatched_block_keys_raises(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """The output_parameters must cover exactly the retrieved blocks."""
+        with pytest.raises(ValueError, match="keyed identically"):
+            RunDFPT.build(
+                codes=dfpt_codes,
+                nscf_remote_folder=nscf_remote,
+                occ_retrieved={"b00": occ_retrieved},
+                occ_output_parameters={
+                    "b00": _w90_output_dict([0.5] * 2),
+                    "b01": _w90_output_dict([0.5] * 2),
+                },
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                group_orbitals_tol=0.05,
+            )
+
+    def test_alpha_guess_wins_over_grouping(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """A caller guess skips screening entirely, grouping included."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            occ_retrieved={"b00": occ_retrieved},
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            alpha_guess=[0.3] * 4,
+            group_orbitals_tol=0.05,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "alphas_from_guess" in names
+        for absent in ("screen", "extract_spreads", "grouped_screen"):
+            assert absent not in names, names
+
+
+class TestSinglepointDFPTGrouping:
+    def test_tol_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={
+                "none": {
+                    "occ": [_block("occ", range(1, 5))],
+                    "emp": [_block("emp", range(5, 9))],
+                }
+            },
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            group_orbitals_tol=0.05,
+        )
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert dfpt_inputs["group_orbitals_tol"].value == 0.05
+        # The parsed per-block wannier90 outputs are threaded alongside the
+        # retrieved folders (the spread clustering consumes the former).
+        for namespace in ("occ_output_parameters", "emp_output_parameters"):
+            assert [socket._name for socket in dfpt_inputs[namespace]] == ["b00"]
+
+    def test_default_keeps_the_single_screen(self, dfpt_codes, silicon_structure, kmesh):
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+        )
+        assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
