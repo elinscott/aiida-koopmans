@@ -272,6 +272,28 @@ class TestKoopmansDFPTTaskBuild:
         screen_params = wg.tasks["screen"].inputs["parameters"].value
         assert screen_params["SCREEN"]["check_spread"] is check_spread
 
+    def test_parallelization_reaches_every_kcw_step(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Ntasks + -pd reach every kcw step; -npool reaches wann2kc/screen but not ham."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            parallelization={"kcw": {"ntasks": 8, "npool": 4, "pd": True}},
+        )
+        # wann2kc and screen take both -npool and -pd (legacy KCWWannier /
+        # KCWScreen); ham takes only -pd (legacy KCWHam has no pool option).
+        for name in ("wann2kc", "screen"):
+            task = wg.tasks[name]
+            assert task.inputs["settings"].value == {"cmdline": ["-npool", "4", "-pd", "true"]}
+            assert task.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+        ham = wg.tasks["ham"]
+        assert ham.inputs["settings"].value == {"cmdline": ["-pd", "true"]}
+        assert ham.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
