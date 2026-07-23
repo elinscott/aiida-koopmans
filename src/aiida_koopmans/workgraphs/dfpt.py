@@ -987,17 +987,14 @@ def SinglepointDFPTWorkflow(
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
     tensor feeds the screen step.
 
-    One shared scf + nscf (:func:`RunScfNscf`, with the spin-regime SYSTEM
-    keys of :func:`_pw_spin_system_defaults` forced on and ``nosym`` /
-    ``noinv`` on the nscf so kcw.x sees the full k-point set), then one
-    :func:`WannierizeBlocks` per spin channel — fed the shared nscf scratch
-    via its ``nscf_remote_folder`` input, so its internal scf + nscf is
-    skipped and the ground state runs exactly once across channels — over
-    that channel's occupied + empty blocks in band order (a manifold may
-    span several blocks, whose Wannier products :func:`RunDFPT` merges back
-    into one file set), and one :func:`RunDFPT` per entry of ``manifolds``
-    — a dict keyed by spin channel (:class:`SpinChannel` values as strings)
-    whose values are :class:`ManifoldBlocks`:
+    Perform one shared scf + nscf (:func:`RunScfNscf`, with the spin-regime
+    SYSTEM keys of :func:`_pw_spin_system_defaults` forced on and ``nosym``
+    / ``noinv`` on the nscf so kcw.x sees the full k-point set). The nscf
+    scratch feeds one :func:`WannierizeBlocks` per spin channel, covering
+    that channel's occupied + empty blocks in band order. One
+    :func:`RunDFPT` then runs per entry of ``manifolds`` — a dict keyed by
+    spin channel (:class:`SpinChannel` values as strings) whose values are
+    :class:`ManifoldBlocks`:
 
     * ``spin = NONE`` — ``manifolds = {"none": ...}``: one chain on the up
       channel of the closed-shell nspin=2 scratch.

@@ -502,9 +502,6 @@ def WannierizeBlocks(
     if scf_nscf is not None:
         outputs["nscf"] = PwOutputs(
             remote_folder=nscf_scratch,
-            # Exposed for the fold-to-supercell consistency check: the
-            # PW-vs-CP band-gap comparison needs the nscf eigenvalues and
-            # scalar results.
             output_parameters=scf_nscf["nscf_output_parameters"],
             output_band=scf_nscf["nscf_output_band"],
         )

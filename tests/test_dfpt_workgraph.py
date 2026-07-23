@@ -9,7 +9,6 @@ style of ``test_block_wannierize.py``. Also unit-tests the
 from __future__ import annotations
 
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
@@ -17,6 +16,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
+from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -55,13 +55,6 @@ def bands_path(aiida_profile):
     kpts = KpointsData()
     kpts.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.0, 0.25], [0.5, 0.0, 0.5]])
     return kpts
-
-
-@pytest.fixture
-def nscf_remote(aiida_localhost, tmp_path):
-    from aiida.orm import RemoteData
-
-    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path)).store()
 
 
 @pytest.fixture
@@ -126,16 +119,7 @@ def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
 
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=SpinChannel.NONE,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=["Si:sp3"],
-    )
+    return explicit_block(label, include, projections=["Si:sp3"])
 
 
 # ----------------------------------------------------------------------

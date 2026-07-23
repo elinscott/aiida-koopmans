@@ -12,6 +12,7 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeBlocks
+from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures: codes, structures, block shapes
@@ -49,14 +50,6 @@ def wannier_codes(aiida_localhost):
 
 
 @pytest.fixture
-def nscf_remote(aiida_localhost, tmp_path):
-    """Return a stand-in external nscf scratch (never read; construction-only)."""
-    from aiida.orm import RemoteData
-
-    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path)).store()
-
-
-@pytest.fixture
 def zno_structure(aiida_profile):
     """Return a 4-atom periodic wurtzite-ish ZnO ``StructureData``."""
     from aiida.orm import StructureData
@@ -70,36 +63,22 @@ def zno_structure(aiida_profile):
     return struct
 
 
-def _explicit_block(label: str, include: range) -> ExplicitProjectionBlock:
-    """Build a minimal nspin=1 explicit (ANALYTIC) block over ``include`` bands."""
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=SpinChannel.NONE,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=[],
-    )
-
-
 def _silicon_blocks() -> list[ExplicitProjectionBlock]:
     """tutorial_2 silicon shape: 1 occupied block + 1 empty block, nspin=1."""
     return [
-        _explicit_block("block_1", range(1, 5)),  # 4 occupied
-        _explicit_block("block_2", range(5, 9)),  # 4 empty
+        explicit_block("block_1", range(1, 5)),  # 4 occupied
+        explicit_block("block_2", range(5, 9)),  # 4 empty
     ]
 
 
 def _zno_blocks() -> list[ExplicitProjectionBlock]:
     """ZnO shape: 4 occupied blocks + 1 empty block, nspin=1."""
     return [
-        _explicit_block("block_1", range(1, 6)),  # Zn 3d-ish
-        _explicit_block("block_2", range(6, 9)),
-        _explicit_block("block_3", range(9, 13)),
-        _explicit_block("block_4", range(13, 17)),
-        _explicit_block("block_5", range(17, 21)),  # empty
+        explicit_block("block_1", range(1, 6)),  # Zn 3d-ish
+        explicit_block("block_2", range(6, 9)),
+        explicit_block("block_3", range(9, 13)),
+        explicit_block("block_4", range(13, 17)),
+        explicit_block("block_5", range(17, 21)),  # empty
     ]
 
 
@@ -410,7 +389,7 @@ class TestWannierizeBlockBuild:
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """num_bands == num_wann strips the windows; mp_grid=None drops the key."""
-        block = _explicit_block("block_1", range(1, 5))
+        block = explicit_block("block_1", range(1, 5))
         block["exclude_bands"] = [9, 10]
         wg = self._build_block(
             wannier_codes,
