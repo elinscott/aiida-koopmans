@@ -216,6 +216,34 @@ class TestTopLevelGraphBuild:
         assert detect_task.inputs["num_occ_bands"].value == 4
         assert detect_task.inputs["threshold"].value == 1.5
 
+    def test_parallelization_reaches_the_shared_pw_steps(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """The pw mapping lands on the bands step and threads into scf+nscf."""
+        blocks = [_explicit_block("block_1", range(1, 5), ["Si: sp3"])]
+        wg = WannierizeAndSplitBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=blocks,
+            kpoints=kmesh,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            pseudo_family=fake_cutoffs_family.label,
+            parallelization={"pw": {"ntasks": 3, "npool": 2}},
+        )
+
+        # The bands step is a direct pw step in this graph, so the resources
+        # and -npool flag are merged straight onto its pw namespace.
+        bands_pw = wg.tasks["bands"].inputs["pw"]
+        assert bands_pw["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 3
+        assert bands_pw["settings"].value["cmdline"] == ["-npool", "2"]
+
+        # The scf+nscf pair runs inside a nested graph, which receives the
+        # mapping as an input rather than dropping it.
+        assert wg.tasks["scf_nscf"].inputs["parallelization"].value == {
+            "pw": {"ntasks": 3, "npool": 2}
+        }
+
 
 class TestPerBlockGraphBuild:
     """Eager per-block builds: the deferred body runs with concrete groups."""

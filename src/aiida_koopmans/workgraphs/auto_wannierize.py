@@ -42,13 +42,17 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.types import ProjectionBlock
+from aiida_koopmans.types import ParallelizationDict, ProjectionBlock
 from aiida_koopmans.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
-from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeOverrides
 from aiida_koopmans.workgraphs.pw import PwBaseStep, PwOutputs, RunScfNscf
 
@@ -323,6 +327,7 @@ def WannierizeAndSplitBlock(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
+    parallelization: ParallelizationDict | None = None,
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
@@ -363,6 +368,7 @@ def WannierizeAndSplitBlock(
         overrides=overrides,
         electronic_type=electronic_type,
         spin_type=spin_type,
+        parallelization=parallelization,
         metadata={"call_link_label": "wannierize_whole_block"},
     )
 
@@ -457,6 +463,7 @@ def WannierizeAndSplitBlocks(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
+    parallelization: ParallelizationDict | None = None,
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
@@ -488,6 +495,11 @@ def WannierizeAndSplitBlocks(
         pseudo_family / protocol / overrides / electronic_type / spin_type:
             as in ``WannierizeBlocks`` (the ``nscf`` override entry also
             seeds the bands step, so e.g. ``nbnd`` stays consistent).
+        parallelization: per-code parallelization mapping (keyed by code
+            name), threaded into the shared scf/nscf pair, the bands step,
+            and each block's ``pw2wannier90`` / ``wannier90`` steps. The
+            Wannier.jl split CalcJobs and the per-group re-wannierisation run
+            outside this mapping (see ``wjl_options`` / ``wannier90_options``).
         wjl_options / pw2wannier90_options: optional ``metadata.options``
             for the Wannier.jl CalcJobs and the cubic pw2wannier90 run. Both
             CalcJobs carry their own ``resources`` defaults, so normally
@@ -505,6 +517,8 @@ def WannierizeAndSplitBlocks(
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
     from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
+
+    validate_parallelization(parallelization)
 
     overrides = overrides or {}
     # ``.build()`` executes this body eagerly, where graph inputs arrive as
@@ -527,6 +541,7 @@ def WannierizeAndSplitBlocks(
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=scf_nscf_overrides or None,
+        parallelization=parallelization,
         nscf_kpoints=explicit_kpoints,
         metadata={"call_link_label": "scf_nscf"},
     )
@@ -555,6 +570,7 @@ def WannierizeAndSplitBlocks(
     bands_data.pop("kpoints_force_parity", None)
     bands_data["kpoints"] = bands_kpoints
     bands_data["pw"]["parent_folder"] = scf_nscf["scf_remote_folder"]
+    merge_parallelization_into_inputs(bands_data["pw"], parallelization, "pw")
     bands_data.setdefault("metadata", {})["call_link_label"] = "bands"
     bands_outputs = PwBaseStep(**bands_data)
 
@@ -583,6 +599,7 @@ def WannierizeAndSplitBlocks(
             overrides=overrides,
             electronic_type=electronic_type,
             spin_type=spin_type,
+            parallelization=parallelization,
             wjl_options=wjl_options,
             wannier90_options=wannier90_options,
             pw2wannier90_options=pw2wannier90_options,
