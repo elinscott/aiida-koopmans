@@ -49,6 +49,14 @@ def wannier_codes(aiida_localhost):
 
 
 @pytest.fixture
+def nscf_remote(aiida_localhost, tmp_path):
+    """Return a stand-in external nscf scratch (never read; construction-only)."""
+    from aiida.orm import RemoteData
+
+    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path)).store()
+
+
+@pytest.fixture
 def zno_structure(aiida_profile):
     """Return a 4-atom periodic wurtzite-ish ZnO ``StructureData``."""
     from aiida.orm import StructureData
@@ -125,12 +133,16 @@ class TestBlockWannierizeGraphBuild:
         # Shared scf+nscf appears exactly once.
         assert names.count("scf_nscf") == 1
         # The native for-loop unrolls at build time over the concrete blocks
-        # list: one independent WannierizeBlock per block (aiida-workgraph
-        # auto-suffixes the repeats: WannierizeBlock, BlockWannierize1, ...).
-        # No Map zone.
-        n_block_tasks = sum(1 for name in names if name.startswith("WannierizeBlock"))
+        # list: one independent WannierizeBlock per block, labelled after the
+        # block. No Map zone.
+        n_block_tasks = sum(1 for name in names if name.startswith("wannierize_block"))
         assert n_block_tasks == n_blocks
         assert names.count("map_zone") == 0
+        # The parsed per-block outputs are unified once, in band order.
+        assert names.count("collect_wannier_functions") == 1
+        output_names = [socket._name for socket in wg.outputs]
+        for expected in ("blocks", "centres", "spreads", "nscf"):
+            assert expected in output_names, output_names
 
     def test_scf_nscf_overrides_reach_the_shared_pair(
         self, wannier_codes, silicon_structure, kmesh
@@ -151,6 +163,131 @@ class TestBlockWannierizeGraphBuild:
         assert pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 70.0
         assert pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 20
         assert "wannier90" not in pw_overrides
+
+    def test_external_scratch_skips_the_internal_scf_nscf(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    ):
+        """An ``nscf_remote_folder`` input replaces the internal ground state."""
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "scf_nscf" not in names
+        assert names.count("collect_wannier_functions") == 1
+        assert sum(1 for name in names if name.startswith("wannierize_block")) == 2
+
+    def test_external_scratch_rejects_scf_nscf_overrides(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    ):
+        """scf/nscf overrides would be silently ignored alongside an external scratch."""
+        with pytest.raises(ValueError, match="external"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                nscf_remote_folder=nscf_remote,
+                overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 70.0}}}}},
+            )
+
+
+# ----------------------------------------------------------------------
+# collect_wannier_functions (raw callable, no engine)
+# ----------------------------------------------------------------------
+
+
+def _w90_output_parameters(spreads: list[float]) -> dict:
+    """Build a synthetic wannier90 ``output_parameters`` payload.
+
+    Shape-faithful to aiida-wannier90's parser
+    (``aiida_wannier90/parsers/wannier90.py``): the final-state WF table
+    lands in ``wannier_functions_output`` as a per-WF list of
+    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``,
+    ``number_wfs`` comes from the MAIN table, and the manifold-total
+    Omega decomposition sits in separate ``Omega_*`` scalars.
+    """
+    return {
+        "number_wfs": len(spreads),
+        "wannier_functions_output": [
+            {"wf_ids": i, "wf_centres": (0.1 * i, 0.0, 0.0), "wf_spreads": spread}
+            for i, spread in enumerate(spreads, start=1)
+        ],
+        "Omega_total": sum(spreads),
+    }
+
+
+class TestCollectWannierFunctions:
+    """Unit tests of the unify task via its raw ``._callable``.
+
+    The inputs are plain dicts because that is what the task body sees at
+    runtime: aiida-pythonjob's built-in ``Dict`` deserializer hands
+    ``orm.Dict`` inputs over as their ``get_dict()`` payload.
+    """
+
+    def test_concatenates_in_key_order(self):
+        """Blocks concatenate in (zero-padded) key order = input-list order."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        collected = collect_wannier_functions._callable(
+            output_parameters={
+                "b01": _w90_output_parameters([3.3]),
+                "b00": _w90_output_parameters([1.1, 2.2]),
+            }
+        )
+        assert collected["spreads"] == [1.1, 2.2, 3.3]
+        assert collected["centres"] == [[0.1, 0.0, 0.0], [0.2, 0.0, 0.0], [0.1, 0.0, 0.0]]
+
+    def test_entries_are_ordered_by_wf_ids(self):
+        """Out-of-order ``wannier_functions_output`` entries are re-sorted."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        parameters = _w90_output_parameters([1.1, 2.2, 3.3])
+        parameters["wannier_functions_output"].reverse()
+        collected = collect_wannier_functions._callable(output_parameters={"b00": parameters})
+        assert collected["spreads"] == [1.1, 2.2, 3.3]
+
+    def test_unparsed_centre_coordinates_stay_none(self):
+        """The upstream parser None-pads unreadable coordinates; keep them."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        parameters = _w90_output_parameters([1.1])
+        parameters["wannier_functions_output"][0]["wf_centres"] = (0.5, None, 0.7)
+        collected = collect_wannier_functions._callable(output_parameters={"b00": parameters})
+        assert collected["centres"] == [[0.5, None, 0.7]]
+        assert collected["spreads"] == [1.1]
+
+    def test_missing_wf_table_raises(self):
+        """Parameters without ``wannier_functions_output`` (e.g. a -pp run) raise."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        with pytest.raises(ValueError, match="lists 0 final-state Wannier functions"):
+            collect_wannier_functions._callable(output_parameters={"b00": {"number_wfs": 2}})
+
+    def test_wf_count_mismatch_raises(self):
+        """A WF table shorter than the declared ``number_wfs`` is rejected."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        parameters = _w90_output_parameters([1.1])
+        parameters["number_wfs"] = 2
+        with pytest.raises(ValueError, match="declares number_wfs = 2"):
+            collect_wannier_functions._callable(output_parameters={"b00": parameters})
+
+    def test_entries_without_spreads_raise(self):
+        """Restart-for-plotting entries (only wf_ids + im_re_ratio) are rejected."""
+        from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
+
+        parameters = {
+            "number_wfs": 1,
+            "wannier_functions_output": [{"wf_ids": 1, "im_re_ratio": 1.0}],
+        }
+        with pytest.raises(ValueError, match="no ``wf_spreads``"):
+            collect_wannier_functions._callable(output_parameters={"b00": parameters})
 
 
 # ----------------------------------------------------------------------

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, TypedDict
 
-from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.types import SpinChannel, VariationalOrbital, map_key_for
@@ -214,83 +213,29 @@ def extract_self_hartree_from_kcp(output_parameters: dict) -> list[list[float]]:
     return output_parameters["orbital_data"]["self-Hartree"]
 
 
-def _ordered_manifold_keys(entries: dict, manifold: str) -> list[str]:
-    """Validate a manifold's block keys and return them in band order.
-
-    ``_wannierize_manifold`` in ``dfpt.py`` keys each block's products
-    ``b{i:02d}`` with ``i`` a contiguous zero-based block index,
-    so lexicographic key order *is* band order — the convention
-    :func:`prepare_kcw_wannier_files` merges by and kcw.x's 1-based
-    ``SCREEN.i_orb`` counts in. Guard that invariant explicitly rather
-    than trusting a bare ``sorted()`` walk: a refactor of the keying (or
-    a dropped block) would otherwise silently reorder or truncate the
-    spreads and misalign every downstream alpha.
-    """
-    keys = sorted(entries)
-    expected = [f"b{i:02d}" for i in range(len(keys))]
-    if keys != expected:
-        raise ValueError(
-            f"{manifold}-manifold wannier90 outputs must be keyed as a contiguous "
-            f"zero-based ``bNN`` sequence ({expected or ['b00', '...']}); got {keys}."
-        )
-    return keys
-
-
 @task
-def extract_spreads_from_output_parameters(
-    occ_output_parameters: Annotated[dict, dynamic(orm.Dict)],
-    emp_output_parameters: Annotated[dict | None, dynamic(orm.Dict)] = None,
-) -> list[list[float]]:
-    """Pull per-Wannier-function spreads out of parsed wannier90 outputs.
+def spreads_metric_row(spreads: list, expected_count: int | None = None) -> list[list[float]]:
+    """Wrap one channel's flat per-orbital spread list into the metric shape.
 
-    Sibling of :func:`extract_self_hartree_from_kcp` for the DFPT route:
-    consumes each block's wannier90 ``output_parameters`` (the parsed
-    socket ``aiida-wannier90``'s parser always emits — the spread
-    clustering depends on the spreads, not on the raw retrieved folder)
-    and concatenates the final-state spreads into one row. The per-WF
-    entries live under ``wannier_functions_output`` — a list of
-    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``
-    and ``wf_spreads`` in Å² (final state; distinct from the
-    manifold-total ``Omega_*`` scalars). ``orm.Dict`` inputs arrive as
-    plain dicts (aiida-pythonjob's built-in ``Dict`` deserializer).
+    :func:`assign_orbital_groups` takes a per-spin ``[nspin][n_orbitals]``
+    metric; a DFPT channel's unified ``spreads``
+    (the band-ordered, occupied-then-empty
+    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+    output — exactly the order kcw.x counts its 1-based ``SCREEN.i_orb``
+    orbital index in) is a single row consumed with
+    ``spin_polarized=False``. A spin-polarized DFPT chain wraps each
+    channel's own spreads separately.
 
-    Ordering contract: within each manifold the blocks are walked in
-    lexicographic key order (the band-order keying convention of
-    ``prepare_kcw_wannier_files``), occupied manifold first, then empty —
-    exactly the order kcw.x counts its 1-based ``SCREEN.i_orb`` orbital
-    index in. Within a block the entries are ordered by ``wf_ids``.
-
-    Returned as a single-row ``[nspin=1][n_orbitals]`` array so it plugs
-    into :func:`assign_orbital_groups`'s ``metric`` with
-    ``spin_polarized=False`` (a spin-polarized DFPT chain runs one
-    extraction per channel on that channel's outputs).
+    ``expected_count`` guards the orbital bookkeeping at runtime: a
+    mismatch means the wannierized blocks do not cover the manifolds
+    kcw.x will screen, and every downstream alpha would be misaligned.
     """
-
-    def block_spreads(parameters: dict, manifold: str) -> list[float]:
-        wfs = parameters.get("wannier_functions_output") or []
-        if len(wfs) != parameters.get("number_wfs"):
-            raise ValueError(
-                f"A {manifold}-manifold wannier90 ``output_parameters`` lists "
-                f"{len(wfs)} final-state Wannier functions but the run declares "
-                f"number_wfs = {parameters.get('number_wfs')}."
-            )
-        if any("wf_spreads" not in wf for wf in wfs):
-            # A wannier90 restart-for-plotting run parses only wf_ids +
-            # im_re_ratio per WF (no final-state spread table).
-            raise ValueError(
-                f"A {manifold}-manifold ``wannier_functions_output`` entry carries "
-                "no ``wf_spreads`` — the run did not minimise to a final state "
-                "(e.g. a restart-for-plotting run)."
-            )
-        return [float(wf["wf_spreads"]) for wf in sorted(wfs, key=lambda wf: int(wf["wf_ids"]))]
-
-    spreads: list[float] = []
-    for key in _ordered_manifold_keys(occ_output_parameters, "occupied"):
-        spreads += block_spreads(occ_output_parameters[key], "occupied")
-    emp = emp_output_parameters or {}
-    for key in _ordered_manifold_keys(emp, "empty"):
-        spreads += block_spreads(emp[key], "empty")
-    return [spreads]
+    row = [float(s) for s in spreads]
+    if expected_count is not None and len(row) != int(expected_count):
+        raise ValueError(
+            f"Got {len(row)} Wannier spreads for {int(expected_count)} variational orbitals."
+        )
+    return [row]
 
 
 @task
