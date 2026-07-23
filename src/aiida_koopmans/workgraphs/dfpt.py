@@ -340,7 +340,7 @@ def alphas_in_orbital_order(
     return ordered
 
 
-class GroupedScreeningOutputs(TypedDict):
+class GroupedKcwScreeningOutputs(TypedDict):
     """Outputs of :func:`GroupedKcwScreening`.
 
     ``alphas`` is the full per-orbital screening-parameter list (occupied
@@ -361,7 +361,7 @@ def GroupedKcwScreening(
     parent_folder: orm.RemoteData,
     wannier_files: orm.FolderData,
     orbitals: list[VariationalOrbital],
-) -> GroupedScreeningOutputs:
+) -> GroupedKcwScreeningOutputs:
     """Per-group screening fan-out: one ``SCREEN.i_orb`` run per representative.
 
     A separate ``@task.graph`` (rather than inline in :func:`RunDFPT`)
@@ -425,7 +425,7 @@ def GroupedKcwScreening(
         empty_alphas=expanded["empty_alphas"],
         metadata={"call_link_label": "alphas_in_orbital_order"},
     )
-    return GroupedScreeningOutputs(alphas=ordered.result)
+    return GroupedKcwScreeningOutputs(alphas=ordered.result)
 
 
 @task
