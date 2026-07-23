@@ -186,6 +186,32 @@ def kmesh(aiida_profile):
     return kpts
 
 
+def explicit_block(label, include, projections=None, spin=None):
+    """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands."""
+    from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+    from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+
+    n = len(include)
+    return ExplicitProjectionBlock(
+        label=label,
+        spin=SpinChannel.NONE if spin is None else spin,
+        num_wann=n,
+        num_bands=n,
+        include_bands=list(include),
+        projection_type=WannierProjectionType.ANALYTIC,
+        projections=[] if projections is None else projections,
+    )
+
+
+@pytest.fixture
+def nscf_remote(aiida_localhost, tmp_path):
+    """Return a stand-in nscf scratch ``RemoteData`` (never read; construction-only)."""
+    from aiida.orm import RemoteData
+
+    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path)).store()
+
+
 @pytest.fixture
 def kcp_code(aiida_local_code_factory):
     """Return a mock ``koopmans.kcp`` code backed by the ``true`` executable."""
