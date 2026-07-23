@@ -33,7 +33,7 @@ class TestValidate:
 class TestResolve:
     def test_ntasks_and_npool(self):
         options, settings = resolve_parallelization({"pw": {"ntasks": 8, "npool": 4}}, "pw")
-        assert options == {"resources": {"num_machines": 1, "tot_num_mpiprocs": 8}}
+        assert options == {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 8}}
         assert settings == {"cmdline": ["-npool", "4"]}
 
     def test_missing_code_and_empty(self):
@@ -47,7 +47,7 @@ class TestResolve:
             {"cmdline": ["-npool", "2"]},
         )
         assert resolve_parallelization({"pw": {"ntasks": 3}}, "pw") == (
-            {"resources": {"num_machines": 1, "tot_num_mpiprocs": 3}},
+            {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 3}},
             {},
         )
 
@@ -87,7 +87,7 @@ class TestApplyToCalcJob:
         inputs = {"metadata": {"call_link_label": "screen"}, "settings": {"a": 1}}
         merge_parallelization_into_inputs(inputs, {"kcw": {"ntasks": 2, "npool": 4}}, "kcw")
         assert inputs["metadata"]["call_link_label"] == "screen"
-        assert inputs["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
+        assert inputs["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"] == 2
         assert inputs["settings"] == {"a": 1, "cmdline": ["-npool", "4"]}
 
     def test_pools_false_drops_npool(self):
@@ -112,7 +112,10 @@ class TestInjectOverrides:
             [(("scf", "pw"), "pw"), (("projwfc",), "projwfc")],
         )
         assert overrides["scf"]["pw"]["settings"]["cmdline"] == ["-npool", "4"]
-        assert overrides["projwfc"]["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
+        assert (
+            overrides["projwfc"]["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"]
+            == 2
+        )
 
 
 class TestApplyPresent:
@@ -124,6 +127,6 @@ class TestApplyPresent:
             [(("wannier90", "wannier90"), "wannier90"), (("projwfc", "projwfc"), "projwfc")],
         )
         w90 = data["wannier90"]["wannier90"]
-        assert w90["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 4
+        assert w90["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"] == 4
         # The absent projwfc namespace is not created.
         assert "projwfc" not in data
