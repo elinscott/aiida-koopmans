@@ -90,8 +90,6 @@ def detect_band_blocks(
       than ``threshold`` (eV) everywhere in the Brillouin zone (the minimum
       of band *i* lies more than ``threshold`` above the maximum of band
       *i - 1*). ``threshold=None`` disables gap detection.
-
-    Port of the legacy ``workflows/_wannierize.py::detect_band_blocks``.
     """
     boundary = -1 if num_occ_bands is None else num_occ_bands
     groups: list[list[int]] = [[1]]

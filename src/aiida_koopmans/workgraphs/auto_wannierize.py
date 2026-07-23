@@ -1,9 +1,8 @@
 """Automated block splitting during Wannierisation (Wannier.jl parallel transport).
 
-Port of the legacy ``WannierizeAndSplitBlockWorkflow`` (branch
-``automated_wannierization_3``): a projection block whose bands separate into
-energy-isolated groups — or straddle the occupied/empty boundary — is
-Wannierised once as a whole, split into per-group manifolds with
+A projection block whose bands separate into energy-isolated groups — or
+straddle the occupied/empty boundary — is Wannierised once as a whole, split
+into per-group manifolds with
 `aiida-wannierjl <https://github.com/elinscott/aiida-wannierjl>`_
 (``Wannier.Tools.mrwf`` parallel transport, including the cubic b-vector
 stencil fallback), re-Wannierised group by group without disentanglement, and
@@ -350,8 +349,9 @@ def WannierizeAndSplitBlock(
     The groups arrive as global band indices; they are restricted to the
     block and re-based to the block's 1-based Wannier indices before the
     split (Wannier.jl indexes the model's Wannier functions, not global
-    bands — the legacy code passed global indices, which only coincided
-    because its implicit block always started at band 1).
+    bands, so a block that does not start at band 1 must be re-based —
+    handing the split global indices would mis-address its Wannier
+    functions).
     """
     overrides = overrides or {}
 
