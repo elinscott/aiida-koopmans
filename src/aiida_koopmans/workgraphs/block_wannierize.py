@@ -14,12 +14,20 @@ Per-block file staging that the supercell fold consumes:
 * ``hr_retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
   which holds ``aiida_hr.dat`` (the real-space Hamiltonian, written because
   ``write_hr=True``) plus ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
-  and, for disentangling blocks, ``aiida_u_dis.mat`` (all forced into the
-  retrieve list; downstream consumers such as pw2wannier90
-  ``wan_mode='decompose'`` and the wannierjl split read them).
+  and, for disentangling blocks, ``aiida_u_dis.mat``. All but ``aiida.chk``
+  are retrieved by upstream's default suffix list once written (the ``write_*``
+  pins are what guarantee they exist); ``aiida.chk`` is force-retrieved.
+  Downstream consumers such as pw2wannier90 ``wan_mode='decompose'`` and the
+  wannierjl split read them.
 * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
 * ``nnkp_file`` -- the ``aiida.nnkp`` :class:`~aiida.orm.SinglefileData`
   emitted by the wannier90 post-processing (``-pp``) run.
+
+Alongside the file staging, each block also exposes the parsed wannier90
+``output_parameters`` :class:`~aiida.orm.Dict` (per-WF spreads / centres,
+Omega decomposition), so downstream consumers that depend on parsed
+quantities — e.g. the DFPT spread-based orbital grouping — read them from
+the parser output rather than re-parsing the raw ``.wout``.
 """
 
 from __future__ import annotations
@@ -38,22 +46,15 @@ from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
-# Force retrieval of the wannier90 products that are not in the default
-# retrieve list: ``aiida.chk`` (the supercell fold needs it to unitarily
-# rotate the per-block manifolds) plus the U matrices and Wannier centres
-# consumed by pw2wannier90 ``wan_mode='decompose'`` and the wannierjl
-# parallel-transport split. ``aiida_u_dis.mat`` only exists when the block
-# disentangles; absent entries are harmless (aiida-core retrieves with
-# ``ignore_nonexisting`` and the parser never cross-checks the list).
-# ``aiida_hr.dat`` lands in ``retrieved`` automatically once ``write_hr=True``.
-_W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {
-    "additional_retrieve_list": [
-        "aiida.chk",
-        "aiida_u.mat",
-        "aiida_u_dis.mat",
-        "aiida_centres.xyz",
-    ]
-}
+# ``aiida.chk`` is the only wannier90 product upstream excludes from its
+# retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
+# aiida-wannier90's ``Wannier90Calculation`` already covers ``_u.mat`` /
+# ``_u_dis.mat`` / ``_centres.xyz`` / ``_hr.dat``, so once those files are
+# written they land in ``retrieved`` automatically. What guarantees the
+# product set is therefore the ``write_hr`` / ``write_u_matrices`` /
+# ``write_xyz`` pins below, not this list. The supercell fold needs
+# ``aiida.chk`` to unitarily rotate the per-block manifolds, so force it.
+_W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
 
 class WannierizeOverrides(TypedDict, total=False):
@@ -88,11 +89,16 @@ class WannierizeBlockOutputs(TypedDict):
       and, when the block disentangles, ``aiida_u_dis.mat``).
     * ``remote_folder`` -- wannier90 ``RemoteData`` scratch.
     * ``nnkp_file`` -- ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
+    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
+      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
+      the ``Omega_*`` decomposition), for consumers that depend on parsed
+      quantities rather than the raw retrieved files.
     """
 
     hr_retrieved: orm.FolderData
     remote_folder: orm.RemoteData
     nnkp_file: orm.SinglefileData
+    output_parameters: orm.Dict
 
 
 class WannierizeBlocksOutputs(TypedDict):
@@ -167,9 +173,11 @@ def WannierizeBlock(
     * overrides the per-block ``num_wann`` / ``num_bands`` / ``exclude_bands``
       (and ``projections`` for explicit blocks) from
       :func:`block_w90_kwargs`;
-    * forces ``write_hr`` / ``write_u_matrices`` / ``write_xyz`` and the
-      retrieval of ``aiida.chk``, ``aiida_u.mat``, ``aiida_u_dis.mat`` and
-      ``aiida_centres.xyz``.
+    * forces ``write_hr`` / ``write_u_matrices`` / ``write_xyz`` so
+      ``aiida_hr.dat`` / ``aiida_u.mat`` / ``aiida_u_dis.mat`` /
+      ``aiida_centres.xyz`` are written (upstream's default retrieve list then
+      picks them up), and force-retrieves ``aiida.chk``, which upstream
+      excludes by default.
     """
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
@@ -244,9 +252,9 @@ def WannierizeBlock(
     # eigenstates on the exact grid the shared nscf produced.
     w90["kpoints"] = kpoints
 
-    # Force the extra wannier90 products into the retrieve list (merged on top of
-    # whatever ``settings`` the protocol set; the workchain only adds its own
-    # ``postproc_setup`` key on top of this).
+    # Force-retrieve ``aiida.chk`` (upstream's only non-default product), merged
+    # on top of whatever ``settings`` the protocol set; the workchain only adds
+    # its own ``postproc_setup`` key on top of this.
     existing_settings: dict = {}
     if "settings" in w90:
         existing_settings = w90["settings"].get_dict()
@@ -268,6 +276,7 @@ def WannierizeBlock(
         hr_retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
+        output_parameters=outputs["wannier90"]["output_parameters"],
     )
 
 
