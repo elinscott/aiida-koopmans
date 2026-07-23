@@ -10,8 +10,8 @@ leaf ``@task`` / calcfunction / workfunction computations.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any, TypedDict
+from collections.abc import Iterable, Mapping
+from typing import Any, TypedDict, cast
 
 from aiida import orm
 
@@ -82,7 +82,9 @@ def resolve_parallelization(
     """
     if not parallelization:
         return {}, {}
-    cfg_entry = parallelization.get(code)
+    # A TypedDict lookup with a runtime key types as ``object``; view the
+    # mapping generically for the dynamic per-code access.
+    cfg_entry = cast("Mapping[str, Any]", parallelization).get(code)
     if not cfg_entry:
         return {}, {}
     # Rebuild the entry into a plain dict: a wrapt-proxied graph input must
