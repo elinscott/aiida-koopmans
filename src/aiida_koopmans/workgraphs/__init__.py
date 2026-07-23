@@ -82,13 +82,11 @@ def resolve_parallelization(
     """
     if not parallelization:
         return {}, {}
-    # Rebuild into plain dicts (dropping the TypedDict view) so a dynamic code
-    # key and a wrapt-proxied graph input both work, and so a TaggedValue never
-    # reaches a namespace socket, which rejects it.
-    entries: dict[str, Any] = dict(parallelization)
-    cfg_entry = entries.get(code)
+    cfg_entry = parallelization.get(code)
     if not cfg_entry:
         return {}, {}
+    # Rebuild the entry into a plain dict: a wrapt-proxied graph input must
+    # never reach a namespace socket as a TaggedValue, which rejects it.
     cfg: dict[str, Any] = dict(cfg_entry)
     options: dict[str, Any] = {}
     ntasks = cfg.get("ntasks")
