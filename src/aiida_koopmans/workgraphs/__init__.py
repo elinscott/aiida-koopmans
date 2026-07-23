@@ -50,12 +50,16 @@ def inject_pseudo_family(
 
 
 # QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil
-# decomposition) on the command line. Ground truth is the legacy
-# ``koopmans.commands`` per-executable config classes; mirrors the koopmans2
-# schema. ``kcw`` accepts pools only for its wann2kc / screen steps, not ham —
-# that per-step split is the ``pools`` argument below, not a code-level fact.
-POOL_SUPPORTING_CODES = frozenset({"pw", "projwfc", "kcw"})
-PD_SUPPORTING_CODES = frozenset({"pw", "pw2wannier90", "projwfc", "kcw"})
+# decomposition) on the command line. Source-verified against Quantum ESPRESSO:
+# ``Modules/command_line_options.f90`` parses ``-nk``/``-npool`` and ``-pd``
+# globally for the modern binaries (pw, ph, projwfc, pw2wannier90, kcw); the
+# koopmans-kcp fork (kcp.x and wann2kcp.x) predates that parser and reads no CLI
+# flags at all, and wannier90 has no pool/pd concept. ``kcw`` accepts pools only
+# for its wann2kc / screen steps, not ham (``KCW/src/kcw_readin.f90`` rejects
+# pools for calculation='ham') — that per-step split is the ``pools`` argument
+# below, not a code-level fact.
+POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
+PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
 
 def resolve_parallelization(

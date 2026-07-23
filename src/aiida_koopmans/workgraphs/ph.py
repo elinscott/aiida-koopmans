@@ -134,6 +134,8 @@ def DielectricTask(
         "ph": {"parameters": {"INPUTPH": {"epsil": True, "trans": False}}},
     }
     ph_overrides = recursive_merge(overrides.get("ph", {}), ph_defaults)
+    # ph.x accepts -npool / -pd; QE only rejects ph pools for the
+    # electron-phonon-wannier path, not this epsil (dielectric) run.
     inject_parallelization(ph_overrides, parallelization, [(("ph",), "ph")])
 
     ph_builder = PhBaseWorkChain.get_builder_from_protocol(

@@ -9,7 +9,12 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import Codes, inject_parallelization, inject_pseudo_family
+from aiida_koopmans.workgraphs import (
+    Codes,
+    apply_parallelization_present,
+    inject_parallelization,
+    inject_pseudo_family,
+)
 
 
 class PdosOutputs(TypedDict):
@@ -58,12 +63,18 @@ def RunPdos(
     """
     overrides = overrides or {}
 
+    # ``.build()`` runs this body eagerly, where a graph input arrives as a
+    # provenance-tagged proxy; the family label is bound as an SQL parameter
+    # inside get_builder_from_protocol, which needs a plain str.
+    if pseudo_family is not None:
+        pseudo_family = str(pseudo_family)
+
     # Inject pseudo_family into scf and nscf overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
     inject_parallelization(
         overrides,
         parallelization,
-        [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw"), (("projwfc",), "projwfc")],
+        [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")],
     )
 
     builder = PdosWorkChain.get_builder_from_protocol(
@@ -77,15 +88,21 @@ def RunPdos(
 
     data = get_dict_from_builder(builder)
 
+    # PdosWorkChain.get_builder_from_protocol seeds projwfc.code / parameters /
+    # metadata but never projwfc.settings, so a projwfc entry threaded through
+    # ``overrides`` is silently dropped. Apply it to the built ``data`` dict
+    # instead (dos.x has no pool/pd flags, so it is not threaded).
+    apply_parallelization_present(data, parallelization, [(("projwfc",), "projwfc")])
+
     output = PdosStep(**data)
 
     return PdosOutputs(
-        nscf_remote_folder=output.nscf__remote_folder,
-        nscf_output_parameters=output.nscf__output_parameters,
-        nscf_output_band=output.nscf__output_band,
-        dos_output_dos=output.dos__output_dos,
-        projwfc_projections=output.projwfc__projections,
-        projwfc_projections_up=output.projwfc__projections_up,
-        projwfc_projections_down=output.projwfc__projections_down,
-        projwfc_Pdos=output.projwfc__Pdos,
+        nscf_remote_folder=output["nscf"]["remote_folder"],
+        nscf_output_parameters=output["nscf"]["output_parameters"],
+        nscf_output_band=output["nscf"]["output_band"],
+        dos_output_dos=output["dos"]["output_dos"],
+        projwfc_projections=output["projwfc"]["projections"],
+        projwfc_projections_up=output["projwfc"]["projections_up"],
+        projwfc_projections_down=output["projwfc"]["projections_down"],
+        projwfc_Pdos=output["projwfc"]["Pdos"],
     )

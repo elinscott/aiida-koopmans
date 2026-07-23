@@ -310,8 +310,10 @@ def WannierizeBlock(
     data.pop("clean_workdir", None)
     data["pw2wannier90"]["pw2wannier90"]["parent_folder"] = nscf_remote_folder
 
-    # Per-code parallelization: the wannier90.x step (no k-point pools) and
-    # the pw2wannier90.x step each carry their own metadata.options / -npool.
+    # Per-code parallelization: wannier90.x takes ntasks only (no pool/pd
+    # concept); pw2wannier90.x takes ntasks plus -npool / -pd. QE rejects
+    # pw2wannier90 pools under gamma_only, but this block wannierization is a
+    # periodic (full-grid nscf) path, so no schema guard is needed here.
     apply_parallelization(data["wannier90"]["wannier90"], parallelization, "wannier90")
     apply_parallelization(data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90")
 

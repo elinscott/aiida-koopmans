@@ -45,13 +45,21 @@ class TestResolve:
         _, settings = resolve_parallelization({"pw2wannier90": {"pd": True}}, "pw2wannier90")
         assert settings == {"cmdline": ["-pd", "true"]}
 
-    def test_npool_for_non_pool_code_raises(self):
-        with pytest.raises(ValueError, match="does not parallelize over"):
-            resolve_parallelization({"kcp": {"npool": 2}}, "kcp")
+    @pytest.mark.parametrize("code", ["ph", "pw2wannier90"])
+    def test_npool_and_pd_for_ph_and_pw2wannier90(self, code):
+        """The ph and pw2wannier90 codes accept both flags (QE parses them globally)."""
+        _, settings = resolve_parallelization({code: {"npool": 2, "pd": True}}, code)
+        assert settings == {"cmdline": ["-npool", "2", "-pd", "true"]}
 
-    def test_pd_for_non_pd_code_raises(self):
+    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90"])
+    def test_npool_for_non_pool_code_raises(self, code):
+        with pytest.raises(ValueError, match="does not parallelize over"):
+            resolve_parallelization({code: {"npool": 2}}, code)
+
+    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90"])
+    def test_pd_for_non_pd_code_raises(self, code):
         with pytest.raises(ValueError, match="pencil decomposition"):
-            resolve_parallelization({"ph": {"pd": True}}, "ph")
+            resolve_parallelization({code: {"pd": True}}, code)
 
     def test_pools_false_suppresses_npool_but_keeps_pd(self):
         """The kcw.x ham step drops -npool but still takes -pd."""
