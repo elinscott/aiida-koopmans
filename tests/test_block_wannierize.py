@@ -260,11 +260,11 @@ class TestWannierizeBlockBuild:
         parent = task.inputs["pw2wannier90"]["pw2wannier90"]["parent_folder"].value
         assert parent.uuid == nscf_scratch.uuid
 
-        # The full wannier90 product set is forced into the retrieve list
-        # (aiida_u_dis.mat unconditionally: absent-file entries are no-ops).
+        # Only aiida.chk is force-retrieved; the U matrices, centres and hr file
+        # ride upstream's default retrieve suffixes once the write_* pins above
+        # cause them to be written.
         settings = task.inputs["wannier90"]["wannier90"]["settings"].value.get_dict()
-        for filename in ("aiida.chk", "aiida_u.mat", "aiida_u_dis.mat", "aiida_centres.xyz"):
-            assert filename in settings["additional_retrieve_list"]
+        assert settings["additional_retrieve_list"] == ["aiida.chk"]
 
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
