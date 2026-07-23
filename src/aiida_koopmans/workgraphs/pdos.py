@@ -9,6 +9,7 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
     Codes,
     apply_parallelization_present,
@@ -40,7 +41,7 @@ def RunPdos(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> PdosOutputs:
     """Run PdosWorkChain using the protocol-based builder pattern.
 

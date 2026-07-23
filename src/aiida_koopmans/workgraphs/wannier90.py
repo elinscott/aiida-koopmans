@@ -19,6 +19,7 @@ from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wann
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import Codes, apply_parallelization_present
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
@@ -137,7 +138,7 @@ def Wannierize(
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
 

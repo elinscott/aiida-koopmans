@@ -148,6 +148,41 @@ class AlphaScreening(TypedDict):
     empty: dict[SpinChannel, list[float]]
 
 
+class CodeParallelization(TypedDict, total=False):
+    """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp.
+
+    ``ntasks`` sets ``metadata.options.resources`` (``tot_num_mpiprocs``);
+    ``npool`` becomes ``-npool`` and ``pd`` becomes ``-pd true`` on the QE
+    command line. Every field is optional (``total=False``); an absent one
+    means the QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization``
+    pydantic model that produces these dicts.
+    """
+
+    ntasks: int
+    npool: int
+    pd: bool
+
+
+class ParallelizationDict(TypedDict, total=False):
+    """Per-code parallelization mapping threaded into every top-level graph.
+
+    One optional key per code name — the fixed key set mirrors the koopmans2
+    parallelization schema's ``ALL_CODES``. Each value is a
+    :class:`CodeParallelization`. Which flags each code actually accepts is
+    enforced by ``POOL_SUPPORTING_CODES`` / ``PD_SUPPORTING_CODES`` in
+    ``aiida_koopmans.workgraphs``, not by this shape.
+    """
+
+    pw: CodeParallelization
+    kcp: CodeParallelization
+    kcw: CodeParallelization
+    ph: CodeParallelization
+    projwfc: CodeParallelization
+    pw2wannier90: CodeParallelization
+    wann2kcp: CodeParallelization
+    wannier90: CodeParallelization
+
+
 class OrbitalDict(TypedDict):
     """A single resolved Wannier orbital as a plain dict.
 

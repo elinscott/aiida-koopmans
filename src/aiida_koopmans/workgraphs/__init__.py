@@ -15,6 +15,8 @@ from typing import Any, TypedDict
 
 from aiida import orm
 
+from aiida_koopmans.types import ParallelizationDict
+
 
 class Codes(TypedDict, total=False):
     """Code instances used across koopmans workgraphs."""
@@ -63,7 +65,7 @@ PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
 
 def resolve_parallelization(
-    parallelization: dict[str, Any] | None, code: str, *, pools: bool = True
+    parallelization: ParallelizationDict | None, code: str, *, pools: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(options, settings)`` for ``code`` from a parallelization mapping.
 
@@ -80,10 +82,14 @@ def resolve_parallelization(
     """
     if not parallelization:
         return {}, {}
-    cfg = dict(parallelization).get(code)
-    if not cfg:
+    # Rebuild into plain dicts (dropping the TypedDict view) so a dynamic code
+    # key and a wrapt-proxied graph input both work, and so a TaggedValue never
+    # reaches a namespace socket, which rejects it.
+    entries: dict[str, Any] = dict(parallelization)
+    cfg_entry = entries.get(code)
+    if not cfg_entry:
         return {}, {}
-    cfg = dict(cfg)
+    cfg: dict[str, Any] = dict(cfg_entry)
     options: dict[str, Any] = {}
     ntasks = cfg.get("ntasks")
     npool = cfg.get("npool")
@@ -129,7 +135,7 @@ def _merge_into_namespace(
 
 def apply_parallelization(
     step_inputs: dict[str, Any],
-    parallelization: dict[str, Any] | None,
+    parallelization: ParallelizationDict | None,
     code: str,
     *,
     pools: bool = True,
@@ -146,7 +152,7 @@ def apply_parallelization(
 
 def inject_parallelization(
     overrides: dict[str, Any],
-    parallelization: dict[str, Any] | None,
+    parallelization: ParallelizationDict | None,
     mapping: Iterable[tuple[tuple[str, ...], str]],
 ) -> None:
     """Merge per-code parallelization into WorkChain ``overrides`` namespaces, in place.
@@ -170,7 +176,7 @@ def inject_parallelization(
 
 def apply_parallelization_present(
     data: dict[str, Any],
-    parallelization: dict[str, Any] | None,
+    parallelization: ParallelizationDict | None,
     mapping: Iterable[tuple[tuple[str, ...], str]],
 ) -> None:
     """Merge per-code parallelization into ``data`` namespaces that already exist.

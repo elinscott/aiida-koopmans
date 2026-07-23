@@ -31,6 +31,7 @@ from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
+    ParallelizationDict,
     SpinChannel,
     VariationalOrbital,
     VariationalOrbitalType,
@@ -762,7 +763,7 @@ def InitializeOrbitals(
     parent_folder: orm.RemoteData | None = None,
     name: str = "dft_init",
     overrides: KcpNamelistOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> DFTCPOutputs:
     """Run a kcp.x DFT SCF (``do_orbdep=False``).
 
@@ -851,7 +852,7 @@ def KoopmansDSCFWorkflow(
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> KoopmansDSCFOutputs:
     """Koopmans DSCF workflow — DFT init → trial KI → per-orbital DSCF refinement → final KI.
 
@@ -1194,7 +1195,7 @@ def RunFinalKI(
     neldw: int | None = None,
     tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> KIFinalOutputs:
     """Apply the converged screening parameters via a final KI run.
 
@@ -1267,7 +1268,7 @@ def ComputeFilledOrbitalScreeningParameter(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: KcpNamelistOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     correction: Correction = Correction.KI,
 ) -> OrbitalDeltaSCFOutputs:
     """Compute the new alpha for one **filled** orbital via Delta-SCF.
@@ -1360,7 +1361,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: dict[str, KcpNamelistOverrides | None] | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     correction: Correction = Correction.KI,
 ) -> OrbitalDeltaSCFOutputs:
     """Compute the new alpha for one **empty** orbital via Delta-SCF.
@@ -1498,7 +1499,7 @@ def ComputeOrbitalScreeningParameters(
     eps_inf: float = 1.0,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> _PerOrbitalAlphaOutputs:
     """Refine every representative orbital's alpha via per-orbital Delta-SCF.
 
@@ -1644,7 +1645,7 @@ def ScreeningIteration(
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningIterationOutputs:
     """One iteration of the alpha-refinement loop.
 
@@ -1792,7 +1793,7 @@ def RefineScreeningParameters(
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
     """Recursive alpha-refinement: iterate until converged or out of budget.
 
@@ -1899,7 +1900,7 @@ def ComputeScreeningParameters(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: KoopmansDSCFOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
     """Multi-iteration alpha refinement: trial KI → per-orbital DSCF.
 
@@ -2716,7 +2717,7 @@ def _build_kcp_inputs(
     parameters: dict[str, Any],
     pseudos: dict[str, UpfData],
     *,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     alphas: AlphaScreening | None = None,
     parent_folder: orm.RemoteData | None = None,
     parent_folder_evcfixed: orm.RemoteData | None = None,

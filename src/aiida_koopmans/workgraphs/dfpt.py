@@ -76,6 +76,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.types import (
     ExplicitProjectionBlock,
+    ParallelizationDict,
     ProjectionBlock,
     SpinChannel,
     VariationalOrbital,
@@ -368,7 +369,7 @@ def GroupedKcwScreening(
     parent_folder: orm.RemoteData,
     wannier_files: orm.FolderData,
     orbitals: list[VariationalOrbital],
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> GroupedKcwScreeningOutputs:
     """Per-group screening fan-out: one ``SCREEN.i_orb`` run per representative.
 
@@ -655,7 +656,7 @@ def RunDFPT(
     l_vcut: bool | None = None,
     spin_component: int = 1,
     check_spread: bool = True,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ChannelResults:
     """Run the kcw.x chain off provided wannierization outputs.
 
@@ -991,7 +992,7 @@ def SinglepointDFPTWorkflow(
     spin: SpinType = SpinType.NONE,
     check_spread: bool = True,
     group_orbitals_tol: float | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
 

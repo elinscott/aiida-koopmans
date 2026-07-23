@@ -39,7 +39,13 @@ from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
-from aiida_koopmans.types import MergeGroup, ProjectionBlock, SpinChannel, merge_dest_filename
+from aiida_koopmans.types import (
+    MergeGroup,
+    ParallelizationDict,
+    ProjectionBlock,
+    SpinChannel,
+    merge_dest_filename,
+)
 from aiida_koopmans.workgraphs import Codes, apply_parallelization
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 
@@ -145,7 +151,7 @@ def FoldToSupercell(
     kgrid: list[int],
     gamma_only: bool = False,
     spin_polarized: bool = False,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> FoldToSupercellOutputs:
     """Convert per-block Wannier orbitals into merged supercell kcp.x files.
 

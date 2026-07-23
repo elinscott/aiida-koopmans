@@ -37,7 +37,12 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.ml_helpers import SnapshotDataset
-from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
+from aiida_koopmans.types import (
+    AlphaScreening,
+    Correction,
+    ParallelizationDict,
+    VariationalOrbitalType,
+)
 from aiida_koopmans.workgraphs import apply_parallelization
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
@@ -321,7 +326,7 @@ def OrbitalDensityDatasetWorkflow(
     merge_groups: list,
     alphas: dict,
     decompose_parameters: dict | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> OrbitalDensityDatasetOutputs:
     """Build one snapshot's orbital-density dataset from its Wannierisation.
 
@@ -389,7 +394,7 @@ def TrajectoryWorkflow(
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     ml_mode: str = "none",
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",

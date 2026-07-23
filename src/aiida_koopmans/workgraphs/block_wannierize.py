@@ -50,7 +50,7 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ProjectionBlock, block_w90_kwargs
+from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
 from aiida_koopmans.workgraphs import Codes, apply_parallelization
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
@@ -192,7 +192,7 @@ def WannierizeBlock(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
@@ -386,7 +386,7 @@ def WannierizeBlocks(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
-    parallelization: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
