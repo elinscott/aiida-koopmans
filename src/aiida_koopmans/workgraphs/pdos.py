@@ -9,7 +9,7 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import Codes, inject_pseudo_family
+from aiida_koopmans.workgraphs import Codes, inject_parallelization, inject_pseudo_family
 
 
 class PdosOutputs(TypedDict):
@@ -35,7 +35,7 @@ def RunPdos(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: dict[str, Any] | None = None,
 ) -> PdosOutputs:
     """Run PdosWorkChain using the protocol-based builder pattern.
 
@@ -49,7 +49,9 @@ def RunPdos(
         pseudo_family: Pseudo family label. If not specified, protocol default is used.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary of inputs to override protocol defaults.
-        options: Dictionary of options for metadata.options of nested CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``pw`` / ``projwfc`` entries feed the scf/nscf and projwfc.x
+            steps (``metadata.options`` and ``-npool``).
 
     Returns:
         Dict with NSCF, DOS, and PROJWFC outputs.
@@ -58,6 +60,11 @@ def RunPdos(
 
     # Inject pseudo_family into scf and nscf overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
+    inject_parallelization(
+        overrides,
+        parallelization,
+        [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw"), (("projwfc",), "projwfc")],
+    )
 
     builder = PdosWorkChain.get_builder_from_protocol(
         pw_code=codes["pw"],
@@ -66,7 +73,6 @@ def RunPdos(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
-        options=options or {},
     )
 
     data = get_dict_from_builder(builder)

@@ -38,6 +38,7 @@ from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import AlphaScreening, Correction, VariationalOrbitalType
+from aiida_koopmans.workgraphs import apply_parallelization
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
@@ -320,7 +321,7 @@ def OrbitalDensityDatasetWorkflow(
     merge_groups: list,
     alphas: dict,
     decompose_parameters: dict | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: dict[str, Any] | None = None,
 ) -> OrbitalDensityDatasetOutputs:
     """Build one snapshot's orbital-density dataset from its Wannierisation.
 
@@ -354,8 +355,7 @@ def OrbitalDensityDatasetWorkflow(
             }
             if decompose_parameters is not None:
                 decompose_inputs["parameters"] = decompose_parameters
-            if options is not None:
-                decompose_inputs["metadata"]["options"] = options
+            apply_parallelization(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(
                 coefficients=decompose["coefficients"],
@@ -389,7 +389,7 @@ def TrajectoryWorkflow(
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: dict[str, Any] | None = None,
     ml_mode: str = "none",
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",
@@ -458,7 +458,7 @@ def TrajectoryWorkflow(
             spin_polarized=spin_polarized,
             orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
             overrides=overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": f"dscf_{label}"},
         )
         snapshot_outputs[label] = KoopmansDSCFOutputs(

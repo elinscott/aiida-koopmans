@@ -19,7 +19,7 @@ from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wann
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.workgraphs import Codes, apply_parallelization_present
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
@@ -137,6 +137,7 @@ def Wannierize(
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
+    parallelization: dict[str, Any] | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
 
@@ -204,6 +205,19 @@ def Wannierize(
         bands_kpoints=bands_kpoints,
         projector_rotation=projector_rotation,
         set_bands_kpoints=True,
+    )
+
+    # Per-code parallelization into whichever calcjob namespaces this run has.
+    apply_parallelization_present(
+        data,
+        parallelization,
+        [
+            (("scf", "pw"), "pw"),
+            (("nscf", "pw"), "pw"),
+            (("wannier90", "wannier90"), "wannier90"),
+            (("pw2wannier90", "pw2wannier90"), "pw2wannier90"),
+            (("projwfc", "projwfc"), "projwfc"),
+        ],
     )
 
     # Submit the workchain with converted inputs

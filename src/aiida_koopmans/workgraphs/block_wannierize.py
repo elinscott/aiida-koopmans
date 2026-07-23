@@ -51,7 +51,7 @@ from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ProjectionBlock, block_w90_kwargs
-from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.workgraphs import Codes, apply_parallelization
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
@@ -192,6 +192,7 @@ def WannierizeBlock(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
+    parallelization: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
@@ -309,6 +310,11 @@ def WannierizeBlock(
     data.pop("clean_workdir", None)
     data["pw2wannier90"]["pw2wannier90"]["parent_folder"] = nscf_remote_folder
 
+    # Per-code parallelization: the wannier90.x step (no k-point pools) and
+    # the pw2wannier90.x step each carry their own metadata.options / -npool.
+    apply_parallelization(data["wannier90"]["wannier90"], parallelization, "wannier90")
+    apply_parallelization(data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90")
+
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 
@@ -378,6 +384,7 @@ def WannierizeBlocks(
     overrides: WannierizeOverrides | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
+    parallelization: dict[str, Any] | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
@@ -458,6 +465,7 @@ def WannierizeBlocks(
             # explicit ``kpoints`` mesh, so the nscf must run on exactly that
             # grid (not the protocol's kpoints_distance-derived one).
             nscf_kpoints=kpoints,
+            parallelization=parallelization,
             metadata={"call_link_label": "scf_nscf"},
         )
         nscf_scratch = scf_nscf["nscf_remote_folder"]
@@ -484,6 +492,7 @@ def WannierizeBlocks(
             overrides=overrides or None,
             electronic_type=electronic_type,
             spin_type=spin_type,
+            parallelization=parallelization,
             metadata={"call_link_label": f"wannierize_{block['label']}"},
         )
         block_outputs[block["label"]] = wannierized

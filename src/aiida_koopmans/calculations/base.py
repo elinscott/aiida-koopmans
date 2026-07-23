@@ -73,9 +73,10 @@ class KoopmansCalculation(CalcJob, abc.ABC):
         """
         code_info = CodeInfo()
         code_info.code_uuid = self.inputs.code.uuid
-        code_info.cmdline_params = (
-            cmdline_params if cmdline_params is not None else ["-in", self._INPUT_FILE]
-        )
+        base_params = cmdline_params if cmdline_params is not None else ["-in", self._INPUT_FILE]
+        # Parallelization flags (e.g. ``-npool``) ride ``settings.cmdline`` and,
+        # as in aiida-quantumespresso, precede the ``-in <input>`` block.
+        code_info.cmdline_params = self._cmdline_from_settings() + base_params
         code_info.stdout_name = self._OUTPUT_FILE
         return code_info
 
@@ -83,6 +84,12 @@ class KoopmansCalculation(CalcJob, abc.ABC):
         """Return the ``additional_retrieve_list`` from ``settings`` (or an empty list)."""
         if "settings" in self.inputs:
             return list(self.inputs.settings.get_dict().get("additional_retrieve_list", []))
+        return []
+
+    def _cmdline_from_settings(self) -> list[str]:
+        """Return the ``cmdline`` list from ``settings`` (or an empty list)."""
+        if "settings" in self.inputs:
+            return list(self.inputs.settings.get_dict().get("cmdline", []))
         return []
 
     @abc.abstractmethod

@@ -220,7 +220,7 @@ def MlwfInitialization(
     pseudo_family: str | None = None,
     wannier_protocol: str | None = None,
     wannier_overrides: WannierizeOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: dict[str, Any] | None = None,
 ) -> MlwfInitializationOutputs:
     """Initialise the variational orbitals from (projected) Wannier functions.
 
@@ -249,7 +249,8 @@ def MlwfInitialization(
             ``gamma_trick``).
         pseudo_family / wannier_protocol / wannier_overrides: forwarded to
             the wannierisation builders.
-        options: ``metadata.options`` for the kcp.x / folding CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            threaded to the wannierize, folding, and kcp.x steps.
     """
     # Merge groups are defined by *primitive* occupation counts (the blocks
     # carry primitive band indices); the supercell counts divide back down
@@ -284,6 +285,7 @@ def MlwfInitialization(
         protocol=wannier_protocol,
         overrides=wannier_overrides,
         spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+        parallelization=parallelization,
         metadata={"call_link_label": "wannierize"},
     )
 
@@ -297,7 +299,7 @@ def MlwfInitialization(
         kgrid=kgrid,
         gamma_only=gamma_only,
         spin_polarized=spin_polarized,
-        options=options,
+        parallelization=parallelization,
         metadata={"call_link_label": "fold_to_supercell"},
     )
 
@@ -317,7 +319,7 @@ def MlwfInitialization(
         supercell,
         _build_dft_dummy_parameters(base),
         pseudos,
-        options=options,
+        parallelization=parallelization,
         name="dft_dummy",
     )
     dummy = KcpStep(**dummy_inputs)
@@ -334,7 +336,7 @@ def MlwfInitialization(
         supercell,
         _build_dft_init_from_wannier_parameters(base, nbnd=nbnd),
         pseudos,
-        options=options,
+        parallelization=parallelization,
         parent_folder=dummy["remote_folder"],
         read_wavefunctions=staged,
         name="dft_init",

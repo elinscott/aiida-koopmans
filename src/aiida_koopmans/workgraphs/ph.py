@@ -20,6 +20,7 @@ from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.workgraphs import inject_parallelization
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 
@@ -68,7 +69,7 @@ def DielectricTask(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: dict[str, Any] | None = None,
 ) -> DielectricOutputs:
     """Compute the macroscopic dielectric tensor: scf, then ph.x with epsil.
 
@@ -90,7 +91,9 @@ def DielectricTask(
             The epsil / trans / Gamma-q keys are forced on top of any
             caller-supplied ph overrides — they are what makes this a
             dielectric run.
-        options: Dictionary of options for metadata.options of nested CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``pw`` entry feeds the scf step and the ``ph`` entry feeds the
+            ph.x step (``metadata.options`` and ``-npool``).
 
     Returns:
         Dict with the scalar ``eps_inf`` (isotropic average), the full
@@ -109,6 +112,7 @@ def DielectricTask(
     scf_overrides = overrides.get("scf", {})
     if pseudo_family is not None:
         scf_overrides.setdefault("pseudo_family", pseudo_family)
+    inject_parallelization(scf_overrides, parallelization, [(("pw",), "pw")])
 
     # Fixed occupations: ph.x rejects the electric-field perturbation for
     # metallic (smeared) ground states, and the dielectric tensor is only
@@ -118,7 +122,6 @@ def DielectricTask(
         structure=structure,
         protocol=protocol,
         overrides=scf_overrides,
-        options=options or {},
         electronic_type=ElectronicType.INSULATOR,
     )
     scf_builder.pop("clean_workdir", None)
@@ -131,12 +134,12 @@ def DielectricTask(
         "ph": {"parameters": {"INPUTPH": {"epsil": True, "trans": False}}},
     }
     ph_overrides = recursive_merge(overrides.get("ph", {}), ph_defaults)
+    inject_parallelization(ph_overrides, parallelization, [(("ph",), "ph")])
 
     ph_builder = PhBaseWorkChain.get_builder_from_protocol(
         code=ph_code,
         protocol=protocol,
         overrides=ph_overrides,
-        options=options or {},
     )
     ph_builder.pop("clean_workdir", None)
     ph_data = get_dict_from_builder(ph_builder)
