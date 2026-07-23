@@ -225,7 +225,6 @@ def FoldToSupercell(
             "source_files": source_files,
             "metadata": {"call_link_label": f"merge_{target['stem']}"},
         }
-        apply_parallelization(merge_inputs, parallelization, "merge_evc")
         merged[target["stem"]] = MergeEvcTask(**merge_inputs)["merged_file"]
 
     return cast("FoldToSupercellOutputs", merged)
