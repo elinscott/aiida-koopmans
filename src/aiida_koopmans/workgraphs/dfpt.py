@@ -7,8 +7,9 @@ The three steps are backed by the CalcJobs in
 Two graphs are exposed:
 
 * :func:`RunDFPT` -- the kcw.x chain proper. It *consumes*
-  wannierization outputs (the shared nscf scratch plus the per-block
-  wannier90 ``retrieved`` folders, merged per manifold) and runs
+  wannierization outputs (the shared nscf scratch plus the label-keyed
+  per-block outputs namespace, picked apart by the caller's band-ordered
+  manifold label lists and merged per manifold) and runs
   wann2kcw → screen → ham. When ``alpha_guess`` is provided the screen
   step is skipped and the guess is fed straight to ham.
 * :func:`SinglepointDFPTWorkflow` -- the end-to-end workflow: one shared
@@ -88,7 +89,11 @@ from aiida_koopmans.wannier_merge import (
     parse_wannier_u_file_shape,
 )
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks, WannierizeOverrides
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    WannierizeBlocks,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
@@ -631,11 +636,12 @@ def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.Fold
 def RunDFPT(
     codes: Codes,
     nscf_remote_folder: orm.RemoteData,
-    occ_retrieved: Annotated[dict, dynamic(orm.FolderData)],
+    block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    occ_labels: list,
     num_wann_occ: int,
     num_wann_emp: int,
     kgrid: list[int],
-    emp_retrieved: Annotated[dict | None, dynamic(orm.FolderData)] = None,
+    emp_labels: list | None = None,
     nbnd_emp: int | None = None,
     spreads: list | None = None,
     bands_kpoints: orm.KpointsData | None = None,
@@ -656,16 +662,26 @@ def RunDFPT(
             be an ``nspin = 2`` run even for closed-shell systems -- the DFPT
             perturbations are spin-dependent; the kcw chain reads the up
             channel (``CONTROL.spin_component = 1``).
-        occ_retrieved: the occupied-manifold wannier90 ``retrieved`` folders
-            (each must hold ``aiida_u.mat`` / ``aiida_hr.dat`` /
-            ``aiida_centres.xyz``), keyed so lexicographic key order matches
-            the band order of the manifold's blocks; multi-block manifolds
-            are merged by :func:`prepare_kcw_wannier_files`.
+        block_wannier: the per-block wannierization outputs keyed by block
+            label — pass ``WannierizeBlocks``' ``blocks`` output namespace
+            *wholesale*. A nested sub-graph's dynamic namespace has no
+            per-key sockets until it runs, so callers must not subscript
+            into it; this graph picks blocks out by label in its own
+            deferred body (the ``FoldToSupercell`` pattern). Each entry's
+            ``hr_retrieved`` folder must hold ``aiida_u.mat`` /
+            ``aiida_hr.dat`` / ``aiida_centres.xyz``.
+        occ_labels: the occupied-manifold block labels, in band order.
+            Manifold membership and band order are the caller's structural
+            knowledge (its own block lists); the file merge keys each
+            manifold's blocks ``b{i:02d}`` by list position, so
+            lexicographic order matches band order — the convention
+            :func:`prepare_kcw_wannier_files` merges by. Multi-block
+            manifolds are merged there into one file set.
         num_wann_occ / num_wann_emp: *total* Wannier function counts per
             manifold (``num_wann_emp = 0`` for an occupied-only run).
         kgrid: the Monkhorst-Pack grid of the nscf, for ``CONTROL.mp1-3``.
-        emp_retrieved: the empty-manifold wannier90 ``retrieved`` folders
-            (same keying convention as ``occ_retrieved``).
+        emp_labels: the empty-manifold block labels, in band order (omit
+            for an occupied-only run).
         nbnd_emp: total number of empty bands (``nbnd - nocc``); needed to
             extend the ``u_dis`` matrix when a merged empty manifold is
             disentangled.
@@ -733,10 +749,13 @@ def RunDFPT(
         "has_disentangle": has_disentangle,
     }
 
-    prep_inputs: dict[str, Any] = {f"occ_{key}": folder for key, folder in occ_retrieved.items()}
-    if emp_retrieved is not None:
-        for key, folder in emp_retrieved.items():
-            prep_inputs[f"emp_{key}"] = folder
+    prep_inputs: dict[str, Any] = {
+        f"occ_b{i:02d}": block_wannier[str(label)]["hr_retrieved"]
+        for i, label in enumerate(occ_labels)
+    }
+    if emp_labels is not None:
+        for i, label in enumerate(emp_labels):
+            prep_inputs[f"emp_b{i:02d}"] = block_wannier[str(label)]["hr_retrieved"]
         if nbnd_emp is not None:
             prep_inputs["nbnd_emp"] = nbnd_emp
     wannier_files = prepare_kcw_wannier_files(
@@ -1091,19 +1110,6 @@ def SinglepointDFPTWorkflow(
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
-    def _manifold_retrieved(blocks_ns: Any, manifold_blocks: list) -> dict[str, Any]:
-        """Key one manifold's per-block ``retrieved`` sockets for the file merge.
-
-        The manifold membership and order come from the caller's own block
-        lists (structural knowledge, not label parsing); the ``b{i:02d}``
-        keying is the lexicographic-equals-band-order convention
-        :func:`prepare_kcw_wannier_files` merges by.
-        """
-        return {
-            f"b{i:02d}": blocks_ns[block["label"]]["hr_retrieved"]
-            for i, block in enumerate(manifold_blocks)
-        }
-
     channel_results: dict[str, ChannelResults] = {}
     for channel_key, manifold in manifolds.items():
         channel_key = str(channel_key)
@@ -1132,12 +1138,16 @@ def SinglepointDFPTWorkflow(
             nscf_remote_folder=nscf_remote_folder,
             metadata={"call_link_label": f"wannierize{suffix}"},
         )
-        blocks_ns = wannierized["blocks"]
-
+        # Hand RunDFPT the whole ``blocks`` namespace: a nested sub-graph's
+        # dynamic namespace has no per-key sockets at build time, so it must
+        # flow wholesale; RunDFPT picks blocks out by label in its deferred
+        # body. Manifold membership and band order travel as the caller's
+        # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
             "codes": codes,
             "nscf_remote_folder": nscf_remote_folder,
-            "occ_retrieved": _manifold_retrieved(blocks_ns, occ_blocks),
+            "block_wannier": wannierized["blocks"],
+            "occ_labels": [str(block["label"]) for block in occ_blocks],
             "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
             "kgrid": kgrid,
@@ -1158,7 +1168,7 @@ def SinglepointDFPTWorkflow(
             # absorbs the manifold's disentanglement bands, so the sum is the
             # total empty-band count (nbnd - nocc).
             nbnd_emp = sum(block["num_bands"] for block in emp_blocks)
-            dfpt_inputs["emp_retrieved"] = _manifold_retrieved(blocks_ns, emp_blocks)
+            dfpt_inputs["emp_labels"] = [str(block["label"]) for block in emp_blocks]
             dfpt_inputs["num_wann_emp"] = num_wann_emp
             dfpt_inputs["nbnd_emp"] = nbnd_emp
             # Disentanglement is a property of the empty manifold, not caller

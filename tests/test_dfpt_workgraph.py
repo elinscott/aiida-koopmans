@@ -251,8 +251,12 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -274,7 +278,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -289,8 +294,12 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -360,6 +369,11 @@ class TestSinglepointDFPTBuild:
         block_labels = [b["label"] for b in wg.tasks["wannierize"].inputs["blocks"].value]
         assert block_labels == ["occ", "emp"]
 
+        # RunDFPT gets the whole blocks namespace plus the band-ordered
+        # manifold label lists it partitions by in its deferred body.
+        assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
+        assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
+
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
@@ -405,6 +419,8 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
+        assert dfpt_inputs["occ_labels"].value == ["occ_1", "occ_2"]
+        assert dfpt_inputs["emp_labels"].value == ["emp_1", "emp_2"]
         assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
 
     def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
@@ -930,8 +946,12 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
             spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
@@ -959,7 +979,8 @@ class TestRunDFPTGrouping:
             RunDFPT.build(
                 codes=dfpt_codes,
                 nscf_remote_folder=nscf_remote,
-                occ_retrieved={"b00": occ_retrieved},
+                block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+                occ_labels=["occ"],
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -971,7 +992,8 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
