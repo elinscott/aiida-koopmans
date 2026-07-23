@@ -530,6 +530,244 @@ def compute_power_spectrum(
 
 
 # ----------------------------------------------------------------------
+# Power spectra from pw2wannier90 ``wan_mode='decompose'`` coefficients
+# ----------------------------------------------------------------------
+#
+# The reciprocal-space decompose feature of pw2wannier90.x writes, per
+# Wannier function, an orbital-density coefficient vector (``<seed>_N.coeff``)
+# and, about the same centre, a group-density coefficient vector
+# (``<seed>_gc_N.coeff``). These two vectors play exactly the roles of the
+# legacy "orbital density" and "total density" channels, so the cross-power
+# assembly reuses :func:`compute_power_spectrum` unchanged (orbital = channel
+# 0, group = channel 1) — the resulting descriptor has the same orb-orb,
+# orb-group, group-group block layout as legacy ``compute_power_mat``.
+
+
+def orbital_power_block_length(n_max: int, l_max: int) -> int:
+    """Return the orbital-only power length ``(l_max+1)*n_max*(n_max+1)/2``.
+
+    Matches the length of the QE ``<seed>_N.power`` file and the first block
+    of :func:`compute_power_mat` (the ``orb-orb`` channel).
+    """
+    return (l_max + 1) * n_max * (n_max + 1) // 2
+
+
+def orbital_power_from_coefficients(
+    orbital_coefficients: np.ndarray, n_max: int, l_max: int
+) -> np.ndarray:
+    """Orbital-only power spectrum from a single ``.coeff`` vector.
+
+    Equals the QE ``<seed>_N.power`` file (and the leading ``orb-orb`` block
+    of :func:`compute_power_spectrum`): ``p_{n1 n2 l} = sum_m c(n1,l,m)
+    c(n2,l,m)`` for ``n1 <= n2``. Used as the internal-consistency check
+    against the binary's own ``.power`` output.
+    """
+    full = compute_power_spectrum(orbital_coefficients, orbital_coefficients, n_max, l_max)
+    return full[: orbital_power_block_length(n_max, l_max)]
+
+
+def cross_power_spectra(
+    coefficients: np.ndarray,
+    group_coefficients: np.ndarray,
+    n_max: int,
+    l_max: int,
+) -> np.ndarray:
+    """Assemble the per-WF cross-power descriptor from decompose coefficients.
+
+    :param coefficients: ``(num_wann, n_coeff)`` orbital-density coefficients
+        (row ``i`` is Wannier function ``i``), the ``coefficients`` array of
+        :class:`Pw2wannierDecomposeParser`.
+    :param group_coefficients: ``(num_wann, n_coeff)`` group-density
+        coefficients about each Wannier centre (the ``group_coefficients``
+        array); row ``i`` must be the group density about WF ``i``'s centre.
+
+    Returns a ``(num_wann, n_power_full)`` array whose row ``i`` is the
+    orb-orb / orb-group / group-group power spectrum of WF ``i`` in legacy
+    ``compute_power_mat`` order.
+    """
+    coefficients = np.asarray(coefficients, dtype=float)
+    group_coefficients = np.asarray(group_coefficients, dtype=float)
+    if coefficients.shape != group_coefficients.shape:
+        raise ValueError(
+            f"orbital and group coefficient arrays must have the same shape, got "
+            f"{coefficients.shape} vs {group_coefficients.shape}"
+        )
+    return np.array(
+        [
+            compute_power_spectrum(coefficients[i], group_coefficients[i], n_max, l_max)
+            for i in range(coefficients.shape[0])
+        ],
+        dtype=float,
+    )
+
+
+def parse_wannier_centres_xyz(xyz_content: str) -> list[list[float]]:
+    """Extract the Wannier-centre coordinates from a wannier90 ``_centres.xyz`` file.
+
+    wannier90's ``write_xyz`` labels the Wannier-function centres with the
+    ``X`` pseudo-species (the real atoms follow with their element symbols).
+    Returns the ``X`` rows as ``[x, y, z]`` Cartesian-Angstrom triples, in
+    file order (i.e. Wannier-function order).
+    """
+    centres: list[list[float]] = []
+    for line in xyz_content.splitlines():
+        tokens = line.split()
+        if len(tokens) >= 4 and tokens[0] == "X":
+            centres.append([float(t) for t in tokens[1:4]])
+    return centres
+
+
+def format_group_centres_file(centres: Sequence[Sequence[float]]) -> str:
+    """Render centres for pw2wannier90's ``decompose_centres_file``.
+
+    One Cartesian-Angstrom triple per line; the leading ``#`` line is a
+    comment the QE reader skips. Passing every Wannier centre here makes the
+    group (total) density be decomposed about each orbital's own centre, so
+    the resulting ``_gc_N.coeff`` aligns with the orbital ``_N.coeff`` for the
+    legacy-comparable cross-power.
+    """
+    header = "# Wannier centres for the group-density decomposition (Cartesian, Angstrom)\n"
+    return header + "".join(f"{c[0]:.10f} {c[1]:.10f} {c[2]:.10f}\n" for c in centres)
+
+
+def build_orbital_density_dataset(
+    descriptors: Sequence[Sequence[float]],
+    alphas: Sequence[float],
+    filled: Sequence[bool],
+    labels: Sequence[str],
+) -> SnapshotDataset:
+    """Assemble a :class:`SnapshotDataset` from aligned per-orbital rows.
+
+    Route-agnostic: the caller supplies aligned per-orbital ``descriptors``
+    (e.g. the rows of :func:`cross_power_spectra`), the screening parameters
+    ``alphas`` those orbitals were computed to have (kcp.x for DSCF today,
+    kcw.x ``screen_parameters`` for DFPT later), the ``filled`` mask, and the
+    ``labels``. This keeps the descriptor source and the alpha source
+    decoupled, mirroring :func:`build_snapshot_dataset` for the
+    ``self_hartree`` route.
+    """
+    n = len(descriptors)
+    if not (len(alphas) == len(filled) == len(labels) == n):
+        raise ValueError(
+            "descriptors, alphas, filled and labels must be the same length "
+            f"({n}, {len(alphas)}, {len(filled)}, {len(labels)})"
+        )
+    return {
+        "descriptors": [[float(x) for x in row] for row in descriptors],
+        "alphas": [float(a) for a in alphas],
+        "filled": [bool(f) for f in filled],
+        "labels": [str(label) for label in labels],
+    }
+
+
+def _gather_channel_rows(
+    merge_groups: Sequence[Mapping[str, Any]],
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    want_filled: bool,
+    channel: Any,
+) -> list[list[float]]:
+    """Concatenate the descriptor rows of one ``(filled, spin)`` slot.
+
+    Iterates ``merge_groups`` (and each group's ``blocks``) in order, so the
+    row order matches the band order the alphas were gathered in.
+    """
+    rows: list[list[float]] = []
+    for group in merge_groups:
+        if bool(group["filled"]) != want_filled or group["spin"] != channel:
+            continue
+        for block in group["blocks"]:
+            block_rows = block_descriptors.get(block["label"])
+            if block_rows is None:
+                raise ValueError(
+                    f"No descriptors for block `{block['label']}` "
+                    "(present in a merge group but absent from block_descriptors)"
+                )
+            rows.extend([float(x) for x in row] for row in block_rows)
+    return rows
+
+
+def assemble_orbital_density_dataset(
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    merge_groups: Sequence[Mapping[str, Any]],
+    alphas: AlphaScreening,
+) -> SnapshotDataset:
+    """Align per-block Wannier-function descriptors with the screening parameters.
+
+    The decompose route produces descriptors per *projection block* (each
+    block's Wannier functions), whereas the screening parameters live in the
+    per-spin :class:`~aiida_koopmans.types.AlphaScreening` shape. This joins
+    them into a :class:`SnapshotDataset` whose row order is IDENTICAL to
+    :func:`build_snapshot_dataset` (the ``self_hartree`` route), so a model is
+    agnostic to which descriptor produced the training rows:
+
+    * outer loop over spin channels, ordered by spin index (``up`` before
+      ``down``; ``none`` for closed shell);
+    * within a channel, the filled orbitals first, then the empty ones;
+    * within a (channel, filling) slot, the member blocks in
+      :class:`~aiida_koopmans.types.MergeGroup` order, each block's Wannier
+      functions in their own row order.
+
+    :param block_descriptors: ``{block_label: rows}`` where ``rows`` is the
+        block's ``(num_wann, descriptor_dim)`` descriptor matrix (e.g. the
+        output of :func:`cross_power_spectra`).
+    :param merge_groups: the ``(filled, spin, blocks)`` groups (see
+        :class:`~aiida_koopmans.types.MergeGroup`); ``blocks`` entries need a
+        ``label`` (and their row count must match the descriptor matrix).
+    :param alphas: the screening parameters, in ``AlphaScreening`` shape.
+
+    Raises ``ValueError`` on any per-channel length mismatch between the
+    concatenated block Wannier functions and the alpha list — the guard that
+    a silent misordering would otherwise slip past.
+    """
+    filled_alphas = alphas.get("filled", {})
+    empty_alphas = alphas.get("empty", {})
+    channels = sorted(
+        set(filled_alphas) | set(empty_alphas),
+        key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), str(ch)),
+    )
+    if not channels:
+        raise ValueError("No screening parameters provided: `alphas` has no spin channels")
+
+    # A ``SpinChannel`` is a ``str`` subclass, so genuine keys pass ``isinstance``;
+    # a stray non-string key (e.g. an integer) would otherwise coerce to a
+    # garbage label like ``"123_orb_1"`` further down.
+    bad_keys = [ch for ch in channels if not isinstance(ch, str)]
+    if bad_keys:
+        raise ValueError(
+            f"Unrecognized spin-channel key(s) {bad_keys} in `alphas`: expected "
+            "`SpinChannel` members or the strings 'none'/'up'/'down'."
+        )
+
+    dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    for channel in channels:
+        filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
+        empty_rows = _gather_channel_rows(merge_groups, block_descriptors, False, channel)
+        channel_filled = [float(a) for a in filled_alphas.get(channel, [])]
+        channel_empty = [float(a) for a in empty_alphas.get(channel, [])]
+        if len(filled_rows) != len(channel_filled):
+            raise ValueError(
+                f"Filled Wannier-function / alpha mismatch for spin channel `{channel}`: "
+                f"{len(filled_rows)} descriptor rows vs {len(channel_filled)} filled alphas"
+            )
+        if len(empty_rows) != len(channel_empty):
+            raise ValueError(
+                f"Empty Wannier-function / alpha mismatch for spin channel `{channel}`: "
+                f"{len(empty_rows)} descriptor rows vs {len(channel_empty)} empty alphas"
+            )
+        # ``.value`` for genuine SpinChannel keys, identity for plain strings;
+        # matches the label convention of :func:`build_snapshot_dataset`.
+        prefix = "" if channel == "none" else f"{getattr(channel, 'value', channel)}_"
+        rows = filled_rows + empty_rows
+        channel_alphas = channel_filled + channel_empty
+        for i, (row, alpha) in enumerate(zip(rows, channel_alphas, strict=True)):
+            dataset["descriptors"].append(row)
+            dataset["alphas"].append(alpha)
+            dataset["filled"].append(i < len(filled_rows))
+            dataset["labels"].append(f"{prefix}orb_{i + 1}")
+    return dataset
+
+
+# ----------------------------------------------------------------------
 # Estimators (sklearn replaced with closed forms)
 # ----------------------------------------------------------------------
 

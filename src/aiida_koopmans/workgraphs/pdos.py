@@ -9,7 +9,14 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import Codes, inject_pseudo_family
+from aiida_koopmans.types import ParallelizationDict
+from aiida_koopmans.workgraphs import (
+    Codes,
+    inject_pseudo_family,
+    merge_parallelization_into_existing_namespaces,
+    merge_parallelization_into_overrides,
+    validate_parallelization,
+)
 
 
 class PdosOutputs(TypedDict):
@@ -35,7 +42,7 @@ def RunPdos(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> PdosOutputs:
     """Run PdosWorkChain using the protocol-based builder pattern.
 
@@ -49,15 +56,30 @@ def RunPdos(
         pseudo_family: Pseudo family label. If not specified, protocol default is used.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary of inputs to override protocol defaults.
-        options: Dictionary of options for metadata.options of nested CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``pw`` / ``projwfc`` entries feed the scf/nscf and projwfc.x
+            steps (``metadata.options`` and ``-npool``).
 
     Returns:
         Dict with NSCF, DOS, and PROJWFC outputs.
     """
+    validate_parallelization(parallelization)
+
     overrides = overrides or {}
+
+    # ``.build()`` runs this body eagerly, where a graph input arrives as a
+    # provenance-tagged proxy; the family label is bound as an SQL parameter
+    # inside get_builder_from_protocol, which needs a plain str.
+    if pseudo_family is not None:
+        pseudo_family = str(pseudo_family)
 
     # Inject pseudo_family into scf and nscf overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
+    merge_parallelization_into_overrides(
+        overrides,
+        parallelization,
+        [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")],
+    )
 
     builder = PdosWorkChain.get_builder_from_protocol(
         pw_code=codes["pw"],
@@ -66,20 +88,27 @@ def RunPdos(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
-        options=options or {},
     )
 
     data = get_dict_from_builder(builder)
 
+    # PdosWorkChain.get_builder_from_protocol seeds projwfc.code / parameters /
+    # metadata but never projwfc.settings, so a projwfc entry threaded through
+    # ``overrides`` is silently dropped. Apply it to the built ``data`` dict
+    # instead (dos.x has no pool/pd flags, so it is not threaded).
+    merge_parallelization_into_existing_namespaces(
+        data, parallelization, [(("projwfc",), "projwfc")]
+    )
+
     output = PdosStep(**data)
 
     return PdosOutputs(
-        nscf_remote_folder=output.nscf__remote_folder,
-        nscf_output_parameters=output.nscf__output_parameters,
-        nscf_output_band=output.nscf__output_band,
-        dos_output_dos=output.dos__output_dos,
-        projwfc_projections=output.projwfc__projections,
-        projwfc_projections_up=output.projwfc__projections_up,
-        projwfc_projections_down=output.projwfc__projections_down,
-        projwfc_Pdos=output.projwfc__Pdos,
+        nscf_remote_folder=output["nscf"]["remote_folder"],
+        nscf_output_parameters=output["nscf"]["output_parameters"],
+        nscf_output_band=output["nscf"]["output_band"],
+        dos_output_dos=output["dos"]["output_dos"],
+        projwfc_projections=output["projwfc"]["projections"],
+        projwfc_projections_up=output["projwfc"]["projections_up"],
+        projwfc_projections_down=output["projwfc"]["projections_down"],
+        projwfc_Pdos=output["projwfc"]["Pdos"],
     )

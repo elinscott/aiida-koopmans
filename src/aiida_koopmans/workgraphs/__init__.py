@@ -11,9 +11,11 @@ leaf ``@task`` / calcfunction / workfunction computations.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from aiida import orm
+
+from aiida_koopmans.types import CODE_NAMES, CodeName, ParallelizationDict
 
 
 class Codes(TypedDict, total=False):
@@ -48,3 +50,169 @@ def inject_pseudo_family(
         return
     for namespace in namespaces:
         overrides.setdefault(namespace, {}).setdefault("pseudo_family", pseudo_family)
+
+
+# QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil
+# decomposition) on the command line. Source-verified against Quantum ESPRESSO:
+# ``Modules/command_line_options.f90`` parses ``-nk``/``-npool`` and ``-pd``
+# globally for the modern binaries (pw, ph, projwfc, pw2wannier90, kcw); the
+# koopmans-kcp fork (kcp.x and wann2kcp.x) predates that parser and reads no CLI
+# flags at all, and wannier90 has no pool/pd concept. ``kcw`` accepts pools only
+# for its wann2kc / screen steps, not ham (``KCW/src/kcw_readin.f90`` rejects
+# pools for calculation='ham') — that per-step split is the ``pools`` argument
+# below, not a code-level fact.
+POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
+PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
+
+
+def validate_parallelization(parallelization: ParallelizationDict | None) -> None:
+    """Raise if the mapping names a code outside the known vocabulary.
+
+    The runtime guard behind the ``CodeName`` type: graph inputs arrive as plain
+    dicts whatever the annotation, so a typo'd code name (``"pww"``) would
+    otherwise silently no-op — the merge helpers skip codes they do not
+    recognise — which violates the explicit-failure standard. Call once at each
+    graph's merge entry.
+
+    Raises:
+        ValueError: If any key is not one of :data:`~aiida_koopmans.types.CODE_NAMES`.
+    """
+    if not parallelization:
+        return
+    unknown = sorted(name for name in dict(parallelization) if name not in CODE_NAMES)
+    if unknown:
+        raise ValueError(
+            f"unknown parallelization code name(s): {unknown}; "
+            f"valid codes are {sorted(CODE_NAMES)}."
+        )
+
+
+def resolve_parallelization(
+    parallelization: ParallelizationDict | None, code: CodeName, *, pools: bool = True
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return ``(options, settings)`` for ``code`` from a parallelization mapping.
+
+    ``parallelization`` is keyed by code name; each value is a plain dict with
+    optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
+    (k-point pools -> ``-npool``), and ``pd`` (pencil decomposition ->
+    ``-pd true``). The two flags are emitted npool-before-pd.
+
+    ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
+    pools even though the code generally does (the kcw.x ham step).
+    """
+    if not parallelization:
+        return {}, {}
+    cfg_entry = parallelization.get(code)
+    if not cfg_entry:
+        return {}, {}
+    # Rebuild the entry into a plain dict: a wrapt-proxied graph input must
+    # never reach a namespace socket as a TaggedValue, which rejects it.
+    cfg: dict[str, Any] = dict(cfg_entry)
+    options: dict[str, Any] = {}
+    ntasks = cfg.get("ntasks")
+    npool = cfg.get("npool")
+    pd = cfg.get("pd")
+    if ntasks is not None:
+        options = {"resources": {"num_machines": 1, "tot_num_mpiprocs": int(ntasks)}}
+    cmdline: list[str] = []
+    if npool is not None and pools:
+        if code not in POOL_SUPPORTING_CODES:
+            raise ValueError(
+                f"'npool' was requested for {code!r}, which does not parallelize over "
+                f"k-point pools; pools are only valid for {sorted(POOL_SUPPORTING_CODES)}."
+            )
+        cmdline += ["-npool", str(int(npool))]
+    if pd:
+        if code not in PD_SUPPORTING_CODES:
+            raise ValueError(
+                f"'pd' (pencil decomposition) was requested for {code!r}, which does not "
+                f"support it; pd is only valid for {sorted(PD_SUPPORTING_CODES)}."
+            )
+        cmdline += ["-pd", "true"]
+    settings: dict[str, Any] = {"cmdline": cmdline} if cmdline else {}
+    return options, settings
+
+
+def _merge_into_namespace(
+    namespace: dict[str, Any], options: dict[str, Any], settings: dict[str, Any]
+) -> None:
+    """Merge ``metadata.options`` / ``settings`` into a CalcJob-input namespace, in place.
+
+    Preserves an existing ``metadata`` (e.g. a ``call_link_label``) and an
+    existing ``settings`` (e.g. ``additional_retrieve_list``).
+    """
+    if options:
+        metadata = dict(namespace.get("metadata") or {})
+        metadata["options"] = options
+        namespace["metadata"] = metadata
+    if settings:
+        merged = dict(namespace.get("settings") or {})
+        merged.update(settings)
+        namespace["settings"] = merged
+
+
+def merge_parallelization_into_inputs(
+    step_inputs: dict[str, Any],
+    parallelization: ParallelizationDict | None,
+    code: CodeName,
+    *,
+    pools: bool = True,
+) -> None:
+    """Inject ``code``'s ``metadata.options`` / ``settings.cmdline`` into a CalcJob step's inputs.
+
+    Operates in place on ``step_inputs``. Pass ``pools=False`` for a step whose
+    executable takes no ``-npool`` even though the code generally does (the
+    kcw.x ham step).
+    """
+    options, settings = resolve_parallelization(parallelization, code, pools=pools)
+    _merge_into_namespace(step_inputs, options, settings)
+
+
+def merge_parallelization_into_overrides(
+    overrides: dict[str, Any],
+    parallelization: ParallelizationDict | None,
+    mapping: Iterable[tuple[tuple[str, ...], CodeName]],
+) -> None:
+    """Merge per-code parallelization into WorkChain ``overrides`` namespaces, in place.
+
+    ``mapping`` pairs each calcjob-namespace *path* with the code driving it.
+    The path locates the calcjob namespace inside ``overrides``: e.g.
+    ``(("scf", "pw"), "pw")`` for a nested PwBaseWorkChain step,
+    ``(("projwfc",), "projwfc")`` for a direct calcjob namespace. For each
+    pair the code's ``metadata.options`` and ``settings.cmdline`` are merged
+    under ``overrides[path...]``.
+    """
+    for path, code in mapping:
+        options, settings = resolve_parallelization(parallelization, code)
+        if not options and not settings:
+            continue
+        namespace = overrides
+        for part in path:
+            namespace = namespace.setdefault(part, {})
+        _merge_into_namespace(namespace, options, settings)
+
+
+def merge_parallelization_into_existing_namespaces(
+    data: dict[str, Any],
+    parallelization: ParallelizationDict | None,
+    mapping: Iterable[tuple[tuple[str, ...], CodeName]],
+) -> None:
+    """Merge per-code parallelization into ``data`` namespaces that already exist.
+
+    Like :func:`merge_parallelization_into_overrides` but never creates a namespace: a path
+    absent from ``data`` (e.g. the ``projwfc`` step the workchain isn't running)
+    is skipped. For post-builder ``data`` dicts where the present namespaces
+    depend on the run.
+    """
+    for path, code in mapping:
+        options, settings = resolve_parallelization(parallelization, code)
+        if not options and not settings:
+            continue
+        namespace: object = data
+        for part in path:
+            if not isinstance(namespace, dict) or part not in namespace:
+                namespace = None
+                break
+            namespace = namespace[part]
+        if isinstance(namespace, dict):
+            _merge_into_namespace(namespace, options, settings)

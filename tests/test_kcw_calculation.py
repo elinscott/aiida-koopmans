@@ -235,6 +235,31 @@ class TestPrepareForSubmission:
         assert "aiida_emp_u_dis.mat" in copied
         assert calc_info.retrieve_list == ["aiida.w2ko"]
 
+    def test_settings_cmdline_precedes_input_flag(
+        self,
+        aiida_profile,
+        fixture_sandbox,
+        generate_calc_job,
+        kcw_code,
+        parent_scratch,
+        wannier_files,
+    ):
+        """A ``settings.cmdline`` list (e.g. -npool) rides the command line before ``-in``."""
+        from aiida import orm
+
+        calc_info = generate_calc_job(
+            fixture_sandbox,
+            "koopmans.kcw_wann2kc",
+            {
+                "code": kcw_code,
+                "parameters": orm.Dict({"CONTROL": _control(), "WANNIER": _wannier()}),
+                "parent_folder": parent_scratch,
+                "wannier_files": wannier_files,
+                "settings": orm.Dict({"cmdline": ["-npool", "4"]}),
+            },
+        )
+        assert calc_info.codes_info[0].cmdline_params == ["-npool", "4", "-in", "aiida.w2ki"]
+
     def test_ham_card_alpharef_and_retrieve(
         self,
         aiida_profile,

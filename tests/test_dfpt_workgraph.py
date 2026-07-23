@@ -9,7 +9,6 @@ style of ``test_block_wannierize.py``. Also unit-tests the
 from __future__ import annotations
 
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
@@ -17,6 +16,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
+from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -55,13 +55,6 @@ def bands_path(aiida_profile):
     kpts = KpointsData()
     kpts.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.0, 0.25], [0.5, 0.0, 0.5]])
     return kpts
-
-
-@pytest.fixture
-def nscf_remote(aiida_localhost, tmp_path):
-    from aiida.orm import RemoteData
-
-    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path)).store()
 
 
 @pytest.fixture
@@ -126,16 +119,7 @@ def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
 
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=SpinChannel.NONE,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=["Si:sp3"],
-    )
+    return explicit_block(label, include, projections=["Si:sp3"])
 
 
 # ----------------------------------------------------------------------
@@ -251,8 +235,12 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -274,7 +262,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -283,14 +272,40 @@ class TestKoopmansDFPTTaskBuild:
         screen_params = wg.tasks["screen"].inputs["parameters"].value
         assert screen_params["SCREEN"]["check_spread"] is check_spread
 
+    def test_parallelization_reaches_every_kcw_step(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """Ntasks + -pd reach every kcw step; -npool reaches wann2kc/screen but not ham."""
+        wg = RunDFPT.build(
+            codes=dfpt_codes,
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            parallelization={"kcw": {"ntasks": 8, "npool": 4, "pd": True}},
+        )
+        # wann2kc and screen take both -npool and -pd (legacy KCWWannier /
+        # KCWScreen); ham takes only -pd (legacy KCWHam has no pool option).
+        for name in ("wann2kc", "screen"):
+            task = wg.tasks[name]
+            assert task.inputs["settings"].value == {"cmdline": ["-npool", "4", "-pd", "true"]}
+            assert task.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+        ham = wg.tasks["ham"]
+        assert ham.inputs["settings"].value == {"cmdline": ["-pd", "true"]}
+        assert ham.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -321,8 +336,8 @@ class TestSinglepointDFPTBuild:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("scf_nscf") == 1
-        assert "wannierize_occ" in names
-        assert "wannierize_emp" in names
+        # One WannierizeBlocks per channel covers both manifolds' blocks.
+        assert names.count("wannierize") == 1
         assert "dfpt" in names
 
         # The single chain's results sit under channels.none in the dynamic
@@ -348,13 +363,22 @@ class TestSinglepointDFPTBuild:
 
         # pw2wannier90 must read the up channel of the nspin=2 scratch, and
         # the wannier90 runs must write the files kcw.x consumes.
-        for wannierize in ("wannierize_occ", "wannierize_emp"):
-            w90_overrides = wg.tasks[wannierize].inputs["overrides"]
-            inputpp = w90_overrides["pw2wannier90"].value
-            assert inputpp["spin_component"] == "up"
-            w90_params = w90_overrides["wannier90"].value
-            assert w90_params["write_u_matrices"] is True
-            assert w90_params["write_xyz"] is True
+        w90_overrides = wg.tasks["wannierize"].inputs["overrides"]
+        inputpp = w90_overrides["pw2wannier90"].value
+        assert inputpp["spin_component"] == "up"
+        w90_params = w90_overrides["wannier90"].value
+        assert w90_params["write_u_matrices"] is True
+        assert w90_params["write_xyz"] is True
+
+        # The wannierization reuses the shared scratch (no internal scf+nscf)
+        # and sees the channel's blocks in band order: occupied then empty.
+        block_labels = [b["label"] for b in wg.tasks["wannierize"].inputs["blocks"].value]
+        assert block_labels == ["occ", "emp"]
+
+        # RunDFPT gets the whole blocks namespace plus the band-ordered
+        # manifold label lists it partitions by in its deferred body.
+        assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
+        assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
 
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(
@@ -366,12 +390,15 @@ class TestSinglepointDFPTBuild:
             pseudo_family="SSSP/1.3/PBE/efficiency",
         )
         names = [t.name for t in wg.tasks]
-        assert "wannierize_occ" in names
-        assert "wannierize_emp" not in names
+        assert names.count("wannierize") == 1
         assert "dfpt" in names
+        block_labels = [b["label"] for b in wg.tasks["wannierize"].inputs["blocks"].value]
+        assert block_labels == ["occ"]
 
-    def test_multi_block_manifolds_fan_out_per_block(self, dfpt_codes, silicon_structure, kmesh):
-        """Each block is wannierized separately; the kcw chain sees the totals."""
+    def test_multi_block_manifolds_reach_one_wannierization(
+        self, dfpt_codes, silicon_structure, kmesh
+    ):
+        """All of a channel's blocks feed one WannierizeBlocks; the kcw chain sees the totals."""
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
@@ -386,20 +413,20 @@ class TestSinglepointDFPTBuild:
             pseudo_family="SSSP/1.3/PBE/efficiency",
         )
         names = [t.name for t in wg.tasks]
-        for expected in (
-            "wannierize_occ_1",
-            "wannierize_occ_2",
-            "wannierize_emp_1",
-            "wannierize_emp_2",
-            "dfpt",
-        ):
-            assert expected in names, names
+        assert names.count("wannierize") == 1
+        assert "dfpt" in names
         assert names.count("scf_nscf") == 1
+        # The per-block fan-out lives inside WannierizeBlocks (covered by its
+        # own tests); here the channel hands it every block in band order.
+        block_labels = [b["label"] for b in wg.tasks["wannierize"].inputs["blocks"].value]
+        assert block_labels == ["occ_1", "occ_2", "emp_1", "emp_2"]
 
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
+        assert dfpt_inputs["occ_labels"].value == ["occ_1", "occ_2"]
+        assert dfpt_inputs["emp_labels"].value == ["emp_1", "emp_2"]
         assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
 
     def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
@@ -453,11 +480,9 @@ class TestSinglepointDFPTBuild:
         names = [t.name for t in wg.tasks]
         assert names.count("scf_nscf") == 1
         for expected in (
-            "wannierize_occ_up",
-            "wannierize_emp_up",
+            "wannierize_up",
             "dfpt_up",
-            "wannierize_occ_down",
-            "wannierize_emp_down",
+            "wannierize_down",
             "dfpt_down",
         ):
             assert expected in names, names
@@ -479,7 +504,7 @@ class TestSinglepointDFPTBuild:
         # Each channel's wannierization selects its spin in both wannier90
         # and pw2wannier90, and each kcw chain reads its channel.
         for suffix, channel, component in (("_up", "up", 1), ("_down", "down", 2)):
-            w90_overrides = wg.tasks[f"wannierize_occ{suffix}"].inputs["overrides"]
+            w90_overrides = wg.tasks[f"wannierize{suffix}"].inputs["overrides"]
             w90_params = w90_overrides["wannier90"].value
             assert w90_params["spin"] == channel
             inputpp = w90_overrides["pw2wannier90"].value
@@ -514,7 +539,7 @@ class TestSinglepointDFPTBuild:
             spin=SpinType.SPIN_ORBIT,
         )
         names = [t.name for t in wg.tasks]
-        assert "wannierize_occ" in names
+        assert "wannierize" in names
         assert "dfpt" in names
         assert "dfpt_down" not in names
 
@@ -527,7 +552,7 @@ class TestSinglepointDFPTBuild:
         assert "tot_magnetization" not in scf_system
 
         # Spinor wannierization: spinors on, no channel selection anywhere.
-        w90_overrides = wg.tasks["wannierize_occ"].inputs["overrides"]
+        w90_overrides = wg.tasks["wannierize"].inputs["overrides"]
         w90_params = w90_overrides["wannier90"].value
         assert w90_params["spinors"] is True
         assert "spin" not in w90_params
@@ -793,33 +818,6 @@ class TestNormalizeAlphaGuess:
 # ----------------------------------------------------------------------
 
 
-def _w90_output_parameters(spreads: list[float]) -> dict:
-    """Build a synthetic wannier90 ``output_parameters`` payload.
-
-    Shape-faithful to aiida-wannier90's parser
-    (``aiida_wannier90/parsers/wannier90.py``): the final-state WF table
-    lands in ``wannier_functions_output`` as a per-WF list of
-    ``{wf_ids, wf_centres, wf_spreads}`` dicts with 1-based ``wf_ids``,
-    ``number_wfs`` comes from the MAIN table, and the manifold-total
-    Omega decomposition sits in separate ``Omega_*`` scalars.
-    """
-    return {
-        "number_wfs": len(spreads),
-        "wannier_functions_output": [
-            {"wf_ids": i, "wf_centres": (0.0, 0.0, 0.0), "wf_spreads": spread}
-            for i, spread in enumerate(spreads, start=1)
-        ],
-        "Omega_total": sum(spreads),
-    }
-
-
-def _w90_output_dict(spreads: list[float]):
-    """Store the synthetic payload as the ``orm.Dict`` the parser emits."""
-    from aiida.orm import Dict
-
-    return Dict(dict=_w90_output_parameters(spreads)).store()
-
-
 def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -> dict:
     return {
         "spin": SpinChannel.NONE.value,
@@ -830,104 +828,25 @@ def _orbital(index: int, *, filled: bool, group_id: int, representative: bool) -
     }
 
 
-class TestExtractSpreadsFromOutputParameters:
-    """Unit tests of the spread extractor via its raw ``._callable``.
+class TestSpreadsMetricRow:
+    """Unit tests of the metric-row wrapper via its raw ``._callable``."""
 
-    The inputs are plain dicts because that is what the task body sees at
-    runtime: aiida-pythonjob's built-in ``Dict`` deserializer hands
-    ``orm.Dict`` inputs over as their ``get_dict()`` payload.
-    """
+    def test_wraps_one_row(self):
+        from aiida_koopmans.workgraphs.variational_orbitals import spreads_metric_row
 
-    def test_manifold_and_key_order(self):
-        """Occ blocks (lexicographic key order) come before emp blocks."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
+        assert spreads_metric_row._callable([1.1, 2.2, 3.3]) == [[1.1, 2.2, 3.3]]
 
-        metric = extract_spreads_from_output_parameters._callable(
-            occ_output_parameters={
-                "b01": _w90_output_parameters([3.3]),
-                "b00": _w90_output_parameters([1.1, 2.2]),
-            },
-            emp_output_parameters={"b00": _w90_output_parameters([4.4])},
-        )
-        assert metric == [[1.1, 2.2, 3.3, 4.4]]
+    def test_expected_count_passes(self):
+        from aiida_koopmans.workgraphs.variational_orbitals import spreads_metric_row
 
-    def test_occ_only(self):
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
+        assert spreads_metric_row._callable([0.5, 0.7], expected_count=2) == [[0.5, 0.7]]
 
-        metric = extract_spreads_from_output_parameters._callable(
-            occ_output_parameters={"b00": _w90_output_parameters([1.5, 0.5])}
-        )
-        assert metric == [[1.5, 0.5]]
+    def test_count_mismatch_raises(self):
+        """A spread list not covering every variational orbital is rejected."""
+        from aiida_koopmans.workgraphs.variational_orbitals import spreads_metric_row
 
-    def test_entries_are_ordered_by_wf_ids(self):
-        """Out-of-order ``wannier_functions_output`` entries are re-sorted."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
-
-        parameters = _w90_output_parameters([1.1, 2.2, 3.3])
-        parameters["wannier_functions_output"].reverse()
-        metric = extract_spreads_from_output_parameters._callable(
-            occ_output_parameters={"b00": parameters}
-        )
-        assert metric == [[1.1, 2.2, 3.3]]
-
-    def test_missing_wf_table_raises(self):
-        """Parameters without ``wannier_functions_output`` (e.g. a -pp run) raise."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
-
-        with pytest.raises(ValueError, match="lists 0 final-state Wannier functions"):
-            extract_spreads_from_output_parameters._callable(
-                occ_output_parameters={"b00": {"number_wfs": 2}}
-            )
-
-    def test_wf_count_mismatch_raises(self):
-        """A WF table shorter than the declared ``number_wfs`` is rejected."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
-
-        parameters = _w90_output_parameters([1.1])
-        parameters["number_wfs"] = 2
-        with pytest.raises(ValueError, match="declares number_wfs = 2"):
-            extract_spreads_from_output_parameters._callable(
-                occ_output_parameters={"b00": parameters}
-            )
-
-    def test_entries_without_spreads_raise(self):
-        """Restart-for-plotting entries (only wf_ids + im_re_ratio) are rejected."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
-
-        parameters = {
-            "number_wfs": 1,
-            "wannier_functions_output": [{"wf_ids": 1, "im_re_ratio": 1.0}],
-        }
-        with pytest.raises(ValueError, match="no ``wf_spreads``"):
-            extract_spreads_from_output_parameters._callable(
-                occ_output_parameters={"b00": parameters}
-            )
-
-    def test_noncontiguous_block_keys_raise(self):
-        """A gap in the ``bNN`` block numbering is rejected before spreads are read."""
-        from aiida_koopmans.workgraphs.variational_orbitals import (
-            extract_spreads_from_output_parameters,
-        )
-
-        with pytest.raises(ValueError, match=r"contiguous zero-based ``bNN``.*b02"):
-            extract_spreads_from_output_parameters._callable(
-                occ_output_parameters={
-                    "b00": _w90_output_parameters([1.1]),
-                    "b02": _w90_output_parameters([2.2]),
-                },
-            )
+        with pytest.raises(ValueError, match="3 Wannier spreads for 4 variational orbitals"):
+            spreads_metric_row._callable([1.1, 2.2, 3.3], expected_count=4)
 
 
 class TestSingleOrbitalAlpha:
@@ -1033,10 +952,13 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
-            emp_retrieved={"b00": emp_retrieved},
-            occ_output_parameters={"b00": _w90_output_dict([0.5] * 4)},
-            emp_output_parameters={"b00": _w90_output_dict([0.7] * 4)},
+            block_wannier={
+                "occ": {"hr_retrieved": occ_retrieved},
+                "emp": {"hr_retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
+            spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -1045,8 +967,11 @@ class TestRunDFPTGrouping:
         )
         names = [t.name for t in wg.tasks]
         assert "screen" not in names
-        for expected in ("extract_spreads", "assign_orbital_groups", "grouped_screen", "ham"):
+        for expected in ("spreads_metric_row", "assign_orbital_groups", "grouped_screen", "ham"):
             assert expected in names, names
+        # The unified spreads cover occ + emp, guarded against the totals.
+        metric_inputs = wg.tasks["spreads_metric_row"].inputs
+        assert metric_inputs["expected_count"].value == 8
         # The clustering sees one metric row covering occ + emp.
         group_inputs = wg.tasks["assign_orbital_groups"].inputs
         assert group_inputs["nelup"].value == 4
@@ -1054,34 +979,14 @@ class TestRunDFPTGrouping:
         assert group_inputs["tol"].value == 0.05
         assert group_inputs["spin_polarized"].value == False  # noqa: E712 — TaggedValue breaks `is`
 
-    def test_grouping_without_output_parameters_raises(
-        self, dfpt_codes, nscf_remote, occ_retrieved
-    ):
-        """The spread clustering depends on the parsed wannier90 outputs."""
-        with pytest.raises(ValueError, match="requires the per-block wannier90"):
+    def test_grouping_without_spreads_raises(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """The spread clustering depends on the unified wannier90 spreads."""
+        with pytest.raises(ValueError, match="requires the channel's per-orbital"):
             RunDFPT.build(
                 codes=dfpt_codes,
                 nscf_remote_folder=nscf_remote,
-                occ_retrieved={"b00": occ_retrieved},
-                num_wann_occ=4,
-                num_wann_emp=0,
-                kgrid=[2, 2, 2],
-                group_orbitals_tol=0.05,
-            )
-
-    def test_grouping_with_mismatched_block_keys_raises(
-        self, dfpt_codes, nscf_remote, occ_retrieved
-    ):
-        """The output_parameters must cover exactly the retrieved blocks."""
-        with pytest.raises(ValueError, match="keyed identically"):
-            RunDFPT.build(
-                codes=dfpt_codes,
-                nscf_remote_folder=nscf_remote,
-                occ_retrieved={"b00": occ_retrieved},
-                occ_output_parameters={
-                    "b00": _w90_output_dict([0.5] * 2),
-                    "b01": _w90_output_dict([0.5] * 2),
-                },
+                block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+                occ_labels=["occ"],
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -1093,7 +998,8 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            occ_retrieved={"b00": occ_retrieved},
+            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -1102,7 +1008,7 @@ class TestRunDFPTGrouping:
         )
         names = [t.name for t in wg.tasks]
         assert "alphas_from_guess" in names
-        for absent in ("screen", "extract_spreads", "grouped_screen"):
+        for absent in ("screen", "spreads_metric_row", "grouped_screen"):
             assert absent not in names, names
 
 
@@ -1123,10 +1029,11 @@ class TestSinglepointDFPTGrouping:
         )
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert dfpt_inputs["group_orbitals_tol"].value == 0.05
-        # The parsed per-block wannier90 outputs are threaded alongside the
-        # retrieved folders (the spread clustering consumes the former).
-        for namespace in ("occ_output_parameters", "emp_output_parameters"):
-            assert [socket._name for socket in dfpt_inputs[namespace]] == ["b00"]
+        # The channel's unified WannierizeBlocks spreads are threaded to the
+        # kcw chain alongside the retrieved folders (the spread clustering
+        # consumes them).
+        assert "wannierize" in [t.name for t in wg.tasks]
+        assert "spreads" in [socket._name for socket in dfpt_inputs]
 
     def test_default_keeps_the_single_screen(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(

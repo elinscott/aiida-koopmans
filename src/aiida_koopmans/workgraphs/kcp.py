@@ -31,6 +31,7 @@ from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
+    ParallelizationDict,
     SpinChannel,
     VariationalOrbital,
     VariationalOrbitalType,
@@ -40,8 +41,15 @@ from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
-from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
@@ -80,8 +88,8 @@ class KIFinalOutputs(TypedDict):
     remote_folder: orm.RemoteData
 
 
-class KoopmansDSCFOutputs(TypedDict):
-    """Outputs of a full KI-DSCF workflow.
+class _KoopmansDSCFOutputsRequired(TypedDict):
+    """The always-present outputs of a full KI-DSCF workflow.
 
     :class:`KIFinalOutputs` plus ``alphas`` — the converged per-orbital
     screening parameters the final KI consumed (in the
@@ -100,6 +108,38 @@ class KoopmansDSCFOutputs(TypedDict):
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
     alphas: AlphaScreening
+
+
+class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
+    """A full KI-DSCF workflow's outputs, with the Wannier-route-only extras.
+
+    Adds two sockets that only the periodic Wannier-initialisation route
+    (``init_orbitals`` in ``mlwfs`` / ``projwfs``) produces — hence the
+    ``total=False`` split so the molecular Kohn-Sham route can omit them
+    without a graph-output type mismatch:
+
+    * ``nscf_remote_folder`` — the primitive-cell nscf scratch every block
+      was Wannierised off; the ``parent_folder`` a pw2wannier90
+      ``wan_mode='decompose'`` pass reads.
+    * ``block_wannierizations`` — the per-block Wannierisation outputs
+      (keyed by block label), each holding the ``hr_retrieved`` folder with
+      the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
+
+    Together these are the inputs the ``orbital_density`` ML descriptor route
+    (:func:`~aiida_koopmans.workgraphs.ml.OrbitalDensityDatasetWorkflow`)
+    consumes.
+
+    Contract for consumers: these two keys are present **only** on the
+    Wannier-initialised route. On the molecular (KS-init) route they are absent,
+    so ``outputs["nscf_remote_folder"]`` / ``outputs["block_wannierizations"]``
+    raise ``KeyError``. Guard with ``.get`` or a route check before indexing;
+    ``OrbitalDensityDatasetWorkflow`` does this via
+    :func:`~aiida_koopmans.workgraphs.ml.require_wannier_route_inputs`, which
+    raises a descriptive ``ValueError`` when the route requirement is unmet.
+    """
+
+    nscf_remote_folder: orm.RemoteData
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 @dataclass(frozen=True)
@@ -727,7 +767,7 @@ def InitializeOrbitals(
     parent_folder: orm.RemoteData | None = None,
     name: str = "dft_init",
     overrides: KcpNamelistOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> DFTCPOutputs:
     """Run a kcp.x DFT SCF (``do_orbdep=False``).
 
@@ -776,7 +816,7 @@ def InitializeOrbitals(
         structure,
         parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         parent_folder=parent_folder,
         name=name,
     )
@@ -816,7 +856,7 @@ def KoopmansDSCFWorkflow(
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> KoopmansDSCFOutputs:
     """Koopmans DSCF workflow — DFT init → trial KI → per-orbital DSCF refinement → final KI.
 
@@ -846,6 +886,8 @@ def KoopmansDSCFWorkflow(
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
+    validate_parallelization(parallelization)
+
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
         primitive_to_supercell,
@@ -925,6 +967,11 @@ def KoopmansDSCFWorkflow(
 
     initial_evc_occupied1 = None
     initial_evc_occupied2 = None
+    # The primitive nscf scratch + per-block Wannierisation outputs the
+    # orbital_density ML descriptor route consumes; only the Wannier route
+    # produces them (see the ``total=False`` KoopmansDSCFOutputs split).
+    nscf_remote_folder = None
+    block_wannierizations = None
     if wannier_init:
         init = MlwfInitialization(
             codes={**cast("dict", codes), "kcp": code},
@@ -947,12 +994,14 @@ def KoopmansDSCFWorkflow(
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": "wannier_initialization"},
         )
         dft_remote = init["remote_folder"]
         initial_evc_occupied1 = init["evc_occupied1"]
         initial_evc_occupied2 = init["evc_occupied2"]
+        nscf_remote_folder = init["nscf_remote_folder"]
+        block_wannierizations = init["block_wannierizations"]
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -970,7 +1019,7 @@ def KoopmansDSCFWorkflow(
             nspin=nspin,
             tot_magnetization=tot_magnetization,
             overrides=dft_overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": "dft_init"},
         )
         dft_remote = dft["remote_folder"]
@@ -1001,7 +1050,7 @@ def KoopmansDSCFWorkflow(
             outerloop=True,
             restart_mode="from_scratch",
             overrides=dft_overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": "dft_init_nspin1"},
         )
 
@@ -1020,7 +1069,7 @@ def KoopmansDSCFWorkflow(
             outerloop=False,
             restart_mode="from_scratch",
             overrides=dft_overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": "dft_init_nspin2_dummy"},
         )
 
@@ -1050,7 +1099,7 @@ def KoopmansDSCFWorkflow(
             restart_mode="restart",
             parent_folder=converted["remote_folder"],
             overrides=dft_overrides,
-            options=options,
+            parallelization=parallelization,
             metadata={"call_link_label": "dft_init_nspin2"},
         )
         dft_remote = dft["remote_folder"]
@@ -1079,7 +1128,7 @@ def KoopmansDSCFWorkflow(
         mp_correction=mp_correction,
         eps_inf=eps_inf,
         overrides=overrides,
-        options=options,
+        parallelization=parallelization,
     )
 
     # ------------------------------------------------------------------
@@ -1116,9 +1165,9 @@ def KoopmansDSCFWorkflow(
         alphas=screening["alphas"],
         parent_folder=screening["trial_remote"],
         overrides=overrides.get("ki") if overrides else None,
-        options=options,
+        parallelization=parallelization,
     )
-    return KoopmansDSCFOutputs(
+    outputs = KoopmansDSCFOutputs(
         parameters=ki_final["parameters"],
         eigenvalues=ki_final["eigenvalues"],
         lambdas=ki_final["lambdas"],
@@ -1126,6 +1175,12 @@ def KoopmansDSCFWorkflow(
         remote_folder=ki_final["remote_folder"],
         alphas=screening["alphas"],
     )
+    # The Wannier-route-only sockets: present only when the descriptor route
+    # can be fed (the molecular Kohn-Sham route runs no wannierization).
+    if wannier_init:
+        outputs["nscf_remote_folder"] = cast("orm.RemoteData", nscf_remote_folder)
+        outputs["block_wannierizations"] = cast("dict", block_wannierizations)
+    return outputs
 
 
 @task.graph
@@ -1146,7 +1201,7 @@ def RunFinalKI(
     neldw: int | None = None,
     tot_magnetization: int | None = None,
     overrides: KcpNamelistOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> KIFinalOutputs:
     """Apply the converged screening parameters via a final KI run.
 
@@ -1181,7 +1236,7 @@ def RunFinalKI(
         structure,
         ki_parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         alphas=alphas,
         parent_folder=parent_folder,
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
@@ -1219,7 +1274,7 @@ def ComputeFilledOrbitalScreeningParameter(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: KcpNamelistOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     correction: Correction = Correction.KI,
 ) -> OrbitalDeltaSCFOutputs:
     """Compute the new alpha for one **filled** orbital via Delta-SCF.
@@ -1264,7 +1319,7 @@ def ComputeFilledOrbitalScreeningParameter(
         structure,
         parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         parent_folder=trial_remote,
         # ``call_link_label`` reflects the calc-type name: plain DFT for
         # KI, KIPZ-flavoured for KIPZ. Shows up in the live progress
@@ -1312,7 +1367,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: dict[str, KcpNamelistOverrides | None] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     correction: Correction = Correction.KI,
 ) -> OrbitalDeltaSCFOutputs:
     """Compute the new alpha for one **empty** orbital via Delta-SCF.
@@ -1360,7 +1415,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         structure,
         dummy_parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         name="dft_n_plus_1_dummy",  # always plain DFT in both KI and KIPZ
     )
     dummy_outputs = KcpStep(**dummy_inputs)
@@ -1379,7 +1434,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         structure,
         pz_parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         alphas=pz_alphas,
         parent_folder=trial_remote,
         variational_orbital_overlays=overlay,
@@ -1394,7 +1449,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         structure,
         n_plus_1_parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         parent_folder=dummy_outputs["remote_folder"],
         parent_folder_evcfixed=pz_outputs["remote_folder"],
         name="kipz_n_plus_1" if correction == Correction.KIPZ else "dft_n_plus_1",
@@ -1450,7 +1505,7 @@ def ComputeOrbitalScreeningParameters(
     eps_inf: float = 1.0,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> _PerOrbitalAlphaOutputs:
     """Refine every representative orbital's alpha via per-orbital Delta-SCF.
 
@@ -1499,7 +1554,7 @@ def ComputeOrbitalScreeningParameters(
             mp_correction=mp_correction,
             eps_inf=eps_inf,
             overrides=filled_overrides,
-            options=options,
+            parallelization=parallelization,
             correction=correction,
             metadata={"call_link_label": f"compute_alpha_{key}"},
         )
@@ -1535,7 +1590,7 @@ def ComputeOrbitalScreeningParameters(
             mp_correction=mp_correction,
             eps_inf=eps_inf,
             overrides=empty_overrides_dict,
-            options=options,
+            parallelization=parallelization,
             correction=correction,
             metadata={"call_link_label": f"compute_alpha_{key}"},
         )
@@ -1596,7 +1651,7 @@ def ScreeningIteration(
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningIterationOutputs:
     """One iteration of the alpha-refinement loop.
 
@@ -1650,7 +1705,7 @@ def ScreeningIteration(
         structure,
         ki_parameters,
         pseudos,
-        options=options,
+        parallelization=parallelization,
         alphas=current_alphas,
         parent_folder=parent_folder,
         variational_orbital_overlays=variational_orbital_overlays,
@@ -1697,7 +1752,7 @@ def ScreeningIteration(
         eps_inf=eps_inf,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
-        options=options,
+        parallelization=parallelization,
         metadata={"call_link_label": "compute_orbital_screening_parameters"},
     )
 
@@ -1744,7 +1799,7 @@ def RefineScreeningParameters(
     ki_overrides: KcpNamelistOverrides | None = None,
     filled_overrides: KcpNamelistOverrides | None = None,
     empty_overrides_dict: dict[str, KcpNamelistOverrides | None] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
     """Recursive alpha-refinement: iterate until converged or out of budget.
 
@@ -1787,7 +1842,7 @@ def RefineScreeningParameters(
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
-        options=options,
+        parallelization=parallelization,
         metadata={"call_link_label": "screening_iteration"},
     )
 
@@ -1810,7 +1865,7 @@ def RefineScreeningParameters(
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
-        options=options,
+        parallelization=parallelization,
         metadata={"call_link_label": "refine_screening_parameters"},
     )
     return ScreeningParametersOutputs(
@@ -1851,7 +1906,7 @@ def ComputeScreeningParameters(
     mp_correction: bool = False,
     eps_inf: float = 1.0,
     overrides: KoopmansDSCFOverrides | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
     """Multi-iteration alpha refinement: trial KI → per-orbital DSCF.
 
@@ -1976,7 +2031,7 @@ def ComputeScreeningParameters(
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
-        options=options,
+        parallelization=parallelization,
     )
 
     # ``alpha_numsteps == 1`` needs no refinement beyond iter_1 — skip the
@@ -2008,7 +2063,7 @@ def ComputeScreeningParameters(
         ki_overrides=ki_overrides,
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
-        options=options,
+        parallelization=parallelization,
         metadata={"call_link_label": "refine_screening_parameters"},
     )
 
@@ -2668,7 +2723,7 @@ def _build_kcp_inputs(
     parameters: dict[str, Any],
     pseudos: dict[str, UpfData],
     *,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     alphas: AlphaScreening | None = None,
     parent_folder: orm.RemoteData | None = None,
     parent_folder_evcfixed: orm.RemoteData | None = None,
@@ -2724,11 +2779,7 @@ def _build_kcp_inputs(
         inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
     if read_wavefunctions:
         inputs["read_wavefunctions"] = read_wavefunctions
-    metadata: dict[str, Any] = {}
-    if options:
-        metadata["options"] = options
     if name:
-        metadata["call_link_label"] = name
-    if metadata:
-        inputs["metadata"] = metadata
+        inputs["metadata"] = {"call_link_label": name}
+    merge_parallelization_into_inputs(inputs, parallelization, "kcp")
     return inputs

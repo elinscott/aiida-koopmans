@@ -376,3 +376,243 @@ class TestScreeningModel:
         assert metrics["mae"] == pytest.approx(0.5)
         assert metrics["max_abs_error"] == pytest.approx(1.0)
         assert metrics["rmse"] == pytest.approx(np.sqrt((0.0 + 0.25 + 1.0) / 3))
+
+
+class TestDecomposeCrossPower:
+    """Cross-power assembly from pw2wannier90 ``wan_mode='decompose'`` output."""
+
+    @staticmethod
+    def _qe_orbital_power(coeff, n_max, l_max):
+        """Compute the reference orbital-only power, mirroring QE ``wdcp_power_orb``.
+
+        Ordering: outer n1, then n2>=n1, then l; entry = sum_m c(n1,l,m) c(n2,l,m)
+        with the flat index ``(n-1)*(l_max+1)^2 + l^2 + m``.
+        """
+        out = []
+        for n1 in range(n_max):
+            for n2 in range(n1, n_max):
+                for l in range(l_max + 1):
+                    ib1 = n1 * (l_max + 1) ** 2 + l**2
+                    ib2 = n2 * (l_max + 1) ** 2 + l**2
+                    out.append(sum(coeff[ib1 + m] * coeff[ib2 + m] for m in range(2 * l + 1)))
+        return np.array(out)
+
+    def test_block_length(self):
+        assert ml_helpers.orbital_power_block_length(4, 4) == 5 * 4 * 5 // 2
+        assert ml_helpers.orbital_power_block_length(2, 1) == 2 * 2 * 3 // 2
+
+    def test_orbital_power_matches_qe_formula(self):
+        """The strongest correctness evidence: our orbital power == QE ``.power``."""
+        n_max, l_max = 3, 2
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(0)
+        coeff = rng.standard_normal(n_coeff)
+        got = ml_helpers.orbital_power_from_coefficients(coeff, n_max, l_max)
+        ref = self._qe_orbital_power(coeff, n_max, l_max)
+        assert got.shape == (ml_helpers.orbital_power_block_length(n_max, l_max),)
+        assert np.allclose(got, ref)
+
+    def test_cross_power_orb_block_equals_orbital_power(self):
+        n_max, l_max = 2, 2
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(2)
+        coeff = rng.standard_normal((3, n_coeff))
+        group = rng.standard_normal((3, n_coeff))
+        power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+        block = ml_helpers.orbital_power_block_length(n_max, l_max)
+        # Full descriptor has three blocks (orb-orb, orb-group, group-group).
+        assert power.shape == (3, 3 * block)
+        for i in range(3):
+            assert np.allclose(
+                power[i, :block],
+                ml_helpers.orbital_power_from_coefficients(coeff[i], n_max, l_max),
+            )
+
+    def test_cross_power_group_block_matches_manual(self):
+        """The group-group block is the orbital power of the group coefficients."""
+        n_max, l_max = 2, 1
+        n_coeff = n_max * (l_max + 1) ** 2
+        rng = np.random.default_rng(5)
+        coeff = rng.standard_normal((1, n_coeff))
+        group = rng.standard_normal((1, n_coeff))
+        power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+        block = ml_helpers.orbital_power_block_length(n_max, l_max)
+        assert np.allclose(
+            power[0, 2 * block :],
+            self._qe_orbital_power(group[0], n_max, l_max),
+        )
+
+    def test_cross_power_shape_mismatch_raises(self):
+        with pytest.raises(ValueError, match="same shape"):
+            ml_helpers.cross_power_spectra(np.zeros((2, 8)), np.zeros((2, 9)), 2, 1)
+
+    def test_build_orbital_density_dataset(self):
+        ds = ml_helpers.build_orbital_density_dataset(
+            descriptors=[[1.0, 2.0], [3.0, 4.0]],
+            alphas=[0.5, 0.6],
+            filled=[True, False],
+            labels=["orb_1", "emp_orb_1"],
+        )
+        assert ds["descriptors"] == [[1.0, 2.0], [3.0, 4.0]]
+        assert ds["alphas"] == [0.5, 0.6]
+        assert ds["filled"] == [True, False]
+        assert ds["labels"] == ["orb_1", "emp_orb_1"]
+
+    def test_build_orbital_density_dataset_length_mismatch(self):
+        with pytest.raises(ValueError, match="same length"):
+            ml_helpers.build_orbital_density_dataset(
+                descriptors=[[1.0]], alphas=[0.5, 0.6], filled=[True], labels=["a"]
+            )
+
+
+class TestAssembleOrbitalDensityDataset:
+    """Block-to-alpha alignment for the orbital_density (decompose) route.
+
+    These tests are the discriminators the live-daemon regression will later
+    corroborate: blocks carry distinguishable descriptor values so a wrong
+    concatenation order (empty-before-filled, down-before-up, or block
+    reordering within a slot) changes the asserted row order.
+    """
+
+    def test_filled_before_empty_single_channel(self):
+        """Discriminator: occ rows must precede emp rows, with matching alphas."""
+        block_descriptors = {"occ": [[1.0], [2.0]], "emp": [[10.0], [20.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5, 0.6]}}
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert ds["descriptors"] == [[1.0], [2.0], [10.0], [20.0]]
+        assert ds["alphas"] == [0.1, 0.2, 0.5, 0.6]
+        assert ds["filled"] == [True, True, False, False]
+        assert ds["labels"] == ["orb_1", "orb_2", "orb_3", "orb_4"]
+
+    def test_multi_block_within_slot_keeps_group_order(self):
+        """Two occupied blocks concatenate in MergeGroup ``blocks`` order."""
+        block_descriptors = {"a": [[1.0]], "b": [[2.0], [3.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "a"}, {"label": "b"}]},
+        ]
+        alphas = {"filled": {"none": [0.1, 0.2, 0.3]}, "empty": {}}
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert ds["descriptors"] == [[1.0], [2.0], [3.0]]
+        assert ds["filled"] == [True, True, True]
+
+    def test_spin_channels_up_before_down(self):
+        """Discriminator: the up channel's orbitals precede the down channel's."""
+        block_descriptors = {
+            "up_occ": [[1.0]],
+            "up_emp": [[2.0]],
+            "down_occ": [[11.0]],
+            "down_emp": [[12.0]],
+        }
+        merge_groups = [
+            {"filled": True, "spin": "down", "blocks": [{"label": "down_occ"}]},
+            {"filled": False, "spin": "up", "blocks": [{"label": "up_emp"}]},
+            {"filled": True, "spin": "up", "blocks": [{"label": "up_occ"}]},
+            {"filled": False, "spin": "down", "blocks": [{"label": "down_emp"}]},
+        ]
+        alphas = {
+            "filled": {"up": [0.1], "down": [0.3]},
+            "empty": {"up": [0.2], "down": [0.4]},
+        }
+        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        # up (filled, empty) then down (filled, empty), regardless of group list order.
+        assert ds["descriptors"] == [[1.0], [2.0], [11.0], [12.0]]
+        assert ds["alphas"] == [0.1, 0.2, 0.3, 0.4]
+        assert ds["filled"] == [True, False, True, False]
+        assert ds["labels"] == ["up_orb_1", "up_orb_2", "down_orb_1", "down_orb_2"]
+
+    def test_length_mismatch_raises(self):
+        """A block-WF / alpha count mismatch is a hard error, not silent truncation."""
+        block_descriptors = {"occ": [[1.0], [2.0]]}
+        merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+        alphas = {"filled": {"none": [0.1]}, "empty": {}}  # 2 WFs vs 1 alpha
+        with pytest.raises(ValueError, match="Filled Wannier-function / alpha mismatch"):
+            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+
+    def test_missing_block_descriptors_raises(self):
+        merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
+        alphas = {"filled": {"none": [0.1]}, "empty": {}}
+        with pytest.raises(ValueError, match="No descriptors for block `occ`"):
+            ml_helpers.assemble_orbital_density_dataset({}, merge_groups, alphas)
+
+    def test_row_layout_matches_self_hartree_route(self):
+        """Parity: labels/filled/alpha order match build_snapshot_dataset exactly.
+
+        For a closed-shell 2-filled/1-empty case the two routes must produce
+        identical ``labels`` / ``filled`` / ``alphas`` (only the descriptor
+        values differ), so a model trained on either is row-compatible.
+        """
+        alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5]}}
+        # self_hartree reference (descriptors are the per-orbital SH scalars).
+        sh_ref = ml_helpers.build_snapshot_dataset([[7.0, 8.0, 9.0]], alphas)
+        # orbital_density: one occ block (2 WFs) + one emp block (1 WF).
+        block_descriptors = {"occ": [[1.0], [2.0]], "emp": [[3.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        od = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        assert od["labels"] == sh_ref["labels"]
+        assert od["filled"] == sh_ref["filled"]
+        assert od["alphas"] == sh_ref["alphas"]
+
+    def test_no_channels_raises(self):
+        """Empty alphas (no spin channels) is a hard error."""
+        with pytest.raises(ValueError, match="no spin channels"):
+            ml_helpers.assemble_orbital_density_dataset({}, [], {"filled": {}, "empty": {}})
+
+    def test_empty_channel_mismatch_raises(self):
+        """An empty-orbital / alpha mismatch is caught after the filled check passes."""
+        block_descriptors = {"occ": [[1.0]], "emp": [[10.0], [20.0]]}
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
+            {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
+        ]
+        # filled matches (1 WF / 1 alpha) so the empty guard (2 WFs / 1 alpha) is what fires.
+        alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
+        with pytest.raises(ValueError, match="Empty Wannier-function / alpha mismatch"):
+            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+
+    def test_non_string_channel_key_raises(self):
+        """A non-string spin-channel key is rejected before it corrupts labels."""
+        # A stray integer key would otherwise produce a ``"123_orb_1"`` label.
+        alphas = {"filled": {123: [0.1]}, "empty": {}}
+        with pytest.raises(ValueError, match="Unrecognized spin-channel key"):
+            ml_helpers.assemble_orbital_density_dataset({"occ": [[1.0]]}, [], alphas)
+
+
+class TestCentresHelpers:
+    """``parse_wannier_centres_xyz`` / ``format_group_centres_file`` round-trip."""
+
+    def test_parse_extracts_only_x_pseudospecies_rows(self):
+        """Only the ``X`` (Wannier-centre) rows are returned, in file order."""
+        xyz = (
+            "4\n"
+            "comment line\n"
+            "X   0.10000000   0.20000000   0.30000000\n"
+            "Si  1.00000000   1.00000000   1.00000000\n"
+            "X   0.40000000   0.50000000   0.60000000\n"
+            "O   2.00000000   2.00000000   2.00000000\n"
+        )
+        centres = ml_helpers.parse_wannier_centres_xyz(xyz)
+        assert centres == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+    def test_format_renders_one_triple_per_line_after_comment(self):
+        """Each centre becomes one Cartesian triple; the first line is a comment."""
+        text = ml_helpers.format_group_centres_file([[0.1, 0.2, 0.3], [4.0, 5.0, 6.0]])
+        lines = text.splitlines()
+        assert lines[0].startswith("#")
+        assert len(lines) == 3
+        assert [float(t) for t in lines[1].split()] == [0.1, 0.2, 0.3]
+        assert [float(t) for t in lines[2].split()] == [4.0, 5.0, 6.0]
+
+    def test_parse_format_round_trip(self):
+        """Formatting then re-parsing (with an ``X`` label) recovers the centres."""
+        centres = [[0.123456789, 1.0, -2.5], [3.3, 4.4, 5.5]]
+        formatted = ml_helpers.format_group_centres_file(centres)
+        xyz = "n\ncomment\n" + "".join(f"X {ln}\n" for ln in formatted.splitlines()[1:])
+        recovered = ml_helpers.parse_wannier_centres_xyz(xyz)
+        assert np.allclose(recovered, centres)

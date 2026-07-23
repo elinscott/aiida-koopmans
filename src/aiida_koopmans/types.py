@@ -7,7 +7,7 @@ CalcJob, parser, and tests can all import a single canonical definition.
 from __future__ import annotations
 
 from enum import Enum
-from typing import NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast, get_args
 
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -146,6 +146,38 @@ class AlphaScreening(TypedDict):
 
     filled: dict[SpinChannel, list[float]]
     empty: dict[SpinChannel, list[float]]
+
+
+# The QE code vocabulary, defined once. ``CODE_NAMES`` is the runtime tuple
+# (the koopmans2 parallelization schema imports it for its ``ALL_CODES``); the
+# ``CodeName`` ``Literal`` types dict keys / helper args so a typo is a static
+# error, and ``validate_parallelization`` catches one that slips in at runtime.
+CodeName = Literal["pw", "kcp", "kcw", "ph", "projwfc", "pw2wannier90", "wann2kcp", "wannier90"]
+CODE_NAMES: tuple[str, ...] = get_args(CodeName)
+
+
+class CodeParallelization(TypedDict, total=False):
+    """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp.
+
+    ``ntasks`` sets ``metadata.options.resources`` (``tot_num_mpiprocs``);
+    ``npool`` becomes ``-npool`` and ``pd`` becomes ``-pd true`` on the QE
+    command line. Every field is optional (``total=False``); an absent one
+    means the QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization``
+    pydantic model that produces these dicts.
+    """
+
+    ntasks: int
+    npool: int
+    pd: bool
+
+
+# Per-code parallelization mapping threaded into every top-level graph: a plain
+# dict keyed by code name, each value a :class:`CodeParallelization`. A dict
+# alias (not a fixed-key TypedDict) so ``aiida-workgraph`` keeps it as one
+# opaque input socket rather than expanding a typed namespace, and so a dynamic
+# ``code`` lookup types cleanly. Which flags each code accepts is enforced by
+# ``POOL_SUPPORTING_CODES`` / ``PD_SUPPORTING_CODES`` in ``aiida_koopmans.workgraphs``.
+ParallelizationDict = dict[CodeName, CodeParallelization]
 
 
 class OrbitalDict(TypedDict):

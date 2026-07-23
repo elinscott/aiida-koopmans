@@ -11,7 +11,12 @@ from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.workgraphs import inject_pseudo_family
+from aiida_koopmans.types import ParallelizationDict
+from aiida_koopmans.workgraphs import (
+    inject_pseudo_family,
+    merge_parallelization_into_overrides,
+    validate_parallelization,
+)
 
 
 class PwOutputs(TypedDict, total=False):
@@ -57,14 +62,14 @@ def RunPwBands(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     bands_kpoints: orm.KpointsData | None = None,
 ) -> ScfBandsOutputs:
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
     This task wraps PwBandsWorkChain and uses get_builder_from_protocol to
     construct the inputs from a simplified set of arguments (code, structure,
-    protocol, overrides, options).
+    protocol, overrides, parallelization).
 
     Args:
         code: The Code instance configured for the quantumespresso.pw plugin.
@@ -73,24 +78,30 @@ def RunPwBands(
             If not specified, the protocol default is used.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary of inputs to override protocol defaults.
-        options: Dictionary of options for metadata.options of nested CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``pw`` entry sets the scf/bands pw.x ``metadata.options`` and
+            ``-npool``.
         bands_kpoints: Explicit KpointsData for the bands path. If provided,
             seekpath is bypassed entirely.
 
     Returns:
         Dict with scf_parameters and band_structure outputs.
     """
+    validate_parallelization(parallelization)
+
     overrides = overrides or {}
 
     # Inject pseudo_family into both scf and bands overrides
     inject_pseudo_family(overrides, pseudo_family, ("scf", "bands"))
+    merge_parallelization_into_overrides(
+        overrides, parallelization, [(("scf", "pw"), "pw"), (("bands", "pw"), "pw")]
+    )
 
     builder = PwBandsWorkChain.get_builder_from_protocol(
         code=code,
         structure=structure,
         protocol=protocol,
         overrides=overrides,
-        options=options or {},
     )
 
     data = get_dict_from_builder(builder)
@@ -121,7 +132,7 @@ def RunScfNscf(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
@@ -140,7 +151,9 @@ def RunScfNscf(
             If not specified, the protocol default is used.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
-        options: Dictionary of options for metadata.options of nested CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``pw`` entry sets the scf/nscf pw.x ``metadata.options`` and
+            ``-npool``.
         nscf_kpoints: Explicit k-points for the NSCF step, replacing the
             protocol's ``kpoints_distance``. A wannierisation NSCF must run
             on the full (symmetry-unreduced) grid in the k-point order the
@@ -158,6 +171,9 @@ def RunScfNscf(
 
     # Inject pseudo_family as a top-level override for both steps
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
+    merge_parallelization_into_overrides(
+        overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
+    )
     scf_overrides = overrides.get("scf", {})
 
     # --- SCF builder ---
@@ -166,7 +182,6 @@ def RunScfNscf(
         structure=structure,
         protocol=protocol,
         overrides=scf_overrides,
-        options=options or {},
         electronic_type=electronic_type,
     )
     scf_data = get_dict_from_builder(scf_builder)
@@ -194,7 +209,6 @@ def RunScfNscf(
         structure=structure,
         protocol=protocol,
         overrides=nscf_merged,
-        options=options or {},
         electronic_type=electronic_type,
     )
     nscf_data = get_dict_from_builder(nscf_builder)

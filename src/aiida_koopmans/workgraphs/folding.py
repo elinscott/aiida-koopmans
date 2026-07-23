@@ -39,8 +39,14 @@ from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
-from aiida_koopmans.types import MergeGroup, ProjectionBlock, SpinChannel, merge_dest_filename
-from aiida_koopmans.workgraphs import Codes
+from aiida_koopmans.types import (
+    MergeGroup,
+    ParallelizationDict,
+    ProjectionBlock,
+    SpinChannel,
+    merge_dest_filename,
+)
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 
 Wann2kcpTask = task(Wann2kcpCalculation)
@@ -145,7 +151,7 @@ def FoldToSupercell(
     kgrid: list[int],
     gamma_only: bool = False,
     spin_polarized: bool = False,
-    options: dict[str, Any] | None = None,
+    parallelization: ParallelizationDict | None = None,
 ) -> FoldToSupercellOutputs:
     """Convert per-block Wannier orbitals into merged supercell kcp.x files.
 
@@ -167,7 +173,9 @@ def FoldToSupercell(
         spin_polarized: spin-resolved Wannierisation. Each block then runs
             wann2kcp.x with its own ``spin_component`` and writes a single
             ``evcw.dat``; spinless blocks write ``evcw1.dat`` + ``evcw2.dat``.
-        options: ``metadata.options`` for the underlying CalcJobs.
+        parallelization: Per-code parallelization mapping (keyed by code name);
+            the ``wann2kcp`` entry feeds the wann2kcp.x steps
+            (``metadata.options`` and ``-npool``).
 
     The per-block fan-out is a native ``for`` loop in this deferred body
     (the documented dynamic scatter-gather; see ``block_wannierize.py``).
@@ -202,8 +210,7 @@ def FoldToSupercell(
             "hr_file": wannier_files["hr_file"],
             "metadata": {"call_link_label": f"fold_{label}"},
         }
-        if options:
-            w2k_inputs["metadata"]["options"] = options
+        merge_parallelization_into_inputs(w2k_inputs, parallelization, "wann2kcp")
         w2k_outputs[label] = Wann2kcpTask(**w2k_inputs)
 
     # --- per-(manifold, spin slot) merge_evc.x ---
@@ -224,8 +231,6 @@ def FoldToSupercell(
             "source_files": source_files,
             "metadata": {"call_link_label": f"merge_{target['stem']}"},
         }
-        if options:
-            merge_inputs["metadata"]["options"] = options
         merged[target["stem"]] = MergeEvcTask(**merge_inputs)["merged_file"]
 
     return cast("FoldToSupercellOutputs", merged)
