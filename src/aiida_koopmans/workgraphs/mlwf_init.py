@@ -38,7 +38,11 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.types import ProjectionBlock, SpinChannel, group_blocks_to_merge
 from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs import Codes
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks, WannierizeOverrides
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    WannierizeBlocks,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
 from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
@@ -69,12 +73,20 @@ class MlwfInitializationOutputs(TypedDict):
       stages into its read ``K00001``.
     * ``report`` — the consistency-check numbers (PW/CP gaps and the
       initial/final kcp.x energies).
+    * ``nscf_remote_folder`` — the shared primitive-cell nscf scratch every
+      block was Wannierised off; the ``parent_folder`` a downstream
+      pw2wannier90 ``wan_mode='decompose'`` pass reads.
+    * ``block_wannierizations`` — the per-block Wannierisation outputs
+      (keyed by block label), each holding the ``hr_retrieved`` folder with
+      ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
     """
 
     remote_folder: orm.RemoteData
     evc_occupied1: orm.SinglefileData
     evc_occupied2: orm.SinglefileData
     report: dict
+    nscf_remote_folder: orm.RemoteData
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 @task(deserializers=_BANDS_DESERIALIZERS)
@@ -345,4 +357,6 @@ def MlwfInitialization(
         evc_occupied1=fold["evc_occupied1"],
         evc_occupied2=fold["evc_occupied2"],
         report=report.result,
+        nscf_remote_folder=wannierize["nscf"]["remote_folder"],
+        block_wannierizations=wannierize["blocks"],
     )
