@@ -94,8 +94,7 @@ def resolve_parallelization(
     ``parallelization`` is keyed by code name; each value is a plain dict with
     optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
     (k-point pools -> ``-npool``), and ``pd`` (pencil decomposition ->
-    ``-pd true``). The two flags are emitted npool-before-pd, matching the
-    legacy command rendering.
+    ``-pd true``). The two flags are emitted npool-before-pd.
 
     ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
     pools even though the code generally does (the kcw.x ham step).

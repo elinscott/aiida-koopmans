@@ -867,8 +867,8 @@ def RunDFPT(
     }
     if do_bands:
         ham_inputs["kpoints"] = bands_kpoints
-    # The kcw.x ham step takes no -npool (legacy KCWHamConfig has no pool
-    # option), only -pd; wann2kc and screen above take both.
+    # The kcw.x ham step takes no -npool (kcw_readin.f90 rejects pools for
+    # calculation='ham'), only -pd; wann2kc and screen above take both.
     merge_parallelization_into_inputs(ham_inputs, parallelization, "kcw", pools=False)
     ham = KcwHamStep(**ham_inputs)
 
@@ -961,8 +961,8 @@ def _manifold_wannier_overrides(
         "conv_tol": 1.0e-10,
         "conv_window": 5,
         # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
-        # pin wannier90's own default (1e-10, what legacy runs with) so the
-        # disentanglement is converged as tightly as the legacy reference.
+        # pin wannier90's own default (1e-10) so the disentanglement is
+        # tightly converged rather than the protocol's looser 4e-7.
         "dis_conv_tol": 1.0e-10,
     }
     channel_defaults = _channel_w90_defaults(spin, channel)
