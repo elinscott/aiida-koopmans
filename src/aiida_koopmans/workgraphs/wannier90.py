@@ -20,7 +20,11 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_existing_namespaces
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_existing_namespaces,
+    validate_parallelization,
+)
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
@@ -179,6 +183,8 @@ def Wannierize(
     Returns:
         Dict with outputs from the Wannier90WorkChain.
     """
+    validate_parallelization(parallelization)
+
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,

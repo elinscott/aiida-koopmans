@@ -41,7 +41,11 @@ from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -882,6 +886,8 @@ def KoopmansDSCFWorkflow(
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
+    validate_parallelization(parallelization)
+
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
         primitive_to_supercell,

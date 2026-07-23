@@ -89,7 +89,11 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_u_file_contents,
     parse_wannier_u_file_shape,
 )
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -1040,6 +1044,8 @@ def SinglepointDFPTWorkflow(
     independently (a channel running from its ``alpha_guess`` skips
     screening entirely, grouping included).
     """
+    validate_parallelization(parallelization)
+
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
     overrides = overrides or {}

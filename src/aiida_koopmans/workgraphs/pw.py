@@ -12,7 +12,11 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import inject_pseudo_family, merge_parallelization_into_overrides
+from aiida_koopmans.workgraphs import (
+    inject_pseudo_family,
+    merge_parallelization_into_overrides,
+    validate_parallelization,
+)
 
 
 class PwOutputs(TypedDict, total=False):
@@ -83,6 +87,8 @@ def RunPwBands(
     Returns:
         Dict with scf_parameters and band_structure outputs.
     """
+    validate_parallelization(parallelization)
+
     overrides = overrides or {}
 
     # Inject pseudo_family into both scf and bands overrides

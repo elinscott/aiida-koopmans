@@ -43,7 +43,7 @@ from aiida_koopmans.types import (
     ParallelizationDict,
     VariationalOrbitalType,
 )
-from aiida_koopmans.workgraphs import merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import merge_parallelization_into_inputs, validate_parallelization
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
@@ -418,6 +418,8 @@ def TrajectoryWorkflow(
     * ``"test"`` — extract the same pairs and score the supplied
       ``ml_model`` against the computed alphas.
     """
+    validate_parallelization(parallelization)
+
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
     if ml_mode != "none":

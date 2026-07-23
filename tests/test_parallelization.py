@@ -12,7 +12,22 @@ from aiida_koopmans.workgraphs import (
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
     resolve_parallelization,
+    validate_parallelization,
 )
+
+
+class TestValidate:
+    def test_unknown_key_raises_with_the_name(self):
+        with pytest.raises(ValueError, match=r"unknown parallelization code name.*pww"):
+            validate_parallelization({"pw": {"npool": 2}, "pww": {"npool": 2}})
+
+    def test_valid_sparse_mapping_passes(self):
+        # A subset of codes with assorted fields is accepted (no raise).
+        validate_parallelization({"pw": {"npool": 2}, "kcw": {"pd": True}})
+
+    def test_none_and_empty_pass(self):
+        validate_parallelization(None)
+        validate_parallelization({})
 
 
 class TestResolve:

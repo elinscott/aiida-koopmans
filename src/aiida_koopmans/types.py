@@ -7,7 +7,7 @@ CalcJob, parser, and tests can all import a single canonical definition.
 from __future__ import annotations
 
 from enum import Enum
-from typing import NotRequired, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast, get_args
 
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -148,6 +148,14 @@ class AlphaScreening(TypedDict):
     empty: dict[SpinChannel, list[float]]
 
 
+# The QE code vocabulary, defined once. ``CODE_NAMES`` is the runtime tuple
+# (the koopmans2 parallelization schema imports it for its ``ALL_CODES``); the
+# ``CodeName`` ``Literal`` types dict keys / helper args so a typo is a static
+# error, and ``validate_parallelization`` catches one that slips in at runtime.
+CodeName = Literal["pw", "kcp", "kcw", "ph", "projwfc", "pw2wannier90", "wann2kcp", "wannier90"]
+CODE_NAMES: tuple[str, ...] = get_args(CodeName)
+
+
 class CodeParallelization(TypedDict, total=False):
     """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp.
 
@@ -163,24 +171,13 @@ class CodeParallelization(TypedDict, total=False):
     pd: bool
 
 
-class ParallelizationDict(TypedDict, total=False):
-    """Per-code parallelization mapping threaded into every top-level graph.
-
-    One optional key per code name — the fixed key set mirrors the koopmans2
-    parallelization schema's ``ALL_CODES``. Each value is a
-    :class:`CodeParallelization`. Which flags each code actually accepts is
-    enforced by ``POOL_SUPPORTING_CODES`` / ``PD_SUPPORTING_CODES`` in
-    ``aiida_koopmans.workgraphs``, not by this shape.
-    """
-
-    pw: CodeParallelization
-    kcp: CodeParallelization
-    kcw: CodeParallelization
-    ph: CodeParallelization
-    projwfc: CodeParallelization
-    pw2wannier90: CodeParallelization
-    wann2kcp: CodeParallelization
-    wannier90: CodeParallelization
+# Per-code parallelization mapping threaded into every top-level graph: a plain
+# dict keyed by code name, each value a :class:`CodeParallelization`. A dict
+# alias (not a fixed-key TypedDict) so ``aiida-workgraph`` keeps it as one
+# opaque input socket rather than expanding a typed namespace, and so a dynamic
+# ``code`` lookup types cleanly. Which flags each code accepts is enforced by
+# ``POOL_SUPPORTING_CODES`` / ``PD_SUPPORTING_CODES`` in ``aiida_koopmans.workgraphs``.
+ParallelizationDict = dict[CodeName, CodeParallelization]
 
 
 class OrbitalDict(TypedDict):

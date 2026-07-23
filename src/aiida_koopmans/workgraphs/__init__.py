@@ -10,12 +10,12 @@ leaf ``@task`` / calcfunction / workfunction computations.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
-from typing import Any, TypedDict, cast
+from collections.abc import Iterable
+from typing import Any, TypedDict
 
 from aiida import orm
 
-from aiida_koopmans.types import ParallelizationDict
+from aiida_koopmans.types import CODE_NAMES, CodeName, ParallelizationDict
 
 
 class Codes(TypedDict, total=False):
@@ -64,8 +64,30 @@ POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"}
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
 
+def validate_parallelization(parallelization: ParallelizationDict | None) -> None:
+    """Raise if the mapping names a code outside the known vocabulary.
+
+    The runtime guard behind the ``CodeName`` type: graph inputs arrive as plain
+    dicts whatever the annotation, so a typo'd code name (``"pww"``) would
+    otherwise silently no-op — the merge helpers skip codes they do not
+    recognise — which violates the explicit-failure standard. Call once at each
+    graph's merge entry.
+
+    Raises:
+        ValueError: If any key is not one of :data:`~aiida_koopmans.types.CODE_NAMES`.
+    """
+    if not parallelization:
+        return
+    unknown = sorted(name for name in dict(parallelization) if name not in CODE_NAMES)
+    if unknown:
+        raise ValueError(
+            f"unknown parallelization code name(s): {unknown}; "
+            f"valid codes are {sorted(CODE_NAMES)}."
+        )
+
+
 def resolve_parallelization(
-    parallelization: ParallelizationDict | None, code: str, *, pools: bool = True
+    parallelization: ParallelizationDict | None, code: CodeName, *, pools: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(options, settings)`` for ``code`` from a parallelization mapping.
 
@@ -73,18 +95,14 @@ def resolve_parallelization(
     optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
     (k-point pools -> ``-npool``), and ``pd`` (pencil decomposition ->
     ``-pd true``). The two flags are emitted npool-before-pd, matching the
-    legacy command rendering. Everything is rebuilt into fresh plain dicts so a
-    wrapt-proxied graph input (a ``TaggedValue``) never reaches a namespace
-    socket, which rejects it.
+    legacy command rendering.
 
     ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
     pools even though the code generally does (the kcw.x ham step).
     """
     if not parallelization:
         return {}, {}
-    # A TypedDict lookup with a runtime key types as ``object``; view the
-    # mapping generically for the dynamic per-code access.
-    cfg_entry = cast("Mapping[str, Any]", parallelization).get(code)
+    cfg_entry = parallelization.get(code)
     if not cfg_entry:
         return {}, {}
     # Rebuild the entry into a plain dict: a wrapt-proxied graph input must
@@ -136,7 +154,7 @@ def _merge_into_namespace(
 def merge_parallelization_into_inputs(
     step_inputs: dict[str, Any],
     parallelization: ParallelizationDict | None,
-    code: str,
+    code: CodeName,
     *,
     pools: bool = True,
 ) -> None:
@@ -153,7 +171,7 @@ def merge_parallelization_into_inputs(
 def merge_parallelization_into_overrides(
     overrides: dict[str, Any],
     parallelization: ParallelizationDict | None,
-    mapping: Iterable[tuple[tuple[str, ...], str]],
+    mapping: Iterable[tuple[tuple[str, ...], CodeName]],
 ) -> None:
     """Merge per-code parallelization into WorkChain ``overrides`` namespaces, in place.
 
@@ -177,7 +195,7 @@ def merge_parallelization_into_overrides(
 def merge_parallelization_into_existing_namespaces(
     data: dict[str, Any],
     parallelization: ParallelizationDict | None,
-    mapping: Iterable[tuple[tuple[str, ...], str]],
+    mapping: Iterable[tuple[tuple[str, ...], CodeName]],
 ) -> None:
     """Merge per-code parallelization into ``data`` namespaces that already exist.
 

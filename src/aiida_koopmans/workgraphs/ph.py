@@ -21,7 +21,10 @@ from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import merge_parallelization_into_overrides
+from aiida_koopmans.workgraphs import (
+    merge_parallelization_into_overrides,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 
@@ -100,6 +103,8 @@ def DielectricTask(
         Dict with the scalar ``eps_inf`` (isotropic average), the full
         3x3 ``dielectric_tensor``, and the raw ph.x output parameters.
     """
+    validate_parallelization(parallelization)
+
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
     overrides = overrides or {}

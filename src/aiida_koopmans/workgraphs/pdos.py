@@ -15,6 +15,7 @@ from aiida_koopmans.workgraphs import (
     inject_pseudo_family,
     merge_parallelization_into_existing_namespaces,
     merge_parallelization_into_overrides,
+    validate_parallelization,
 )
 
 
@@ -62,6 +63,8 @@ def RunPdos(
     Returns:
         Dict with NSCF, DOS, and PROJWFC outputs.
     """
+    validate_parallelization(parallelization)
+
     overrides = overrides or {}
 
     # ``.build()`` runs this body eagerly, where a graph input arrives as a
