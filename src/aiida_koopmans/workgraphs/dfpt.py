@@ -862,7 +862,9 @@ def RunDFPT(
     }
     if do_bands:
         ham_inputs["kpoints"] = bands_kpoints
-    apply_parallelization(ham_inputs, parallelization, "kcw")
+    # The kcw.x ham step takes no -npool (legacy KCWHamConfig has no pool
+    # option), only -pd; wann2kc and screen above take both.
+    apply_parallelization(ham_inputs, parallelization, "kcw", pools=False)
     ham = KcwHamStep(**ham_inputs)
 
     outputs["alphas"] = alphas

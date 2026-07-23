@@ -49,21 +49,30 @@ def inject_pseudo_family(
         overrides.setdefault(namespace, {}).setdefault("pseudo_family", pseudo_family)
 
 
-# QE codes that accept ``-npool`` (k-point pools). Mirrors the koopmans2
-# parallelization schema; wannier90 has no pool concept.
-POOL_SUPPORTING_CODES = frozenset({"pw", "kcp", "kcw", "ph", "projwfc", "pw2wannier90", "wann2kcp"})
+# QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil
+# decomposition) on the command line. Ground truth is the legacy
+# ``koopmans.commands`` per-executable config classes; mirrors the koopmans2
+# schema. ``kcw`` accepts pools only for its wann2kc / screen steps, not ham —
+# that per-step split is the ``pools`` argument below, not a code-level fact.
+POOL_SUPPORTING_CODES = frozenset({"pw", "projwfc", "kcw"})
+PD_SUPPORTING_CODES = frozenset({"pw", "pw2wannier90", "projwfc", "kcw"})
 
 
 def resolve_parallelization(
-    parallelization: dict[str, Any] | None, code: str
+    parallelization: dict[str, Any] | None, code: str, *, pools: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Return ``(options, settings)`` for ``code`` from a parallelization mapping.
 
     ``parallelization`` is keyed by code name; each value is a plain dict with
-    optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``) and
-    ``npool`` (k-point pools -> ``-npool`` on the command line). Everything is
-    rebuilt into fresh plain dicts so a wrapt-proxied graph input (a
-    ``TaggedValue``) never reaches a namespace socket, which rejects it.
+    optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
+    (k-point pools -> ``-npool``), and ``pd`` (pencil decomposition ->
+    ``-pd true``). The two flags are emitted npool-before-pd, matching the
+    legacy command rendering. Everything is rebuilt into fresh plain dicts so a
+    wrapt-proxied graph input (a ``TaggedValue``) never reaches a namespace
+    socket, which rejects it.
+
+    ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
+    pools even though the code generally does (the kcw.x ham step).
     """
     if not parallelization:
         return {}, {}
@@ -72,18 +81,27 @@ def resolve_parallelization(
         return {}, {}
     cfg = dict(cfg)
     options: dict[str, Any] = {}
-    settings: dict[str, Any] = {}
     ntasks = cfg.get("ntasks")
     npool = cfg.get("npool")
+    pd = cfg.get("pd")
     if ntasks is not None:
         options = {"resources": {"num_machines": 1, "tot_num_mpiprocs": int(ntasks)}}
-    if npool is not None:
+    cmdline: list[str] = []
+    if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:
             raise ValueError(
                 f"'npool' was requested for {code!r}, which does not parallelize over "
                 f"k-point pools; pools are only valid for {sorted(POOL_SUPPORTING_CODES)}."
             )
-        settings = {"cmdline": ["-npool", str(int(npool))]}
+        cmdline += ["-npool", str(int(npool))]
+    if pd:
+        if code not in PD_SUPPORTING_CODES:
+            raise ValueError(
+                f"'pd' (pencil decomposition) was requested for {code!r}, which does not "
+                f"support it; pd is only valid for {sorted(PD_SUPPORTING_CODES)}."
+            )
+        cmdline += ["-pd", "true"]
+    settings: dict[str, Any] = {"cmdline": cmdline} if cmdline else {}
     return options, settings
 
 
@@ -106,13 +124,19 @@ def _merge_into_namespace(
 
 
 def apply_parallelization(
-    step_inputs: dict[str, Any], parallelization: dict[str, Any] | None, code: str
+    step_inputs: dict[str, Any],
+    parallelization: dict[str, Any] | None,
+    code: str,
+    *,
+    pools: bool = True,
 ) -> None:
     """Inject ``code``'s ``metadata.options`` / ``settings.cmdline`` into a CalcJob step's inputs.
 
-    Operates in place on ``step_inputs``.
+    Operates in place on ``step_inputs``. Pass ``pools=False`` for a step whose
+    executable takes no ``-npool`` even though the code generally does (the
+    kcw.x ham step).
     """
-    options, settings = resolve_parallelization(parallelization, code)
+    options, settings = resolve_parallelization(parallelization, code, pools=pools)
     _merge_into_namespace(step_inputs, options, settings)
 
 

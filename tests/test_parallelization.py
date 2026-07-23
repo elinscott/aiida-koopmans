@@ -36,9 +36,27 @@ class TestResolve:
             {},
         )
 
+    def test_npool_and_pd_ordering(self):
+        """Both flags emit npool-before-pd; pd renders lowercase ``true``."""
+        _, settings = resolve_parallelization({"kcw": {"npool": 4, "pd": True}}, "kcw")
+        assert settings == {"cmdline": ["-npool", "4", "-pd", "true"]}
+
+    def test_pd_only(self):
+        _, settings = resolve_parallelization({"pw2wannier90": {"pd": True}}, "pw2wannier90")
+        assert settings == {"cmdline": ["-pd", "true"]}
+
     def test_npool_for_non_pool_code_raises(self):
         with pytest.raises(ValueError, match="does not parallelize over"):
-            resolve_parallelization({"wannier90": {"npool": 2}}, "wannier90")
+            resolve_parallelization({"kcp": {"npool": 2}}, "kcp")
+
+    def test_pd_for_non_pd_code_raises(self):
+        with pytest.raises(ValueError, match="pencil decomposition"):
+            resolve_parallelization({"ph": {"pd": True}}, "ph")
+
+    def test_pools_false_suppresses_npool_but_keeps_pd(self):
+        """The kcw.x ham step drops -npool but still takes -pd."""
+        _, settings = resolve_parallelization({"kcw": {"npool": 4, "pd": True}}, "kcw", pools=False)
+        assert settings == {"cmdline": ["-pd", "true"]}
 
 
 class TestApplyToCalcJob:
@@ -48,6 +66,11 @@ class TestApplyToCalcJob:
         assert inputs["metadata"]["call_link_label"] == "screen"
         assert inputs["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
         assert inputs["settings"] == {"a": 1, "cmdline": ["-npool", "4"]}
+
+    def test_pools_false_drops_npool(self):
+        inputs = {"metadata": {"call_link_label": "ham"}}
+        apply_parallelization(inputs, {"kcw": {"npool": 4, "pd": True}}, "kcw", pools=False)
+        assert inputs["settings"]["cmdline"] == ["-pd", "true"]
 
     def test_no_config_is_a_noop(self):
         inputs = {"metadata": {"call_link_label": "x"}}

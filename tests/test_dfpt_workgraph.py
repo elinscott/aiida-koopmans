@@ -273,7 +273,7 @@ class TestKoopmansDFPTTaskBuild:
         assert screen_params["SCREEN"]["check_spread"] is check_spread
 
     def test_parallelization_reaches_every_kcw_step(self, dfpt_codes, nscf_remote, occ_retrieved):
-        """The kcw entry sets metadata.options and -npool on wann2kc / screen / ham."""
+        """Ntasks + -pd reach every kcw step; -npool reaches wann2kc/screen but not ham."""
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
@@ -282,13 +282,17 @@ class TestKoopmansDFPTTaskBuild:
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
-            parallelization={"kcw": {"ntasks": 8, "npool": 4}},
+            parallelization={"kcw": {"ntasks": 8, "npool": 4, "pd": True}},
         )
-        for name in ("wann2kc", "screen", "ham"):
+        # wann2kc and screen take both -npool and -pd (legacy KCWWannier /
+        # KCWScreen); ham takes only -pd (legacy KCWHam has no pool option).
+        for name in ("wann2kc", "screen"):
             task = wg.tasks[name]
-            assert task.inputs["settings"].value == {"cmdline": ["-npool", "4"]}
-            resources = task.inputs["metadata"]["options"]["resources"].value
-            assert resources["tot_num_mpiprocs"] == 8
+            assert task.inputs["settings"].value == {"cmdline": ["-npool", "4", "-pd", "true"]}
+            assert task.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+        ham = wg.tasks["ham"]
+        assert ham.inputs["settings"].value == {"cmdline": ["-pd", "true"]}
+        assert ham.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
 
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved

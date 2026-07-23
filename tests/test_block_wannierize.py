@@ -323,7 +323,7 @@ class TestWannierizeBlockBuild:
     def test_parallelization_reaches_wannier_and_pw2wannier_steps(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
-        """wannier90 takes metadata.options only (no pools); pw2wannier90 takes both."""
+        """wannier90 takes metadata.options only (no flags); pw2wannier90 takes -pd."""
         block = ExplicitProjectionBlock(
             label="block_1",
             spin=SpinChannel.NONE,
@@ -343,16 +343,19 @@ class TestWannierizeBlockBuild:
             pseudo_family=fake_cutoffs_family.label,
             parallelization={
                 "wannier90": {"ntasks": 4},
-                "pw2wannier90": {"ntasks": 2, "npool": 3},
+                "pw2wannier90": {"ntasks": 2, "pd": True},
             },
         )
         task = self._wannier_task(wg)
 
         w90 = task.inputs["wannier90"]["wannier90"]
         assert w90["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 4
+        # wannier90 has no pool/pd concept, so no cmdline flag is injected.
+        w90_settings = w90["settings"].value
+        assert w90_settings is None or "cmdline" not in w90_settings
         p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
         assert p2w["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 2
-        assert p2w["settings"].value["cmdline"] == ["-npool", "3"]
+        assert p2w["settings"].value["cmdline"] == ["-pd", "true"]
 
     def test_flat_overrides_reach_the_builder_namespaces(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
