@@ -349,12 +349,12 @@ class TestWannierizeBlockBuild:
         task = self._wannier_task(wg)
 
         w90 = task.inputs["wannier90"]["wannier90"]
-        assert w90["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 4
+        assert w90["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 4
         # wannier90 has no pool/pd concept, so no cmdline flag is injected.
         w90_settings = w90["settings"].value
         assert w90_settings is None or "cmdline" not in w90_settings
         p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
-        assert p2w["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 2
+        assert p2w["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
         assert p2w["settings"].value["cmdline"] == ["-pd", "true"]
 
     def test_flat_overrides_reach_the_builder_namespaces(

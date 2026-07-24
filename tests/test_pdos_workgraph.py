@@ -51,4 +51,4 @@ def test_projwfc_npool_and_pd_reach_the_projwfc_step(
     assert tasks, f"no task with a projwfc namespace among {[t.name for t in wg.tasks]}"
     projwfc = tasks[0].inputs["projwfc"]
     assert projwfc["settings"].value["cmdline"] == ["-npool", "2", "-pd", "true"]
-    assert projwfc["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 4
+    assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 4
