@@ -15,38 +15,8 @@ from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, Wannieri
 from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
-# Fixtures: codes, structures, block shapes
+# Fixtures: structures, block shapes (``wannier_codes`` is shared, see fixtures.py)
 # ----------------------------------------------------------------------
-
-
-@pytest.fixture
-def wannier_codes(aiida_localhost):
-    """Return the ``Codes`` dict of stand-in InstalledCode nodes.
-
-    The codes never execute (these are construction-only tests); they exist
-    only so the ``Codes`` input namespace is populated with real
-    ``AbstractCode`` nodes, which the builder / namespace validators require.
-    """
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("bw-pw", "quantumespresso.pw"),
-        "wannier90": _code("bw-w90", "wannier90.wannier90"),
-        "pw2wannier90": _code("bw-p2w", "quantumespresso.pw2wannier90"),
-        "projwfc": _code("bw-pjw", "quantumespresso.projwfc"),
-    }
 
 
 @pytest.fixture
