@@ -95,6 +95,16 @@ def enforce_step_calculation(params: dict[str, Any], step: str, expected: str) -
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
+# Exported via metadata.options.prepend_text, which aiida-core assembles last
+# so it overrides the computer-level pin of 1 (an ``environment_variables``
+# entry would instead lose — those are emitted before any prepend_text).
+_OMP_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+
+
+def omp_prepend_text(nthreads: int) -> str:
+    """Return the ``export OMP_NUM_THREADS=...`` block pinning all BLAS thread pools."""
+    return "\n".join(f"export {var}={int(nthreads)}" for var in _OMP_THREAD_VARS)
+
 
 def validate_parallelization(parallelization: ParallelizationDict | None) -> None:
     """Raise if the mapping names a code outside the known vocabulary.
@@ -125,8 +135,11 @@ def resolve_parallelization(
 
     ``parallelization`` is keyed by code name; each value is a plain dict with
     optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
-    (k-point pools -> ``-npool``), and ``pd`` (pencil decomposition ->
-    ``-pd true``). The two flags are emitted npool-before-pd.
+    (k-point pools -> ``-npool``), ``pd`` (pencil decomposition -> ``-pd true``),
+    and ``omp`` (per-rank BLAS threads -> ``metadata.options.prepend_text``).
+    The two command-line flags are emitted npool-before-pd. Unlike npool/pd,
+    ``omp`` is a plain environment knob accepted for every code — no support
+    matrix.
 
     ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
     pools even though the code generally does (the kcw.x ham step).
@@ -143,6 +156,7 @@ def resolve_parallelization(
     ntasks = cfg.get("ntasks")
     npool = cfg.get("npool")
     pd = cfg.get("pd")
+    omp = cfg.get("omp")
     if ntasks is not None:
         # ``num_machines`` + ``num_mpiprocs_per_machine`` is the one resource
         # shape every scheduler in play accepts: native for the node-counting
@@ -150,6 +164,8 @@ def resolve_parallelization(
         # (its own class ignores ``tot_num_mpiprocs``, silently yielding
         # single-rank jobs).
         options = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": int(ntasks)}}
+    if omp is not None:
+        options["prepend_text"] = omp_prepend_text(omp)
     cmdline: list[str] = []
     if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:
@@ -174,12 +190,25 @@ def _merge_into_namespace(
 ) -> None:
     """Merge ``metadata.options`` / ``settings`` into a CalcJob-input namespace, in place.
 
-    Preserves an existing ``metadata`` (e.g. a ``call_link_label``) and an
-    existing ``settings`` (e.g. ``additional_retrieve_list``).
+    Preserves an existing ``metadata`` (e.g. a ``call_link_label``), an existing
+    ``metadata.options`` (e.g. a ``prepend_text`` already set by the step), and
+    an existing ``settings`` (e.g. ``additional_retrieve_list``). A
+    ``prepend_text`` in ``options`` is *appended* (newline-joined) to any already
+    present rather than clobbering it, so the omp export block adds to — never
+    replaces — a step's own prepend.
     """
     if options:
         metadata = dict(namespace.get("metadata") or {})
-        metadata["options"] = options
+        merged_options = dict(metadata.get("options") or {})
+        incoming = dict(options)
+        incoming_prepend = incoming.pop("prepend_text", None)
+        merged_options.update(incoming)
+        if incoming_prepend:
+            existing_prepend = merged_options.get("prepend_text")
+            merged_options["prepend_text"] = (
+                f"{existing_prepend}\n{incoming_prepend}" if existing_prepend else incoming_prepend
+            )
+        metadata["options"] = merged_options
         namespace["metadata"] = metadata
     if settings:
         merged = dict(namespace.get("settings") or {})
