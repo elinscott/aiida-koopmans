@@ -49,6 +49,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
@@ -87,6 +88,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -131,6 +133,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - name: Set up Python
       uses: actions/setup-python@v5
       with:

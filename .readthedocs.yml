@@ -20,6 +20,7 @@ build:
     - git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
     - git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
     - git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+    - git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - uv venv $READTHEDOCS_VIRTUALENV_PATH
     - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv pip install ".[docs]"
     - python -m sphinx -T -W --keep-going -b html -d docs/_build/doctrees -D language=en docs/source $READTHEDOCS_OUTPUT/html
