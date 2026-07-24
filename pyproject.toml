@@ -192,9 +192,10 @@ lint-fix = "ruff check --config pyproject.toml --fix --exit-non-zero-on-fix --sh
 aiida-workgraph = { path = "../aiida-workgraph", editable = true }
 aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = true }
 node-graph = { path = "../node-graph", editable = true }
-# aiida-wannier90 releases disappeared from PyPI (the simple index lists no
-# files); install the released tag from GitHub until they reappear.
-aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", tag = "v2.2.0" }
+# aiida-wannier90 was quarantined on PyPI (the simple index lists no files);
+# install the v2.2.0 release from GitHub, pinned to the immutable sha that
+# matches a pre-quarantine local clone, until the releases reappear.
+aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = "5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
 
 [tool.hatch.envs.docs]
 installer = "uv"
