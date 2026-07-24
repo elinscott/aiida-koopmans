@@ -136,9 +136,11 @@ class TestSchedulerCanary:
     """Pin how the installed schedulers interpret the emitted resource shape.
 
     The hyperqueue resource class silently drops unknown keys (a
-    ``tot_num_mpiprocs``-only mapping once yielded single-rank jobs), so these
-    tests fail loudly if a plugin upgrade changes how the emitted
-    ``num_machines`` + ``num_mpiprocs_per_machine`` pair is consumed.
+    ``tot_num_mpiprocs``-only mapping once yielded single-rank jobs).  A
+    revert to that shape is caught by the exact-dict assertions above; the
+    canaries here instead catch a *plugin upgrade* that stops consuming the
+    emitted pair, so the hyperqueue one only bites where aiida-hyperqueue is
+    installed (a test dependency for exactly that reason).
     """
 
     def test_hyperqueue_consumes_emitted_shape(self):
@@ -152,6 +154,7 @@ class TestSchedulerCanary:
         assert resources.num_cpus == 8
 
     def test_direct_scheduler_consumes_emitted_shape(self):
+        """Check compatibility only: direct accepts old and new shapes alike."""
         from aiida.schedulers.plugins.direct import DirectJobResource
 
         options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
