@@ -130,3 +130,30 @@ class TestApplyPresent:
         assert w90["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"] == 4
         # The absent projwfc namespace is not created.
         assert "projwfc" not in data
+
+
+class TestSchedulerCanary:
+    """Pin how the installed schedulers interpret the emitted resource shape.
+
+    The hyperqueue resource class silently drops unknown keys (a
+    ``tot_num_mpiprocs``-only mapping once yielded single-rank jobs), so these
+    tests fail loudly if a plugin upgrade changes how the emitted
+    ``num_machines`` + ``num_mpiprocs_per_machine`` pair is consumed.
+    """
+
+    def test_hyperqueue_consumes_emitted_shape(self):
+        hq = pytest.importorskip("aiida_hyperqueue.scheduler")
+        options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            resources = hq.HyperQueueJobResource.validate_resources(**options["resources"])
+        assert resources.num_cpus == 8
+
+    def test_direct_scheduler_consumes_emitted_shape(self):
+        from aiida.schedulers.plugins.direct import DirectJobResource
+
+        options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
+        resources = DirectJobResource(**options["resources"])
+        assert resources.num_machines * resources.num_mpiprocs_per_machine == 8
