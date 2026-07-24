@@ -50,7 +50,11 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_u_file_contents,
 )
 from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeOverrides
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlock,
+    WannierizedBlockProducts,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 Wannier90CalcStep = task(Wannier90Calculation)
@@ -336,30 +340,18 @@ def RewannierizeSplitBlocks(
 # ----------------------------------------------------------------------
 
 
-class AutoWannierizeBlockRequiredOutputs(TypedDict):
-    """Whole-block Wannierisation outputs, present on both branches.
-
-    The same shape as ``WannierizeBlockOutputs`` — the whole-block
-    Wannierisation always runs (the split, when it triggers, starts from its
-    checkpoint).
-    """
-
-    hr_retrieved: orm.FolderData
-    remote_folder: orm.RemoteData
-    nnkp_file: orm.SinglefileData
-
-
-class AutoWannierizeBlockOutputs(AutoWannierizeBlockRequiredOutputs, total=False):
+class AutoWannierizeBlockOutputs(WannierizedBlockProducts, total=False):
     """Outputs of :func:`WannierizeAndSplitBlock`.
 
-    The merged product files and the per-sub-block ``retrieved`` namespace
-    exist only when the block was actually split (``total=False``: the
-    unsplit branch simply does not populate them).
+    The uniform :class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizedBlockProducts`
+    set is present on both branches: the whole-block Wannierisation always
+    runs, and the ``u_file`` / ``hr_file`` / ``centres_file`` trio carries
+    its gauge when the block stays whole and the block-diagonal merge when
+    it splits. Only the per-sub-block ``retrieved`` namespace is
+    branch-dependent (``total=False``: the unsplit branch does not populate
+    it).
     """
 
-    u_file: orm.SinglefileData
-    hr_file: orm.SinglefileData
-    centres_file: orm.SinglefileData
     subblock_retrieved: Annotated[dict, dynamic(orm.FolderData)]
 
 
@@ -389,7 +381,8 @@ def WannierizeAndSplitBlock(
     concrete and the split-vs-plain decision is an ordinary ``if``:
 
     * one detected group overlapping the block — the block is already
-      isolated; only the plain :func:`WannierizeBlock` runs;
+      isolated; only the plain :func:`WannierizeBlock` runs and the product
+      trio carries its gauge;
     * several groups — the whole-block Wannierisation is followed by the
       aiida-wannierjl ``split_wannierization`` chain (cubic-stencil check,
       optional cubic ``.mmn`` regeneration off the shared nscf scratch, and
@@ -424,6 +417,9 @@ def WannierizeAndSplitBlock(
     )
 
     outputs = AutoWannierizeBlockOutputs(
+        u_file=whole["u_file"],
+        hr_file=whole["hr_file"],
+        centres_file=whole["centres_file"],
         hr_retrieved=whole["hr_retrieved"],
         remote_folder=whole["remote_folder"],
         nnkp_file=whole["nnkp_file"],

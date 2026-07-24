@@ -47,7 +47,7 @@ from aiida_koopmans.workgraphs import (
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
-    WannierizeBlockOutputs,
+    WannierizedBlockProducts,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -139,7 +139,7 @@ class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
     """
 
     nscf_remote_folder: orm.RemoteData
-    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    block_wannierizations: Annotated[dict, dynamic(WannierizedBlockProducts)]
 
 
 @dataclass(frozen=True)

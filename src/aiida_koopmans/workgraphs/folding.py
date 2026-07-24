@@ -47,7 +47,7 @@ from aiida_koopmans.types import (
     merge_dest_filename,
 )
 from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
+from aiida_koopmans.workgraphs.block_wannierize import WannierizedBlockProducts
 
 Wann2kcpTask = task(Wann2kcpCalculation)
 MergeEvcTask = task(MergeEvcCalculation)
@@ -147,7 +147,7 @@ def FoldToSupercell(
     blocks: list[ProjectionBlock],
     merge_groups: list[MergeGroup],
     nscf_remote_folder: orm.RemoteData,
-    block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    block_wannier: Annotated[dict, dynamic(WannierizedBlockProducts)],
     kgrid: list[int],
     gamma_only: bool = False,
     spin_polarized: bool = False,

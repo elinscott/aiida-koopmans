@@ -198,6 +198,7 @@ class TestTopLevelGraphBuild:
             mp_grid=[2, 2, 2],
             bands_kpoints=kpath,
             num_occ_bands=4,
+            split_threshold=1.5,
             pseudo_family=fake_cutoffs_family.label,
             parallelization={"pw": {"ntasks": 3, "npool": 2}},
         )
@@ -249,6 +250,10 @@ class TestPerBlockGraphBuild:
         assert "extract_win_file" not in names
         assert "split_wannierization" not in names
         assert not any(name.startswith("Wannier90Calculation") for name in names)
+        # The unsplit branch still emits the uniform product trio, sourced
+        # from the whole-block run.
+        for name in ("u_file", "hr_file", "centres_file"):
+            assert wg.outputs[name]._links, name
 
     def test_split_branch_topology_and_wiring(
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
@@ -518,6 +523,7 @@ class TestOverridesForwarding:
             mp_grid=[2, 2, 2],
             bands_kpoints=kpath,
             num_occ_bands=4,
+            split_threshold=1.5,
             pseudo_family=fake_cutoffs_family.label,
             overrides=overrides,
         )

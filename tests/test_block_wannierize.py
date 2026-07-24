@@ -12,7 +12,7 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeBlocks
-from tests.fixtures import explicit_block
+from tests.fixtures import automatic_block, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures: codes, structures, block shapes
@@ -182,9 +182,9 @@ class TestBlockWannierizeGraphBuild:
 
 
 class TestSplitMode:
-    """A ``bands_kpoints`` input triggers split mode; its inputs validate loudly."""
+    """Split-mode triggering, loud validation, and the uniform block contract."""
 
-    def _build_split(self, codes, structure, kmesh, **kwargs):
+    def _build_split(self, codes, structure, kmesh, kpath=None, **kwargs):
         defaults: dict = {
             "codes": codes,
             "structure": structure,
@@ -192,24 +192,47 @@ class TestSplitMode:
             "kpoints": kmesh,
             "mp_grid": [2, 2, 2],
             "pseudo_family": "SSSP/1.3/PBE/efficiency",
+            "split_threshold": 1.5,
+            "bands_kpoints": kpath,
             "num_occ_bands": 4,
         }
         defaults.update(kwargs)
         return WannierizeBlocks.build(**defaults)
 
+    def test_split_without_bands_kpoints_raises(self, auto_codes, silicon_structure, kmesh):
+        """The trigger is the threshold; the k-path is a requirement, not the trigger."""
+        with pytest.raises(ValueError, match="bands_kpoints"):
+            self._build_split(auto_codes, silicon_structure, kmesh, bands_kpoints=None)
+
+    def test_automatic_block_triggers_the_split_path(self, auto_codes, silicon_structure, kmesh):
+        """An automatic-projections block alone selects split mode.
+
+        No threshold is set, yet the build must go down the split path — and
+        therefore demand its ``bands_kpoints`` requirement.
+        """
+        blocks = [explicit_block("block_1", range(1, 5)), automatic_block("block_2", range(5, 9))]
+        with pytest.raises(ValueError, match="bands_kpoints"):
+            WannierizeBlocks.build(
+                codes=auto_codes,
+                structure=silicon_structure,
+                blocks=blocks,
+                kpoints=kmesh,
+                mp_grid=[2, 2, 2],
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                num_occ_bands=4,
+            )
+
     def test_split_without_num_occ_bands_raises(self, auto_codes, silicon_structure, kmesh, kpath):
         """The detection always splits at the occupied/empty boundary."""
         with pytest.raises(ValueError, match="num_occ_bands"):
-            self._build_split(
-                auto_codes, silicon_structure, kmesh, bands_kpoints=kpath, num_occ_bands=None
-            )
+            self._build_split(auto_codes, silicon_structure, kmesh, kpath, num_occ_bands=None)
 
     def test_split_without_wannierjl_code_raises(
         self, wannier_codes, silicon_structure, kmesh, kpath
     ):
         """The detected groups are split with Wannier.jl, so its code is required."""
         with pytest.raises(ValueError, match="wannierjl"):
-            self._build_split(wannier_codes, silicon_structure, kmesh, bands_kpoints=kpath)
+            self._build_split(wannier_codes, silicon_structure, kmesh, kpath)
 
     def test_split_with_external_scratch_raises(
         self, auto_codes, silicon_structure, kmesh, kpath, nscf_remote
@@ -217,24 +240,18 @@ class TestSplitMode:
         """The bands step needs the internal scf; an external nscf scratch has none."""
         with pytest.raises(ValueError, match="external"):
             self._build_split(
-                auto_codes,
-                silicon_structure,
-                kmesh,
-                bands_kpoints=kpath,
-                nscf_remote_folder=nscf_remote,
+                auto_codes, silicon_structure, kmesh, kpath, nscf_remote_folder=nscf_remote
             )
 
     def test_split_without_mp_grid_raises(self, auto_codes, silicon_structure, kmesh, kpath):
         """The per-group re-wannierisation writes ``mp_grid`` into each sub-block."""
         with pytest.raises(ValueError, match="mp_grid"):
-            self._build_split(
-                auto_codes, silicon_structure, kmesh, bands_kpoints=kpath, mp_grid=None
-            )
+            self._build_split(auto_codes, silicon_structure, kmesh, kpath, mp_grid=None)
 
-    def test_split_only_inputs_without_bands_kpoints_raise(
-        self, wannier_codes, silicon_structure, kmesh
+    def test_split_only_inputs_without_a_trigger_raise(
+        self, wannier_codes, silicon_structure, kmesh, kpath
     ):
-        """Split-only knobs without the trigger would be silently ignored."""
+        """Split-only knobs without a trigger would be silently ignored."""
         with pytest.raises(ValueError, match="Split-only"):
             WannierizeBlocks.build(
                 codes=wannier_codes,
@@ -242,31 +259,40 @@ class TestSplitMode:
                 blocks=_silicon_blocks(),
                 kpoints=kmesh,
                 pseudo_family="SSSP/1.3/PBE/efficiency",
-                split_threshold=1.5,
+                bands_kpoints=kpath,
+                num_occ_bands=4,
             )
 
-    def test_split_mode_omits_the_unified_outputs(
+    def test_uniform_block_contract_and_output_gating(
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
-        """Split mode wires bands/groups but no unified centres/spreads.
+        """Split and plain entries expose identical sockets; unified outputs gate.
 
         The per-group product shapes only exist inside the deferred nested
-        graphs, so the top-level collect step cannot run; the plain build
-        keeps emitting the unified arrays. Every declared socket shows up in
-        ``wg.outputs`` either way, so populated-ness is read off the links.
+        graphs, so split mode skips the top-level collect step and wires
+        ``bands`` / ``groups`` instead; the plain build keeps emitting the
+        unified arrays. Every declared socket shows up in ``wg.outputs``
+        either way, so populated-ness is read off the links.
         """
+        expected_entry = {
+            "u_file",
+            "hr_file",
+            "centres_file",
+            "hr_retrieved",
+            "remote_folder",
+            "nnkp_file",
+        }
+
         wg = self._build_split(
-            auto_codes,
-            silicon_structure,
-            kmesh,
-            bands_kpoints=kpath,
-            pseudo_family=fake_cutoffs_family.label,
+            auto_codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
         )
         names = [t.name for t in wg.tasks]
         assert "collect_wannier_functions" not in names
-        # Namespaces carry their links on their children/entries.
         for label in ("block_1", "block_2"):
-            assert wg.outputs["blocks"][label]._links, label
+            entry = wg.outputs["blocks"][label]
+            assert {socket._name for socket in entry} == expected_entry
+            for socket in entry:
+                assert socket._links, f"{label}.{socket._name}"
         assert wg.outputs["nscf"]["remote_folder"]._links
         for populated in ("bands", "groups"):
             assert wg.outputs[populated]._links, populated
@@ -282,6 +308,11 @@ class TestSplitMode:
             pseudo_family="SSSP/1.3/PBE/efficiency",
         )
         assert "collect_wannier_functions" in [t.name for t in plain.tasks]
+        for label in ("block_1", "block_2"):
+            entry = plain.outputs["blocks"][label]
+            assert {socket._name for socket in entry} == expected_entry
+            for socket in entry:
+                assert socket._links, f"{label}.{socket._name}"
         assert plain.outputs["centres"]._links
         assert plain.outputs["spreads"]._links
         assert not plain.outputs["bands"]._links
@@ -379,6 +410,41 @@ class TestCollectWannierFunctions:
         }
         with pytest.raises(ValueError, match="no ``wf_spreads``"):
             collect_wannier_functions._callable(output_parameters={"b00": parameters})
+
+
+# ----------------------------------------------------------------------
+# extract_wannier_products (raw callable, no engine)
+# ----------------------------------------------------------------------
+
+
+class TestExtractWannierProducts:
+    """The gauge-product trio is read back off a wannier90 retrieved folder."""
+
+    @staticmethod
+    def _folder(names):
+        from aiida.orm import FolderData
+
+        folder = FolderData()
+        for name in names:
+            folder.base.repository.put_object_from_bytes(f"<{name}>".encode(), name)
+        return folder.store()
+
+    def test_extracts_the_trio(self, aiida_profile):
+        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_products
+
+        folder = self._folder(["aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz"])
+        products = extract_wannier_products._callable(retrieved=folder)
+        assert products["u_file"].filename == "aiida_u.mat"
+        assert products["u_file"].get_content() == "<aiida_u.mat>"
+        assert products["hr_file"].get_content() == "<aiida_hr.dat>"
+        assert products["centres_file"].get_content() == "<aiida_centres.xyz>"
+
+    def test_missing_file_raises(self, aiida_profile):
+        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_products
+
+        folder = self._folder(["aiida_u.mat"])
+        with pytest.raises(ValueError, match=r"aiida_hr\.dat"):
+            extract_wannier_products._callable(retrieved=folder)
 
 
 # ----------------------------------------------------------------------
@@ -584,6 +650,23 @@ class TestWannierizeBlockBuild:
         task = self._wannier_task(wg)
         params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
         assert params["dis_num_iter"] == 5000
+
+    def test_gauge_products_are_extracted(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """The block graph runs the extract step and wires the uniform trio."""
+        block = explicit_block("block_1", range(1, 5))
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+        )
+        assert "extract_wannier_products" in [t.name for t in wg.tasks]
+        for name in ("u_file", "hr_file", "centres_file"):
+            assert wg.outputs[name]._links, name
 
 
 def test_unknown_parallelization_code_raises(wannier_codes, silicon_structure, kmesh):

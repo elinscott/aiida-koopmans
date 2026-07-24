@@ -244,6 +244,23 @@ def explicit_block(label, include, projections=None, spin=None):
     )
 
 
+def automatic_block(label, include, spin=None):
+    """Build a minimal automatic (SCDM) projection block over ``include`` bands."""
+    from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+    from aiida_koopmans.types import AutomaticProjectionBlock, SpinChannel
+
+    n = len(include)
+    return AutomaticProjectionBlock(
+        label=label,
+        spin=SpinChannel.NONE if spin is None else spin,
+        num_wann=n,
+        num_bands=n,
+        include_bands=list(include),
+        projection_type=WannierProjectionType.SCDM,
+    )
+
+
 @pytest.fixture
 def nscf_remote(aiida_localhost, tmp_path):
     """Return a stand-in nscf scratch ``RemoteData`` (never read; construction-only)."""
