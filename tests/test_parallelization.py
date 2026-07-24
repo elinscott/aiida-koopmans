@@ -35,7 +35,7 @@ class TestValidate:
 class TestResolve:
     def test_ntasks_and_npool(self):
         options, settings = resolve_parallelization({"pw": {"ntasks": 8, "npool": 4}}, "pw")
-        assert options == {"resources": {"num_machines": 1, "tot_num_mpiprocs": 8}}
+        assert options == {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 8}}
         assert settings == {"cmdline": ["-npool", "4"]}
 
     def test_missing_code_and_empty(self):
@@ -49,7 +49,7 @@ class TestResolve:
             {"cmdline": ["-npool", "2"]},
         )
         assert resolve_parallelization({"pw": {"ntasks": 3}}, "pw") == (
-            {"resources": {"num_machines": 1, "tot_num_mpiprocs": 3}},
+            {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 3}},
             {},
         )
 
@@ -96,7 +96,7 @@ class TestOmp:
 
     def test_omp_alongside_ntasks(self):
         options, _ = resolve_parallelization({"pw": {"ntasks": 8, "omp": 2}}, "pw")
-        assert options["resources"] == {"num_machines": 1, "tot_num_mpiprocs": 8}
+        assert options["resources"] == {"num_machines": 1, "num_mpiprocs_per_machine": 8}
         assert options["prepend_text"] == omp_prepend_text(2)
 
     @pytest.mark.parametrize("code", list(CODE_NAMES))
@@ -128,7 +128,7 @@ class TestApplyToCalcJob:
         inputs = {"metadata": {"call_link_label": "screen"}, "settings": {"a": 1}}
         merge_parallelization_into_inputs(inputs, {"kcw": {"ntasks": 2, "npool": 4}}, "kcw")
         assert inputs["metadata"]["call_link_label"] == "screen"
-        assert inputs["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
+        assert inputs["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"] == 2
         assert inputs["settings"] == {"a": 1, "cmdline": ["-npool", "4"]}
 
     def test_pools_false_drops_npool(self):
@@ -153,7 +153,10 @@ class TestInjectOverrides:
             [(("scf", "pw"), "pw"), (("projwfc",), "projwfc")],
         )
         assert overrides["scf"]["pw"]["settings"]["cmdline"] == ["-npool", "4"]
-        assert overrides["projwfc"]["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 2
+        assert (
+            overrides["projwfc"]["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"]
+            == 2
+        )
 
 
 class TestApplyPresent:
@@ -165,6 +168,46 @@ class TestApplyPresent:
             [(("wannier90", "wannier90"), "wannier90"), (("projwfc", "projwfc"), "projwfc")],
         )
         w90 = data["wannier90"]["wannier90"]
-        assert w90["metadata"]["options"]["resources"]["tot_num_mpiprocs"] == 4
+        assert w90["metadata"]["options"]["resources"]["num_mpiprocs_per_machine"] == 4
         # The absent projwfc namespace is not created.
         assert "projwfc" not in data
+
+
+class TestSchedulerCanary:
+    """Pin how the installed schedulers interpret the emitted resource shape.
+
+    The hyperqueue resource class silently drops unknown keys (a
+    ``tot_num_mpiprocs``-only mapping once yielded single-rank jobs).  A
+    revert to that shape is caught by the exact-dict assertions above; the
+    canaries here instead catch a *plugin upgrade* that stops consuming the
+    emitted pair, so the hyperqueue one only bites where aiida-hyperqueue is
+    installed (a test dependency for exactly that reason).
+    """
+
+    def test_hyperqueue_consumes_emitted_shape(self):
+        hq = pytest.importorskip("aiida_hyperqueue.scheduler")
+        options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            resources = hq.HyperQueueJobResource.validate_resources(**options["resources"])
+        assert resources.num_cpus == 8
+
+    def test_direct_scheduler_consumes_emitted_shape(self):
+        """Check compatibility only: direct accepts old and new shapes alike."""
+        from aiida.schedulers.plugins.direct import DirectJobResource
+
+        options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
+        resources = DirectJobResource(**options["resources"])
+        assert resources.num_machines * resources.num_mpiprocs_per_machine == 8
+
+    def test_unconfigured_code_is_skipped(self):
+        data = {"projwfc": {"projwfc": {"parameters": {}}}}
+        merge_parallelization_into_existing_namespaces(
+            data,
+            {"pw": {"ntasks": 4}},
+            [(("projwfc", "projwfc"), "projwfc")],
+        )
+        # No pw entry in the mapping and no projwfc config: data is untouched.
+        assert data == {"projwfc": {"projwfc": {"parameters": {}}}}

@@ -133,7 +133,12 @@ def resolve_parallelization(
     pd = cfg.get("pd")
     omp = cfg.get("omp")
     if ntasks is not None:
-        options = {"resources": {"num_machines": 1, "tot_num_mpiprocs": int(ntasks)}}
+        # ``num_machines`` + ``num_mpiprocs_per_machine`` is the one resource
+        # shape every scheduler in play accepts: native for the node-counting
+        # schedulers, and hyperqueue's back-compat path maps it to num_cpus
+        # (its own class ignores ``tot_num_mpiprocs``, silently yielding
+        # single-rank jobs).
+        options = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": int(ntasks)}}
     if omp is not None:
         options["prepend_text"] = omp_prepend_text(omp)
     cmdline: list[str] = []

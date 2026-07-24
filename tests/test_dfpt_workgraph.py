@@ -289,10 +289,13 @@ class TestKoopmansDFPTTaskBuild:
         for name in ("wann2kc", "screen"):
             task = wg.tasks[name]
             assert task.inputs["settings"].value == {"cmdline": ["-npool", "4", "-pd", "true"]}
-            assert task.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+            assert (
+                task.inputs["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"]
+                == 8
+            )
         ham = wg.tasks["ham"]
         assert ham.inputs["settings"].value == {"cmdline": ["-pd", "true"]}
-        assert ham.inputs["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 8
+        assert ham.inputs["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 8
 
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved

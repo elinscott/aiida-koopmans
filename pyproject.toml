@@ -159,7 +159,10 @@ dependencies = [
     'pytest~=7.0',
     "pytest-cov~=4.1",
     "pytest-regressions~=2.5",
-    "ipdb"
+    "ipdb",
+    # The scheduler canary tests must exercise the real hyperqueue resource
+    # class, which is not a runtime dependency of this package.
+    "aiida-hyperqueue~=0.3",
 ]
 
 [tool.hatch.envs.hatch-test.scripts]
