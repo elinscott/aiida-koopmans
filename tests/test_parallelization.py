@@ -160,3 +160,13 @@ class TestSchedulerCanary:
         options, _ = resolve_parallelization({"pw": {"ntasks": 8}}, "pw")
         resources = DirectJobResource(**options["resources"])
         assert resources.num_machines * resources.num_mpiprocs_per_machine == 8
+
+    def test_unconfigured_code_is_skipped(self):
+        data = {"projwfc": {"projwfc": {"parameters": {}}}}
+        merge_parallelization_into_existing_namespaces(
+            data,
+            {"pw": {"ntasks": 4}},
+            [(("projwfc", "projwfc"), "projwfc")],
+        )
+        # No pw entry in the mapping and no projwfc config: data is untouched.
+        assert data == {"projwfc": {"projwfc": {"parameters": {}}}}
