@@ -1,12 +1,11 @@
 """Tests for the automated block-splitting Wannierisation.
 
 Pure-function tests for the band-group detection/restriction helpers, plus
-construction-level graph tests: the top-level ``WannierizeAndSplitBlocks``
-build (shared scf+nscf, the bands step, the runtime detection task, one
-nested per-block graph per block) and eager ``WannierizeAndSplitBlock``
-builds with concrete groups, which execute the normally-deferred body and
-expose both the unsplit and the split branches. Nothing runs — dummy codes
-only.
+construction-level graph tests: the split-mode ``WannierizeBlocks`` build
+(shared scf+nscf, the bands step, the runtime detection task, one nested
+per-block graph per block) and eager ``WannierizeAndSplitBlock`` builds with
+concrete groups, which execute the normally-deferred body and expose both
+the unsplit and the split branches. Nothing runs — dummy codes only.
 """
 
 from __future__ import annotations
@@ -23,13 +22,13 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.auto_wannierize import (
     WannierizeAndSplitBlock,
-    WannierizeAndSplitBlocks,
     _plain_options,
     _subblock_w90_parameters,
     detect_band_groups,
     extract_win_file,
     merge_split_block_products,
 )
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -123,41 +122,6 @@ class TestSubblockParameters:
 
 
 @pytest.fixture
-def auto_codes(aiida_localhost):
-    """Stand-in codes for construction-only builds (never executed)."""
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("aw-pw", "quantumespresso.pw"),
-        "wannier90": _code("aw-w90", "wannier90.wannier90"),
-        "pw2wannier90": _code("aw-p2w", "quantumespresso.pw2wannier90"),
-        "wannierjl": _code("aw-wjl", "wannierjl.check_neighbors"),
-    }
-
-
-@pytest.fixture
-def kpath(aiida_profile):
-    """Return a short explicit k-path ``KpointsData``."""
-    from aiida.orm import KpointsData
-
-    kpts = KpointsData()
-    kpts.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0], [0.5, 0.0, 0.0]])
-    return kpts
-
-
-@pytest.fixture
 def nscf_scratch(aiida_localhost, tmp_path):
     """Return a stand-in ``RemoteData`` for the shared nscf scratch."""
     from aiida.orm import RemoteData
@@ -187,14 +151,15 @@ class TestTopLevelGraphBuild:
             _explicit_block("block_1", range(1, 5), ["Si: sp3"]),
             _explicit_block("block_2", range(5, 9), ["Si: sp3"]),
         ]
-        wg = WannierizeAndSplitBlocks.build(
+        wg = WannierizeBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
             blocks=blocks,
             kpoints=kmesh,
+            mp_grid=[2, 2, 2],
             bands_kpoints=kpath,
             num_occ_bands=4,
-            threshold=1.5,
+            split_threshold=1.5,
             pseudo_family=fake_cutoffs_family.label,
         )
         names = [t.name for t in wg.tasks]
@@ -225,11 +190,12 @@ class TestTopLevelGraphBuild:
     ):
         """The pw mapping lands on the bands step and threads into scf+nscf."""
         blocks = [_explicit_block("block_1", range(1, 5), ["Si: sp3"])]
-        wg = WannierizeAndSplitBlocks.build(
+        wg = WannierizeBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
             blocks=blocks,
             kpoints=kmesh,
+            mp_grid=[2, 2, 2],
             bands_kpoints=kpath,
             num_occ_bands=4,
             pseudo_family=fake_cutoffs_family.label,
@@ -544,11 +510,12 @@ class TestOverridesForwarding:
             "scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 30.0}}}},
             "nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}},
         }
-        wg = WannierizeAndSplitBlocks.build(
+        wg = WannierizeBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
             blocks=blocks,
             kpoints=kmesh,
+            mp_grid=[2, 2, 2],
             bands_kpoints=kpath,
             num_occ_bands=4,
             pseudo_family=fake_cutoffs_family.label,

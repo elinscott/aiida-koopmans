@@ -186,6 +186,46 @@ def kmesh(aiida_profile):
     return kpts
 
 
+@pytest.fixture
+def kpath(aiida_profile):
+    """Return a short explicit k-path ``KpointsData``."""
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0], [0.5, 0.0, 0.0]])
+    return kpts
+
+
+@pytest.fixture
+def auto_codes(aiida_localhost):
+    """Return stand-in codes for split-mode construction-only builds.
+
+    Covers the codes the automated block-splitting flow requires (``pw``,
+    ``wannier90``, ``pw2wannier90`` and the ``wannierjl`` julia stand-in);
+    the codes never execute.
+    """
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    def _code(label: str, entry_point: str):
+        try:
+            return InstalledCode.collection.get(label=label)
+        except NotExistent:
+            return InstalledCode(
+                label=label,
+                computer=aiida_localhost,
+                filepath_executable="/bin/true",
+                default_calc_job_plugin=entry_point,
+            ).store()
+
+    return {
+        "pw": _code("aw-pw", "quantumespresso.pw"),
+        "wannier90": _code("aw-w90", "wannier90.wannier90"),
+        "pw2wannier90": _code("aw-p2w", "quantumespresso.pw2wannier90"),
+        "wannierjl": _code("aw-wjl", "wannierjl.check_neighbors"),
+    }
+
+
 def explicit_block(label, include, projections=None, spin=None):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands."""
     from aiida_wannier90_workflows.common.types import WannierProjectionType

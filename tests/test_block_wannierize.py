@@ -177,6 +177,118 @@ class TestBlockWannierizeGraphBuild:
 
 
 # ----------------------------------------------------------------------
+# Split mode: loud validation and the unified-output gate
+# ----------------------------------------------------------------------
+
+
+class TestSplitMode:
+    """A ``bands_kpoints`` input triggers split mode; its inputs validate loudly."""
+
+    def _build_split(self, codes, structure, kmesh, **kwargs):
+        defaults: dict = {
+            "codes": codes,
+            "structure": structure,
+            "blocks": _silicon_blocks(),
+            "kpoints": kmesh,
+            "mp_grid": [2, 2, 2],
+            "pseudo_family": "SSSP/1.3/PBE/efficiency",
+            "num_occ_bands": 4,
+        }
+        defaults.update(kwargs)
+        return WannierizeBlocks.build(**defaults)
+
+    def test_split_without_num_occ_bands_raises(self, auto_codes, silicon_structure, kmesh, kpath):
+        """The detection always splits at the occupied/empty boundary."""
+        with pytest.raises(ValueError, match="num_occ_bands"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, bands_kpoints=kpath, num_occ_bands=None
+            )
+
+    def test_split_without_wannierjl_code_raises(
+        self, wannier_codes, silicon_structure, kmesh, kpath
+    ):
+        """The detected groups are split with Wannier.jl, so its code is required."""
+        with pytest.raises(ValueError, match="wannierjl"):
+            self._build_split(wannier_codes, silicon_structure, kmesh, bands_kpoints=kpath)
+
+    def test_split_with_external_scratch_raises(
+        self, auto_codes, silicon_structure, kmesh, kpath, nscf_remote
+    ):
+        """The bands step needs the internal scf; an external nscf scratch has none."""
+        with pytest.raises(ValueError, match="external"):
+            self._build_split(
+                auto_codes,
+                silicon_structure,
+                kmesh,
+                bands_kpoints=kpath,
+                nscf_remote_folder=nscf_remote,
+            )
+
+    def test_split_without_mp_grid_raises(self, auto_codes, silicon_structure, kmesh, kpath):
+        """The per-group re-wannierisation writes ``mp_grid`` into each sub-block."""
+        with pytest.raises(ValueError, match="mp_grid"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, bands_kpoints=kpath, mp_grid=None
+            )
+
+    def test_split_only_inputs_without_bands_kpoints_raise(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """Split-only knobs without the trigger would be silently ignored."""
+        with pytest.raises(ValueError, match="Split-only"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                split_threshold=1.5,
+            )
+
+    def test_split_mode_omits_the_unified_outputs(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """Split mode wires bands/groups but no unified centres/spreads.
+
+        The per-group product shapes only exist inside the deferred nested
+        graphs, so the top-level collect step cannot run; the plain build
+        keeps emitting the unified arrays. Every declared socket shows up in
+        ``wg.outputs`` either way, so populated-ness is read off the links.
+        """
+        wg = self._build_split(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            bands_kpoints=kpath,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "collect_wannier_functions" not in names
+        # Namespaces carry their links on their children/entries.
+        for label in ("block_1", "block_2"):
+            assert wg.outputs["blocks"][label]._links, label
+        assert wg.outputs["nscf"]["remote_folder"]._links
+        for populated in ("bands", "groups"):
+            assert wg.outputs[populated]._links, populated
+        assert not wg.outputs["centres"]._links
+        assert not wg.outputs["spreads"]._links
+
+        plain = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        assert "collect_wannier_functions" in [t.name for t in plain.tasks]
+        assert plain.outputs["centres"]._links
+        assert plain.outputs["spreads"]._links
+        assert not plain.outputs["bands"]._links
+        assert not plain.outputs["groups"]._links
+
+
+# ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)
 # ----------------------------------------------------------------------
 

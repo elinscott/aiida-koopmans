@@ -12,10 +12,12 @@ back into one block-diagonal file set.
 The group detection is data-dependent (it reads the eigenvalues of a pw.x
 ``bands`` run), so the split-vs-plain decision and the per-group fan-out
 cannot be drawn at graph-construction time. The standard nested-deferred-graph
-pattern applies: :func:`WannierizeAndSplitBlocks` (the top-level builder) wires
-the runtime ``detect_band_groups`` result into one nested
-:func:`WannierizeAndSplitBlock` graph per block; when that nested body runs the
-groups are concrete values and ordinary ``if`` / ``for`` build the branch.
+pattern applies: the split mode of
+:func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` (the
+entry point) wires the runtime :func:`detect_band_groups` result into one
+nested :func:`WannierizeAndSplitBlock` graph per block; when that nested body
+runs the groups are concrete values and ordinary ``if`` / ``for`` build the
+branch. This module holds the split-specific pieces only.
 
 Scope (mirroring the PR that introduces this module): explicitly-projected
 blocks and a single spin channel. Implicit/automatic projections and the
@@ -47,13 +49,9 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    validate_parallelization,
-)
+from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeOverrides
-from aiida_koopmans.workgraphs.pw import PwBaseStep, PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 Wannier90CalcStep = task(Wannier90Calculation)
 
@@ -98,6 +96,59 @@ def _plain_options(options: dict[str, Any] | None) -> dict[str, Any]:
         }
 
     return rebuild(options) if options else _DEFAULT_CALCJOB_OPTIONS
+
+
+def add_bands_step(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    bands_kpoints: orm.KpointsData,
+    scf_remote_folder: orm.RemoteData,
+    nscf_overrides: dict[str, Any] | None = None,
+    pseudo_family: str | None = None,
+    protocol: str | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    parallelization: ParallelizationDict | None = None,
+) -> Any:
+    """Assemble a pw.x ``bands`` step along ``bands_kpoints`` off an scf density.
+
+    A plain graph-assembly helper, not a task: it must be called inside a
+    ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
+    surrounding graph (``call_link_label`` ``bands``). The step is seeded
+    from the caller's nscf protocol overrides — so e.g. ``nbnd`` and the
+    cutoffs stay consistent with the nscf — with the calculation type forced
+    on top, and reads the density from ``scf_remote_folder``. Returns the
+    step's outputs (``output_band`` holds the eigenvalues along the path).
+    """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
+    # provenance-tagged proxies; the family label ends up bound as an SQL
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+
+    bands_overrides = recursive_merge(
+        dict(nscf_overrides or {}),
+        {"pw": {"parameters": {"CONTROL": {"calculation": "bands"}}}},
+    )
+    if pseudo_family is not None:
+        bands_overrides.setdefault("pseudo_family", pseudo_family)
+    bands_builder = PwBaseWorkChain.get_builder_from_protocol(
+        code=code,
+        structure=structure,
+        protocol=protocol,
+        overrides=bands_overrides,
+        electronic_type=electronic_type,
+    )
+    bands_data = get_dict_from_builder(bands_builder)
+    bands_data.pop("clean_workdir", None)
+    # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``.
+    bands_data.pop("kpoints_distance", None)
+    bands_data.pop("kpoints_force_parity", None)
+    bands_data["kpoints"] = bands_kpoints
+    bands_data["pw"]["parent_folder"] = scf_remote_folder
+    merge_parallelization_into_inputs(bands_data["pw"], parallelization, "pw")
+    bands_data.setdefault("metadata", {})["call_link_label"] = "bands"
+    return PwBaseStep(**bands_data)
 
 
 # ----------------------------------------------------------------------
@@ -425,194 +476,3 @@ def WannierizeAndSplitBlock(
     outputs["centres_file"] = rewannierized["centres_file"]
     outputs["subblock_retrieved"] = rewannierized["subblock_retrieved"]
     return outputs
-
-
-# ----------------------------------------------------------------------
-# Top-level graph
-# ----------------------------------------------------------------------
-
-
-class WannierizeAndSplitBlocksOutputs(TypedDict):
-    """Outputs of :func:`WannierizeAndSplitBlocks`.
-
-    * ``nscf`` — the shared nscf :class:`PwOutputs` (scratch + eigenvalues).
-    * ``bands`` — the pw.x ``bands``-run eigenvalues the grouping was
-      detected on.
-    * ``groups`` — the detected 1-indexed band groups (global indices).
-    * ``blocks`` — a dynamic namespace keyed by block label; each entry is an
-      :class:`AutoWannierizeBlockOutputs`.
-    """
-
-    nscf: PwOutputs
-    bands: orm.BandsData
-    groups: list[list[int]]
-    blocks: Annotated[dict, dynamic(AutoWannierizeBlockOutputs)]
-
-
-@task.graph
-def WannierizeAndSplitBlocks(
-    codes: Codes,
-    structure: orm.StructureData,
-    blocks: list[ProjectionBlock],
-    kpoints: orm.KpointsData,
-    bands_kpoints: orm.KpointsData,
-    num_occ_bands: int,
-    threshold: float | None = None,
-    pseudo_family: str | None = None,
-    protocol: str | None = None,
-    overrides: WannierizeOverrides | None = None,
-    electronic_type: ElectronicType = ElectronicType.INSULATOR,
-    spin_type: SpinType = SpinType.NONE,
-    parallelization: ParallelizationDict | None = None,
-    wjl_options: dict[str, Any] | None = None,
-    wannier90_options: dict[str, Any] | None = None,
-    pw2wannier90_options: dict[str, Any] | None = None,
-) -> WannierizeAndSplitBlocksOutputs:
-    """Wannierise a system block-by-block with automated block splitting.
-
-    The shared scf + nscf pair runs once (as in ``WannierizeBlocks``), plus a
-    pw.x ``bands`` step along ``bands_kpoints`` off the scf density. The
-    runtime :func:`detect_band_groups` task turns the bands eigenvalues into
-    energy-separated groups (always splitting at the occupied/empty boundary
-    ``num_occ_bands``, and at every gap wider than ``threshold`` eV); each
-    projection block is then handled by a nested
-    :func:`WannierizeAndSplitBlock` that receives the resolved groups.
-
-    Args:
-        codes: code instances. Required: ``pw``, ``wannier90``,
-            ``pw2wannier90`` and ``wannierjl`` (the julia binary registered
-            via ``aiida_wannierjl.helpers.get_wannierjl_code``).
-        structure: the periodic ``StructureData``.
-        blocks: the explicit projection blocks (single spin channel).
-        kpoints: the Monkhorst-Pack mesh ``KpointsData``; expanded once into
-            the explicit list shared by the nscf and every wannier90 step.
-        bands_kpoints: the k-path for the pw.x ``bands`` run the group
-            detection reads.
-        num_occ_bands: occupied-band count of the channel (the detection
-            always opens a new group at this boundary).
-        threshold: minimum gap (eV) between consecutive bands for a split;
-            ``None`` splits only at the occupied/empty boundary.
-        pseudo_family / protocol / overrides / electronic_type / spin_type:
-            as in ``WannierizeBlocks`` (the ``nscf`` override entry also
-            seeds the bands step, so e.g. ``nbnd`` stays consistent).
-        parallelization: per-code parallelization mapping (keyed by code
-            name), threaded into the shared scf/nscf pair, the bands step,
-            and each block's ``pw2wannier90`` / ``wannier90`` steps. The
-            Wannier.jl split CalcJobs and the per-group re-wannierisation run
-            outside this mapping (see ``wjl_options`` / ``wannier90_options``).
-        wjl_options / pw2wannier90_options: optional ``metadata.options``
-            for the Wannier.jl CalcJobs and the cubic pw2wannier90 run. Both
-            CalcJobs carry their own ``resources`` defaults, so normally
-            leave these unset: a non-None dict currently trips
-            aiida-wannierjl's options handling inside a graph body (dict
-            graph inputs arrive as TaggedValue proxies, which node-graph
-            refuses to assign into ``metadata.options``).
-        wannier90_options: optional ``metadata.options`` for the per-group
-            re-wannierisation ``Wannier90Calculation`` (defaults to
-            single-machine resources; that CalcJob has no resources
-            default of its own).
-
-    Returns:
-        A :class:`WannierizeAndSplitBlocksOutputs`.
-    """
-    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
-    from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
-
-    validate_parallelization(parallelization)
-
-    overrides = overrides or {}
-    # ``.build()`` executes this body eagerly, where graph inputs arrive as
-    # provenance-tagged proxies; the family label ends up bound as an SQL
-    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
-    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-
-    mp_grid = [int(x) for x in kpoints.get_kpoints_mesh()[0]]
-    explicit_kpoints = get_explicit_kpoints(kpoints)
-
-    # --- shared scf + nscf (run once) ---
-    scf_nscf_overrides: dict[str, Any] = {}
-    if "scf" in overrides:
-        scf_nscf_overrides["scf"] = overrides["scf"]
-    if "nscf" in overrides:
-        scf_nscf_overrides["nscf"] = overrides["nscf"]
-    scf_nscf = RunScfNscf(
-        code=codes["pw"],
-        structure=structure,
-        pseudo_family=pseudo_family,
-        protocol=protocol,
-        overrides=scf_nscf_overrides or None,
-        parallelization=parallelization,
-        nscf_kpoints=explicit_kpoints,
-        metadata={"call_link_label": "scf_nscf"},
-    )
-    nscf_remote_folder = scf_nscf["nscf_remote_folder"]
-
-    # --- bands run along the k-path, off the scf density ---
-    # Seeded from the nscf override entry (same nbnd / cutoffs), with the
-    # calculation type forced on top.
-    bands_overrides = recursive_merge(
-        dict(overrides.get("nscf", {})),
-        {"pw": {"parameters": {"CONTROL": {"calculation": "bands"}}}},
-    )
-    if pseudo_family is not None:
-        bands_overrides.setdefault("pseudo_family", pseudo_family)
-    bands_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=codes["pw"],
-        structure=structure,
-        protocol=protocol,
-        overrides=bands_overrides,
-        electronic_type=electronic_type,
-    )
-    bands_data = get_dict_from_builder(bands_builder)
-    bands_data.pop("clean_workdir", None)
-    # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``.
-    bands_data.pop("kpoints_distance", None)
-    bands_data.pop("kpoints_force_parity", None)
-    bands_data["kpoints"] = bands_kpoints
-    bands_data["pw"]["parent_folder"] = scf_nscf["scf_remote_folder"]
-    merge_parallelization_into_inputs(bands_data["pw"], parallelization, "pw")
-    bands_data.setdefault("metadata", {})["call_link_label"] = "bands"
-    bands_outputs = PwBaseStep(**bands_data)
-
-    # --- runtime group detection over the Wannierised manifold ---
-    num_bands_total = sum(int(block["num_wann"]) for block in blocks)
-    detect = detect_band_groups(
-        bands=bands_outputs["output_band"],
-        num_occ_bands=num_occ_bands,
-        threshold=threshold,
-        num_bands_total=num_bands_total,
-    )
-
-    # --- per-block fan-out: native for-loop over the concrete blocks ---
-    block_outputs: dict[str, Any] = {}
-    for block in blocks:
-        block_outputs[block["label"]] = WannierizeAndSplitBlock(
-            codes=codes,
-            structure=structure,
-            block=block,
-            groups=detect.result,
-            nscf_remote_folder=nscf_remote_folder,
-            kpoints=explicit_kpoints,
-            mp_grid=mp_grid,
-            pseudo_family=pseudo_family,
-            protocol=protocol,
-            overrides=overrides,
-            electronic_type=electronic_type,
-            spin_type=spin_type,
-            parallelization=parallelization,
-            wjl_options=wjl_options,
-            wannier90_options=wannier90_options,
-            pw2wannier90_options=pw2wannier90_options,
-            metadata={"call_link_label": f"wannierize_split_{block['label']}"},
-        )
-
-    return WannierizeAndSplitBlocksOutputs(
-        nscf=PwOutputs(
-            remote_folder=nscf_remote_folder,
-            output_parameters=scf_nscf["nscf_output_parameters"],
-            output_band=scf_nscf["nscf_output_band"],
-        ),
-        bands=bands_outputs["output_band"],
-        groups=detect.result,
-        blocks=block_outputs,
-    )
