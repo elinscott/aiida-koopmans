@@ -157,18 +157,21 @@ CODE_NAMES: tuple[str, ...] = get_args(CodeName)
 
 
 class CodeParallelization(TypedDict, total=False):
-    """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp.
+    """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp, threads.
 
     ``ntasks`` sets ``metadata.options.resources`` (``tot_num_mpiprocs``);
     ``npool`` becomes ``-npool`` and ``pd`` becomes ``-pd true`` on the QE
-    command line. Every field is optional (``total=False``); an absent one
-    means the QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization``
-    pydantic model that produces these dicts.
+    command line; ``omp`` sets the per-rank OpenMP/BLAS thread count via a
+    ``metadata.options.prepend_text`` export block (overriding the
+    computer-level pin of one thread). Every field is optional
+    (``total=False``); an absent one means the QE/AiiDA default. Mirrors the
+    koopmans2 ``CodeParallelization`` pydantic model that produces these dicts.
     """
 
     ntasks: int
     npool: int
     pd: bool
+    omp: int
 
 
 # Per-code parallelization mapping threaded into every top-level graph: a plain

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import pytest
 
+from aiida_koopmans.types import CODE_NAMES
 from aiida_koopmans.workgraphs import (
     merge_parallelization_into_existing_namespaces,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
+    omp_prepend_text,
     resolve_parallelization,
     validate_parallelization,
 )
@@ -80,6 +82,45 @@ class TestResolve:
         """The kcw.x ham step drops -npool but still takes -pd."""
         _, settings = resolve_parallelization({"kcw": {"npool": 4, "pd": True}}, "kcw", pools=False)
         assert settings == {"cmdline": ["-pd", "true"]}
+
+
+class TestOmp:
+    def test_prepend_text_exports_all_three_at_the_count(self):
+        options, settings = resolve_parallelization({"pw": {"omp": 4}}, "pw")
+        assert settings == {}
+        assert options == {
+            "prepend_text": (
+                "export OMP_NUM_THREADS=4\nexport OPENBLAS_NUM_THREADS=4\nexport MKL_NUM_THREADS=4"
+            )
+        }
+
+    def test_omp_alongside_ntasks(self):
+        options, _ = resolve_parallelization({"pw": {"ntasks": 8, "omp": 2}}, "pw")
+        assert options["resources"] == {"num_machines": 1, "tot_num_mpiprocs": 8}
+        assert options["prepend_text"] == omp_prepend_text(2)
+
+    @pytest.mark.parametrize("code", list(CODE_NAMES))
+    def test_omp_accepted_for_every_code(self, code):
+        """Accept omp for every code — it is an env-level knob with no support matrix.
+
+        Even the codes that reject npool/pd (kcp, wann2kcp, wannier90) take it.
+        """
+        options, _ = resolve_parallelization({code: {"omp": 3}}, code)
+        assert options == {"prepend_text": omp_prepend_text(3)}
+
+    def test_appends_to_existing_prepend_text(self):
+        inputs = {"metadata": {"options": {"prepend_text": "module load qe"}}}
+        merge_parallelization_into_inputs(inputs, {"kcw": {"omp": 2}}, "kcw")
+        assert inputs["metadata"]["options"]["prepend_text"] == (
+            f"module load qe\n{omp_prepend_text(2)}"
+        )
+
+    def test_preserves_resources_when_appending_prepend(self):
+        inputs = {"metadata": {"options": {"max_wallclock_seconds": 3600}}}
+        merge_parallelization_into_inputs(inputs, {"pw": {"omp": 2}}, "pw")
+        options = inputs["metadata"]["options"]
+        assert options["max_wallclock_seconds"] == 3600
+        assert options["prepend_text"] == omp_prepend_text(2)
 
 
 class TestApplyToCalcJob:
