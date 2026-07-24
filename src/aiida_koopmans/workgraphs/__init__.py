@@ -113,7 +113,12 @@ def resolve_parallelization(
     npool = cfg.get("npool")
     pd = cfg.get("pd")
     if ntasks is not None:
-        options = {"resources": {"num_machines": 1, "tot_num_mpiprocs": int(ntasks)}}
+        # ``num_machines`` + ``num_mpiprocs_per_machine`` is the one resource
+        # shape every scheduler in play accepts: native for the node-counting
+        # schedulers, and hyperqueue's back-compat path maps it to num_cpus
+        # (its own class ignores ``tot_num_mpiprocs``, silently yielding
+        # single-rank jobs).
+        options = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": int(ntasks)}}
     cmdline: list[str] = []
     if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:

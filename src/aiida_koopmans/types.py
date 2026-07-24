@@ -159,7 +159,7 @@ CODE_NAMES: tuple[str, ...] = get_args(CodeName)
 class CodeParallelization(TypedDict, total=False):
     """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp.
 
-    ``ntasks`` sets ``metadata.options.resources`` (``tot_num_mpiprocs``);
+    ``ntasks`` sets ``metadata.options.resources`` (``num_mpiprocs_per_machine``);
     ``npool`` becomes ``-npool`` and ``pd`` becomes ``-pd true`` on the QE
     command line. Every field is optional (``total=False``); an absent one
     means the QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization``
