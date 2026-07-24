@@ -239,7 +239,7 @@ class TestTopLevelGraphBuild:
         # The bands step is a direct pw step in this graph, so the resources
         # and -npool flag are merged straight onto its pw namespace.
         bands_pw = wg.tasks["bands"].inputs["pw"]
-        assert bands_pw["metadata"]["options"]["resources"].value["tot_num_mpiprocs"] == 3
+        assert bands_pw["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 3
         assert bands_pw["settings"].value["cmdline"] == ["-npool", "2"]
 
         # The scf+nscf pair runs inside a nested graph, which receives the
