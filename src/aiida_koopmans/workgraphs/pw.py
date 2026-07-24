@@ -13,6 +13,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
+    enforce_step_calculation,
     inject_pseudo_family,
     merge_parallelization_into_overrides,
     validate_parallelization,
@@ -89,6 +90,9 @@ def RunPwBands(
     """
     validate_parallelization(parallelization)
 
+    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
+    # protocol builder's pseudo-family QueryBuilder can bind it.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     overrides = overrides or {}
 
     # Inject pseudo_family into both scf and bands overrides
@@ -105,6 +109,15 @@ def RunPwBands(
     )
 
     data = get_dict_from_builder(builder)
+
+    # Each step owns its calculation mode: the scf step stays 'scf' and the
+    # bands step stays 'bands', raising if a merged override set either
+    # otherwise.
+    for step, expected in (("scf", "scf"), ("bands", "bands")):
+        pw_inputs = data[step]["pw"]
+        pw_inputs["parameters"] = orm.Dict(
+            enforce_step_calculation(pw_inputs["parameters"].get_dict(), step, expected)
+        )
 
     # If nbnd is explicitly set, remove nbands_factor to avoid conflict
     bands_system = overrides.get("bands", {}).get("pw", {}).get("parameters", {}).get("SYSTEM", {})
@@ -165,8 +178,9 @@ def RunScfNscf(
     Returns:
         Dict with remote folders and retrieved data from both steps.
     """
-    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
-
+    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
+    # protocol builder's pseudo-family QueryBuilder can bind it.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     overrides = overrides or {}
 
     # Inject pseudo_family as a top-level override for both steps
@@ -174,7 +188,12 @@ def RunScfNscf(
     merge_parallelization_into_overrides(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
-    scf_overrides = overrides.get("scf", {})
+    scf_overrides = overrides.setdefault("scf", {})
+
+    # The scf step owns calculation='scf'; raise if an override says otherwise.
+    enforce_step_calculation(
+        scf_overrides.setdefault("pw", {}).setdefault("parameters", {}), "scf", "scf"
+    )
 
     # --- SCF builder ---
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
@@ -192,34 +211,22 @@ def RunScfNscf(
     # --- NSCF builder ---
     # Start from protocol defaults, then merge NSCF-specific overrides
     # (pseudo_family already seeded above).
-    nscf_overrides = overrides.get("nscf", {})
+    nscf_overrides = overrides.setdefault("nscf", {})
 
-    # Ensure calculation type is nscf
-    nscf_defaults: dict[str, Any] = {
-        "pw": {
-            "parameters": {
-                "CONTROL": {"calculation": "nscf"},
-            },
-        },
-    }
-    nscf_merged = recursive_merge(nscf_defaults, nscf_overrides)
+    # The nscf step owns calculation='nscf'; raise if an override says otherwise.
+    enforce_step_calculation(
+        nscf_overrides.setdefault("pw", {}).setdefault("parameters", {}), "nscf", "nscf"
+    )
 
     nscf_builder = PwBaseWorkChain.get_builder_from_protocol(
         code=code,
         structure=structure,
         protocol=protocol,
-        overrides=nscf_merged,
+        overrides=nscf_overrides,
         electronic_type=electronic_type,
     )
     nscf_data = get_dict_from_builder(nscf_builder)
     nscf_data.pop("clean_workdir", None)
-
-    # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``:
-    # replace the protocol's distance-derived mesh with the caller's grid.
-    if nscf_kpoints is not None:
-        nscf_data.pop("kpoints_distance", None)
-        nscf_data.pop("kpoints_force_parity", None)
-        nscf_data["kpoints"] = nscf_kpoints
 
     # Explicit NSCF k-mesh: PwBaseWorkChain accepts exactly one of
     # ``kpoints`` / ``kpoints_distance``, so drop the protocol's distance

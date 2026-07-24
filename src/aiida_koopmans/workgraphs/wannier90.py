@@ -22,6 +22,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
     Codes,
+    enforce_step_calculation,
     merge_parallelization_into_existing_namespaces,
     validate_parallelization,
 )
@@ -116,7 +117,17 @@ def _finalize_wannier_builder(
     if projector_rotation is not None:
         builder.projector_rotation = projector_rotation
 
-    return get_dict_from_builder(builder)
+    data = get_dict_from_builder(builder)
+
+    # The wannierisation nscf step owns calculation='nscf'; raise if a merged
+    # override set it otherwise. The scf/wannier steps carry no such conflict.
+    nscf_pw = data.get("nscf", {}).get("pw")
+    if nscf_pw is not None and nscf_pw.get("parameters") is not None:
+        nscf_pw["parameters"] = orm.Dict(
+            enforce_step_calculation(nscf_pw["parameters"].get_dict(), "nscf", "nscf")
+        )
+
+    return data
 
 
 @task.graph
@@ -184,6 +195,10 @@ def Wannierize(
         Dict with outputs from the Wannier90WorkChain.
     """
     validate_parallelization(parallelization)
+
+    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
+    # protocol builder's pseudo-family QueryBuilder can bind it.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
@@ -328,6 +343,10 @@ def OptimizeWannierization(
     Returns:
         Dict with outputs including optimal Wannier90 results and bands_distance.
     """
+    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
+    # protocol builder's pseudo-family QueryBuilder can bind it.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+
     builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,

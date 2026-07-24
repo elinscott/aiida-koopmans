@@ -51,6 +51,38 @@ def inject_pseudo_family(
         overrides.setdefault(namespace, {}).setdefault("pseudo_family", pseudo_family)
 
 
+def enforce_step_calculation(params: dict[str, Any], step: str, expected: str) -> dict[str, Any]:
+    """Stamp the ``CONTROL.calculation`` a step owns, raising on a conflicting explicit value.
+
+    Each step in a multi-step graph (scf, nscf, bands, ...) owns its
+    ``CONTROL.calculation`` mode. After the protocol defaults and caller
+    overrides are merged, assert the merged parameters carry no *different*
+    explicit calculation and set ``expected`` in place. A matching explicit
+    value is accepted; a genuine conflict raises so no override is dropped
+    silently.
+
+    Args:
+        params: The pw ``parameters`` namelist dict (mutated in place).
+        step: The step name, used only for the error message.
+        expected: The calculation mode this step requires.
+
+    Returns:
+        The same ``params`` dict, with ``CONTROL.calculation`` set to ``expected``.
+
+    Raises:
+        ValueError: If ``params`` already sets a different ``CONTROL.calculation``.
+    """
+    control = params.setdefault("CONTROL", {})
+    found = control.get("calculation")
+    if found is not None and found != expected:
+        raise ValueError(
+            f"the {step!r} step requires CONTROL.calculation={expected!r}, but the "
+            f"merged parameters set calculation={found!r}; remove the conflicting override."
+        )
+    control["calculation"] = expected
+    return params
+
+
 # QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil
 # decomposition) on the command line. Source-verified against Quantum ESPRESSO:
 # ``Modules/command_line_options.f90`` parses ``-nk``/``-npool`` and ``-pd``
