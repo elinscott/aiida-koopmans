@@ -584,3 +584,16 @@ class TestWannierizeBlockBuild:
         task = self._wannier_task(wg)
         params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
         assert params["dis_num_iter"] == 5000
+
+
+def test_unknown_parallelization_code_raises(wannier_codes, silicon_structure, kmesh):
+    """A typo'd parallelization code name fails loudly at build time."""
+    with pytest.raises(ValueError, match="unknown parallelization code name"):
+        WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            parallelization={"pww": {"npool": 2}},
+        )

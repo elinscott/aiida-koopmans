@@ -59,7 +59,11 @@ from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
@@ -563,6 +567,7 @@ def WannierizeBlocks(
         when the scf + nscf ran here) the shared ``nscf`` outputs.
     """
     overrides = overrides or {}
+    validate_parallelization(parallelization)
 
     _validate_split_inputs(
         codes=codes,
