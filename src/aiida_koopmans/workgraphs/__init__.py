@@ -63,16 +63,9 @@ def inject_pseudo_family(
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
-# The OpenMP / BLAS thread-count environment variables. The GNU QE builds link
-# threaded OpenBLAS, so under mpirun each rank otherwise spawns its own BLAS
-# thread pool and oversubscribes the allocation; the localhost computer pins all
-# three to one thread by default (see koopmans2's ``THREAD_PIN_PREPEND``). A
-# per-code ``omp`` re-exports them at a higher count via
-# ``metadata.options.prepend_text``, which overrides the computer-level pin:
-# aiida-core assembles prepend texts computer -> code -> calc_info ->
-# metadata.options last (``calcjob.py:1004-1009``), and the later bash export
-# wins. (An ``environment_variables`` entry would instead lose, since the
-# submit script emits those *before* prepend_text — ``scheduler.py:228-232``.)
+# Exported via metadata.options.prepend_text, which aiida-core assembles last
+# so it overrides the computer-level pin of 1 (an ``environment_variables``
+# entry would instead lose — those are emitted before any prepend_text).
 _OMP_THREAD_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 
 
