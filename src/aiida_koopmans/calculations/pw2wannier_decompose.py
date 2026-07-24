@@ -222,7 +222,12 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         spec.exit_code(
             330,
             "ERROR_OUTPUT_COEFF_MISSING",
-            message="A completed decompose run retrieved no ``*.coeff`` files.",
+            message=(
+                "A completed decompose run retrieved no ``*.coeff`` files. "
+                "A pw2wannier90.x build without the decompose feature runs "
+                "wan_mode='decompose' without doing anything, so this usually "
+                "means the registered pw2wannier90 code lacks the feature."
+            ),
             invalidates_cache=True,
         )
         spec.exit_code(
