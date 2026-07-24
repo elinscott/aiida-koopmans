@@ -16,7 +16,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
-from tests.fixtures import explicit_block
+from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -358,6 +358,10 @@ class TestSinglepointDFPTBuild:
         scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
         nscf_system = pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]
         assert scf_system["nspin"] == 2
+
+        # `wg.run()` reconstructs the graph from its serialized form before
+        # executing; the nested WannierizeBlocks wiring must survive that.
+        assert_graph_roundtrips(wg)
         assert scf_system["tot_magnetization"] == 0
         assert nscf_system["nspin"] == 2
         assert nscf_system["tot_magnetization"] == 0

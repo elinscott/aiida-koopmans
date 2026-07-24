@@ -340,14 +340,21 @@ def RewannierizeSplitBlocks(
 # ----------------------------------------------------------------------
 
 
-class AutoWannierizeBlockOutputs(WannierizedBlockProducts, total=False):
+class _AutoWannierizeBlockRequired(TypedDict):
+    """Required part of :class:`AutoWannierizeBlockOutputs`."""
+
+    products: WannierizedBlockProducts
+
+
+class AutoWannierizeBlockOutputs(_AutoWannierizeBlockRequired, total=False):
     """Outputs of :func:`WannierizeAndSplitBlock`.
 
-    The uniform :class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizedBlockProducts`
-    set is present on both branches: the whole-block Wannierisation always
-    runs, and the ``u_file`` / ``hr_file`` / ``centres_file`` trio carries
-    its gauge when the block stays whole and the block-diagonal merge when
-    it splits. Only the per-sub-block ``retrieved`` namespace is
+    The uniform
+    :class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizedBlockProducts`
+    namespace is present on both branches: the whole-block Wannierisation
+    always runs, and the ``u_file`` / ``hr_file`` / ``centres_file`` trio
+    carries its gauge when the block stays whole and the block-diagonal
+    merge when it splits. Only the per-sub-block ``retrieved`` namespace is
     branch-dependent (``total=False``: the unsplit branch does not populate
     it).
     """
@@ -416,25 +423,19 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "wannierize_whole_block"},
     )
 
-    outputs = AutoWannierizeBlockOutputs(
-        u_file=whole["u_file"],
-        hr_file=whole["hr_file"],
-        centres_file=whole["centres_file"],
-        hr_retrieved=whole["hr_retrieved"],
-        remote_folder=whole["remote_folder"],
-        nnkp_file=whole["nnkp_file"],
-    )
-
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
-        return outputs
+        # Forward the whole-block products namespace as one handle; per-key
+        # re-assembly of a namespace destined for a dynamic entry does not
+        # survive the to_dict/from_dict round-trip `wg.run()` performs.
+        return AutoWannierizeBlockOutputs(products=whole["products"])
 
     wann_groups = [
         [int(index) for index in group]
         for group in groups_to_wannier_indices(local_groups, list(block["include_bands"]))
     ]
 
-    win_file = extract_win_file(retrieved=whole["hr_retrieved"]).result
+    win_file = extract_win_file(retrieved=whole["products"]["hr_retrieved"]).result
 
     # The wannier90 scratch holds every file the split needs: ``aiida.chk``
     # plus the ``aiida.{amn,mmn,eig}`` symlinks that aiida-wannier90 staged
@@ -444,8 +445,8 @@ def WannierizeAndSplitBlock(
         wjl_code=codes["wannierjl"],
         win_file=win_file,
         groups=wann_groups,
-        wannier90_parent=whole["remote_folder"],
-        pw2wannier90_parent=whole["remote_folder"],
+        wannier90_parent=whole["products"]["remote_folder"],
+        pw2wannier90_parent=whole["products"]["remote_folder"],
         nscf_parent=nscf_remote_folder,
         pw2wannier90_code=codes["pw2wannier90"],
         wjl_options=wjl_options,
@@ -467,8 +468,14 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "rewannierize_split_blocks"},
     )
 
-    outputs["u_file"] = rewannierized["u_file"]
-    outputs["hr_file"] = rewannierized["hr_file"]
-    outputs["centres_file"] = rewannierized["centres_file"]
-    outputs["subblock_retrieved"] = rewannierized["subblock_retrieved"]
-    return outputs
+    return AutoWannierizeBlockOutputs(
+        products=WannierizedBlockProducts(
+            u_file=rewannierized["u_file"],
+            hr_file=rewannierized["hr_file"],
+            centres_file=rewannierized["centres_file"],
+            hr_retrieved=whole["products"]["hr_retrieved"],
+            remote_folder=whole["products"]["remote_folder"],
+            nnkp_file=whole["products"]["nnkp_file"],
+        ),
+        subblock_retrieved=rewannierized["subblock_retrieved"],
+    )

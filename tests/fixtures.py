@@ -244,6 +244,19 @@ def explicit_block(label, include, projections=None, spin=None):
     )
 
 
+def assert_graph_roundtrips(wg):
+    """Assert a built WorkGraph survives ``to_dict`` -> ``from_dict``.
+
+    ``wg.run()`` and the daemon reconstruct the graph through exactly this
+    round-trip before executing anything, so wiring that fails it dies at
+    run start even though construction succeeded (e.g. per-key links into
+    the entries of a typed dynamic output namespace).
+    """
+    from aiida_workgraph import WorkGraph
+
+    WorkGraph.from_dict(wg.to_dict())
+
+
 def automatic_block(label, include, spin=None):
     """Build a minimal automatic (SCDM) projection block over ``include`` bands."""
     from aiida_wannier90_workflows.common.types import WannierProjectionType

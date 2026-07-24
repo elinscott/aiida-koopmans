@@ -29,6 +29,7 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     merge_split_block_products,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
+from tests.fixtures import assert_graph_roundtrips
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -185,6 +186,8 @@ class TestTopLevelGraphBuild:
         assert detect_task.inputs["num_occ_bands"].value == 4
         assert detect_task.inputs["threshold"].value == 1.5
 
+        assert_graph_roundtrips(wg)
+
     def test_parallelization_reaches_the_shared_pw_steps(
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
@@ -250,10 +253,10 @@ class TestPerBlockGraphBuild:
         assert "extract_win_file" not in names
         assert "split_wannierization" not in names
         assert not any(name.startswith("Wannier90Calculation") for name in names)
-        # The unsplit branch still emits the uniform product trio, sourced
-        # from the whole-block run.
-        for name in ("u_file", "hr_file", "centres_file"):
-            assert wg.outputs[name]._links, name
+        # The unsplit branch still emits the uniform products namespace,
+        # forwarded whole from the nested whole-block run.
+        assert wg.outputs["products"]._links
+        assert_graph_roundtrips(wg)
 
     def test_split_branch_topology_and_wiring(
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
@@ -288,6 +291,8 @@ class TestPerBlockGraphBuild:
         # cardinality) up front, even though the split folders are futures.
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
+
+        assert_graph_roundtrips(wg)
 
     def test_groups_are_rebased_for_offset_blocks(
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family

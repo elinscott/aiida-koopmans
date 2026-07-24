@@ -139,19 +139,22 @@ class WannierizedBlockProducts(TypedDict):
     nnkp_file: orm.SinglefileData
 
 
-class WannierizeBlockOutputs(WannierizedBlockProducts):
+class WannierizeBlockOutputs(TypedDict):
     """Outputs of the single-block graph :func:`WannierizeBlock`.
 
-    The uniform :class:`WannierizedBlockProducts` set (here the trio is
-    always extracted from ``hr_retrieved``, so both views show the same
-    gauge) plus:
-
+    * ``products`` -- the uniform :class:`WannierizedBlockProducts`
+      namespace (here the trio is always extracted from ``hr_retrieved``,
+      so both views show the same gauge). Grouped as one sub-namespace so
+      callers forward it as a single handle — per-key re-assembly of a
+      namespace destined for a dynamic entry does not survive the
+      to_dict/from_dict round-trip ``wg.run()`` performs.
     * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
       ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
       the ``Omega_*`` decomposition), for consumers that depend on parsed
       quantities rather than the raw retrieved files.
     """
 
+    products: WannierizedBlockProducts
     output_parameters: orm.Dict
 
 
@@ -412,12 +415,14 @@ def WannierizeBlock(
     )
 
     return WannierizeBlockOutputs(
-        u_file=products["u_file"],
-        hr_file=products["hr_file"],
-        centres_file=products["centres_file"],
-        hr_retrieved=outputs["wannier90"]["retrieved"],
-        remote_folder=outputs["wannier90"]["remote_folder"],
-        nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
+        products=WannierizedBlockProducts(
+            u_file=products["u_file"],
+            hr_file=products["hr_file"],
+            centres_file=products["centres_file"],
+            hr_retrieved=outputs["wannier90"]["retrieved"],
+            remote_folder=outputs["wannier90"]["remote_folder"],
+            nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
+        ),
         output_parameters=outputs["wannier90"]["output_parameters"],
     )
 
@@ -783,18 +788,12 @@ def WannierizeBlocks(
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
             collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
-        # Both branches expose the uniform product sockets; assembling the
-        # entry explicitly (rather than assigning the nested graph's whole
-        # output namespace) is what keeps the two modes' extra outputs from
-        # leaking into the shared contract.
-        block_outputs[block["label"]] = WannierizedBlockProducts(
-            u_file=wannierized["u_file"],
-            hr_file=wannierized["hr_file"],
-            centres_file=wannierized["centres_file"],
-            hr_retrieved=wannierized["hr_retrieved"],
-            remote_folder=wannierized["remote_folder"],
-            nnkp_file=wannierized["nnkp_file"],
-        )
+        # Both branches group the uniform contract as a ``products``
+        # sub-namespace, forwarded here as a single handle: it keeps the
+        # modes' extra outputs off the shared contract, and per-key
+        # re-assembly of a dynamic entry does not survive the
+        # to_dict/from_dict round-trip ``wg.run()`` performs.
+        block_outputs[block["label"]] = wannierized["products"]
 
     outputs = WannierizeBlocksOutputs(blocks=block_outputs)
     if split:

@@ -12,7 +12,7 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeBlocks
-from tests.fixtures import automatic_block, explicit_block
+from tests.fixtures import assert_graph_roundtrips, automatic_block, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures: codes, structures, block shapes
@@ -288,16 +288,19 @@ class TestSplitMode:
         )
         names = [t.name for t in wg.tasks]
         assert "collect_wannier_functions" not in names
+        # Each entry receives its whole products namespace through a single
+        # handle link (per-key links into a dynamic entry do not survive the
+        # run-start round-trip), so the link sits on the entry itself.
         for label in ("block_1", "block_2"):
             entry = wg.outputs["blocks"][label]
             assert {socket._name for socket in entry} == expected_entry
-            for socket in entry:
-                assert socket._links, f"{label}.{socket._name}"
+            assert entry._links, label
         assert wg.outputs["nscf"]["remote_folder"]._links
         for populated in ("bands", "groups"):
             assert wg.outputs[populated]._links, populated
         assert not wg.outputs["centres"]._links
         assert not wg.outputs["spreads"]._links
+        assert_graph_roundtrips(wg)
 
         plain = WannierizeBlocks.build(
             codes=auto_codes,
@@ -311,12 +314,12 @@ class TestSplitMode:
         for label in ("block_1", "block_2"):
             entry = plain.outputs["blocks"][label]
             assert {socket._name for socket in entry} == expected_entry
-            for socket in entry:
-                assert socket._links, f"{label}.{socket._name}"
+            assert entry._links, label
         assert plain.outputs["centres"]._links
         assert plain.outputs["spreads"]._links
         assert not plain.outputs["bands"]._links
         assert not plain.outputs["groups"]._links
+        assert_graph_roundtrips(plain)
 
 
 # ----------------------------------------------------------------------
@@ -666,7 +669,8 @@ class TestWannierizeBlockBuild:
         )
         assert "extract_wannier_products" in [t.name for t in wg.tasks]
         for name in ("u_file", "hr_file", "centres_file"):
-            assert wg.outputs[name]._links, name
+            assert wg.outputs["products"][name]._links, name
+        assert_graph_roundtrips(wg)
 
 
 def test_unknown_parallelization_code_raises(wannier_codes, silicon_structure, kmesh):
