@@ -49,7 +49,7 @@ require.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
@@ -102,16 +102,7 @@ class WannierizeOverrides(TypedDict, total=False):
     pw2wannier90: dict[str, Any]
 
 
-class _WannierizeBlockOutputsRequired(TypedDict):
-    """Required part of :class:`WannierizeBlockOutputs`."""
-
-    u_file: orm.SinglefileData
-    hr_file: orm.SinglefileData
-    centres_file: orm.SinglefileData
-    nnkp_file: orm.SinglefileData
-
-
-class WannierizeBlockOutputs(_WannierizeBlockOutputsRequired, total=False):
+class WannierizeBlockOutputs(TypedDict):
     """The flat per-block contract, and the entry shape of ``blocks``.
 
     Every :func:`WannierizeBlocks` mode declares this socket set per block,
@@ -148,9 +139,13 @@ class WannierizeBlockOutputs(_WannierizeBlockOutputsRequired, total=False):
       the ``Omega_*`` decomposition).
     """
 
-    hr_retrieved: orm.FolderData
-    remote_folder: orm.RemoteData
-    output_parameters: orm.Dict
+    u_file: orm.SinglefileData
+    hr_file: orm.SinglefileData
+    centres_file: orm.SinglefileData
+    nnkp_file: orm.SinglefileData
+    hr_retrieved: NotRequired[orm.FolderData]
+    remote_folder: NotRequired[orm.RemoteData]
+    output_parameters: NotRequired[orm.Dict]
 
 
 class CollectedWannierFunctions(TypedDict):
