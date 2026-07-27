@@ -253,13 +253,14 @@ class TestPerBlockGraphBuild:
         assert "extract_win_file" not in names
         assert "split_wannierization" not in names
         assert not any(name.startswith("Wannier90Calculation") for name in names)
-        # The unsplit branch still emits the required contract from the
-        # whole-block run; the plain-route-only optional keys stay
+        # The unsplit branch emits the required contract from the
+        # whole-block run — its gauge is final, so its parsed
+        # ``output_parameters`` rides along; the folder keys stay
         # unpopulated (runtime ``None``, uniformly across the split
         # route's branches).
-        for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
+        for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
             assert wg.outputs[name]._links, name
-        for name in ("retrieved", "remote_folder", "output_parameters"):
+        for name in ("retrieved", "remote_folder"):
             assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
@@ -297,11 +298,11 @@ class TestPerBlockGraphBuild:
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
-        # The merged trio feeds the outputs; the plain-route-only optional
-        # keys stay unpopulated on the split route.
-        for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
+        # The merged trio and the merged parsed Dict feed the outputs; the
+        # plain-route-only folder keys stay unpopulated on the split route.
+        for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
             assert wg.outputs[name]._links, name
-        for name in ("retrieved", "remote_folder", "output_parameters"):
+        for name in ("retrieved", "remote_folder"):
             assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
@@ -348,6 +349,7 @@ class TestRewannierizeSplitBlocksBuild:
         )
         names = [t.name for t in wg.tasks]
         assert "merge_split_block_products" in names
+        assert "merge_wannier_output_parameters" in names
         w90_tasks = [t for t in wg.tasks if t.name.startswith("wannier90_split_block")]
         assert len(w90_tasks) == 2
 
@@ -444,6 +446,73 @@ class TestExtractWinFile:
         win = extract_win_file._callable(retrieved=retrieved)
         assert win.filename == "aiida.win"
         assert win.get_content() == "num_wann = 4\n"
+
+
+class TestMergeWannierOutputParameters:
+    """Per-group parsed outputs concatenate block-wide in group order."""
+
+    @staticmethod
+    def _group_parameters(spreads, start=1):
+        from aiida.orm import Dict
+
+        return Dict(
+            {
+                "number_wfs": len(spreads),
+                "wannier_functions_output": [
+                    {"wf_ids": i, "wf_centres": [0.1 * i, 0.0, 0.0], "wf_spreads": spread}
+                    for i, spread in enumerate(spreads, start=start)
+                ],
+            }
+        )
+
+    def test_group_order_concatenation_and_wf_id_rebasing(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        merged = merge_wannier_output_parameters._callable(
+            b00=self._group_parameters([1.1, 2.2]),
+            b01=self._group_parameters([3.3]),
+        ).get_dict()
+        assert merged["number_wfs"] == 3
+        assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
+        assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2, 3.3]
+
+    def test_swapped_group_keys_swap_the_band_order(self, aiida_profile):
+        """Negative control: the keys, not insertion order, define the order.
+
+        Assigning the groups to swapped keys yields the swapped
+        concatenation — proving the merge would mis-order bands if the
+        caller mislabelled the groups.
+        """
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        merged = merge_wannier_output_parameters._callable(
+            b01=self._group_parameters([1.1, 2.2]),
+            b00=self._group_parameters([3.3]),
+        ).get_dict()
+        assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [3.3, 1.1, 2.2]
+        assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
+
+    def test_out_of_order_entries_are_sorted_before_rebasing(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        params = self._group_parameters([1.1, 2.2])
+        shuffled = params.get_dict()
+        shuffled["wannier_functions_output"].reverse()
+        from aiida.orm import Dict
+
+        merged = merge_wannier_output_parameters._callable(b00=Dict(shuffled)).get_dict()
+        assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2]
+
+    def test_wf_count_mismatch_raises(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        params = self._group_parameters([1.1])
+        broken = params.get_dict()
+        broken["number_wfs"] = 2
+        from aiida.orm import Dict
+
+        with pytest.raises(ValueError, match="declares"):
+            merge_wannier_output_parameters._callable(b00=Dict(broken))
 
 
 class TestMergeSplitBlockProducts:

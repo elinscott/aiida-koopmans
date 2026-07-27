@@ -235,6 +235,39 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
     }
 
 
+@task.calcfunction
+def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
+    """Concatenate per-group parsed wannier90 outputs into one block-wide Dict.
+
+    ``output_parameters`` holds the per-group re-Wannierisation outputs,
+    keyed so lexicographic order matches the group (= band) order (``b00``,
+    ``b01``, ...). The per-WF ``wannier_functions_output`` tables are
+    concatenated in that order, entries sorted by their run-local
+    ``wf_ids`` and re-based to a block-wide 1-based numbering, and
+    ``number_wfs`` is summed. Only these honestly mergeable keys are
+    carried; per-run scalars such as the ``Omega_*`` decomposition are
+    dropped rather than fabricated. This threads parsed outputs
+    (concatenating parsed dicts) — no file is re-parsed.
+    """
+    merged_wfs: list[dict] = []
+    offset = 0
+    for key in sorted(output_parameters):
+        params = output_parameters[key].get_dict()
+        wfs = params.get("wannier_functions_output") or []
+        if len(wfs) != params.get("number_wfs"):
+            raise ValueError(
+                f"A sub-block's wannier90 ``output_parameters`` lists {len(wfs)} "
+                "final-state Wannier functions but the run declares "
+                f"number_wfs = {params.get('number_wfs')}."
+            )
+        for wf in sorted(wfs, key=lambda wf: int(wf["wf_ids"])):
+            entry = dict(wf)
+            entry["wf_ids"] = offset + int(wf["wf_ids"])
+            merged_wfs.append(entry)
+        offset += len(wfs)
+    return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
+
+
 def _subblock_w90_parameters(
     num_wann: int, mp_grid: list[int], wannier90_overrides: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -269,14 +302,17 @@ def _subblock_w90_parameters(
 class RewannierizeSplitOutputs(TypedDict):
     """Outputs of :func:`RewannierizeSplitBlocks`.
 
-    The merged block-wide product files. The per-sub-block wannier90 runs
-    stay reachable through provenance (the merge task consumes their
-    ``retrieved`` folders as inputs); they are not re-exported as sockets.
+    The merged block-wide product files plus the merged parsed
+    ``output_parameters`` — all describing the final (split) gauge. The
+    per-sub-block wannier90 runs stay reachable through provenance (the
+    merge tasks consume their ``retrieved`` folders and parsed Dicts as
+    inputs); they are not re-exported as sockets.
     """
 
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
+    output_parameters: orm.Dict
 
 
 @task.graph
@@ -299,9 +335,11 @@ def RewannierizeSplitBlocks(
     native ``for`` loop. Each sub-block runs a preprocessing-free
     ``Wannier90Calculation`` on the split ``.amn``/``.mmn``/``.eig``
     (``local_input_folder``), then the ``_u.mat`` / ``_hr.dat`` /
-    ``_centres.xyz`` products are merged block-diagonally.
+    ``_centres.xyz`` products are merged block-diagonally and the parsed
+    per-group ``output_parameters`` are concatenated in group order.
     """
     subblock_retrieved: dict[str, Any] = {}
+    subblock_parameters: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
         rewannierized = Wannier90CalcStep(
             code=codes["wannier90"],
@@ -315,16 +353,22 @@ def RewannierizeSplitBlocks(
             },
         )
         subblock_retrieved[f"b{i:02d}"] = rewannierized["retrieved"]
+        subblock_parameters[f"b{i:02d}"] = rewannierized["output_parameters"]
 
     merged = merge_split_block_products(
         **subblock_retrieved,
         metadata={"call_link_label": "merge_split_block_products"},
+    )
+    merged_parameters = merge_wannier_output_parameters(
+        **subblock_parameters,
+        metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
     return RewannierizeSplitOutputs(
         u_file=merged["u_file"],
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
+        output_parameters=merged_parameters.result,
     )
 
 
@@ -396,16 +440,17 @@ def WannierizeAndSplitBlock(
 
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
-        # The whole-block gauge is final, but the plain-route-only fields
-        # (``retrieved`` / ``remote_folder`` / ``output_parameters``) are
-        # still left unpopulated (consumers read ``None`` at runtime):
-        # whether a block splits is a runtime question, and the optional
-        # keys' populated-ness stays uniform across the split route.
+        # The whole-block gauge is final here, so its parsed
+        # ``output_parameters`` is the entry's final-gauge Dict. The
+        # folder fields stay unpopulated (consumers read ``None`` at
+        # runtime): whether a block splits is a runtime question, and
+        # their populated-ness stays uniform across the split route.
         return WannierizeBlockOutputs(
             u_file=whole["u_file"],
             hr_file=whole["hr_file"],
             centres_file=whole["centres_file"],
             nnkp_file=whole["nnkp_file"],
+            output_parameters=whole["output_parameters"],
         )
 
     wann_groups = [
@@ -451,4 +496,5 @@ def WannierizeAndSplitBlock(
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],
         nnkp_file=whole["nnkp_file"],
+        output_parameters=rewannierized["output_parameters"],
     )

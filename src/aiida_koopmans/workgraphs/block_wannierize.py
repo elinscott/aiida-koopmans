@@ -112,40 +112,45 @@ class WannierizeBlockOutputs(TypedDict):
     split consumer someday needs the whole-block artifacts, they get
     explicitly named new optional fields — never overloaded ones.
 
-    Always populated:
+    Always populated, always the entry's *final* gauge:
 
     * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
-      (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``) of the
-      block's *final* gauge: extracted from the wannier90 ``retrieved``
-      folder for a plainly-Wannierised block, merged block-diagonally from
-      the per-group runs for a split one.
+      (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``):
+      extracted from the wannier90 ``retrieved`` folder for a
+      plainly-Wannierised block, merged block-diagonally from the per-group
+      runs for a split one.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).
+    * ``output_parameters`` -- the parsed wannier90 output Dict, holding at
+      least the per-WF ``wannier_functions_output`` table (spreads /
+      centres, 1-based block-wide ``wf_ids``) and ``number_wfs``: the
+      producing run's Dict for a plainly-Wannierised block, the per-group
+      parsed outputs concatenated in band order for a split one (whose
+      merged Dict carries only the honestly mergeable keys).
 
-    Populated on the plain route only; split entries leave them unpopulated
-    (consumers read ``None`` at runtime, not a ``KeyError``), so e.g. a
-    decompose-style consumer reading ``retrieved`` off a split entry
-    fails loudly instead of silently working with the pre-split gauge. All
-    current readers of these fields (``RunDFPT``, ``FoldToSupercell``, the
-    decompose dataset route) are fed by plain-mode ``WannierizeBlocks``
-    calls, so none is affected:
+    Populated on the plain route only, because on the split route no folder
+    of the final gauge exists (the whole-block run's folders describe the
+    pre-split gauge, and a field never changes meaning). Split entries
+    leave them unpopulated (consumers read ``None`` at runtime, not a
+    ``KeyError``), so e.g. a decompose-style consumer reading ``retrieved``
+    off a split entry fails loudly instead of silently working with the
+    pre-split gauge. All current readers of these fields (``RunDFPT``,
+    ``FoldToSupercell``, the decompose dataset route) are fed by plain-mode
+    ``WannierizeBlocks`` calls, so none is affected:
 
     * ``retrieved`` -- the wannier90 ``retrieved`` FolderData (holds
       ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
       and, when the block disentangles, ``aiida_u_dis.mat``).
     * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
-    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
-      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
-      the ``Omega_*`` decomposition).
     """
 
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
     nnkp_file: orm.SinglefileData
+    output_parameters: orm.Dict
     retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]
-    output_parameters: NotRequired[orm.Dict]
 
 
 class CollectedWannierFunctions(TypedDict):
@@ -171,8 +176,8 @@ class WannierizeBlocksOutputs(TypedDict):
       modes, consumable downstream as a namespace.
     * ``centres`` / ``spreads`` -- the unified, band-ordered per-WF arrays of
       :class:`CollectedWannierFunctions`, concatenated across all blocks in
-      input-list order (every downstream code wants the unified view).
-      Plain mode only.
+      input-list order (every downstream code wants the unified view);
+      final-gauge in both modes.
     * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
       can read ``nscf["remote_folder"]`` (the nscf scratch every block was
       built on). Absent when the caller supplied its own
@@ -183,8 +188,8 @@ class WannierizeBlocksOutputs(TypedDict):
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
-    centres: NotRequired[list]
-    spreads: NotRequired[list]
+    centres: list
+    spreads: list
     nscf: NotRequired[PwOutputs]
     bands: NotRequired[orm.BandsData]
     groups: NotRequired[list[list[int]]]
@@ -565,12 +570,10 @@ def WannierizeBlocks(
     :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`
     that receives the resolved groups and splits the block when they divide
     it. Either way every ``blocks`` entry emits the same
-    :class:`WannierizeBlockOutputs` socket set, so downstream consumers
-    never branch on the mode. Split mode does not emit the unified
-    ``centres`` / ``spreads`` outputs: the per-group product shapes only
-    exist inside the deferred nested graphs, so the top-level collect step
-    cannot be wired at build time (unifying the split products is a future
-    extension).
+    :class:`WannierizeBlockOutputs` socket set — one final-gauge
+    ``output_parameters`` per block included — so downstream consumers
+    never branch on the mode and the unified ``centres`` / ``spreads``
+    are collected unconditionally.
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
@@ -719,10 +722,10 @@ def WannierizeBlocks(
     # Each iteration adds an independent per-block graph (they share only
     # the read-only nscf scratch, so they run in parallel), collected into a
     # dict keyed by block label -> the ``blocks`` dynamic output namespace.
-    # In plain mode the parsed per-block outputs feed the unify task
-    # positionally, read straight off each graph call (not off the ``blocks``
-    # entries, whose label keys would impose a sort order): the ``blocks``
-    # input-list order is the band-order authority.
+    # The parsed per-block outputs feed the unify task positionally, read
+    # straight off each graph call (not off the ``blocks`` entries, whose
+    # label keys would impose a sort order): the ``blocks`` input-list
+    # order is the band-order authority.
     block_outputs: dict[str, Any] = {}
     collect_inputs: dict[str, Any] = {}
     for i, block in enumerate(blocks):
@@ -765,23 +768,24 @@ def WannierizeBlocks(
                 parallelization=parallelization,
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
-            collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
         # Both per-block graphs return the flat WannierizeBlockOutputs
         # shape, forwarded whole into the entry (split-mode entries leave
-        # the plain-route-only optional sockets unpopulated).
+        # the plain-route-only folder sockets unpopulated).
         block_outputs[block["label"]] = wannierized
+        collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
 
-    outputs = WannierizeBlocksOutputs(blocks=block_outputs)
+    collected = collect_wannier_functions(
+        output_parameters=collect_inputs,
+        metadata={"call_link_label": "collect_wannier_functions"},
+    )
+    outputs = WannierizeBlocksOutputs(
+        blocks=block_outputs,
+        centres=collected["centres"],
+        spreads=collected["spreads"],
+    )
     if split:
         outputs["bands"] = bands_outputs["output_band"]
         outputs["groups"] = detect.result
-    else:
-        collected = collect_wannier_functions(
-            output_parameters=collect_inputs,
-            metadata={"call_link_label": "collect_wannier_functions"},
-        )
-        outputs["centres"] = collected["centres"]
-        outputs["spreads"] = collected["spreads"]
     if scf_nscf is not None:
         outputs["nscf"] = PwOutputs(
             remote_folder=nscf_scratch,

@@ -238,15 +238,15 @@ class TestSplitMode:
     ):
         """Split and plain entries expose identical sockets; unified outputs gate.
 
-        The per-group product shapes only exist inside the deferred nested
-        graphs, so split mode skips the top-level collect step and wires
-        ``bands`` / ``groups`` instead; the plain build keeps emitting the
-        unified arrays. Every declared socket shows up in ``wg.outputs``
-        either way, so populated-ness is read off the links.
+        Every entry carries a final-gauge ``output_parameters``, so the
+        unified ``centres`` / ``spreads`` are collected in both modes;
+        split mode additionally wires ``bands`` / ``groups``. Every
+        declared socket shows up in ``wg.outputs`` either way, so
+        populated-ness is read off the links.
         """
         # Every entry declares the full flat contract; the plain-route-only
-        # optional keys (retrieved / remote_folder / output_parameters)
-        # stay unpopulated at runtime on split entries.
+        # folder keys (retrieved / remote_folder) stay unpopulated at
+        # runtime on split entries.
         expected_entry = {
             "u_file",
             "hr_file",
@@ -261,7 +261,7 @@ class TestSplitMode:
             auto_codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
         )
         names = [t.name for t in wg.tasks]
-        assert "collect_wannier_functions" not in names
+        assert names.count("collect_wannier_functions") == 1
         # Each entry receives its whole products namespace through a single
         # handle link (per-key links into a dynamic entry do not survive the
         # run-start round-trip), so the link sits on the entry itself.
@@ -270,10 +270,8 @@ class TestSplitMode:
             assert {socket._name for socket in entry} == expected_entry
             assert entry._links, label
         assert wg.outputs["nscf"]["remote_folder"]._links
-        for populated in ("bands", "groups"):
+        for populated in ("bands", "groups", "centres", "spreads"):
             assert wg.outputs[populated]._links, populated
-        assert not wg.outputs["centres"]._links
-        assert not wg.outputs["spreads"]._links
         assert_graph_roundtrips(wg)
 
         plain = WannierizeBlocks.build(
