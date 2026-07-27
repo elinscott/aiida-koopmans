@@ -12,7 +12,7 @@ as a dynamic output namespace.
 
 Per-block file staging that the supercell fold consumes:
 
-* ``hr_retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
+* ``retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
   which holds ``aiida_hr.dat`` (the real-space Hamiltonian, written because
   ``write_hr=True``) plus ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
   and, for disentangling blocks, ``aiida_u_dis.mat``. All but ``aiida.chk``
@@ -124,13 +124,13 @@ class WannierizeBlockOutputs(TypedDict):
 
     Populated on the plain route only; split entries leave them unpopulated
     (consumers read ``None`` at runtime, not a ``KeyError``), so e.g. a
-    decompose-style consumer reading ``hr_retrieved`` off a split entry
+    decompose-style consumer reading ``retrieved`` off a split entry
     fails loudly instead of silently working with the pre-split gauge. All
     current readers of these fields (``RunDFPT``, ``FoldToSupercell``, the
     decompose dataset route) are fed by plain-mode ``WannierizeBlocks``
     calls, so none is affected:
 
-    * ``hr_retrieved`` -- the wannier90 ``retrieved`` FolderData (holds
+    * ``retrieved`` -- the wannier90 ``retrieved`` FolderData (holds
       ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
       and, when the block disentangles, ``aiida_u_dis.mat``).
     * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
@@ -143,7 +143,7 @@ class WannierizeBlockOutputs(TypedDict):
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
     nnkp_file: orm.SinglefileData
-    hr_retrieved: NotRequired[orm.FolderData]
+    retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]
     output_parameters: NotRequired[orm.Dict]
 
@@ -397,7 +397,7 @@ def WannierizeBlock(
         u_file=products["u_file"],
         hr_file=products["hr_file"],
         centres_file=products["centres_file"],
-        hr_retrieved=outputs["wannier90"]["retrieved"],
+        retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
         output_parameters=outputs["wannier90"]["output_parameters"],

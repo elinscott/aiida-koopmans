@@ -236,8 +236,8 @@ class TestKoopmansDFPTTaskBuild:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -262,7 +262,7 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
@@ -277,7 +277,7 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
@@ -304,8 +304,8 @@ class TestKoopmansDFPTTaskBuild:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -960,8 +960,8 @@ class TestRunDFPTGrouping:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -992,7 +992,7 @@ class TestRunDFPTGrouping:
             RunDFPT.build(
                 codes=dfpt_codes,
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+                block_wannier={"occ": {"retrieved": occ_retrieved}},
                 occ_labels=["occ"],
                 num_wann_occ=4,
                 num_wann_emp=0,
@@ -1005,7 +1005,7 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,

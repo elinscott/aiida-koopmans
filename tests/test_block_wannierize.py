@@ -245,13 +245,13 @@ class TestSplitMode:
         either way, so populated-ness is read off the links.
         """
         # Every entry declares the full flat contract; the plain-route-only
-        # optional keys (hr_retrieved / remote_folder / output_parameters)
+        # optional keys (retrieved / remote_folder / output_parameters)
         # stay unpopulated at runtime on split entries.
         expected_entry = {
             "u_file",
             "hr_file",
             "centres_file",
-            "hr_retrieved",
+            "retrieved",
             "remote_folder",
             "nnkp_file",
             "output_parameters",
@@ -648,7 +648,7 @@ class TestWannierizeBlockBuild:
             "hr_file",
             "centres_file",
             "nnkp_file",
-            "hr_retrieved",
+            "retrieved",
             "remote_folder",
             "output_parameters",
         ):

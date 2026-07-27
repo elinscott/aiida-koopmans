@@ -397,7 +397,7 @@ def WannierizeAndSplitBlock(
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
         # The whole-block gauge is final, but the plain-route-only fields
-        # (``hr_retrieved`` / ``remote_folder`` / ``output_parameters``) are
+        # (``retrieved`` / ``remote_folder`` / ``output_parameters``) are
         # still left unpopulated (consumers read ``None`` at runtime):
         # whether a block splits is a runtime question, and the optional
         # keys' populated-ness stays uniform across the split route.
@@ -413,7 +413,7 @@ def WannierizeAndSplitBlock(
         for group in groups_to_wannier_indices(local_groups, list(block["include_bands"]))
     ]
 
-    win_file = extract_win_file(retrieved=whole["hr_retrieved"]).result
+    win_file = extract_win_file(retrieved=whole["retrieved"]).result
 
     # The wannier90 scratch holds every file the split needs: ``aiida.chk``
     # plus the ``aiida.{amn,mmn,eig}`` symlinks that aiida-wannier90 staged

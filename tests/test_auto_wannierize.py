@@ -259,7 +259,7 @@ class TestPerBlockGraphBuild:
         # route's branches).
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
             assert wg.outputs[name]._links, name
-        for name in ("hr_retrieved", "remote_folder", "output_parameters"):
+        for name in ("retrieved", "remote_folder", "output_parameters"):
             assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
@@ -301,7 +301,7 @@ class TestPerBlockGraphBuild:
         # keys stay unpopulated on the split route.
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
             assert wg.outputs[name]._links, name
-        for name in ("hr_retrieved", "remote_folder", "output_parameters"):
+        for name in ("retrieved", "remote_folder", "output_parameters"):
             assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 

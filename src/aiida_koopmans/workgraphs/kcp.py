@@ -122,7 +122,7 @@ class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
       was Wannierised off; the ``parent_folder`` a pw2wannier90
       ``wan_mode='decompose'`` pass reads.
     * ``block_wannierizations`` — the per-block Wannierisation outputs
-      (keyed by block label), each holding the ``hr_retrieved`` folder with
+      (keyed by block label), each holding the ``retrieved`` folder with
       the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
 
     Together these are the inputs the ``orbital_density`` ML descriptor route
