@@ -403,8 +403,9 @@ def WannierizeAndSplitBlock(
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
         # The whole-block gauge is final, but ``output_parameters`` is still
-        # omitted: whether a block splits is a runtime question, and the
-        # optional key's presence must not be data-dependent.
+        # left unpopulated (consumers read ``None`` at runtime): whether a
+        # block splits is a runtime question, and the optional key's
+        # populated-ness stays uniform across the split route.
         return WannierizedBlockProducts(
             u_file=whole["u_file"],
             hr_file=whole["hr_file"],

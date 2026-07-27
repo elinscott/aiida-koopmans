@@ -135,12 +135,12 @@ class WannierizedBlockProducts(_WannierizedBlockProductsRequired, total=False):
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
     * ``output_parameters`` -- optional: the parsed wannier90 output Dict
       (per-WF ``wannier_functions_output`` with spreads / centres,
-      ``number_wfs``, the ``Omega_*`` decomposition). Present only when the
-      producing run's gauge is the final one, i.e. on plainly-Wannierised
-      blocks; the split route omits it rather than pad the entry with the
-      pre-split gauge's values. Absent-optional keys in a typed dynamic
-      namespace require the patched aiida-workgraph/node-graph engine (the
-      namespace-link fixes); released engines reject this contract.
+      ``number_wfs``, the ``Omega_*`` decomposition). Populated only when
+      the producing run's gauge is the final one, i.e. on plainly-Wannierised
+      blocks; the split route leaves it unpopulated (consumers read ``None``
+      at runtime, not a ``KeyError``) rather than pad the entry with the
+      pre-split gauge's values. Both per-block graphs declare this same
+      shape, so the socket exists on every entry either way.
     """
 
     output_parameters: orm.Dict

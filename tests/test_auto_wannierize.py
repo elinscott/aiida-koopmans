@@ -255,8 +255,8 @@ class TestPerBlockGraphBuild:
         assert not any(name.startswith("Wannier90Calculation") for name in names)
         # The unsplit branch still emits the uniform product trio from the
         # whole-block run; the optional ``output_parameters`` stays
-        # unpopulated on the split route (its presence must not be
-        # data-dependent).
+        # unpopulated on the split route (runtime ``None``, uniformly
+        # across its branches).
         for name in ("u_file", "hr_file", "centres_file"):
             assert wg.outputs[name]._links, name
         assert not wg.outputs["output_parameters"]._links
