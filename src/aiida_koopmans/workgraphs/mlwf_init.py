@@ -44,8 +44,8 @@ from aiida_koopmans.types import (
 from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
     WannierizeBlocks,
-    WannierizedBlockProducts,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
@@ -91,7 +91,7 @@ class MlwfInitializationOutputs(TypedDict):
     evc_occupied2: orm.SinglefileData
     report: dict
     nscf_remote_folder: orm.RemoteData
-    block_wannierizations: Annotated[dict, dynamic(WannierizedBlockProducts)]
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 @task(deserializers=_BANDS_DESERIALIZERS)

@@ -44,7 +44,7 @@ from aiida_koopmans.types import (
     VariationalOrbitalType,
 )
 from aiida_koopmans.workgraphs import merge_parallelization_into_inputs, validate_parallelization
-from aiida_koopmans.workgraphs.block_wannierize import WannierizedBlockProducts
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
@@ -322,7 +322,7 @@ def require_wannier_route_inputs(
 def OrbitalDensityDatasetWorkflow(
     code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
-    block_wannierizations: Annotated[dict, dynamic(WannierizedBlockProducts)],
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     merge_groups: list,
     alphas: dict,
     decompose_parameters: dict | None = None,

@@ -95,8 +95,8 @@ from aiida_koopmans.workgraphs import (
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
     WannierizeBlocks,
-    WannierizedBlockProducts,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
@@ -644,7 +644,7 @@ def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.Fold
 def RunDFPT(
     codes: Codes,
     nscf_remote_folder: orm.RemoteData,
-    block_wannier: Annotated[dict, dynamic(WannierizedBlockProducts)],
+    block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     occ_labels: list,
     num_wann_occ: int,
     num_wann_emp: int,

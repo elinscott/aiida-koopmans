@@ -50,7 +50,7 @@ from aiida_koopmans.wannier_merge import (
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlock,
-    WannierizedBlockProducts,
+    WannierizeBlockOutputs,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.pw import assemble_pw_base_step
@@ -348,7 +348,7 @@ def WannierizeAndSplitBlock(
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
-) -> WannierizedBlockProducts:
+) -> WannierizeBlockOutputs:
     """Wannierise one block, splitting it into detected groups when needed.
 
     Called as a nested graph task with ``groups`` wired from
@@ -397,7 +397,7 @@ def WannierizeAndSplitBlock(
         # left unpopulated (consumers read ``None`` at runtime): whether a
         # block splits is a runtime question, and the optional key's
         # populated-ness stays uniform across the split route.
-        return WannierizedBlockProducts(
+        return WannierizeBlockOutputs(
             u_file=whole["u_file"],
             hr_file=whole["hr_file"],
             centres_file=whole["centres_file"],
@@ -444,7 +444,7 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "rewannierize_split_blocks"},
     )
 
-    return WannierizedBlockProducts(
+    return WannierizeBlockOutputs(
         u_file=rewannierized["u_file"],
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],

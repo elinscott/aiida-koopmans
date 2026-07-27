@@ -102,8 +102,8 @@ class WannierizeOverrides(TypedDict, total=False):
     pw2wannier90: dict[str, Any]
 
 
-class _WannierizedBlockProductsRequired(TypedDict):
-    """Required part of :class:`WannierizedBlockProducts`."""
+class _WannierizeBlockOutputsRequired(TypedDict):
+    """Required part of :class:`WannierizeBlockOutputs`."""
 
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
@@ -113,7 +113,7 @@ class _WannierizedBlockProductsRequired(TypedDict):
     nnkp_file: orm.SinglefileData
 
 
-class WannierizedBlockProducts(_WannierizedBlockProductsRequired, total=False):
+class WannierizeBlockOutputs(_WannierizeBlockOutputsRequired, total=False):
     """The flat per-block contract, and the entry shape of ``blocks``.
 
     Every :func:`WannierizeBlocks` mode emits this socket set per block, so
@@ -170,14 +170,14 @@ class _WannierizeBlocksRequired(TypedDict):
     annotated source.
     """
 
-    blocks: Annotated[dict, dynamic(WannierizedBlockProducts)]
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
 
 
 class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
     """Outputs of :func:`WannierizeBlocks`.
 
     * ``blocks`` -- a dynamic namespace keyed by block label; every entry is
-      the uniform :class:`WannierizedBlockProducts` set, identical across
+      the uniform :class:`WannierizeBlockOutputs` set, identical across
       modes, consumable downstream as a namespace.
     * ``centres`` / ``spreads`` -- the unified, band-ordered per-WF arrays of
       :class:`CollectedWannierFunctions`, concatenated across all blocks in
@@ -268,7 +268,7 @@ def WannierizeBlock(
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
-) -> WannierizedBlockProducts:
+) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
     ``overrides`` is the flat :class:`WannierizeOverrides`; this block-level
@@ -402,7 +402,7 @@ def WannierizeBlock(
         metadata={"call_link_label": "extract_wannier_products"},
     )
 
-    return WannierizedBlockProducts(
+    return WannierizeBlockOutputs(
         u_file=products["u_file"],
         hr_file=products["hr_file"],
         centres_file=products["centres_file"],
@@ -574,7 +574,7 @@ def WannierizeBlocks(
     :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`
     that receives the resolved groups and splits the block when they divide
     it. Either way every ``blocks`` entry emits the same
-    :class:`WannierizedBlockProducts` socket set, so downstream consumers
+    :class:`WannierizeBlockOutputs` socket set, so downstream consumers
     never branch on the mode. Split mode does not emit the unified
     ``centres`` / ``spreads`` outputs: the per-group product shapes only
     exist inside the deferred nested graphs, so the top-level collect step
@@ -775,7 +775,7 @@ def WannierizeBlocks(
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
             collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
-        # Both per-block graphs return the flat WannierizedBlockProducts
+        # Both per-block graphs return the flat WannierizeBlockOutputs
         # shape, forwarded whole into the entry (split-mode entries leave
         # the optional ``output_parameters`` socket unpopulated).
         block_outputs[block["label"]] = wannierized
