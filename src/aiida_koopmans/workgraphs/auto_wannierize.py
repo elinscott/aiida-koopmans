@@ -32,11 +32,9 @@ from typing import Annotated, Any, TypedDict
 import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
-from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
-from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.projections import (
     detect_band_blocks,
@@ -49,13 +47,13 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlock,
     WannierizedBlockProducts,
     WannierizeOverrides,
 )
-from aiida_koopmans.workgraphs.pw import PwBaseStep
+from aiida_koopmans.workgraphs.pw import assemble_pw_base_step
 
 Wannier90CalcStep = task(Wannier90Calculation)
 
@@ -123,36 +121,29 @@ def add_bands_step(
     on top, and reads the density from ``scf_remote_folder``. Returns the
     step's outputs (``output_band`` holds the eigenvalues along the path).
     """
-    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
-
     # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL
     # parameter inside ``get_builder_from_protocol``, which needs a plain str.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
-    bands_overrides = recursive_merge(
-        dict(nscf_overrides or {}),
-        {"pw": {"parameters": {"CONTROL": {"calculation": "bands"}}}},
-    )
+    bands_overrides = dict(nscf_overrides or {})
+    # The seed comes from the caller's nscf overrides; a calculation type
+    # riding along in it is seed residue, not a conflict with this step.
+    bands_overrides.get("pw", {}).get("parameters", {}).get("CONTROL", {}).pop("calculation", None)
     if pseudo_family is not None:
         bands_overrides.setdefault("pseudo_family", pseudo_family)
-    bands_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=code,
-        structure=structure,
-        protocol=protocol,
+    return assemble_pw_base_step(
+        code,
+        structure,
+        calculation="bands",
+        call_link_label="bands",
         overrides=bands_overrides,
+        protocol=protocol,
         electronic_type=electronic_type,
+        kpoints=bands_kpoints,
+        parent_folder=scf_remote_folder,
+        parallelization=parallelization,
     )
-    bands_data = get_dict_from_builder(bands_builder)
-    bands_data.pop("clean_workdir", None)
-    # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``.
-    bands_data.pop("kpoints_distance", None)
-    bands_data.pop("kpoints_force_parity", None)
-    bands_data["kpoints"] = bands_kpoints
-    bands_data["pw"]["parent_folder"] = scf_remote_folder
-    merge_parallelization_into_inputs(bands_data["pw"], parallelization, "pw")
-    bands_data.setdefault("metadata", {})["call_link_label"] = "bands"
-    return PwBaseStep(**bands_data)
 
 
 # ----------------------------------------------------------------------
