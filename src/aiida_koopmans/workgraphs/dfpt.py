@@ -57,7 +57,7 @@ Current limitations:
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
@@ -498,13 +498,7 @@ class KoopmansDFPTOutputs(TypedDict):
     channels: Annotated[dict, dynamic(ChannelResults)]
 
 
-class _ManifoldBlocksRequired(TypedDict):
-    """Required part of :class:`ManifoldBlocks` (split so the rest can be optional)."""
-
-    occ: list[ProjectionBlock]
-
-
-class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
+class ManifoldBlocks(TypedDict):
     """Per-spin-channel manifold description consumed by :func:`SinglepointDFPTWorkflow`.
 
     * ``occ`` -- the occupied projection blocks in band order (at least one;
@@ -517,8 +511,9 @@ class ManifoldBlocks(_ManifoldBlocksRequired, total=False):
     products merged back into one file set by :func:`prepare_kcw_wannier_files`.
     """
 
-    emp: list[ProjectionBlock]
-    alpha_guess: list[float] | None
+    occ: list[ProjectionBlock]
+    emp: NotRequired[list[ProjectionBlock]]
+    alpha_guess: NotRequired[list[float] | None]
 
 
 def _read_block_files(folder: orm.FolderData, manifold: str) -> dict[str, bytes]:

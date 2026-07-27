@@ -19,7 +19,7 @@ build time.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Annotated, Any, TypedDict, cast
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -88,35 +88,22 @@ class KIFinalOutputs(TypedDict):
     remote_folder: orm.RemoteData
 
 
-class _KoopmansDSCFOutputsRequired(TypedDict):
-    """The always-present outputs of a full KI-DSCF workflow.
-
-    :class:`KIFinalOutputs` plus ``alphas`` — the converged per-orbital
-    screening parameters the final KI consumed (in the
-    :class:`~aiida_koopmans.types.AlphaScreening` shape). Exposed at the
-    workflow level so consumers (e.g. the ML trajectory workflow's
-    training targets) read them directly instead of walking provenance.
-    A separate ``TypedDict`` from :class:`KIFinalOutputs` because
-    ``alphas`` is an *input* of the final KI — :func:`RunFinalKI` cannot
-    echo a graph input as an output, so the field is wired at the outer
-    workflow level from the screening step's outputs.
-    """
-
-    parameters: dict
-    eigenvalues: np.ndarray
-    lambdas: np.ndarray
-    bare_lambdas: np.ndarray
-    remote_folder: orm.RemoteData
-    alphas: AlphaScreening
-
-
-class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
+class KoopmansDSCFOutputs(TypedDict):
     """A full KI-DSCF workflow's outputs, with the Wannier-route-only extras.
 
-    Adds two sockets that only the periodic Wannier-initialisation route
-    (``init_orbitals`` in ``mlwfs`` / ``projwfs``) produces — hence the
-    ``total=False`` split so the molecular Kohn-Sham route can omit them
-    without a graph-output type mismatch:
+    The always-present sockets are :class:`KIFinalOutputs` plus ``alphas`` —
+    the converged per-orbital screening parameters the final KI consumed (in
+    the :class:`~aiida_koopmans.types.AlphaScreening` shape). Exposed at the
+    workflow level so consumers (e.g. the ML trajectory workflow's training
+    targets) read them directly instead of walking provenance. ``alphas`` is
+    an *input* of the final KI — :func:`RunFinalKI` cannot echo a graph input
+    as an output, so the field is wired at the outer workflow level from the
+    screening step's outputs.
+
+    Two further sockets are ``NotRequired`` because only the periodic
+    Wannier-initialisation route (``init_orbitals`` in ``mlwfs`` /
+    ``projwfs``) produces them, so the molecular Kohn-Sham route can omit
+    them without a graph-output type mismatch:
 
     * ``nscf_remote_folder`` — the primitive-cell nscf scratch every block
       was Wannierised off; the ``parent_folder`` a pw2wannier90
@@ -138,8 +125,14 @@ class KoopmansDSCFOutputs(_KoopmansDSCFOutputsRequired, total=False):
     raises a descriptive ``ValueError`` when the route requirement is unmet.
     """
 
-    nscf_remote_folder: orm.RemoteData
-    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    parameters: dict
+    eigenvalues: np.ndarray
+    lambdas: np.ndarray
+    bare_lambdas: np.ndarray
+    remote_folder: orm.RemoteData
+    alphas: AlphaScreening
+    nscf_remote_folder: NotRequired[orm.RemoteData]
+    block_wannierizations: NotRequired[Annotated[dict, dynamic(WannierizeBlockOutputs)]]
 
 
 @dataclass(frozen=True)
@@ -969,7 +962,7 @@ def KoopmansDSCFWorkflow(
     initial_evc_occupied2 = None
     # The primitive nscf scratch + per-block Wannierisation outputs the
     # orbital_density ML descriptor route consumes; only the Wannier route
-    # produces them (see the ``total=False`` KoopmansDSCFOutputs split).
+    # produces them (the ``NotRequired`` sockets on KoopmansDSCFOutputs).
     nscf_remote_folder = None
     block_wannierizations = None
     if wannier_init:

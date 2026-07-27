@@ -41,7 +41,7 @@ from block labels or output-namespace keys.
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
@@ -125,20 +125,7 @@ class CollectedWannierFunctions(TypedDict):
     spreads: list
 
 
-class _WannierizeBlocksRequired(TypedDict):
-    """Required part of :class:`WannierizeBlocksOutputs`.
-
-    Split out so ``nscf`` can be conditional: a conditionally-absent graph
-    output must be ``NotRequired`` via a ``total=False`` subclass, or the
-    socket type-check fails against the annotated source.
-    """
-
-    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
-    centres: list
-    spreads: list
-
-
-class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
+class WannierizeBlocksOutputs(TypedDict):
     """Outputs of :func:`WannierizeBlocks`.
 
     * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
@@ -152,7 +139,10 @@ class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
       ``nscf_remote_folder`` and the internal scf + nscf was skipped.
     """
 
-    nscf: PwOutputs
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    centres: list
+    spreads: list
+    nscf: NotRequired[PwOutputs]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:

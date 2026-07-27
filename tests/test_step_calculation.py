@@ -144,10 +144,9 @@ class TestWannierizeEnforcement:
     """Exercise the nscf enforcement shared by ``Wannierize`` / ``OptimizeWannierization``.
 
     Both route through ``_finalize_wannier_builder``, which is where the nscf
-    step stamps its calculation. Building the whole ``Wannierize`` graph is
-    avoided here because its output linking trips an unrelated ``NotRequired``
-    output-socket mismatch (``disentanglement_data`` / ``spread_data``) for a
-    run without disentanglement — orthogonal to this backstop.
+    step stamps its calculation. These target that shared tail directly rather
+    than the whole graph; the full-graph build is covered by
+    ``test_wannierize_workgraph.py``.
     """
 
     def _builder(self, wannier_codes, structure, pseudo_family, nscf_override):
