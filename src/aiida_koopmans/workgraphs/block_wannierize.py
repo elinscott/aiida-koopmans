@@ -163,19 +163,7 @@ class CollectedWannierFunctions(TypedDict):
     spreads: list
 
 
-class _WannierizeBlocksRequired(TypedDict):
-    """Required part of :class:`WannierizeBlocksOutputs`.
-
-    Split out so the mode-dependent outputs can be conditional: a
-    conditionally-absent graph output must be ``NotRequired`` via a
-    ``total=False`` subclass, or the socket type-check fails against the
-    annotated source.
-    """
-
-    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
-
-
-class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
+class WannierizeBlocksOutputs(TypedDict):
     """Outputs of :func:`WannierizeBlocks`.
 
     * ``blocks`` -- a dynamic namespace keyed by block label; every entry is
@@ -194,11 +182,12 @@ class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
       band groups (global indices).
     """
 
-    centres: list
-    spreads: list
-    nscf: PwOutputs
-    bands: orm.BandsData
-    groups: list[list[int]]
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    centres: NotRequired[list]
+    spreads: NotRequired[list]
+    nscf: NotRequired[PwOutputs]
+    bands: NotRequired[orm.BandsData]
+    groups: NotRequired[list[list[int]]]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
