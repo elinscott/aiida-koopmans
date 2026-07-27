@@ -393,16 +393,15 @@ def WannierizeAndSplitBlock(
 
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
-        # The whole-block gauge is final, but ``output_parameters`` is still
-        # left unpopulated (consumers read ``None`` at runtime): whether a
-        # block splits is a runtime question, and the optional key's
-        # populated-ness stays uniform across the split route.
+        # The whole-block gauge is final, but the plain-route-only fields
+        # (``hr_retrieved`` / ``remote_folder`` / ``output_parameters``) are
+        # still left unpopulated (consumers read ``None`` at runtime):
+        # whether a block splits is a runtime question, and the optional
+        # keys' populated-ness stays uniform across the split route.
         return WannierizeBlockOutputs(
             u_file=whole["u_file"],
             hr_file=whole["hr_file"],
             centres_file=whole["centres_file"],
-            hr_retrieved=whole["hr_retrieved"],
-            remote_folder=whole["remote_folder"],
             nnkp_file=whole["nnkp_file"],
         )
 
@@ -448,7 +447,5 @@ def WannierizeAndSplitBlock(
         u_file=rewannierized["u_file"],
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],
-        hr_retrieved=whole["hr_retrieved"],
-        remote_folder=whole["remote_folder"],
         nnkp_file=whole["nnkp_file"],
     )

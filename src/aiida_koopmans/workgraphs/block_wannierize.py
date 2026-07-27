@@ -108,41 +108,48 @@ class _WannierizeBlockOutputsRequired(TypedDict):
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
-    hr_retrieved: orm.FolderData
-    remote_folder: orm.RemoteData
     nnkp_file: orm.SinglefileData
 
 
 class WannierizeBlockOutputs(_WannierizeBlockOutputsRequired, total=False):
     """The flat per-block contract, and the entry shape of ``blocks``.
 
-    Every :func:`WannierizeBlocks` mode emits this socket set per block, so
-    downstream consumers never branch on how the block was Wannierised
-    (plain vs split).
+    Every :func:`WannierizeBlocks` mode declares this socket set per block,
+    and a field never changes meaning per route: anything that would (the
+    whole-block run's folders, whose product files describe the pre-split
+    gauge on the split route) is populated on the plain route only. If a
+    split consumer someday needs the whole-block artifacts, they get
+    explicitly named new optional fields — never overloaded ones.
+
+    Always populated:
 
     * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
       (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``) of the
       block's *final* gauge: extracted from the wannier90 ``retrieved``
       folder for a plainly-Wannierised block, merged block-diagonally from
       the per-group runs for a split one.
+    * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
+      run (gauge-independent, hence shared by both routes).
+
+    Populated on the plain route only; split entries leave them unpopulated
+    (consumers read ``None`` at runtime, not a ``KeyError``), so e.g. a
+    decompose-style consumer reading ``hr_retrieved`` off a split entry
+    fails loudly instead of silently working with the pre-split gauge. All
+    current readers of these fields (``RunDFPT``, ``FoldToSupercell``, the
+    decompose dataset route) are fed by plain-mode ``WannierizeBlocks``
+    calls, so none is affected:
+
     * ``hr_retrieved`` -- the wannier90 ``retrieved`` FolderData (holds
       ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
-      and, when the block disentangles, ``aiida_u_dis.mat``). For a split
-      block this is the *whole-block* run — its product files describe the
-      pre-split gauge; consumers wanting the final gauge read the trio.
-    * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch (whole-block
-      run for a split block).
-    * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
-    * ``output_parameters`` -- optional: the parsed wannier90 output Dict
-      (per-WF ``wannier_functions_output`` with spreads / centres,
-      ``number_wfs``, the ``Omega_*`` decomposition). Populated only when
-      the producing run's gauge is the final one, i.e. on plainly-Wannierised
-      blocks; the split route leaves it unpopulated (consumers read ``None``
-      at runtime, not a ``KeyError``) rather than pad the entry with the
-      pre-split gauge's values. Both per-block graphs declare this same
-      shape, so the socket exists on every entry either way.
+      and, when the block disentangles, ``aiida_u_dis.mat``).
+    * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
+    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
+      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
+      the ``Omega_*`` decomposition).
     """
 
+    hr_retrieved: orm.FolderData
+    remote_folder: orm.RemoteData
     output_parameters: orm.Dict
 
 
@@ -777,7 +784,7 @@ def WannierizeBlocks(
             collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
         # Both per-block graphs return the flat WannierizeBlockOutputs
         # shape, forwarded whole into the entry (split-mode entries leave
-        # the optional ``output_parameters`` socket unpopulated).
+        # the plain-route-only optional sockets unpopulated).
         block_outputs[block["label"]] = wannierized
 
     outputs = WannierizeBlocksOutputs(blocks=block_outputs)

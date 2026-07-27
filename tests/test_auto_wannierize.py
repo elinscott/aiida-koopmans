@@ -253,13 +253,14 @@ class TestPerBlockGraphBuild:
         assert "extract_win_file" not in names
         assert "split_wannierization" not in names
         assert not any(name.startswith("Wannier90Calculation") for name in names)
-        # The unsplit branch still emits the uniform product trio from the
-        # whole-block run; the optional ``output_parameters`` stays
-        # unpopulated on the split route (runtime ``None``, uniformly
-        # across its branches).
-        for name in ("u_file", "hr_file", "centres_file"):
+        # The unsplit branch still emits the required contract from the
+        # whole-block run; the plain-route-only optional keys stay
+        # unpopulated (runtime ``None``, uniformly across the split
+        # route's branches).
+        for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
             assert wg.outputs[name]._links, name
-        assert not wg.outputs["output_parameters"]._links
+        for name in ("hr_retrieved", "remote_folder", "output_parameters"):
+            assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
     def test_split_branch_topology_and_wiring(
@@ -296,11 +297,12 @@ class TestPerBlockGraphBuild:
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
-        # The merged trio feeds the outputs; ``output_parameters`` stays
-        # unpopulated on the split route.
-        for name in ("u_file", "hr_file", "centres_file"):
+        # The merged trio feeds the outputs; the plain-route-only optional
+        # keys stay unpopulated on the split route.
+        for name in ("u_file", "hr_file", "centres_file", "nnkp_file"):
             assert wg.outputs[name]._links, name
-        assert not wg.outputs["output_parameters"]._links
+        for name in ("hr_retrieved", "remote_folder", "output_parameters"):
+            assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
     def test_groups_are_rebased_for_offset_blocks(
