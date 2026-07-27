@@ -51,6 +51,36 @@ def test_extract_decompose_inputs_missing_file_raises(aiida_profile):
         extract_decompose_inputs._callable.run_get_node(hr_retrieved=folder)
 
 
+def test_extract_u_dis_mat_emits_singlefile(aiida_profile):
+    """The calcfunction lifts ``aiida_u_dis.mat`` out of a disentangling block's folder."""
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import extract_u_dis_mat
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u dis bytes"), "aiida_u_dis.mat")
+    folder.store()
+
+    result, _ = extract_u_dis_mat._callable.run_get_node(hr_retrieved=folder)
+
+    assert result.filename == "aiida_u_dis.mat"
+    assert result.get_content() == "u dis bytes"
+
+
+def test_extract_u_dis_mat_missing_file_raises(aiida_profile):
+    """A folder without ``aiida_u_dis.mat`` is a hard error, not a silent skip."""
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import extract_u_dis_mat
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
+    folder.store()
+
+    with pytest.raises(FileNotFoundError, match=r"aiida_u_dis\.mat"):
+        extract_u_dis_mat._callable.run_get_node(hr_retrieved=folder)
+
+
 def test_orbital_density_dataset_workflow_fans_out_per_block(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
