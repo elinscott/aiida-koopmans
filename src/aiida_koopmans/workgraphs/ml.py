@@ -41,6 +41,7 @@ from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
     ParallelizationDict,
+    SpinChannel,
     VariationalOrbitalType,
 )
 from aiida_koopmans.workgraphs import merge_parallelization_into_inputs, validate_parallelization
@@ -225,6 +226,51 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
     return {"u_mat": u_mat, "centres_xyz": centres_xyz, "centres_file": centres_file}
 
 
+@task.calcfunction
+def extract_u_dis_mat(hr_retrieved: orm.FolderData) -> orm.SinglefileData:
+    """Lift the wannier90 disentanglement matrix out of a block's retrieved folder.
+
+    Called only for a manifold the caller's block metadata marks as
+    disentangling (``num_bands`` > ``num_wann``); the decompose pass errors
+    without ``<seed>_u_dis.mat`` in that case, so a missing file here is a
+    hard error rather than an optional-input skip.
+    """
+    names = hr_retrieved.base.repository.list_object_names()
+    if "aiida_u_dis.mat" not in names:
+        raise FileNotFoundError(
+            "``aiida_u_dis.mat`` is missing from the wannier90 retrieved folder, but "
+            "the block metadata marks the manifold as disentangling "
+            "(num_bands > num_wann). Check that the block wannierization forced its "
+            "retrieval (write_u_matrices)."
+        )
+    with hr_retrieved.base.repository.open("aiida_u_dis.mat", "rb") as handle:
+        return orm.SinglefileData(handle, filename="aiida_u_dis.mat")
+
+
+def _block_disentangles(block: dict) -> bool:
+    """Return whether a manifold disentangles, from the block's own counts.
+
+    Structural authority: the decision to stage ``u_dis`` is read from the
+    caller's ``num_bands`` / ``num_wann`` metadata, never probed from the
+    retrieved folder's contents.
+    """
+    num_bands = block.get("num_bands")
+    num_wann = block.get("num_wann")
+    return num_bands is not None and num_wann is not None and num_bands > num_wann
+
+
+def _spin_component(group_spin: Any) -> str | None:
+    """Map a manifold's spin channel to the decompose ``spin_component`` value.
+
+    ``SpinChannel.UP`` / ``SpinChannel.DOWN`` become ``'up'`` / ``'down'`` so
+    the decompose pass reads one channel of an nspin=2 scratch; ``NONE``
+    (nspin=1) returns ``None`` and the key is omitted, letting QE default to
+    the single channel.
+    """
+    spin = group_spin if isinstance(group_spin, SpinChannel) else SpinChannel(group_spin)
+    return None if spin == SpinChannel.NONE else spin.value
+
+
 class OrbitalDensityDatasetOutputs(TypedDict):
     """Outputs of :func:`OrbitalDensityDatasetWorkflow`.
 
@@ -331,14 +377,21 @@ def OrbitalDensityDatasetWorkflow(
     """Build one snapshot's orbital-density dataset from its Wannierisation.
 
     Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
-    projection block (each block's ``hr_retrieved`` folder from
-    ``block_wannierizations``, all against the shared ``nscf_remote_folder``),
-    then gathers the per-block power-spectrum descriptors and aligns them with
-    ``alphas`` in ``merge_groups`` order.
+    projection block (each block's ``hr_retrieved`` folder and ``nnkp_file``
+    from ``block_wannierizations``, all against the shared
+    ``nscf_remote_folder``), then gathers the per-block power-spectrum
+    descriptors and aligns them with ``alphas`` in ``merge_groups`` order.
+
+    Each block's decompose pass is staged from that block's own Wannierisation:
+    the required ``nnkp`` file threads straight from ``nnkp_file``; the U_dis
+    matrix is lifted from ``hr_retrieved`` and wired only when the block's
+    metadata marks the manifold as disentangling (``num_bands`` > ``num_wann``);
+    and the ``spin_component`` namelist key is set per group from the manifold's
+    spin channel so an nspin=2 scratch is read one channel at a time.
 
     ``merge_groups`` is the ``(filled, spin, blocks)`` partition (each block a
-    ``{"label": ...}`` mapping); ``alphas`` is the snapshot's screening
-    parameters in ``AlphaScreening`` shape.
+    ``{"label", "num_wann", "num_bands", ...}`` mapping); ``alphas`` is the
+    snapshot's screening parameters in ``AlphaScreening`` shape.
 
     Raises ``ValueError`` at graph-build time if the Wannier-initialised-route
     inputs (``nscf_remote_folder`` / ``block_wannierizations``) are missing —
@@ -347,19 +400,34 @@ def OrbitalDensityDatasetWorkflow(
     require_wannier_route_inputs(nscf_remote_folder, block_wannierizations, merge_groups)
     block_descriptors: dict[str, orm.ArrayData] = {}
     for group in merge_groups:
+        spin_component = _spin_component(group["spin"])
         for block in group["blocks"]:
             label = block["label"]
             products = extract_decompose_inputs(block_wannierizations[label]["hr_retrieved"])
             decompose_inputs: dict[str, Any] = {
                 "code": code,
                 "parent_folder": nscf_remote_folder,
+                "nnkp": block_wannierizations[label]["nnkp_file"],
                 "u_mat": products["u_mat"],
                 "centres_xyz": products["centres_xyz"],
                 "centres_file": products["centres_file"],
                 "metadata": {"call_link_label": f"decompose_{label}"},
             }
-            if decompose_parameters is not None:
-                decompose_inputs["parameters"] = decompose_parameters
+            # Per-block namelist: the manifold's spin channel (structural
+            # authority) fixes ``spin_component``, overriding any shared value
+            # because one ``decompose_parameters`` dict spans both channels.
+            block_parameters = dict(decompose_parameters or {})
+            if spin_component is not None:
+                block_parameters["spin_component"] = spin_component
+            if block_parameters:
+                decompose_inputs["parameters"] = block_parameters
+            # A disentangling manifold needs its U_dis matrix or the QE
+            # decompose pass errors; the decision is read from the block's
+            # counts, never probed from the retrieved folder.
+            if _block_disentangles(block):
+                decompose_inputs["u_dis_mat"] = extract_u_dis_mat(
+                    block_wannierizations[label]["hr_retrieved"]
+                ).result
             merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(

@@ -58,6 +58,11 @@ class TestNormalizeParameters:
         }
         assert Pw2wannierDecomposeCalculation._normalize_parameters(params) == params
 
+    def test_accepts_spin_component(self):
+        # ``spin_component`` selects the nspin=2 channel; caller-set, not owned.
+        out = Pw2wannierDecomposeCalculation._normalize_parameters({"spin_component": "up"})
+        assert out == {"spin_component": "up"}
+
 
 class TestInjectOwnedKeys:
     """``_inject_owned_keys`` defaults and owned-key injection."""
@@ -145,7 +150,8 @@ def _decompose_inputs(fixture_localhost, aiida_local_code_factory, tmp_path_fact
 
     u_mat = orm.SinglefileData(io.BytesIO(b"u matrix"), filename="anything_u.mat")
     centres = orm.SinglefileData(io.BytesIO(b"2\n\nX 0 0 0\nX 1 1 1\n"), filename="c.xyz")
-    return code, remote, parent_root, u_mat, centres
+    nnkp = orm.SinglefileData(io.BytesIO(b"begin real_lattice\n"), filename="anything.nnkp")
+    return code, remote, parent_root, u_mat, centres, nnkp
 
 
 def test_full_render_stages_products_and_retrieves_globs(
@@ -159,13 +165,14 @@ def test_full_render_stages_products_and_retrieves_globs(
     from aiida import orm
     from aiida.common import datastructures
 
-    code, remote, parent_root, u_mat, centres = _decompose_inputs
+    code, remote, parent_root, u_mat, centres, nnkp = _decompose_inputs
     gc = orm.SinglefileData(io.BytesIO(b"0 0 0\n1 1 1\n"), filename="gc.dat")
 
     inputs = {
         "code": code,
         "parameters": orm.Dict(dict={"decompose_n_max": 4, "decompose_l_max": 4}),
         "parent_folder": remote,
+        "nnkp": nnkp,
         "u_mat": u_mat,
         "centres_xyz": centres,
         "centres_file": gc,
@@ -182,9 +189,11 @@ def test_full_render_stages_products_and_retrieves_globs(
         (f"{parent_root.as_posix()}/out/aiida.save", "TMP/aiida.save")
     ]
 
-    # Wannier products staged under seedname-derived destinations.
+    # Wannier products staged under seedname-derived destinations. The
+    # ``.nnkp`` is mandatory -- the decompose pass opens it before any density
+    # work, so it must land as ``aiida.nnkp``.
     destinations = {item[2] for item in calc_info.local_copy_list}
-    assert {"aiida_u.mat", "aiida_centres.xyz", "gc_centres.dat"} <= destinations
+    assert {"aiida.nnkp", "aiida_u.mat", "aiida_centres.xyz", "gc_centres.dat"} <= destinations
     # No u_dis input -> not staged.
     assert "aiida_u_dis.mat" not in destinations
 
@@ -212,12 +221,13 @@ def test_full_render_without_centres_file_omits_group_channel(
     """Without a ``centres_file`` input, no group-density channel is requested."""
     from aiida import orm
 
-    code, remote, _parent_root, u_mat, centres = _decompose_inputs
+    code, remote, _parent_root, u_mat, centres, nnkp = _decompose_inputs
     u_dis = orm.SinglefileData(io.BytesIO(b"u dis"), filename="d.mat")
 
     inputs = {
         "code": code,
         "parent_folder": remote,
+        "nnkp": nnkp,
         "u_mat": u_mat,
         "u_dis_mat": u_dis,
         "centres_xyz": centres,
@@ -233,3 +243,58 @@ def test_full_render_without_centres_file_omits_group_channel(
     with fixture_sandbox.open("aiida.decompose.in") as handle:
         rendered = handle.read()
     assert "decompose_centres_file" not in rendered
+
+
+def test_missing_nnkp_input_is_rejected(
+    aiida_profile,
+    register_decompose_entry_points,
+    fixture_sandbox,
+    generate_calc_job,
+    _decompose_inputs,
+):
+    """The ``.nnkp`` file is mandatory: omitting it fails port validation.
+
+    Negative control for the ``.nnkp`` staging fix -- before ``nnkp`` became a
+    required input the same input set built a (silently broken) CalcInfo.
+    """
+    code, remote, _parent_root, u_mat, centres, _nnkp = _decompose_inputs
+
+    inputs = {
+        "code": code,
+        "parent_folder": remote,
+        "u_mat": u_mat,
+        "centres_xyz": centres,
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    with pytest.raises(ValueError, match="nnkp"):
+        generate_calc_job(fixture_sandbox, "koopmans.pw2wannier_decompose", inputs)
+
+
+def test_spin_component_accepted_and_rendered(
+    aiida_profile,
+    register_decompose_entry_points,
+    fixture_sandbox,
+    generate_calc_job,
+    _decompose_inputs,
+):
+    """``spin_component`` is a valid caller-set key and lands in the namelist."""
+    from aiida import orm
+
+    code, remote, _parent_root, u_mat, centres, nnkp = _decompose_inputs
+
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"spin_component": "down"}),
+        "parent_folder": remote,
+        "nnkp": nnkp,
+        "u_mat": u_mat,
+        "centres_xyz": centres,
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    generate_calc_job(fixture_sandbox, "koopmans.pw2wannier_decompose", inputs)
+
+    with fixture_sandbox.open("aiida.decompose.in") as handle:
+        rendered = handle.read()
+    assert "spin_component = 'down'" in rendered

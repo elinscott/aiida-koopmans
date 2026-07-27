@@ -10,16 +10,23 @@ real-space orbital-density postprocessing as the source of the
 
 Upstream ``aiida-quantumespresso`` provides a ``Pw2wannier90Calculation``,
 but it cannot stage the wannier90 read-back files this mode requires
-(``<seed>_u.mat``, the optional ``<seed>_u_dis.mat`` and
-``<seed>_centres.xyz``), so this is a standalone ``CalcJob``.
+(the ``<seed>.nnkp`` post-processing file, ``<seed>_u.mat``, the optional
+``<seed>_u_dis.mat`` and ``<seed>_centres.xyz``), so this is a standalone
+``CalcJob``.
 
 Inputs staged into the work directory:
 
 * ``parent_folder`` -- the pw.x nscf scratch (a ``RemoteData``), symlinked
   as ``./TMP/<prefix>.save`` exactly like every QE post-processing parent.
+* ``nnkp`` -- the wannier90 ``<seed>.nnkp`` post-processing file
+  (``SinglefileData``), copied in as ``<seedname>.nnkp``. The decompose
+  pass opens it (``read_nnkp``) before any density work, so it is required;
+  it also fixes the band count (``num_bands``) and excluded-band mask the
+  decomposition applies.
 * ``u_mat`` / ``u_dis_mat`` / ``centres_xyz`` -- the enumerated wannier90
   products (``SinglefileData``), copied in as ``<seedname>_u.mat`` /
-  ``<seedname>_u_dis.mat`` / ``<seedname>_centres.xyz``.
+  ``<seedname>_u_dis.mat`` / ``<seedname>_centres.xyz``. ``u_dis_mat`` is
+  required whenever the manifold disentangles (``num_bands`` > ``num_wann``).
 * ``centres_file`` -- optional extra centres for the group-density channel
   (``SinglefileData``, one Cartesian-Angstrom triple per line). When given,
   the run additionally decomposes the group density (sum of the normalized
@@ -73,13 +80,18 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
     )
 
     # The full set of valid keys. Unknown keys are rejected so a typo does
-    # not silently produce a broken input.
+    # not silently produce a broken input. ``spin_component`` is caller-set
+    # (not owned): a decompose pass over an nspin=2 scratch must read one
+    # channel at a time, so the graph passes ``'up'`` / ``'down'`` per block;
+    # on an nspin=1 scratch it is omitted and QE defaults to the single
+    # channel.
     _VALID_KEYS: ClassVar[frozenset[str]] = frozenset(
         {
             "outdir",
             "prefix",
             "seedname",
             "wan_mode",
+            "spin_component",
             "decompose_centres_file",
             "decompose_n_max",
             "decompose_l_max",
@@ -114,7 +126,9 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
                 "'decompose_r_min': 0.5, 'decompose_r_max': 4.0}``. Keys are "
                 "case-insensitive. ``outdir``, ``prefix``, ``seedname``, "
                 "``wan_mode`` and ``decompose_centres_file`` are owned by the "
-                "CalcJob. Defaults: n_max=4, l_max=4, r_min=0.5, r_max=4.0."
+                "CalcJob; ``spin_component`` (``'up'`` / ``'down'``) is caller-set "
+                "and required per channel on an nspin=2 scratch. Defaults: "
+                "n_max=4, l_max=4, r_min=0.5, r_max=4.0."
             ),
         )
         spec.input(
@@ -125,6 +139,17 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
                 "Remote folder of the upstream pw.x nscf run. Its ``.save`` tree "
                 "is recursively symlinked into ``./TMP/<prefix>.save`` so the "
                 "decompose pass can read the Bloch wavefunctions."
+            ),
+        )
+        spec.input(
+            "nnkp",
+            valid_type=SinglefileData,
+            required=True,
+            help=(
+                "The wannier90 ``<seed>.nnkp`` post-processing file. Copied in as "
+                "``<seedname>.nnkp``. The decompose pass reads it (``read_nnkp``) "
+                "before any density work, so it is mandatory; it also supplies the "
+                "band count and excluded-band mask the decomposition applies."
             ),
         )
         spec.input(
@@ -141,8 +166,10 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
             valid_type=SinglefileData,
             required=False,
             help=(
-                "The wannier90 disentanglement matrix, only present when the "
-                "block disentangles. Copied in as ``<seedname>_u_dis.mat``."
+                "The wannier90 disentanglement matrix. Required whenever the "
+                "manifold disentangles (``num_bands`` > ``num_wann``); the QE "
+                "decompose pass errors without it in that case. Copied in as "
+                "``<seedname>_u_dis.mat``."
             ),
         )
         spec.input(
@@ -304,6 +331,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         """
         seedname = parameters.get("seedname", self._DEFAULT_SEEDNAME)
         destinations = {
+            "nnkp": f"{seedname}.nnkp",
             "u_mat": f"{seedname}_u.mat",
             "u_dis_mat": f"{seedname}_u_dis.mat",
             "centres_xyz": f"{seedname}_centres.xyz",
