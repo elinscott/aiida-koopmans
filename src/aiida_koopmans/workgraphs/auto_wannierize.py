@@ -275,14 +275,14 @@ def _subblock_w90_parameters(
 class RewannierizeSplitOutputs(TypedDict):
     """Outputs of :func:`RewannierizeSplitBlocks`.
 
-    The merged block-wide product files plus the per-sub-block wannier90
-    ``retrieved`` folders (keyed ``b00``, ``b01``, ... in band order).
+    The merged block-wide product files. The per-sub-block wannier90 runs
+    stay reachable through provenance (the merge task consumes their
+    ``retrieved`` folders as inputs); they are not re-exported as sockets.
     """
 
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
-    subblock_retrieved: Annotated[dict, dynamic(orm.FolderData)]
 
 
 @task.graph
@@ -331,35 +331,12 @@ def RewannierizeSplitBlocks(
         u_file=merged["u_file"],
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
-        subblock_retrieved=subblock_retrieved,
     )
 
 
 # ----------------------------------------------------------------------
 # Per-block graph (nested, deferred: receives the resolved groups)
 # ----------------------------------------------------------------------
-
-
-class _AutoWannierizeBlockRequired(TypedDict):
-    """Required part of :class:`AutoWannierizeBlockOutputs`."""
-
-    products: WannierizedBlockProducts
-
-
-class AutoWannierizeBlockOutputs(_AutoWannierizeBlockRequired, total=False):
-    """Outputs of :func:`WannierizeAndSplitBlock`.
-
-    The uniform
-    :class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizedBlockProducts`
-    namespace is present on both branches: the whole-block Wannierisation
-    always runs, and the ``u_file`` / ``hr_file`` / ``centres_file`` trio
-    carries its gauge when the block stays whole and the block-diagonal
-    merge when it splits. Only the per-sub-block ``retrieved`` namespace is
-    branch-dependent (``total=False``: the unsplit branch does not populate
-    it).
-    """
-
-    subblock_retrieved: Annotated[dict, dynamic(orm.FolderData)]
 
 
 @task.graph
@@ -380,7 +357,7 @@ def WannierizeAndSplitBlock(
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
-) -> AutoWannierizeBlockOutputs:
+) -> WannierizedBlockProducts:
     """Wannierise one block, splitting it into detected groups when needed.
 
     Called as a nested graph task with ``groups`` wired from
@@ -425,17 +402,24 @@ def WannierizeAndSplitBlock(
 
     local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
     if len(local_groups) <= 1:
-        # Forward the whole-block products namespace as one handle; per-key
-        # re-assembly of a namespace destined for a dynamic entry does not
-        # survive the to_dict/from_dict round-trip `wg.run()` performs.
-        return AutoWannierizeBlockOutputs(products=whole["products"])
+        # The whole-block gauge is final, but ``output_parameters`` is still
+        # omitted: whether a block splits is a runtime question, and the
+        # optional key's presence must not be data-dependent.
+        return WannierizedBlockProducts(
+            u_file=whole["u_file"],
+            hr_file=whole["hr_file"],
+            centres_file=whole["centres_file"],
+            hr_retrieved=whole["hr_retrieved"],
+            remote_folder=whole["remote_folder"],
+            nnkp_file=whole["nnkp_file"],
+        )
 
     wann_groups = [
         [int(index) for index in group]
         for group in groups_to_wannier_indices(local_groups, list(block["include_bands"]))
     ]
 
-    win_file = extract_win_file(retrieved=whole["products"]["hr_retrieved"]).result
+    win_file = extract_win_file(retrieved=whole["hr_retrieved"]).result
 
     # The wannier90 scratch holds every file the split needs: ``aiida.chk``
     # plus the ``aiida.{amn,mmn,eig}`` symlinks that aiida-wannier90 staged
@@ -445,8 +429,8 @@ def WannierizeAndSplitBlock(
         wjl_code=codes["wannierjl"],
         win_file=win_file,
         groups=wann_groups,
-        wannier90_parent=whole["products"]["remote_folder"],
-        pw2wannier90_parent=whole["products"]["remote_folder"],
+        wannier90_parent=whole["remote_folder"],
+        pw2wannier90_parent=whole["remote_folder"],
         nscf_parent=nscf_remote_folder,
         pw2wannier90_code=codes["pw2wannier90"],
         wjl_options=wjl_options,
@@ -468,14 +452,11 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "rewannierize_split_blocks"},
     )
 
-    return AutoWannierizeBlockOutputs(
-        products=WannierizedBlockProducts(
-            u_file=rewannierized["u_file"],
-            hr_file=rewannierized["hr_file"],
-            centres_file=rewannierized["centres_file"],
-            hr_retrieved=whole["products"]["hr_retrieved"],
-            remote_folder=whole["products"]["remote_folder"],
-            nnkp_file=whole["products"]["nnkp_file"],
-        ),
-        subblock_retrieved=rewannierized["subblock_retrieved"],
+    return WannierizedBlockProducts(
+        u_file=rewannierized["u_file"],
+        hr_file=rewannierized["hr_file"],
+        centres_file=rewannierized["centres_file"],
+        hr_retrieved=whole["hr_retrieved"],
+        remote_folder=whole["remote_folder"],
+        nnkp_file=whole["nnkp_file"],
     )

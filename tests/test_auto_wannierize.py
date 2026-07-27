@@ -253,9 +253,13 @@ class TestPerBlockGraphBuild:
         assert "extract_win_file" not in names
         assert "split_wannierization" not in names
         assert not any(name.startswith("Wannier90Calculation") for name in names)
-        # The unsplit branch still emits the uniform products namespace,
-        # forwarded whole from the nested whole-block run.
-        assert wg.outputs["products"]._links
+        # The unsplit branch still emits the uniform product trio from the
+        # whole-block run; the optional ``output_parameters`` stays
+        # unpopulated on the split route (its presence must not be
+        # data-dependent).
+        for name in ("u_file", "hr_file", "centres_file"):
+            assert wg.outputs[name]._links, name
+        assert not wg.outputs["output_parameters"]._links
         assert_graph_roundtrips(wg)
 
     def test_split_branch_topology_and_wiring(
@@ -292,6 +296,11 @@ class TestPerBlockGraphBuild:
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
+        # The merged trio feeds the outputs; ``output_parameters`` stays
+        # unpopulated on the split route.
+        for name in ("u_file", "hr_file", "centres_file"):
+            assert wg.outputs[name]._links, name
+        assert not wg.outputs["output_parameters"]._links
         assert_graph_roundtrips(wg)
 
     def test_groups_are_rebased_for_offset_blocks(

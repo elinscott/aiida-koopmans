@@ -102,12 +102,23 @@ class WannierizeOverrides(TypedDict, total=False):
     pw2wannier90: dict[str, Any]
 
 
-class WannierizedBlockProducts(TypedDict):
-    """The uniform per-block entry of the ``blocks`` output namespace.
+class _WannierizedBlockProductsRequired(TypedDict):
+    """Required part of :class:`WannierizedBlockProducts`."""
 
-    Every :func:`WannierizeBlocks` mode emits exactly this socket set per
-    block, so downstream consumers never branch on how the block was
-    Wannierised (plain vs split).
+    u_file: orm.SinglefileData
+    hr_file: orm.SinglefileData
+    centres_file: orm.SinglefileData
+    hr_retrieved: orm.FolderData
+    remote_folder: orm.RemoteData
+    nnkp_file: orm.SinglefileData
+
+
+class WannierizedBlockProducts(_WannierizedBlockProductsRequired, total=False):
+    """The flat per-block contract, and the entry shape of ``blocks``.
+
+    Every :func:`WannierizeBlocks` mode emits this socket set per block, so
+    downstream consumers never branch on how the block was Wannierised
+    (plain vs split).
 
     * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
       (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``) of the
@@ -122,39 +133,16 @@ class WannierizedBlockProducts(TypedDict):
     * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch (whole-block
       run for a split block).
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
-
-    The parsed wannier90 ``output_parameters`` is deliberately not part of
-    this contract: no namespace consumer reads it, and for a split block it
-    would describe the pre-split gauge. It stays on the per-block nested
-    graphs (:class:`WannierizeBlockOutputs`), and the parsed per-WF
-    quantities surface through the unified ``centres`` / ``spreads``
-    outputs.
+    * ``output_parameters`` -- optional: the parsed wannier90 output Dict
+      (per-WF ``wannier_functions_output`` with spreads / centres,
+      ``number_wfs``, the ``Omega_*`` decomposition). Present only when the
+      producing run's gauge is the final one, i.e. on plainly-Wannierised
+      blocks; the split route omits it rather than pad the entry with the
+      pre-split gauge's values. Absent-optional keys in a typed dynamic
+      namespace require the patched aiida-workgraph/node-graph engine (the
+      namespace-link fixes); released engines reject this contract.
     """
 
-    u_file: orm.SinglefileData
-    hr_file: orm.SinglefileData
-    centres_file: orm.SinglefileData
-    hr_retrieved: orm.FolderData
-    remote_folder: orm.RemoteData
-    nnkp_file: orm.SinglefileData
-
-
-class WannierizeBlockOutputs(TypedDict):
-    """Outputs of the single-block graph :func:`WannierizeBlock`.
-
-    * ``products`` -- the uniform :class:`WannierizedBlockProducts`
-      namespace (here the trio is always extracted from ``hr_retrieved``,
-      so both views show the same gauge). Grouped as one sub-namespace so
-      callers forward it as a single handle — per-key re-assembly of a
-      namespace destined for a dynamic entry does not survive the
-      to_dict/from_dict round-trip ``wg.run()`` performs.
-    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
-      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
-      the ``Omega_*`` decomposition), for consumers that depend on parsed
-      quantities rather than the raw retrieved files.
-    """
-
-    products: WannierizedBlockProducts
     output_parameters: orm.Dict
 
 
@@ -280,7 +268,7 @@ def WannierizeBlock(
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
-) -> WannierizeBlockOutputs:
+) -> WannierizedBlockProducts:
     """Wannierise a single projection block off the shared nscf scratch.
 
     ``overrides`` is the flat :class:`WannierizeOverrides`; this block-level
@@ -414,15 +402,13 @@ def WannierizeBlock(
         metadata={"call_link_label": "extract_wannier_products"},
     )
 
-    return WannierizeBlockOutputs(
-        products=WannierizedBlockProducts(
-            u_file=products["u_file"],
-            hr_file=products["hr_file"],
-            centres_file=products["centres_file"],
-            hr_retrieved=outputs["wannier90"]["retrieved"],
-            remote_folder=outputs["wannier90"]["remote_folder"],
-            nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
-        ),
+    return WannierizedBlockProducts(
+        u_file=products["u_file"],
+        hr_file=products["hr_file"],
+        centres_file=products["centres_file"],
+        hr_retrieved=outputs["wannier90"]["retrieved"],
+        remote_folder=outputs["wannier90"]["remote_folder"],
+        nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
         output_parameters=outputs["wannier90"]["output_parameters"],
     )
 
@@ -743,8 +729,9 @@ def WannierizeBlocks(
     # the read-only nscf scratch, so they run in parallel), collected into a
     # dict keyed by block label -> the ``blocks`` dynamic output namespace.
     # In plain mode the parsed per-block outputs feed the unify task
-    # positionally: the ``blocks`` input-list order is the band-order
-    # authority.
+    # positionally, read straight off each graph call (not off the ``blocks``
+    # entries, whose label keys would impose a sort order): the ``blocks``
+    # input-list order is the band-order authority.
     block_outputs: dict[str, Any] = {}
     collect_inputs: dict[str, Any] = {}
     for i, block in enumerate(blocks):
@@ -788,12 +775,10 @@ def WannierizeBlocks(
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
             collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
-        # Both branches group the uniform contract as a ``products``
-        # sub-namespace, forwarded here as a single handle: it keeps the
-        # modes' extra outputs off the shared contract, and per-key
-        # re-assembly of a dynamic entry does not survive the
-        # to_dict/from_dict round-trip ``wg.run()`` performs.
-        block_outputs[block["label"]] = wannierized["products"]
+        # Both per-block graphs return the flat WannierizedBlockProducts
+        # shape, forwarded whole into the entry (split-mode entries leave
+        # the optional ``output_parameters`` socket unpopulated).
+        block_outputs[block["label"]] = wannierized
 
     outputs = WannierizeBlocksOutputs(blocks=block_outputs)
     if split:

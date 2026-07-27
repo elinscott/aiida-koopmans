@@ -244,6 +244,8 @@ class TestSplitMode:
         unified arrays. Every declared socket shows up in ``wg.outputs``
         either way, so populated-ness is read off the links.
         """
+        # ``output_parameters`` is declared on every entry (the optional key
+        # of the flat contract); split mode leaves it unpopulated at runtime.
         expected_entry = {
             "u_file",
             "hr_file",
@@ -251,6 +253,7 @@ class TestSplitMode:
             "hr_retrieved",
             "remote_folder",
             "nnkp_file",
+            "output_parameters",
         }
 
         wg = self._build_split(
@@ -638,8 +641,8 @@ class TestWannierizeBlockBuild:
             fake_cutoffs_family.label,
         )
         assert "extract_wannier_products" in [t.name for t in wg.tasks]
-        for name in ("u_file", "hr_file", "centres_file"):
-            assert wg.outputs["products"][name]._links, name
+        for name in ("u_file", "hr_file", "centres_file", "output_parameters"):
+            assert wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
 
