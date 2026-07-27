@@ -219,7 +219,7 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
 
 
 @task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
-def extract_wannier_products(retrieved: orm.FolderData) -> dict:
+def extract_wannier_output_files(retrieved: orm.FolderData) -> dict:
     """Pull the gauge-product trio out of a wannier90 ``retrieved`` folder.
 
     Wraps ``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz`` as
@@ -393,15 +393,15 @@ def WannierizeBlock(
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 
-    products = extract_wannier_products(
+    output_files = extract_wannier_output_files(
         retrieved=outputs["wannier90"]["retrieved"],
-        metadata={"call_link_label": "extract_wannier_products"},
+        metadata={"call_link_label": "extract_wannier_output_files"},
     )
 
     return WannierizeBlockOutputs(
-        u_file=products["u_file"],
-        hr_file=products["hr_file"],
-        centres_file=products["centres_file"],
+        u_file=output_files["u_file"],
+        hr_file=output_files["hr_file"],
+        centres_file=output_files["centres_file"],
         retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
@@ -557,12 +557,12 @@ def WannierizeBlocks(
     into the unified ``centres`` / ``spreads`` outputs
     (:func:`collect_wannier_functions`).
 
-    The automated block-splitting mode switches on when splitting can
-    actually be needed: a gap threshold was requested (``split_threshold``),
-    or any block uses automatic projections, whose band grouping only exists
-    at runtime (that arm is forward-looking — no caller routes automatic
-    blocks through here yet). In split mode a pw.x ``bands`` step runs along
-    the required ``bands_kpoints`` off the internal scf density, the runtime
+    The automated block-splitting mode triggers when a gap threshold was
+    requested (``split_threshold``) or when any block uses automatic
+    projections, whose band grouping only exists at runtime (that arm is
+    forward-looking — no caller routes automatic blocks through here yet).
+    In split mode a pw.x ``bands`` step runs along the required
+    ``bands_kpoints`` off the internal scf density, the runtime
     ``detect_band_groups`` task turns the eigenvalues into energy-separated
     groups (always splitting at the occupied/empty boundary
     ``num_occ_bands``, and at every gap wider than ``split_threshold`` eV),

@@ -388,7 +388,7 @@ class TestCollectWannierFunctions:
 
 
 # ----------------------------------------------------------------------
-# extract_wannier_products (raw callable, no engine)
+# extract_wannier_output_files (raw callable, no engine)
 # ----------------------------------------------------------------------
 
 
@@ -405,21 +405,21 @@ class TestExtractWannierProducts:
         return folder.store()
 
     def test_extracts_the_trio(self, aiida_profile):
-        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_products
+        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_output_files
 
         folder = self._folder(["aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz"])
-        products = extract_wannier_products._callable(retrieved=folder)
+        products = extract_wannier_output_files._callable(retrieved=folder)
         assert products["u_file"].filename == "aiida_u.mat"
         assert products["u_file"].get_content() == "<aiida_u.mat>"
         assert products["hr_file"].get_content() == "<aiida_hr.dat>"
         assert products["centres_file"].get_content() == "<aiida_centres.xyz>"
 
     def test_missing_file_raises(self, aiida_profile):
-        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_products
+        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_output_files
 
         folder = self._folder(["aiida_u.mat"])
         with pytest.raises(ValueError, match=r"aiida_hr\.dat"):
-            extract_wannier_products._callable(retrieved=folder)
+            extract_wannier_output_files._callable(retrieved=folder)
 
 
 # ----------------------------------------------------------------------
@@ -639,7 +639,7 @@ class TestWannierizeBlockBuild:
             block,
             fake_cutoffs_family.label,
         )
-        assert "extract_wannier_products" in [t.name for t in wg.tasks]
+        assert "extract_wannier_output_files" in [t.name for t in wg.tasks]
         # The plain block populates the full contract, optional keys included.
         for name in (
             "u_file",
