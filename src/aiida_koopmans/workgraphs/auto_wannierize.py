@@ -26,6 +26,7 @@ blocks and a single spin channel. Implicit/automatic projections and the
 
 from __future__ import annotations
 
+import copy
 import io
 from typing import Annotated, Any, TypedDict
 
@@ -126,9 +127,11 @@ def add_bands_step(
     # parameter inside ``get_builder_from_protocol``, which needs a plain str.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
-    bands_overrides = dict(nscf_overrides or {})
-    # The seed comes from the caller's nscf overrides; a calculation type
-    # riding along in it is seed residue, not a conflict with this step.
+    # Deep-copy the seed: the shared assembly stamps this step's calculation
+    # type into the overrides, which must never leak into the caller's nscf
+    # override through shared nested dicts.
+    bands_overrides = copy.deepcopy(dict(nscf_overrides or {}))
+    # A calculation type riding along in the seed is residue, not a conflict.
     bands_overrides.get("pw", {}).get("parameters", {}).get("CONTROL", {}).pop("calculation", None)
     if pseudo_family is not None:
         bands_overrides.setdefault("pseudo_family", pseudo_family)

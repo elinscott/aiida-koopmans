@@ -667,3 +667,38 @@ def test_unknown_parallelization_code_raises(wannier_codes, silicon_structure, k
             mp_grid=[2, 2, 2],
             parallelization={"pww": {"npool": 2}},
         )
+
+
+def test_bands_seed_does_not_mutate_the_nscf_override(
+    auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+):
+    """The bands step's calculation stamp must not leak into the caller's dict.
+
+    The bands step is seeded from the nscf override; stamping its own
+    calculation type through shared nested dicts previously rewrote the
+    captured nscf CONTROL to 'bands', which the nscf step's own enforcement
+    then rejected at run start.
+    """
+    from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
+
+    nscf_override = {"pw": {"parameters": {"CONTROL": {"tstress": True}, "SYSTEM": {"nbnd": 12}}}}
+    overrides = {"nscf": nscf_override}
+    wg = WannierizeBlocks.build(
+        codes=auto_codes,
+        structure=silicon_structure,
+        blocks=_silicon_blocks(),
+        kpoints=kmesh,
+        mp_grid=[2, 2, 2],
+        bands_kpoints=kpath,
+        num_occ_bands=4,
+        split_threshold=2.0,
+        pseudo_family=fake_cutoffs_family.label,
+        overrides=overrides,
+    )
+    # The caller's dict is untouched...
+    assert "calculation" not in nscf_override["pw"]["parameters"]["CONTROL"]
+    # ...and the captured nscf override of the scf_nscf task carries no
+    # bands leak (the deferred nscf enforcement would raise on it).
+    captured = wg.tasks.scf_nscf.inputs.overrides.value
+    control = captured["nscf"]["pw"]["parameters"]["CONTROL"]
+    assert control.get("calculation") != "bands"
