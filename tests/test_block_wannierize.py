@@ -670,6 +670,73 @@ class TestWannierizeBlockBuild:
         assert inputpp["INPUTPP"]["atom_proj"] is True
         assert_graph_roundtrips(wg)
 
+    def test_semicore_exclusions_stay_out(
+        self,
+        monkeypatch,
+        wannier_codes,
+        silicon_structure,
+        kmesh,
+        nscf_scratch,
+        fake_cutoffs_family,
+    ):
+        """A curated semicore table must not leak into the block's inputs.
+
+        With semicore handling active, the upstream protocol would exclude
+        the semicore bands and shrink the pw2wannier90 atomic-projector set
+        (``atom_proj_exclude``) — both behind the block bookkeeping's back.
+        The bundled tables match pseudos by md5, so a curated entry is
+        simulated by patching the lookup.
+        """
+        import aiida_wannier90_workflows.utils.pseudo as upstream_pseudo
+
+        monkeypatch.setattr(
+            upstream_pseudo,
+            "get_pseudo_orbitals",
+            lambda *args, **kwargs: {"Si": {"pswfcs": ["3S", "3P"], "semicores": ["3S"]}},
+        )
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert "exclude_bands" not in params
+        assert params["num_wann"] == 8
+        inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
+        assert "atom_proj_exclude" not in inputpp["INPUTPP"]
+
+    def test_no_exclusion_block_drops_global_exclude_bands(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A global ``exclude_bands`` override must not stick to a no-exclusion block.
+
+        The flat ``wannier90`` overrides apply to every block, but the block
+        bookkeeping is the exclusion authority: a block that excludes
+        nothing drops the seeded key.
+        """
+        block = explicit_block("block_1", range(1, 5))
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"exclude_bands": [9, 10]}},
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert "exclude_bands" not in params
+
     def test_disentangling_block_gets_the_default_iteration_budget(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
