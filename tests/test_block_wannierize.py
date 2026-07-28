@@ -293,6 +293,41 @@ class TestSplitMode:
         assert not plain.outputs["groups"]._links
         assert_graph_roundtrips(plain)
 
+    def test_automatic_block_split_topology(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """A single atomic-projector block routes through the split machinery.
+
+        No threshold is set: the automatic block is the trigger on its own,
+        and the detection still runs (it always opens a group at the
+        occupied/empty boundary).
+        """
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert names.count("detect_band_groups") == 1
+        assert "wannierize_split_block_1" in names
+        detect_task = wg.tasks["detect_band_groups"]
+        # The detection covers the block's Wannierised manifold; with no
+        # threshold only the occupied/empty boundary splits it.
+        assert detect_task.inputs["num_bands_total"].value == 8
+        assert detect_task.inputs["threshold"].value is None
+        for populated in ("bands", "groups", "centres", "spreads"):
+            assert wg.outputs[populated]._links, populated
+        assert_graph_roundtrips(wg)
+
 
 # ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)
@@ -601,6 +636,39 @@ class TestWannierizeBlockBuild:
         assert params["write_u_matrices"] is True
         assert params["write_xyz"] is True
         assert "mp_grid" not in params
+
+    def test_automatic_block_relies_on_the_projection_type(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """An atomic-projector block sets ``auto_projections``, no orbital list.
+
+        The block's counts stay authoritative: no protocol-seeded
+        ``exclude_bands`` survives, and the pw2wannier90 namelist carries the
+        matching ``atom_proj`` so the amn width equals ``num_wann``.
+        """
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert params["auto_projections"] is True
+        assert params["num_wann"] == 8
+        assert params["num_bands"] == 8
+        assert "exclude_bands" not in params
+        assert task.inputs["wannier90"]["wannier90"]["projections"].value is None
+        inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
+        assert inputpp["INPUTPP"]["atom_proj"] is True
+        assert_graph_roundtrips(wg)
 
     def test_disentangling_block_gets_the_default_iteration_budget(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family

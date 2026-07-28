@@ -308,6 +308,12 @@ def WannierizeBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
+        # The block's own bookkeeping (num_wann / num_bands / include_bands /
+        # exclude_bands) is the single band-structure authority: the protocol
+        # must not inject semicore ``exclude_bands`` behind its back, nor
+        # shrink the pw2wannier90 atomic-projector set (``atom_proj_exclude``)
+        # that fixes an automatic block's ``num_wann``.
+        exclude_semicore=False,
         # The hamiltonian-retrieval protocol override sets ``write_hr`` /
         # ``write_tb`` and the hr retrieve handling.
         retrieve_hamiltonian=True,
@@ -324,6 +330,10 @@ def WannierizeBlock(
     w90_params["num_bands"] = w90_kwargs["num_bands"]
     if "exclude_bands" in w90_kwargs:
         w90_params["exclude_bands"] = w90_kwargs["exclude_bands"]
+    else:
+        # A block that excludes nothing must not inherit an exclusion the
+        # protocol machinery may have seeded.
+        w90_params.pop("exclude_bands", None)
     # Per-block disentanglement handling: a block with extra bands genuinely
     # disentangles, so give it wannier90's real default iteration budget (the
     # aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
@@ -559,8 +569,7 @@ def WannierizeBlocks(
 
     The automated block-splitting mode triggers when a gap threshold was
     requested (``split_threshold``) or when any block uses automatic
-    projections, whose band grouping only exists at runtime (that arm is
-    forward-looking — no caller routes automatic blocks through here yet).
+    projections, whose band grouping only exists at runtime.
     In split mode a pw.x ``bands`` step runs along the required
     ``bands_kpoints`` off the internal scf density, the runtime
     ``detect_band_groups`` task turns the eigenvalues into energy-separated

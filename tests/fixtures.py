@@ -257,8 +257,8 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def automatic_block(label, include, spin=None):
-    """Build a minimal automatic (SCDM) projection block over ``include`` bands."""
+def automatic_block(label, include, spin=None, projection_type=None):
+    """Build a minimal automatic projection block over ``include`` bands (SCDM default)."""
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
     from aiida_koopmans.types import AutomaticProjectionBlock, SpinChannel
@@ -270,7 +270,7 @@ def automatic_block(label, include, spin=None):
         num_wann=n,
         num_bands=n,
         include_bands=list(include),
-        projection_type=WannierProjectionType.SCDM,
+        projection_type=WannierProjectionType.SCDM if projection_type is None else projection_type,
     )
 
 
