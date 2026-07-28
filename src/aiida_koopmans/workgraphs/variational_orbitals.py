@@ -19,17 +19,29 @@ that is a plain ``dict`` at runtime so ``list[VariationalOrbital]``
 survives ``aiida-workgraph``'s storage path. The string form
 (``f"up_orb_5"`` etc.) is only ever produced via :func:`map_key_for`
 at the per-orbital fan-out boundary; it is never parsed back.
+
+Every grouping criterion is a view of one object: the partition of the
+orbitals into screening-equivalence groups, encoded in ``group_id``.
+:func:`refine_by_key` (exact categorical splits) and
+:func:`refine_by_scalar` (per-group sort-and-cut with a tolerance) only
+ever split existing groups, never merge them, so exact refinements
+compose in any order and both operators are idempotent. Apply every
+exact refinement before the scalar one, so a tolerance chain cannot
+bridge across a categorical boundary.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, TypedDict
+import math
+from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.types import SpinChannel, VariationalOrbital, map_key_for
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable, Sequence
+
     import numpy as np
 
 
@@ -191,6 +203,113 @@ def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
         if o["group_id"] not in seen:
             seen.add(o["group_id"])
             o["representative"] = True
+
+
+def _renumber_and_stamp(
+    orbitals: list[VariationalOrbital], subkeys: list[Hashable]
+) -> list[VariationalOrbital]:
+    """Copy ``orbitals`` with group ids assigned canonically from ``subkeys``.
+
+    Orbitals sharing a subkey share a group. Ids are renumbered by first
+    appearance in list order (the first orbital's group is 1, ids are
+    contiguous), and ``representative`` flags are restamped via
+    :func:`_stamp_representatives` so every group carries exactly one
+    representative. The input list and its dicts are left untouched.
+    """
+    out = [cast("VariationalOrbital", dict(o)) for o in orbitals]
+    numbering: dict[Hashable, int] = {}
+    for o, subkey in zip(out, subkeys, strict=True):
+        o["group_id"] = numbering.setdefault(subkey, len(numbering) + 1)
+    _stamp_representatives(out)
+    return out
+
+
+def refine_by_key(
+    orbitals: list[VariationalOrbital],
+    key: str | Sequence[Hashable],
+) -> list[VariationalOrbital]:
+    """Split every existing group by equality of a categorical property.
+
+    ``key`` is either the name of a :class:`~aiida_koopmans.types.VariationalOrbital`
+    field (``"filled"``, ``"spin"``, ``"manifold"``, ...) or an explicit
+    per-orbital sequence of hashable labels aligned with ``orbitals``
+    (e.g. user-supplied group membership). Two orbitals stay in the same
+    group only if they already shared one *and* their labels compare
+    equal — a label shared across two existing groups never merges them,
+    which gives user-supplied groups intersection semantics.
+
+    Return a new list (inputs untouched) with group ids renumbered
+    canonically and representatives restamped. Raise ``ValueError`` when
+    a named field is absent from any orbital or an explicit label
+    sequence does not match ``orbitals`` in length.
+    """
+    if isinstance(key, str):
+        missing = [i for i, o in enumerate(orbitals) if key not in o]
+        if missing:
+            raise ValueError(
+                f"Cannot refine by {key!r}: orbital(s) at position(s) {missing} "
+                f"carry no {key!r} field."
+            )
+        labels: list[Hashable] = [o[key] for o in orbitals]  # type: ignore[literal-required]
+    else:
+        labels = list(key)
+        if len(labels) != len(orbitals):
+            raise ValueError(f"Got {len(labels)} labels for {len(orbitals)} orbitals.")
+    subkeys = cast(
+        "list[Hashable]",
+        [(o["group_id"], label) for o, label in zip(orbitals, labels, strict=True)],
+    )
+    return _renumber_and_stamp(orbitals, subkeys)
+
+
+def refine_by_scalar(
+    orbitals: list[VariationalOrbital],
+    values: Sequence[float],
+    tol: float,
+) -> list[VariationalOrbital]:
+    """Split every existing group where its sorted scalar values gap by more than ``tol``.
+
+    Sort each group's members by their value and cut wherever adjacent
+    values differ by more than ``tol``; the connected runs become the
+    subgroups (single-linkage clustering). A gap of exactly ``tol``
+    does not cut. Groups are processed independently, so a value
+    belonging to another group can never bridge two members of this one
+    — apply after all exact refinements (:func:`refine_by_key`).
+
+    ``values`` is aligned with ``orbitals`` (one scalar per orbital,
+    e.g. self-Hartree energies or Wannier spreads). Return a new list
+    (inputs untouched) with group ids renumbered canonically and
+    representatives restamped. Raise ``ValueError`` when ``tol`` is not
+    positive, the lengths mismatch, or any value is non-finite.
+    """
+    if not tol > 0:
+        raise ValueError(f"tol must be positive, got {tol!r}.")
+    if len(values) != len(orbitals):
+        raise ValueError(f"Got {len(values)} values for {len(orbitals)} orbitals.")
+    vals = [float(v) for v in values]
+    bad = [i for i, v in enumerate(vals) if not math.isfinite(v)]
+    if bad:
+        raise ValueError(f"Non-finite scalar value(s) at position(s) {bad}.")
+
+    positions_by_group: dict[int, list[int]] = {}
+    for pos, o in enumerate(orbitals):
+        positions_by_group.setdefault(o["group_id"], []).append(pos)
+
+    cut_label = [0] * len(orbitals)
+    for positions in positions_by_group.values():
+        run = 0
+        prev: float | None = None
+        for pos in sorted(positions, key=lambda p: vals[p]):
+            if prev is not None and vals[pos] - prev > tol:
+                run += 1
+            cut_label[pos] = run
+            prev = vals[pos]
+
+    subkeys = cast(
+        "list[Hashable]",
+        [(o["group_id"], cut_label[pos]) for pos, o in enumerate(orbitals)],
+    )
+    return _renumber_and_stamp(orbitals, subkeys)
 
 
 # ----------------------------------------------------------------------
