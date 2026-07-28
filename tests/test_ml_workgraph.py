@@ -65,6 +65,7 @@ class TestTrajectoryGraphBuild:
         from aiida_koopmans.workgraphs.ml import TrajectoryWorkflow
 
         snapshots = {f"snapshot_{i + 1}": ozone_structure for i in range(n_snapshots)}
+        ml_kwargs.setdefault("init_orbitals", VariationalOrbitalType.KOHN_SHAM)
         return TrajectoryWorkflow.build(
             code=kcp_code,
             snapshots=snapshots,
@@ -75,7 +76,6 @@ class TestTrajectoryGraphBuild:
             nspin=2,
             tot_magnetization=None,
             correction=Correction.KI,
-            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
@@ -155,10 +155,11 @@ class TestTrajectoryGraphBuild:
                 ml_mode="test",
             )
 
-    def test_orbital_density_descriptor_raises(
+    def test_orbital_density_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        with pytest.raises(NotImplementedError, match="orbital_density"):
+        """The KS-init route wannierizes nothing, so it cannot feed the decompose pass."""
+        with pytest.raises(ValueError, match="init_orbitals"):
             self._build_wg(
                 ozone_structure=ozone_structure,
                 kcp_code=kcp_code,
@@ -166,6 +167,49 @@ class TestTrajectoryGraphBuild:
                 ml_mode="train",
                 descriptor="orbital_density",
             )
+
+    def test_orbital_density_without_code_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The Wannier route still needs a decompose-capable pw2wannier90.x."""
+        with pytest.raises(ValueError, match="pw2wannier90_code"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="train",
+                descriptor="orbital_density",
+                init_orbitals=VariationalOrbitalType.MLWFS,
+            )
+
+    def test_orbital_density_routes_to_decompose_segment(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
+    ):
+        """`orbital_density` swaps the self-Hartree extraction for the decompose segment.
+
+        The discriminator against a guard flip that silently keeps the old
+        descriptor: assert the per-snapshot dataset comes from
+        ``OrbitalDensityDatasetWorkflow`` and that no
+        ``extract_snapshot_dataset`` survives anywhere in the graph.
+        """
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="train",
+            descriptor="orbital_density",
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            pw2wannier90_code=p2w,
+        )
+        names = _all_task_names(wg)
+
+        assert any("descriptors_snapshot_1" in n for n in names), names
+        assert any("descriptors_snapshot_2" in n for n in names), names
+        assert not any("extract_snapshot_dataset" in n for n in names), names
+        assert sum(1 for n in names if "train_screening_model" in n) == 1, names
 
     def test_unknown_ml_mode_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
         with pytest.raises(ValueError, match="ml_mode"):

@@ -84,6 +84,11 @@ class MlwfInitializationOutputs(TypedDict):
     * ``block_wannierizations`` — the per-block Wannierisation outputs
       (keyed by block label), each holding the ``retrieved`` folder with
       ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
+    * ``merge_groups`` — the ``(filled, spin, blocks)`` partition these
+      blocks were grouped into. It fixes the band order of every
+      per-manifold quantity downstream, so consumers that must line up
+      per-orbital data with the manifolds take it from here rather than
+      re-deriving it.
     """
 
     remote_folder: orm.RemoteData
@@ -92,6 +97,26 @@ class MlwfInitializationOutputs(TypedDict):
     report: dict
     nscf_remote_folder: orm.RemoteData
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    merge_groups: list
+
+
+@task
+def emit_merge_groups(merge_groups: list) -> list:
+    """Expose the block partition as a graph output socket.
+
+    A ``@task.graph`` can only return sockets, so the partition computed in
+    the body passes through here on its way out. Spin channels are
+    normalised to their plain string values so the payload survives the
+    round trip through the socket unchanged.
+    """
+    return [
+        {
+            "filled": group["filled"],
+            "spin": SpinChannel(group["spin"]).value,
+            "blocks": group["blocks"],
+        }
+        for group in merge_groups
+    ]
 
 
 @task(deserializers=_BANDS_DESERIALIZERS)
@@ -366,4 +391,7 @@ def MlwfInitialization(
         report=report.result,
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
         block_wannierizations=wannierize["blocks"],
+        merge_groups=emit_merge_groups(
+            merge_groups=merge_groups, metadata={"call_link_label": "merge_groups"}
+        ).result,
     )
