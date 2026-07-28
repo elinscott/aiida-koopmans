@@ -131,7 +131,7 @@ def _fake_block_wannier(blocks, aiida_localhost):
         folder.put_object_from_bytes(b"chk", "aiida.chk")
         folder.put_object_from_bytes(b"hr", "aiida_hr.dat")
         namespace[block["label"]] = {
-            "hr_retrieved": folder.store(),
+            "retrieved": folder.store(),
             "remote_folder": RemoteData(
                 computer=aiida_localhost, remote_path=f"/fake/{block['label']}"
             ).store(),

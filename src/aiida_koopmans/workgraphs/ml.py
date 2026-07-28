@@ -187,7 +187,7 @@ def evaluate_screening_model(
 
 
 @task.calcfunction(outputs=["u_mat", "centres_xyz", "centres_file"])
-def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
+def extract_decompose_inputs(retrieved: orm.FolderData) -> dict:
     """Lift the wannier90 read-back files out of a block's retrieved folder.
 
     The per-block wannierization (with the ``wannier-product-retrieval``
@@ -197,7 +197,7 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
     group-density ``centres_file`` (every Wannier centre) so the group
     density is decomposed about each orbital's own centre.
     """
-    names = hr_retrieved.base.repository.list_object_names()
+    names = retrieved.base.repository.list_object_names()
     for filename in ("aiida_u.mat", "aiida_centres.xyz"):
         if filename not in names:
             raise FileNotFoundError(
@@ -206,12 +206,12 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
                 "(write_u_matrices / write_xyz)."
             )
 
-    with hr_retrieved.base.repository.open("aiida_u.mat", "rb") as handle:
+    with retrieved.base.repository.open("aiida_u.mat", "rb") as handle:
         u_mat = orm.SinglefileData(handle, filename="aiida_u.mat")
-    with hr_retrieved.base.repository.open("aiida_centres.xyz", "rb") as handle:
+    with retrieved.base.repository.open("aiida_centres.xyz", "rb") as handle:
         centres_xyz = orm.SinglefileData(handle, filename="aiida_centres.xyz")
 
-    xyz_content = hr_retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
+    xyz_content = retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
     centres = ml_helpers.parse_wannier_centres_xyz(xyz_content)
     if not centres:
         raise ValueError(
@@ -227,7 +227,7 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
 
 
 @task.calcfunction
-def extract_u_dis_mat(hr_retrieved: orm.FolderData) -> orm.SinglefileData:
+def extract_u_dis_mat(retrieved: orm.FolderData) -> orm.SinglefileData:
     """Lift the wannier90 disentanglement matrix out of a block's retrieved folder.
 
     Called only for a manifold the caller's block metadata marks as
@@ -235,7 +235,7 @@ def extract_u_dis_mat(hr_retrieved: orm.FolderData) -> orm.SinglefileData:
     without ``<seed>_u_dis.mat`` in that case, so a missing file here is a
     hard error rather than an optional-input skip.
     """
-    names = hr_retrieved.base.repository.list_object_names()
+    names = retrieved.base.repository.list_object_names()
     if "aiida_u_dis.mat" not in names:
         raise FileNotFoundError(
             "``aiida_u_dis.mat`` is missing from the wannier90 retrieved folder, but "
@@ -243,7 +243,7 @@ def extract_u_dis_mat(hr_retrieved: orm.FolderData) -> orm.SinglefileData:
             "(num_bands > num_wann). Check that the block wannierization forced its "
             "retrieval (write_u_matrices)."
         )
-    with hr_retrieved.base.repository.open("aiida_u_dis.mat", "rb") as handle:
+    with retrieved.base.repository.open("aiida_u_dis.mat", "rb") as handle:
         return orm.SinglefileData(handle, filename="aiida_u_dis.mat")
 
 
@@ -374,17 +374,17 @@ def OrbitalDensityDatasetWorkflow(
     decompose_parameters: dict | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> OrbitalDensityDatasetOutputs:
-    """Build one snapshot's orbital-density dataset from its Wannierisation.
+    """Build one snapshot's orbital-density dataset from its Wannierization.
 
     Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
-    projection block (each block's ``hr_retrieved`` folder and ``nnkp_file``
+    projection block (each block's ``retrieved`` folder and ``nnkp_file``
     from ``block_wannierizations``, all against the shared
     ``nscf_remote_folder``), then gathers the per-block power-spectrum
     descriptors and aligns them with ``alphas`` in ``merge_groups`` order.
 
-    Each block's decompose pass is staged from that block's own Wannierisation:
+    Each block's decompose pass is staged from that block's own Wannierization:
     the required ``nnkp`` file threads straight from ``nnkp_file``; the U_dis
-    matrix is lifted from ``hr_retrieved`` and wired only when the block's
+    matrix is lifted from ``retrieved`` and wired only when the block's
     metadata marks the manifold as disentangling (``num_bands`` > ``num_wann``);
     and the ``spin_component`` namelist key is set per group from the manifold's
     spin channel so an nspin=2 scratch is read one channel at a time.
@@ -403,7 +403,7 @@ def OrbitalDensityDatasetWorkflow(
         spin_component = _spin_component(group["spin"])
         for block in group["blocks"]:
             label = block["label"]
-            products = extract_decompose_inputs(block_wannierizations[label]["hr_retrieved"])
+            products = extract_decompose_inputs(block_wannierizations[label]["retrieved"])
             decompose_inputs: dict[str, Any] = {
                 "code": code,
                 "parent_folder": nscf_remote_folder,
@@ -426,7 +426,7 @@ def OrbitalDensityDatasetWorkflow(
             # counts, never probed from the retrieved folder.
             if _block_disentangles(block):
                 decompose_inputs["u_dis_mat"] = extract_u_dis_mat(
-                    block_wannierizations[label]["hr_retrieved"]
+                    block_wannierizations[label]["retrieved"]
                 ).result
             merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)

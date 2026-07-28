@@ -12,7 +12,7 @@ as a dynamic output namespace.
 
 Per-block file staging that the supercell fold consumes:
 
-* ``hr_retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
+* ``retrieved`` -- the wannier90 ``retrieved`` :class:`~aiida.orm.FolderData`,
   which holds ``aiida_hr.dat`` (the real-space Hamiltonian, written because
   ``write_hr=True``) plus ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
   and, for disentangling blocks, ``aiida_u_dis.mat``. All but ``aiida.chk``
@@ -37,11 +37,19 @@ band-ordered ``centres`` and ``spreads`` arrays concatenated across all
 blocks by :func:`collect_wannier_functions`. Band order is taken from the
 input ``blocks`` list order — the single authority — never reconstructed
 from block labels or output-namespace keys.
+
+:func:`WannierizeBlocks` also carries an optional split mode (triggered by a
+``bands_kpoints`` input): a pw.x ``bands`` run feeds a runtime band-group
+detection, and each block is handled by the automated block-splitting chain
+of :mod:`aiida_koopmans.workgraphs.auto_wannierize` instead of a plain
+:func:`WannierizeBlock`. The split machinery is lazy-imported inside the
+graph body: it depends on ``aiida-wannierjl``, which the plain mode must not
+require.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
@@ -51,7 +59,11 @@ from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
-from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
@@ -91,23 +103,54 @@ class WannierizeOverrides(TypedDict, total=False):
 
 
 class WannierizeBlockOutputs(TypedDict):
-    """Per-block Wannierisation outputs that the supercell fold reads.
+    """The flat per-block contract, and the entry shape of ``blocks``.
 
-    * ``hr_retrieved`` -- wannier90 ``retrieved`` FolderData (holds
+    Every :func:`WannierizeBlocks` mode declares this socket set per block,
+    and a field never changes meaning per route: anything that would (the
+    whole-block run's folders, whose product files describe the pre-split
+    gauge on the split route) is populated on the plain route only. If a
+    split consumer someday needs the whole-block artifacts, they get
+    explicitly named new optional fields — never overloaded ones.
+
+    Always populated, always the entry's *final* gauge:
+
+    * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
+      (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``):
+      extracted from the wannier90 ``retrieved`` folder for a
+      plainly-Wannierised block, merged block-diagonally from the per-group
+      runs for a split one.
+    * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
+      run (gauge-independent, hence shared by both routes).
+    * ``output_parameters`` -- the parsed wannier90 output Dict, holding at
+      least the per-WF ``wannier_functions_output`` table (spreads /
+      centres, 1-based block-wide ``wf_ids``) and ``number_wfs``: the
+      producing run's Dict for a plainly-Wannierised block, the per-group
+      parsed outputs concatenated in band order for a split one (whose
+      merged Dict carries only the honestly mergeable keys).
+
+    Populated on the plain route only, because on the split route no folder
+    of the final gauge exists (the whole-block run's folders describe the
+    pre-split gauge, and a field never changes meaning). Split entries
+    leave them unpopulated (consumers read ``None`` at runtime, not a
+    ``KeyError``), so e.g. a decompose-style consumer reading ``retrieved``
+    off a split entry fails loudly instead of silently working with the
+    pre-split gauge. All current readers of these fields (``RunDFPT``,
+    ``FoldToSupercell``, the decompose dataset route) are fed by plain-mode
+    ``WannierizeBlocks`` calls, so none is affected:
+
+    * ``retrieved`` -- the wannier90 ``retrieved`` FolderData (holds
       ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
       and, when the block disentangles, ``aiida_u_dis.mat``).
-    * ``remote_folder`` -- wannier90 ``RemoteData`` scratch.
-    * ``nnkp_file`` -- ``aiida.nnkp`` SinglefileData from the ``-pp`` run.
-    * ``output_parameters`` -- the parsed wannier90 output Dict (per-WF
-      ``wannier_functions_output`` with spreads / centres, ``number_wfs``,
-      the ``Omega_*`` decomposition), for consumers that depend on parsed
-      quantities rather than the raw retrieved files.
+    * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
     """
 
-    hr_retrieved: orm.FolderData
-    remote_folder: orm.RemoteData
+    u_file: orm.SinglefileData
+    hr_file: orm.SinglefileData
+    centres_file: orm.SinglefileData
     nnkp_file: orm.SinglefileData
     output_parameters: orm.Dict
+    retrieved: NotRequired[orm.FolderData]
+    remote_folder: NotRequired[orm.RemoteData]
 
 
 class CollectedWannierFunctions(TypedDict):
@@ -125,34 +168,31 @@ class CollectedWannierFunctions(TypedDict):
     spreads: list
 
 
-class _WannierizeBlocksRequired(TypedDict):
-    """Required part of :class:`WannierizeBlocksOutputs`.
+class WannierizeBlocksOutputs(TypedDict):
+    """Outputs of :func:`WannierizeBlocks`.
 
-    Split out so ``nscf`` can be conditional: a conditionally-absent graph
-    output must be ``NotRequired`` via a ``total=False`` subclass, or the
-    socket type-check fails against the annotated source.
+    * ``blocks`` -- a dynamic namespace keyed by block label; every entry is
+      the uniform :class:`WannierizeBlockOutputs` set, identical across
+      modes, consumable downstream as a namespace.
+    * ``centres`` / ``spreads`` -- the unified, band-ordered per-WF arrays of
+      :class:`CollectedWannierFunctions`, concatenated across all blocks in
+      input-list order (every downstream code wants the unified view);
+      final-gauge in both modes.
+    * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
+      can read ``nscf["remote_folder"]`` (the nscf scratch every block was
+      built on). Absent when the caller supplied its own
+      ``nscf_remote_folder`` and the internal scf + nscf was skipped.
+    * ``bands`` / ``groups`` -- split mode only: the pw.x ``bands``-run
+      eigenvalues the grouping was detected on, and the detected 1-indexed
+      band groups (global indices).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
     centres: list
     spreads: list
-
-
-class WannierizeBlocksOutputs(_WannierizeBlocksRequired, total=False):
-    """Outputs of :func:`WannierizeBlocks`.
-
-    * ``blocks`` -- a dynamic namespace keyed by block label; each entry is
-      a :class:`WannierizeBlockOutputs`, consumable downstream as a namespace.
-    * ``centres`` / ``spreads`` -- the unified, band-ordered per-WF arrays of
-      :class:`CollectedWannierFunctions`, concatenated across all blocks in
-      input-list order (every downstream code wants the unified view).
-    * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
-      can read ``nscf["remote_folder"]`` (the nscf scratch every block was
-      built on). Absent when the caller supplied its own
-      ``nscf_remote_folder`` and the internal scf + nscf was skipped.
-    """
-
-    nscf: PwOutputs
+    nscf: NotRequired[PwOutputs]
+    bands: NotRequired[orm.BandsData]
+    groups: NotRequired[list[list[int]]]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
@@ -176,6 +216,37 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
             "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}
         }
     return builder_overrides or None
+
+
+@task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
+def extract_wannier_output_files(retrieved: orm.FolderData) -> dict:
+    """Pull the gauge-product trio out of a wannier90 ``retrieved`` folder.
+
+    Wraps ``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz`` as
+    individual :class:`~aiida.orm.SinglefileData` nodes so a plainly
+    Wannierised block exposes the same file sockets as a split one. The
+    files exist because :func:`WannierizeBlock` pins ``write_hr`` /
+    ``write_u_matrices`` / ``write_xyz`` (upstream's default retrieve
+    suffixes then pick them up). A calcfunction (not a plain ``@task``): it
+    takes an AiiDA data node, which the PyFunction deserializer refuses.
+    """
+    import io
+
+    def _single(filename: str) -> orm.SinglefileData:
+        if filename not in retrieved.base.repository.list_object_names():
+            raise ValueError(
+                f"``{filename}`` is missing from the wannier90 retrieved folder. "
+                "The wannier90 run must set ``write_hr = True``, "
+                "``write_u_matrices = True`` and ``write_xyz = True``."
+            )
+        content = retrieved.base.repository.get_object_content(filename, mode="rb")
+        return orm.SinglefileData(io.BytesIO(content), filename=filename)
+
+    return {
+        "u_file": _single("aiida_u.mat"),
+        "hr_file": _single("aiida_hr.dat"),
+        "centres_file": _single("aiida_centres.xyz"),
+    }
 
 
 @task.graph
@@ -322,8 +393,16 @@ def WannierizeBlock(
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 
+    output_files = extract_wannier_output_files(
+        retrieved=outputs["wannier90"]["retrieved"],
+        metadata={"call_link_label": "extract_wannier_output_files"},
+    )
+
     return WannierizeBlockOutputs(
-        hr_retrieved=outputs["wannier90"]["retrieved"],
+        u_file=output_files["u_file"],
+        hr_file=output_files["hr_file"],
+        centres_file=output_files["centres_file"],
+        retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
         output_parameters=outputs["wannier90"]["output_parameters"],
@@ -376,6 +455,75 @@ def collect_wannier_functions(
     return CollectedWannierFunctions(centres=centres, spreads=spreads)
 
 
+def _resolve_split_mode(
+    codes: Codes,
+    blocks: list[ProjectionBlock],
+    mp_grid: list[int] | None,
+    nscf_remote_folder: orm.RemoteData | None,
+    split_threshold: float | None,
+    bands_kpoints: orm.KpointsData | None,
+    num_occ_bands: int | None,
+    wjl_options: dict[str, Any] | None,
+    subblock_wannier90_options: dict[str, Any] | None,
+    cubic_pw2wannier90_options: dict[str, Any] | None,
+) -> bool:
+    """Decide split-vs-plain for :func:`WannierizeBlocks` and validate the inputs.
+
+    Split mode triggers on the *need* for splitting: a gap threshold was
+    requested (``split_threshold``), or a block's band groups are only
+    discovered at runtime (an automatic-projections block — no
+    ``projections`` key). ``bands_kpoints`` is a requirement of split mode,
+    not its trigger. Plain mode rejects split-only knobs rather than
+    silently ignore them; every violation raises a ``ValueError`` naming
+    the gap.
+    """
+    split = split_threshold is not None or any("projections" not in block for block in blocks)
+    if not split:
+        split_only = {
+            "bands_kpoints": bands_kpoints,
+            "num_occ_bands": num_occ_bands,
+            "wjl_options": wjl_options,
+            "subblock_wannier90_options": subblock_wannier90_options,
+            "cubic_pw2wannier90_options": cubic_pw2wannier90_options,
+        }
+        given = [name for name, value in split_only.items() if value is not None]
+        if given:
+            raise ValueError(
+                "Split-only inputs were given without a split trigger "
+                f"(`split_threshold` or an automatic-projections block): {given}; "
+                "they would be silently ignored."
+            )
+        return False
+    if bands_kpoints is None:
+        raise ValueError(
+            "Split mode requires `bands_kpoints`: the band-group detection reads "
+            "the eigenvalues of a pw.x bands run along it."
+        )
+    if num_occ_bands is None:
+        raise ValueError(
+            "Split mode requires `num_occ_bands`: the group detection always "
+            "opens a group at the occupied/empty boundary."
+        )
+    if "wannierjl" not in codes:
+        raise ValueError(
+            "Split mode requires a `wannierjl` code: the detected groups are "
+            "split with Wannier.jl parallel transport."
+        )
+    if nscf_remote_folder is not None:
+        raise ValueError(
+            "Split mode cannot build on an external `nscf_remote_folder`: the "
+            "bands step the detection reads runs off the internal scf's remote "
+            "folder, and an external nscf scratch carries no scf density to run "
+            "it from."
+        )
+    if mp_grid is None:
+        raise ValueError(
+            "Split mode requires `mp_grid`: the per-group re-Wannierisation "
+            "writes it into each sub-block `.win`."
+        )
+    return True
+
+
 @task.graph
 def WannierizeBlocks(
     codes: Codes,
@@ -390,6 +538,12 @@ def WannierizeBlocks(
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
+    split_threshold: float | None = None,
+    bands_kpoints: orm.KpointsData | None = None,
+    num_occ_bands: int | None = None,
+    wjl_options: dict[str, Any] | None = None,
+    subblock_wannier90_options: dict[str, Any] | None = None,
+    cubic_pw2wannier90_options: dict[str, Any] | None = None,
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
 
@@ -402,6 +556,24 @@ def WannierizeBlocks(
     and the per-block parsed outputs are concatenated in input-list order
     into the unified ``centres`` / ``spreads`` outputs
     (:func:`collect_wannier_functions`).
+
+    The automated block-splitting mode triggers when a gap threshold was
+    requested (``split_threshold``) or when any block uses automatic
+    projections, whose band grouping only exists at runtime (that arm is
+    forward-looking — no caller routes automatic blocks through here yet).
+    In split mode a pw.x ``bands`` step runs along the required
+    ``bands_kpoints`` off the internal scf density, the runtime
+    ``detect_band_groups`` task turns the eigenvalues into energy-separated
+    groups (always splitting at the occupied/empty boundary
+    ``num_occ_bands``, and at every gap wider than ``split_threshold`` eV),
+    and each block is handled by a nested
+    :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`
+    that receives the resolved groups and splits the block when they divide
+    it. Either way every ``blocks`` entry emits the same
+    :class:`WannierizeBlockOutputs` socket set — one final-gauge
+    ``output_parameters`` per block included — so downstream consumers
+    never branch on the mode and the unified ``centres`` / ``spreads``
+    are collected unconditionally.
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
@@ -433,14 +605,51 @@ def WannierizeBlocks(
             ``kpoints`` consistent with the scratch's k-list. This is how a
             workflow with one scratch shared *across* several
             ``WannierizeBlocks`` calls (e.g. one per spin channel) routes
-            through here without rerunning the ground state.
+            through here without rerunning the ground state. Incompatible
+            with split mode, which needs the internal scf's density for its
+            bands step.
+        split_threshold: minimum gap (eV) between consecutive bands for a
+            split; setting it is one of the two split-mode triggers.
+            ``None`` (with automatic-projections blocks supplying the other
+            trigger) splits only at the occupied/empty boundary.
+        bands_kpoints: split mode only (required there) — the k-path for
+            the pw.x ``bands`` run the group detection reads.
+        num_occ_bands: split mode only (required there) — occupied-band
+            count of the channel (the detection always opens a new group at
+            this boundary).
+        wjl_options / cubic_pw2wannier90_options: split mode only — optional
+            ``metadata.options`` for the Wannier.jl CalcJobs and the cubic
+            pw2wannier90 run. Both CalcJobs carry their own ``resources``
+            defaults, so normally leave these unset: a non-None dict
+            currently trips aiida-wannierjl's options handling inside a
+            graph body (dict graph inputs arrive as TaggedValue proxies,
+            which node-graph refuses to assign into ``metadata.options``).
+        subblock_wannier90_options: split mode only — optional
+            ``metadata.options`` for the per-group re-wannierisation
+            ``Wannier90Calculation`` (defaults to single-machine resources;
+            that CalcJob has no resources default of its own).
 
     Returns:
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
-        block label, the unified ``centres`` / ``spreads``, and (only when
-        the scf + nscf ran here) the shared ``nscf`` outputs.
+        block label, the unified ``centres`` / ``spreads`` (plain mode), the
+        ``bands`` / ``groups`` detection outputs (split mode), and (only
+        when the scf + nscf ran here) the shared ``nscf`` outputs.
     """
     overrides = overrides or {}
+    validate_parallelization(parallelization)
+
+    split = _resolve_split_mode(
+        codes=codes,
+        blocks=blocks,
+        mp_grid=mp_grid,
+        nscf_remote_folder=nscf_remote_folder,
+        split_threshold=split_threshold,
+        bands_kpoints=bands_kpoints,
+        num_occ_bands=num_occ_bands,
+        wjl_options=wjl_options,
+        subblock_wannier90_options=subblock_wannier90_options,
+        cubic_pw2wannier90_options=cubic_pw2wannier90_options,
+    )
 
     # --- shared scf + nscf (run once, or reuse the caller's scratch) ---
     if nscf_remote_folder is not None:
@@ -474,31 +683,94 @@ def WannierizeBlocks(
         )
         nscf_scratch = scf_nscf["nscf_remote_folder"]
 
+        # --- split mode: bands step + runtime group detection ---
+        # Nested under the internal scf + nscf on purpose: split mode
+        # rejects an external scratch, so the bands step always has this
+        # scf's remote folder. After validation ``bands_kpoints is not
+        # None`` is equivalent to ``split`` (the test also narrows the
+        # Optionals). The split machinery depends on aiida-wannierjl, so it
+        # is imported only on this branch; the import direction
+        # (auto_wannierize imports this module at module level, this body
+        # imports auto_wannierize lazily) avoids the cycle.
+        if bands_kpoints is not None:
+            from aiida_koopmans.workgraphs.auto_wannierize import (
+                add_bands_step,
+                detect_band_groups,
+            )
+
+            bands_outputs = add_bands_step(
+                code=codes["pw"],
+                structure=structure,
+                bands_kpoints=bands_kpoints,
+                scf_remote_folder=scf_nscf["scf_remote_folder"],
+                nscf_overrides=overrides.get("nscf"),
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                electronic_type=electronic_type,
+                parallelization=parallelization,
+            )
+            # The detection is restricted to the Wannierised manifold — the
+            # disentanglement pool above it must not influence the grouping.
+            detect = detect_band_groups(
+                bands=bands_outputs["output_band"],
+                num_occ_bands=num_occ_bands,
+                threshold=split_threshold,
+                num_bands_total=sum(int(block["num_wann"]) for block in blocks),
+            )
+
     # --- per-block Wannierisation: native for-loop fan-out ---
-    # Each iteration adds an independent ``WannierizeBlock`` (they share only
+    # Each iteration adds an independent per-block graph (they share only
     # the read-only nscf scratch, so they run in parallel), collected into a
     # dict keyed by block label -> the ``blocks`` dynamic output namespace.
-    # The parsed per-block outputs feed the unify task positionally: the
-    # ``blocks`` input-list order is the band-order authority.
-    block_outputs: dict[str, WannierizeBlockOutputs] = {}
+    # The parsed per-block outputs feed the unify task positionally, read
+    # straight off each graph call (not off the ``blocks`` entries, whose
+    # label keys would impose a sort order): the ``blocks`` input-list
+    # order is the band-order authority.
+    block_outputs: dict[str, Any] = {}
     collect_inputs: dict[str, Any] = {}
     for i, block in enumerate(blocks):
-        wannierized = WannierizeBlock(
-            codes=codes,
-            structure=structure,
-            block=block,
-            projection_type=block["projection_type"],
-            nscf_remote_folder=nscf_scratch,
-            kpoints=kpoints,
-            mp_grid=mp_grid,
-            pseudo_family=pseudo_family,
-            protocol=protocol,
-            overrides=overrides or None,
-            electronic_type=electronic_type,
-            spin_type=spin_type,
-            parallelization=parallelization,
-            metadata={"call_link_label": f"wannierize_{block['label']}"},
-        )
+        if split:
+            from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
+
+            wannierized = WannierizeAndSplitBlock(
+                codes=codes,
+                structure=structure,
+                block=block,
+                groups=detect.result,
+                nscf_remote_folder=nscf_scratch,
+                kpoints=kpoints,
+                mp_grid=mp_grid,
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                overrides=overrides or None,
+                electronic_type=electronic_type,
+                spin_type=spin_type,
+                parallelization=parallelization,
+                wjl_options=wjl_options,
+                wannier90_options=subblock_wannier90_options,
+                pw2wannier90_options=cubic_pw2wannier90_options,
+                metadata={"call_link_label": f"wannierize_split_{block['label']}"},
+            )
+        else:
+            wannierized = WannierizeBlock(
+                codes=codes,
+                structure=structure,
+                block=block,
+                projection_type=block["projection_type"],
+                nscf_remote_folder=nscf_scratch,
+                kpoints=kpoints,
+                mp_grid=mp_grid,
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                overrides=overrides or None,
+                electronic_type=electronic_type,
+                spin_type=spin_type,
+                parallelization=parallelization,
+                metadata={"call_link_label": f"wannierize_{block['label']}"},
+            )
+        # Both per-block graphs return the flat WannierizeBlockOutputs
+        # shape, forwarded whole into the entry (split-mode entries leave
+        # the plain-route-only folder sockets unpopulated).
         block_outputs[block["label"]] = wannierized
         collect_inputs[f"b{i:02d}"] = wannierized["output_parameters"]
 
@@ -506,12 +778,14 @@ def WannierizeBlocks(
         output_parameters=collect_inputs,
         metadata={"call_link_label": "collect_wannier_functions"},
     )
-
     outputs = WannierizeBlocksOutputs(
         blocks=block_outputs,
         centres=collected["centres"],
         spreads=collected["spreads"],
     )
+    if split:
+        outputs["bands"] = bands_outputs["output_band"]
+        outputs["groups"] = detect.result
     if scf_nscf is not None:
         outputs["nscf"] = PwOutputs(
             remote_folder=nscf_scratch,

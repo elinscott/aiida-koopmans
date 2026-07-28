@@ -24,7 +24,7 @@ def test_extract_decompose_inputs_emits_files_and_group_centres(aiida_profile):
     from aiida_koopmans.workgraphs.ml import extract_decompose_inputs
 
     folder = _wannierize_folder()
-    outputs, _ = extract_decompose_inputs._callable.run_get_node(hr_retrieved=folder)
+    outputs, _ = extract_decompose_inputs._callable.run_get_node(retrieved=folder)
 
     assert outputs["u_mat"].filename == "aiida_u.mat"
     assert outputs["centres_xyz"].filename == "aiida_centres.xyz"
@@ -48,7 +48,7 @@ def test_extract_decompose_inputs_missing_file_raises(aiida_profile):
     folder.store()
 
     with pytest.raises(FileNotFoundError, match=r"aiida_u\.mat"):
-        extract_decompose_inputs._callable.run_get_node(hr_retrieved=folder)
+        extract_decompose_inputs._callable.run_get_node(retrieved=folder)
 
 
 def test_extract_u_dis_mat_emits_singlefile(aiida_profile):
@@ -61,7 +61,7 @@ def test_extract_u_dis_mat_emits_singlefile(aiida_profile):
     folder.base.repository.put_object_from_filelike(io.BytesIO(b"u dis bytes"), "aiida_u_dis.mat")
     folder.store()
 
-    result, _ = extract_u_dis_mat._callable.run_get_node(hr_retrieved=folder)
+    result, _ = extract_u_dis_mat._callable.run_get_node(retrieved=folder)
 
     assert result.filename == "aiida_u_dis.mat"
     assert result.get_content() == "u dis bytes"
@@ -78,7 +78,7 @@ def test_extract_u_dis_mat_missing_file_raises(aiida_profile):
     folder.store()
 
     with pytest.raises(FileNotFoundError, match=r"aiida_u_dis\.mat"):
-        extract_u_dis_mat._callable.run_get_node(hr_retrieved=folder)
+        extract_u_dis_mat._callable.run_get_node(retrieved=folder)
 
 
 def test_orbital_density_dataset_workflow_fans_out_per_block(
@@ -106,7 +106,7 @@ def test_orbital_density_dataset_workflow_fans_out_per_block(
         )
         folder.store()
         blocks[label] = {
-            "hr_retrieved": folder,
+            "retrieved": folder,
             "remote_folder": nscf,
             "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
         }
@@ -152,7 +152,7 @@ def _block_wannierization(label, *, with_u_dis):
     )
     folder.store()
     return {
-        "hr_retrieved": folder,
+        "retrieved": folder,
         "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
     }
 
