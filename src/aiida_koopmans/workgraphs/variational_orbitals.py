@@ -1,17 +1,33 @@
 """Variational-orbital grouping for screening-parameter reuse.
 
-Cluster variational orbitals by a per-orbital scalar (default
-self-Hartree energy) so that orbitals close in that value receive a
+Group variational orbitals so that orbitals sharing a group receive a
 single representative screening-parameter calculation, with the result
 copied onto the rest of the group.
 
-The clustering uses ``scipy.cluster.hierarchy.fcluster`` with complete
+The model is a partition of the orbitals into screening-equivalence
+groups, encoded in ``group_id``; every grouping criterion is a view of
+that one object. :func:`refine_by_key` (exact categorical splits) and
+:func:`refine_by_scalar` (per-group sort-and-cut with a tolerance,
+i.e. single linkage) only ever split existing groups, never merge
+them, so exact refinements compose in any order and both operators
+are idempotent. Apply every exact refinement before the scalar one,
+so a tolerance chain cannot bridge across a categorical boundary.
+No workflow calls the operators yet — wiring them into the graphs
+comes separately.
+
+The currently-wired path is :func:`assign_orbital_groups`, which
+clusters with ``scipy.cluster.hierarchy.fcluster`` using complete
 linkage. Orbitals are partitioned by ``(spin, filled)`` first — never
 grouped across spin channels or across the filled / empty boundary.
 Within each subset, an "ill-separated" check (any inter-cluster gap
 smaller than ``2 * tol``) triggers a fallback to ``0.9 * tol`` and the
 clustering is rerun. If the tolerance shrinks below ``0.01 * default_tol``
-the algorithm raises rather than emitting unreliable groups.
+the algorithm raises rather than emitting unreliable groups. The two
+paths deliberately diverge for now: single linkage keeps
+:func:`refine_by_scalar` idempotent where complete linkage on chained
+data would not be, and the ill-separated guard has no operator
+equivalent — reconciling them is deferred to when the operators are
+wired in.
 
 Identity-of-orbital flows through this module as
 :class:`aiida_koopmans.types.VariationalOrbital` — a ``TypedDict``
@@ -19,15 +35,6 @@ that is a plain ``dict`` at runtime so ``list[VariationalOrbital]``
 survives ``aiida-workgraph``'s storage path. The string form
 (``f"up_orb_5"`` etc.) is only ever produced via :func:`map_key_for`
 at the per-orbital fan-out boundary; it is never parsed back.
-
-Every grouping criterion is a view of one object: the partition of the
-orbitals into screening-equivalence groups, encoded in ``group_id``.
-:func:`refine_by_key` (exact categorical splits) and
-:func:`refine_by_scalar` (per-group sort-and-cut with a tolerance) only
-ever split existing groups, never merge them, so exact refinements
-compose in any order and both operators are idempotent. Apply every
-exact refinement before the scalar one, so a tolerance chain cannot
-bridge across a categorical boundary.
 """
 
 from __future__ import annotations
@@ -177,9 +184,19 @@ def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
     index; for empty orbitals, walk per-spin **lowest → highest** index.
     The first orbital encountered in each group becomes its
     representative; all others are marked non-representative.
+
+    Raise ``ValueError`` when an orbital's spin is not a
+    :class:`SpinChannel` value — a spin outside the walk order would
+    otherwise leave its group with no representative at all.
     """
     seen: set[int] = set()
-    spin_order = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE)
+    spin_order = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE, SpinChannel.SPINOR)
+    unknown = {str(o["spin"]) for o in orbitals if o["spin"] not in spin_order}
+    if unknown:
+        raise ValueError(
+            f"Unrecognized spin value(s) {sorted(unknown)}; expected one of "
+            f"{[s.value for s in spin_order]}."
+        )
 
     walk_order: list[VariationalOrbital] = []
     for spin in spin_order:
@@ -203,6 +220,16 @@ def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
         if o["group_id"] not in seen:
             seen.add(o["group_id"])
             o["representative"] = True
+
+
+def _require_group_ids(orbitals: list[VariationalOrbital]) -> None:
+    """Raise ``ValueError`` when any orbital carries no ``group_id`` field."""
+    missing = [i for i, o in enumerate(orbitals) if "group_id" not in o]
+    if missing:
+        raise ValueError(
+            f"Orbital(s) at position(s) {missing} carry no 'group_id' field, "
+            f"so there is no partition to refine."
+        )
 
 
 def _renumber_and_stamp(
@@ -240,9 +267,11 @@ def refine_by_key(
 
     Return a new list (inputs untouched) with group ids renumbered
     canonically and representatives restamped. Raise ``ValueError`` when
-    a named field is absent from any orbital or an explicit label
-    sequence does not match ``orbitals`` in length.
+    a named field is absent from any orbital, an explicit label sequence
+    does not match ``orbitals`` in length, a label is unhashable, or any
+    orbital carries no ``group_id``.
     """
+    _require_group_ids(orbitals)
     if isinstance(key, str):
         missing = [i for i, o in enumerate(orbitals) if key not in o]
         if missing:
@@ -255,6 +284,13 @@ def refine_by_key(
         labels = list(key)
         if len(labels) != len(orbitals):
             raise ValueError(f"Got {len(labels)} labels for {len(orbitals)} orbitals.")
+    for pos, label in enumerate(labels):
+        try:
+            hash(label)
+        except TypeError as exc:
+            raise ValueError(
+                f"Unhashable label {label!r} at position {pos}; labels must be hashable."
+            ) from exc
     subkeys = cast(
         "list[Hashable]",
         [(o["group_id"], label) for o, label in zip(orbitals, labels, strict=True)],
@@ -271,17 +307,22 @@ def refine_by_scalar(
 
     Sort each group's members by their value and cut wherever adjacent
     values differ by more than ``tol``; the connected runs become the
-    subgroups (single-linkage clustering). A gap of exactly ``tol``
-    does not cut. Groups are processed independently, so a value
-    belonging to another group can never bridge two members of this one
-    — apply after all exact refinements (:func:`refine_by_key`).
+    subgroups (single-linkage clustering). The cut condition is a strict
+    floating-point ``>``: a gap that compares equal to ``tol`` does not
+    cut, but a decimal gap only nominally equal to ``tol`` may compare
+    greater (in IEEE-754, ``1.3 - 1.0 > 0.3``). Groups are processed
+    independently, so a value belonging to another group can never
+    bridge two members of this one — apply after all exact refinements
+    (:func:`refine_by_key`).
 
     ``values`` is aligned with ``orbitals`` (one scalar per orbital,
     e.g. self-Hartree energies or Wannier spreads). Return a new list
     (inputs untouched) with group ids renumbered canonically and
     representatives restamped. Raise ``ValueError`` when ``tol`` is not
-    positive, the lengths mismatch, or any value is non-finite.
+    positive, the lengths mismatch, any value is non-finite, or any
+    orbital carries no ``group_id``.
     """
+    _require_group_ids(orbitals)
     if not tol > 0:
         raise ValueError(f"tol must be positive, got {tol!r}.")
     if len(values) != len(orbitals):

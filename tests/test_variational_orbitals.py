@@ -119,6 +119,10 @@ class TestRefineByKey:
         with pytest.raises(ValueError, match="2 labels for 3 orbitals"):
             refine_by_key([orb(1), orb(2), orb(3)], ["a", "b"])
 
+    def test_unhashable_label_raises(self):
+        with pytest.raises(ValueError, match="Unhashable label"):
+            refine_by_key([orb(1)], [["not", "hashable"]])
+
 
 class TestRefineByScalar:
     def test_filling_boundary_not_bridged(self):
@@ -216,6 +220,33 @@ class TestRepresentatives:
         refined = refine_by_key(orbitals, "filled")
         by_position = {pos: o["representative"] for pos, o in enumerate(refined)}
         assert by_position == {0: False, 1: True, 2: True, 3: False}
+
+    def test_spinor_orbitals_get_representatives(self):
+        orbitals = [
+            orb(1, spin=SpinChannel.SPINOR),
+            orb(2, spin=SpinChannel.SPINOR),
+            orb(3, spin=SpinChannel.SPINOR, filled=False),
+        ]
+        refined = refine_by_key(orbitals, "filled")
+        for members in groups_of(refined).values():
+            reps = [pos for pos in members if refined[pos]["representative"]]
+            assert len(reps) == 1
+
+
+class TestMalformedSubstrate:
+    def test_unknown_spin_raises(self):
+        broken = orb(1)
+        broken["spin"] = "sideways"  # type: ignore[typeddict-item]
+        with pytest.raises(ValueError, match="sideways"):
+            refine_by_key([broken], "filled")
+
+    def test_missing_group_id_raises(self):
+        broken = orb(1)
+        del broken["group_id"]  # type: ignore[misc]
+        with pytest.raises(ValueError, match="group_id"):
+            refine_by_key([broken], "filled")
+        with pytest.raises(ValueError, match="group_id"):
+            refine_by_scalar([broken], [1.0], tol=0.3)
 
 
 class TestRefinementInvariant:
