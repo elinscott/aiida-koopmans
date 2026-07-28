@@ -12,7 +12,6 @@ import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import (
-    AutomaticProjectionBlock,
     ExplicitProjectionBlock,
     OrbitalDict,
     SpinChannel,
@@ -20,6 +19,7 @@ from aiida_koopmans.types import (
     group_blocks_to_merge,
     merge_dest_filename,
 )
+from tests.fixtures import automatic_block as _automatic
 
 # ----------------------------------------------------------------------
 # Block fixtures
@@ -37,19 +37,6 @@ def _explicit(label, include, spin=SpinChannel.NONE):
         include_bands=list(include),
         projection_type=WannierProjectionType.ANALYTIC,
         projections=[],  # contents irrelevant to grouping; parity tested separately
-    )
-
-
-def _automatic(label, include, spin=SpinChannel.NONE):
-    """Build a minimal AutomaticProjectionBlock (no explicit projections)."""
-    n = len(include)
-    return AutomaticProjectionBlock(
-        label=label,
-        spin=spin,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.SCDM,
     )
 
 

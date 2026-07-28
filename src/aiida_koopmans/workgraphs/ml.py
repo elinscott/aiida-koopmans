@@ -186,7 +186,7 @@ def evaluate_screening_model(
 
 
 @task.calcfunction(outputs=["u_mat", "centres_xyz", "centres_file"])
-def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
+def extract_decompose_inputs(retrieved: orm.FolderData) -> dict:
     """Lift the wannier90 read-back files out of a block's retrieved folder.
 
     The per-block wannierization (with the ``wannier-product-retrieval``
@@ -196,7 +196,7 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
     group-density ``centres_file`` (every Wannier centre) so the group
     density is decomposed about each orbital's own centre.
     """
-    names = hr_retrieved.base.repository.list_object_names()
+    names = retrieved.base.repository.list_object_names()
     for filename in ("aiida_u.mat", "aiida_centres.xyz"):
         if filename not in names:
             raise FileNotFoundError(
@@ -205,12 +205,12 @@ def extract_decompose_inputs(hr_retrieved: orm.FolderData) -> dict:
                 "(write_u_matrices / write_xyz)."
             )
 
-    with hr_retrieved.base.repository.open("aiida_u.mat", "rb") as handle:
+    with retrieved.base.repository.open("aiida_u.mat", "rb") as handle:
         u_mat = orm.SinglefileData(handle, filename="aiida_u.mat")
-    with hr_retrieved.base.repository.open("aiida_centres.xyz", "rb") as handle:
+    with retrieved.base.repository.open("aiida_centres.xyz", "rb") as handle:
         centres_xyz = orm.SinglefileData(handle, filename="aiida_centres.xyz")
 
-    xyz_content = hr_retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
+    xyz_content = retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
     centres = ml_helpers.parse_wannier_centres_xyz(xyz_content)
     if not centres:
         raise ValueError(
@@ -331,7 +331,7 @@ def OrbitalDensityDatasetWorkflow(
     """Build one snapshot's orbital-density dataset from its Wannierisation.
 
     Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
-    projection block (each block's ``hr_retrieved`` folder from
+    projection block (each block's ``retrieved`` folder from
     ``block_wannierizations``, all against the shared ``nscf_remote_folder``),
     then gathers the per-block power-spectrum descriptors and aligns them with
     ``alphas`` in ``merge_groups`` order.
@@ -349,7 +349,7 @@ def OrbitalDensityDatasetWorkflow(
     for group in merge_groups:
         for block in group["blocks"]:
             label = block["label"]
-            products = extract_decompose_inputs(block_wannierizations[label]["hr_retrieved"])
+            products = extract_decompose_inputs(block_wannierizations[label]["retrieved"])
             decompose_inputs: dict[str, Any] = {
                 "code": code,
                 "parent_folder": nscf_remote_folder,

@@ -672,7 +672,7 @@ def RunDFPT(
             per-key sockets until it runs, so callers must not subscript
             into it; this graph picks blocks out by label in its own
             deferred body (the ``FoldToSupercell`` pattern). Each entry's
-            ``hr_retrieved`` folder must hold ``aiida_u.mat`` /
+            ``retrieved`` folder must hold ``aiida_u.mat`` /
             ``aiida_hr.dat`` / ``aiida_centres.xyz``.
         occ_labels: the occupied-manifold block labels, in band order.
             Manifold membership and band order are the caller's structural
@@ -754,12 +754,12 @@ def RunDFPT(
     }
 
     prep_inputs: dict[str, Any] = {
-        f"occ_b{i:02d}": block_wannier[str(label)]["hr_retrieved"]
+        f"occ_b{i:02d}": block_wannier[str(label)]["retrieved"]
         for i, label in enumerate(occ_labels)
     }
     if emp_labels is not None:
         for i, label in enumerate(emp_labels):
-            prep_inputs[f"emp_b{i:02d}"] = block_wannier[str(label)]["hr_retrieved"]
+            prep_inputs[f"emp_b{i:02d}"] = block_wannier[str(label)]["retrieved"]
         if nbnd_emp is not None:
             prep_inputs["nbnd_emp"] = nbnd_emp
     wannier_files = prepare_kcw_wannier_files(
