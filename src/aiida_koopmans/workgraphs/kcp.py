@@ -100,15 +100,14 @@ class KoopmansDSCFOutputs(TypedDict):
     as an output, so the field is wired at the outer workflow level from the
     screening step's outputs.
 
-    Two further sockets are ``NotRequired`` because only the periodic
-    Wannier-initialisation route (``init_orbitals`` in ``mlwfs`` /
-    ``projwfs``) produces them, so the molecular Kohn-Sham route can omit
-    them without a graph-output type mismatch:
+    Only the periodic Wannier-initialization route (``init_orbitals`` in
+    ``mlwfs`` / ``projwfs``) produces the remaining two; the molecular
+    Kohn-Sham route does not wannierize:
 
     * ``nscf_remote_folder`` — the primitive-cell nscf scratch every block
-      was Wannierised off; the ``parent_folder`` a pw2wannier90
+      was Wannierized off; the ``parent_folder`` a pw2wannier90
       ``wan_mode='decompose'`` pass reads.
-    * ``block_wannierizations`` — the per-block Wannierisation outputs
+    * ``block_wannierizations`` — the per-block Wannierization outputs
       (keyed by block label), each holding the ``retrieved`` folder with
       the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
 
@@ -960,9 +959,9 @@ def KoopmansDSCFWorkflow(
 
     initial_evc_occupied1 = None
     initial_evc_occupied2 = None
-    # The primitive nscf scratch + per-block Wannierisation outputs the
+    # The primitive nscf scratch + per-block Wannierization outputs the
     # orbital_density ML descriptor route consumes; only the Wannier route
-    # produces them (the ``NotRequired`` sockets on KoopmansDSCFOutputs).
+    # produces them.
     nscf_remote_folder = None
     block_wannierizations = None
     if wannier_init:
