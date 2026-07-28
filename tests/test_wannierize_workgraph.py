@@ -9,6 +9,7 @@ absent; the graph's ``NotRequired`` outputs must link cleanly regardless.
 from __future__ import annotations
 
 from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from tests.fixtures import assert_graph_roundtrips
 
 
 class TestWannierizeGraphBuild:
@@ -28,3 +29,5 @@ class TestWannierizeGraphBuild:
         output_names = [socket._name for socket in wg.outputs]
         for expected in ("scf", "nscf", "wannier90", "wannier90_up", "wannier90_down", "projwfc"):
             assert expected in output_names, output_names
+
+        assert_graph_roundtrips(wg)
