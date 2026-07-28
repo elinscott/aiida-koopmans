@@ -25,7 +25,7 @@ Scope notes:
 
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -42,24 +42,17 @@ class DensityOfStates(TypedDict):
     dos: list[float]
 
 
-class _RequiredOutputs(TypedDict):
-    """Required outputs of :func:`UnfoldAndInterpolateTask`: the interpolated bands."""
-
-    band_energies: list[list[float]]
-
-
-class UnfoldAndInterpolateOutputs(_RequiredOutputs, total=False):
+class UnfoldAndInterpolateOutputs(TypedDict):
     """Outputs of :func:`UnfoldAndInterpolateTask`.
 
     * ``band_energies`` — the interpolated eigenvalues along the input
       k-path, one ``(n_kpoints, n_bands)`` table in eV.
-    * ``dos`` — Gaussian-smearing total DOS of those bands (only when
-      ``do_dos``; declared ``total=False`` rather than ``NotRequired`` so
-      the graph-output socket keeps an annotation the socket type-checker
-      can match).
+    * ``dos`` — Gaussian-smearing total DOS of those bands, present only
+      when ``do_dos``.
     """
 
-    dos: DensityOfStates
+    band_energies: list[list[float]]
+    dos: NotRequired[DensityOfStates]
 
 
 @task(deserializers=KOOPMANS_NODE_DESERIALIZERS)
