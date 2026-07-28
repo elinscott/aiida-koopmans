@@ -51,6 +51,36 @@ def test_extract_decompose_inputs_missing_file_raises(aiida_profile):
         extract_decompose_inputs._callable.run_get_node(retrieved=folder)
 
 
+def test_extract_u_dis_mat_emits_singlefile(aiida_profile):
+    """The calcfunction lifts ``aiida_u_dis.mat`` out of a disentangling block's folder."""
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import extract_u_dis_mat
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u dis bytes"), "aiida_u_dis.mat")
+    folder.store()
+
+    result, _ = extract_u_dis_mat._callable.run_get_node(retrieved=folder)
+
+    assert result.filename == "aiida_u_dis.mat"
+    assert result.get_content() == "u dis bytes"
+
+
+def test_extract_u_dis_mat_missing_file_raises(aiida_profile):
+    """A folder without ``aiida_u_dis.mat`` is a hard error, not a silent skip."""
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import extract_u_dis_mat
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
+    folder.store()
+
+    with pytest.raises(FileNotFoundError, match=r"aiida_u_dis\.mat"):
+        extract_u_dis_mat._callable.run_get_node(retrieved=folder)
+
+
 def test_orbital_density_dataset_workflow_fans_out_per_block(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
@@ -98,6 +128,129 @@ def test_orbital_density_dataset_workflow_fans_out_per_block(
     assert "decompose_occ" in names
     assert "decompose_emp" in names
     assert any("align_block_descriptors" in n for n in names)
+
+
+def _spin_block(label, filled, spin, num_bands, num_wann):
+    """Build a merge-group carrying the band counts the u_dis decision reads."""
+    return {
+        "filled": filled,
+        "spin": spin,
+        "blocks": [{"label": label, "num_bands": num_bands, "num_wann": num_wann}],
+    }
+
+
+def _block_wannierization(label, *, with_u_dis):
+    """Build a stored per-block WannierizeBlockOutputs-shaped namespace entry."""
+    from aiida import orm
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
+    if with_u_dis:
+        folder.base.repository.put_object_from_filelike(io.BytesIO(b"ud"), "aiida_u_dis.mat")
+    folder.base.repository.put_object_from_filelike(
+        io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
+    )
+    folder.store()
+    return {
+        "retrieved": folder,
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
+    }
+
+
+def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """The fan-out wires nnkp always, u_dis only for disentangling blocks, spin per channel.
+
+    Construction-level: an nspin=2 layout with a disentangling empty manifold
+    (num_bands > num_wann) per channel. Asserts (a) every decompose task takes
+    its block's nnkp, (b) ``spin_component`` is set from the manifold's spin
+    channel, and (c) ``extract_u_dis_mat`` fires exactly for the disentangling
+    blocks and feeds their ``u_dis_mat`` input.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+
+    labels = ("occ_up", "emp_up", "occ_down", "emp_down")
+    # Empty manifolds disentangle (num_bands 6 > num_wann 2); occupied do not.
+    disentangling = {"emp_up", "emp_down"}
+    block_wannierizations = {
+        label: _block_wannierization(label, with_u_dis=label in disentangling) for label in labels
+    }
+    merge_groups = [
+        _spin_block("occ_up", True, "up", 4, 4),
+        _spin_block("emp_up", False, "up", 6, 2),
+        _spin_block("occ_down", True, "down", 4, 4),
+        _spin_block("emp_down", False, "down", 6, 2),
+    ]
+    alphas = {
+        "filled": {"up": [0.1], "down": [0.1]},
+        "empty": {"up": [0.5], "down": [0.5]},
+    }
+
+    wg = OrbitalDensityDatasetWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations=block_wannierizations,
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+    names = [t.name for t in wg.tasks]
+
+    # (a) nnkp threaded into every decompose pass (linked from the block input).
+    for label in labels:
+        nnkp_socket = wg.tasks[f"decompose_{label}"].inputs["nnkp"]
+        assert nnkp_socket.value is not None or nnkp_socket._links, (
+            f"decompose_{label} has no nnkp wired"
+        )
+
+    # (b) spin_component set per manifold channel.
+    assert wg.tasks["decompose_occ_up"].inputs["parameters"].value["spin_component"] == "up"
+    assert wg.tasks["decompose_emp_down"].inputs["parameters"].value["spin_component"] == "down"
+
+    # (c) u_dis lifted for the disentangling manifolds only.
+    u_dis_tasks = [n for n in names if "extract_u_dis_mat" in n]
+    assert len(u_dis_tasks) == len(disentangling)
+    for label in disentangling:
+        u_dis_socket = wg.tasks[f"decompose_{label}"].inputs["u_dis_mat"]
+        assert u_dis_socket.value is not None or u_dis_socket._links, (
+            f"decompose_{label} disentangles but has no u_dis_mat wired"
+        )
+    for label in ("occ_up", "occ_down"):
+        u_dis_socket = wg.tasks[f"decompose_{label}"].inputs["u_dis_mat"]
+        assert u_dis_socket.value is None and not u_dis_socket._links, (
+            f"decompose_{label} does not disentangle but has u_dis_mat wired"
+        )
+
+
+def test_orbital_density_dataset_nspin1_omits_spin_component(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """On an nspin=1 (spin=none) scratch no ``spin_component`` is injected."""
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    merge_groups = [_spin_block("occ", True, "none", 4, 4)]
+    alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
+
+    wg = OrbitalDensityDatasetWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations=block_wannierizations,
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+    params = wg.tasks["decompose_occ"].inputs["parameters"].value
+    # No decompose_parameters and spin=none -> no parameters injected at all.
+    assert params is None or "spin_component" not in params
 
 
 def test_compute_block_descriptors_returns_cross_power(aiida_profile):
