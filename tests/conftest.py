@@ -20,11 +20,13 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures import (  # noqa: F401
+    auto_codes,
     fake_cutoffs_family,
     fake_upf,
     generate_upf_data,
     kcp_code,
     kmesh,
+    kpath,
     nscf_remote,
     ozone_pseudo_family,
     ozone_pseudos,

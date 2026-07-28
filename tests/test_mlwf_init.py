@@ -257,6 +257,12 @@ class TestMlwfInitializationGraphBuild:
         ):
             assert expected in names, names
 
+        # `wg.run()` reconstructs the graph from its serialized form before
+        # executing; the nested WannierizeBlocks wiring must survive that.
+        from tests.fixtures import assert_graph_roundtrips
+
+        assert_graph_roundtrips(wg)
+
 
 class TestKoopmansDSCFPeriodicMlwfsBuild:
     def test_outer_graph_takes_the_wannier_init_route(

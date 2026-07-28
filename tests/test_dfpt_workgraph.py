@@ -16,7 +16,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
-from tests.fixtures import explicit_block
+from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -236,8 +236,8 @@ class TestKoopmansDFPTTaskBuild:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -262,7 +262,7 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
@@ -277,7 +277,7 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,
@@ -304,8 +304,8 @@ class TestKoopmansDFPTTaskBuild:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -358,6 +358,10 @@ class TestSinglepointDFPTBuild:
         scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
         nscf_system = pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]
         assert scf_system["nspin"] == 2
+
+        # `wg.run()` reconstructs the graph from its serialized form before
+        # executing; the nested WannierizeBlocks wiring must survive that.
+        assert_graph_roundtrips(wg)
         assert scf_system["tot_magnetization"] == 0
         assert nscf_system["nspin"] == 2
         assert nscf_system["tot_magnetization"] == 0
@@ -956,8 +960,8 @@ class TestRunDFPTGrouping:
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"hr_retrieved": occ_retrieved},
-                "emp": {"hr_retrieved": emp_retrieved},
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
             },
             occ_labels=["occ"],
             emp_labels=["emp"],
@@ -988,7 +992,7 @@ class TestRunDFPTGrouping:
             RunDFPT.build(
                 codes=dfpt_codes,
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+                block_wannier={"occ": {"retrieved": occ_retrieved}},
                 occ_labels=["occ"],
                 num_wann_occ=4,
                 num_wann_emp=0,
@@ -1001,7 +1005,7 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             codes=dfpt_codes,
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"hr_retrieved": occ_retrieved}},
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
             num_wann_occ=4,
             num_wann_emp=0,

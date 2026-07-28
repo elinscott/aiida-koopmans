@@ -15,6 +15,7 @@ from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
     inject_pseudo_family,
+    merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
@@ -54,6 +55,56 @@ class ScfNscfOutputs(TypedDict):
 
 PwBaseStep = task(PwBaseWorkChain)
 PwBandsStep = task(PwBandsWorkChain)
+
+
+def assemble_pw_base_step(
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    *,
+    calculation: str,
+    call_link_label: str,
+    overrides: dict[str, Any] | None = None,
+    protocol: str | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    kpoints: orm.KpointsData | None = None,
+    parent_folder: Any = None,
+    parallelization: ParallelizationDict | None = None,
+) -> Any:
+    """Assemble one ``PwBaseWorkChain`` step inside a graph body.
+
+    Build the step from the protocol builder with ``overrides`` merged on
+    top, stamp its ``CONTROL.calculation`` (raising on a conflicting
+    explicit value), replace the protocol's distance-derived mesh with
+    ``kpoints`` when given, wire ``parent_folder``, and add the step to the
+    surrounding graph under ``call_link_label``. A plain graph-assembly
+    helper: it must be called inside a ``@task.graph`` body.
+    """
+    overrides = overrides or {}
+    enforce_step_calculation(
+        overrides.setdefault("pw", {}).setdefault("parameters", {}),
+        call_link_label,
+        calculation,
+    )
+    builder = PwBaseWorkChain.get_builder_from_protocol(
+        code=code,
+        structure=structure,
+        protocol=protocol,
+        overrides=overrides,
+        electronic_type=electronic_type,
+    )
+    data = get_dict_from_builder(builder)
+    data.pop("clean_workdir", None)
+    if kpoints is not None:
+        # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``.
+        data.pop("kpoints_distance", None)
+        data.pop("kpoints_force_parity", None)
+        data["kpoints"] = kpoints
+    if parent_folder is not None:
+        data["pw"]["parent_folder"] = parent_folder
+    if parallelization is not None:
+        merge_parallelization_into_inputs(data["pw"], parallelization, "pw")
+    data.setdefault("metadata", {})["call_link_label"] = call_link_label
+    return PwBaseStep(**data)
 
 
 @task.graph
@@ -188,59 +239,30 @@ def RunScfNscf(
     merge_parallelization_into_overrides(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
-    scf_overrides = overrides.setdefault("scf", {})
-
-    # The scf step owns calculation='scf'; raise if an override says otherwise.
-    enforce_step_calculation(
-        scf_overrides.setdefault("pw", {}).setdefault("parameters", {}), "scf", "scf"
-    )
-
-    # --- SCF builder ---
-    scf_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=code,
-        structure=structure,
+    scf_outputs = assemble_pw_base_step(
+        code,
+        structure,
+        calculation="scf",
+        call_link_label="scf",
+        overrides=overrides.setdefault("scf", {}),
         protocol=protocol,
-        overrides=scf_overrides,
         electronic_type=electronic_type,
     )
-    scf_data = get_dict_from_builder(scf_builder)
-    scf_data.pop("clean_workdir", None)
-    scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
-    scf_outputs = PwBaseStep(**scf_data)
 
-    # --- NSCF builder ---
-    # Start from protocol defaults, then merge NSCF-specific overrides
-    # (pseudo_family already seeded above).
-    nscf_overrides = overrides.setdefault("nscf", {})
-
-    # The nscf step owns calculation='nscf'; raise if an override says otherwise.
-    enforce_step_calculation(
-        nscf_overrides.setdefault("pw", {}).setdefault("parameters", {}), "nscf", "nscf"
-    )
-
-    nscf_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=code,
-        structure=structure,
+    # The nscf reuses the scf density; an explicit mesh (when given) must
+    # replace the protocol's distance-derived one — a wannierisation nscf
+    # runs on the full grid in the downstream wannier90's k-order.
+    nscf_outputs = assemble_pw_base_step(
+        code,
+        structure,
+        calculation="nscf",
+        call_link_label="nscf",
+        overrides=overrides.setdefault("nscf", {}),
         protocol=protocol,
-        overrides=nscf_overrides,
         electronic_type=electronic_type,
+        kpoints=nscf_kpoints,
+        parent_folder=scf_outputs["remote_folder"],
     )
-    nscf_data = get_dict_from_builder(nscf_builder)
-    nscf_data.pop("clean_workdir", None)
-
-    # Explicit NSCF k-mesh: PwBaseWorkChain accepts exactly one of
-    # ``kpoints`` / ``kpoints_distance``, so drop the protocol's distance
-    # (and its companion parity flag) before setting the mesh.
-    if nscf_kpoints is not None:
-        nscf_data.pop("kpoints_distance", None)
-        nscf_data.pop("kpoints_force_parity", None)
-        nscf_data["kpoints"] = nscf_kpoints
-
-    # Wire SCF remote_folder → NSCF parent_folder
-    nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
-
-    nscf_data.setdefault("metadata", {})["call_link_label"] = "nscf"
-    nscf_outputs = PwBaseStep(**nscf_data)
 
     return ScfNscfOutputs(
         scf_remote_folder=scf_outputs["remote_folder"],

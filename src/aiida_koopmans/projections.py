@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 from aiida import orm
 
 
@@ -71,3 +72,64 @@ def band_range_complement(start: int, end: int, nbnd: int) -> list[int] | None:
     """
     excluded = [*range(1, start), *range(end + 1, nbnd + 1)]
     return excluded or None
+
+
+def detect_band_blocks(
+    energies: np.ndarray,
+    num_occ_bands: int | None = None,
+    threshold: float | None = None,
+) -> list[list[int]]:
+    """Group bands into energy-separated blocks (1-indexed band groups).
+
+    Walks the bands of ``energies`` (shape ``(nkpts, nbands)``) in order and
+    opens a new group whenever
+
+    * the occupied/empty boundary is crossed (band ``num_occ_bands + 1``
+      always starts a group), or
+    * the band is separated from the previous one by an energy gap larger
+      than ``threshold`` (eV) everywhere in the Brillouin zone (the minimum
+      of band *i* lies more than ``threshold`` above the maximum of band
+      *i - 1*). ``threshold=None`` disables gap detection.
+    """
+    boundary = -1 if num_occ_bands is None else num_occ_bands
+    groups: list[list[int]] = [[1]]
+    for i in range(1, energies.shape[1]):
+        if i == boundary:
+            groups.append([i + 1])
+        elif threshold and energies[:, i].min() - energies[:, i - 1].max() > threshold:
+            groups.append([i + 1])
+        else:
+            groups[-1].append(i + 1)
+    return groups
+
+
+def restrict_groups_to_block(groups: list[list[int]], include_bands: list[int]) -> list[list[int]]:
+    """Restrict globally-detected band groups to the bands of one block.
+
+    Keeps, from each group, the bands that belong to ``include_bands``
+    (dropping groups with no overlap). The retained groups must cover the
+    block exactly — a block band missing from every group means the groups
+    were detected over too few bands.
+    """
+    include = set(include_bands)
+    restricted = [[band for band in group if band in include] for group in groups]
+    restricted = [group for group in restricted if group]
+    covered = {band for group in restricted for band in group}
+    if covered != include:
+        raise ValueError(
+            f"The detected band groups cover bands {sorted(covered)} of the block but the "
+            f"block includes bands {sorted(include)}; the group detection must span every "
+            "band of the block."
+        )
+    return restricted
+
+
+def groups_to_wannier_indices(groups: list[list[int]], include_bands: list[int]) -> list[list[int]]:
+    """Map global band-index groups onto a block's 1-based Wannier indices.
+
+    The wannierjl split indexes the Wannier functions of the block's model
+    (``1 .. num_wann``), not global band indices, so each band is replaced
+    by its 1-based position within the block's (sorted) ``include_bands``.
+    """
+    position = {band: i + 1 for i, band in enumerate(sorted(include_bands))}
+    return [[position[band] for band in group] for group in groups]

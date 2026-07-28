@@ -82,7 +82,7 @@ class MlwfInitializationOutputs(TypedDict):
       block was Wannierised off; the ``parent_folder`` a downstream
       pw2wannier90 ``wan_mode='decompose'`` pass reads.
     * ``block_wannierizations`` — the per-block Wannierisation outputs
-      (keyed by block label), each holding the ``hr_retrieved`` folder with
+      (keyed by block label), each holding the ``retrieved`` folder with
       ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
     """
 

@@ -197,7 +197,7 @@ def FoldToSupercell(
         # folder so wann2kcp.x consumes them as enumerated SinglefileData
         # inputs alongside the -pp run's nnkp.
         wannier_files = extract_wannier_files(
-            retrieved=block_wannier[label]["hr_retrieved"],
+            retrieved=block_wannier[label]["retrieved"],
             metadata={"call_link_label": f"extract_{label}"},
         )
 
