@@ -313,7 +313,7 @@ class TestInitialOrbitalPartition:
         assert [o["index"] for o in result] == [1, 2, 3, 4, 5, 6, 7]
 
     def test_per_channel_indexing_and_channel_order(self):
-        """Channels appear in first-appearance order, each with its own 1-based iwann."""
+        """Channels emit in the canonical up-then-down walk, each with its own 1-based iwann."""
         result = initial_orbital_partition._callable(
             blocks=[
                 spec("occ_dw", 2, filled=True, spin=SpinChannel.DOWN),
@@ -322,7 +322,7 @@ class TestInitialOrbitalPartition:
                 spec("emp_up", 1, filled=False, spin=SpinChannel.UP),
             ]
         )
-        assert [o["spin"] for o in result] == [SpinChannel.DOWN] * 3 + [SpinChannel.UP] * 3
+        assert [o["spin"] for o in result] == [SpinChannel.UP] * 3 + [SpinChannel.DOWN] * 3
         assert [o["index"] for o in result] == [1, 2, 3, 1, 2, 3]
         assert [o["filled"] for o in result] == [True, True, False] * 2
 

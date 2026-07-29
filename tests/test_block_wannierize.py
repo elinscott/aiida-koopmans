@@ -390,6 +390,50 @@ class TestOrbitalPartitionEmission:
         with pytest.raises(ValueError, match="block_2"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
+    def test_blocks_out_of_emitted_order_raise(self, wannier_codes, silicon_structure, kmesh):
+        """Non-channel-contiguous input would mis-pair `orbitals` against `spreads`.
+
+        The partition walks channels contiguously (up, occupied-then-empty,
+        then down) while `spreads` / `centres` concatenate in input-list
+        order; interleaving the channels makes the two orders diverge, so
+        the build must refuse rather than let a positional consumer
+        mis-align silently.
+        """
+        blocks = [
+            explicit_block("occ_up", range(1, 3), spin=SpinChannel.UP, filled=True),
+            explicit_block("occ_dw", range(1, 3), spin=SpinChannel.DOWN, filled=True),
+            explicit_block("emp_up", range(3, 4), spin=SpinChannel.UP, filled=False),
+            explicit_block("emp_dw", range(3, 4), spin=SpinChannel.DOWN, filled=False),
+        ]
+        with pytest.raises(ValueError, match="emitted orbital order"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_partition_task_runs_through_the_engine(self, aiida_profile):
+        """The reduced specs and the emitted substrate survive engine storage."""
+        from aiida import orm
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.variational_orbitals import initial_orbital_partition
+
+        wg = WorkGraph("initial_orbital_partition_unit")
+        wg.add_task(
+            initial_orbital_partition,
+            name="partition",
+            blocks=[
+                {"label": "occ", "spin": SpinChannel.NONE, "filled": True, "num_wann": 2},
+                {"label": "emp", "spin": SpinChannel.NONE, "filled": False, "num_wann": 1},
+            ],
+        )
+        wg.run()
+        node = wg.tasks.partition.outputs.result.value
+        assert isinstance(node, orm.List)
+        orbitals = node.get_list()
+        assert [o["index"] for o in orbitals] == [1, 2, 3]
+        assert [o["group_id"] for o in orbitals] == [1, 1, 2]
+        # Storage degrades the str-enum spin to a plain str; `==` still
+        # holds (`is` would not), which is the comparison consumers use.
+        assert all(o["spin"] == SpinChannel.NONE for o in orbitals)
+
 
 # ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)

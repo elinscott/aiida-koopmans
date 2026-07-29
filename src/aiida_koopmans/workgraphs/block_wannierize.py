@@ -74,6 +74,7 @@ from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     BlockOrbitalSpec,
     initial_orbital_partition,
+    ordered_block_specs,
 )
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
@@ -240,6 +241,9 @@ class WannierizeBlocksOutputs(TypedDict):
       Emitted only when every input block carries a ``filled`` occupancy
       stamp; identical across plain and split modes (a split block's
       orbitals keep the parent block's label as their ``manifold``).
+      Engine storage returns the list with each orbital's ``spin``
+      degraded to a plain ``str`` — consumers compare with ``==``, never
+      ``is`` (see :class:`~aiida_koopmans.types.VariationalOrbital`).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
@@ -549,16 +553,31 @@ def _maybe_emit_orbital_partition(
         )
     if not (blocks and all(stamped)):
         return
+    specs = [
+        BlockOrbitalSpec(
+            label=str(block["label"]),
+            spin=SpinChannel(block["spin"]),
+            filled=bool(block["filled"]),
+            num_wann=int(block["num_wann"]),
+        )
+        for block in blocks
+    ]
+    # The partition lists orbitals in emitted order while the unified
+    # ``spreads`` / ``centres`` concatenate in input-list order; a consumer
+    # pairing the two positionally would mis-align silently if the orders
+    # diverged, so require the input to already be the emitted order.
+    ordered = ordered_block_specs(specs)
+    if ordered != specs:
+        raise ValueError(
+            f"The blocks are not in emitted orbital order: got labels "
+            f"{[s['label'] for s in specs]} but the partition walks "
+            f"{[s['label'] for s in ordered]} (spin channels up, down, none — each "
+            "contiguous, with every occupied block before every empty one). Reorder "
+            "the blocks so `orbitals` stays aligned with the input-list-ordered "
+            "`spreads` / `centres`."
+        )
     partition = initial_orbital_partition(
-        blocks=[
-            BlockOrbitalSpec(
-                label=str(block["label"]),
-                spin=SpinChannel(block["spin"]),
-                filled=bool(block["filled"]),
-                num_wann=int(block["num_wann"]),
-            )
-            for block in blocks
-        ],
+        blocks=specs,
         metadata={"call_link_label": "initial_orbital_partition"},
     )
     outputs["orbitals"] = partition.result

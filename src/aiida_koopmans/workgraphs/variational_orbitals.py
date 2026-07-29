@@ -56,6 +56,11 @@ if TYPE_CHECKING:
 
     import numpy as np
 
+# Canonical spin-channel walk order, shared by every ordering decision in
+# this module (representative stamping, orbital emission) so no two
+# consumers of the substrate can disagree about channel sequence.
+_SPIN_ORDER = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE, SpinChannel.SPINOR)
+
 
 class ExpandedAlphas(TypedDict):
     """Per-orbital alpha + error dicts after broadcasting from representatives.
@@ -212,23 +217,22 @@ def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
     otherwise leave its group with no representative at all.
     """
     seen: set[int] = set()
-    spin_order = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE, SpinChannel.SPINOR)
-    unknown = {str(o["spin"]) for o in orbitals if o["spin"] not in spin_order}
+    unknown = {str(o["spin"]) for o in orbitals if o["spin"] not in _SPIN_ORDER}
     if unknown:
         raise ValueError(
             f"Unrecognized spin value(s) {sorted(unknown)}; expected one of "
-            f"{[s.value for s in spin_order]}."
+            f"{[s.value for s in _SPIN_ORDER]}."
         )
 
     walk_order: list[VariationalOrbital] = []
-    for spin in spin_order:
+    for spin in _SPIN_ORDER:
         walk_order.extend(
             sorted(
                 (o for o in orbitals if o["spin"] == spin and o["filled"]),
                 key=lambda o: -o["index"],
             )
         )
-    for spin in spin_order:
+    for spin in _SPIN_ORDER:
         walk_order.extend(
             sorted(
                 (o for o in orbitals if o["spin"] == spin and not o["filled"]),
@@ -409,6 +413,26 @@ def refine_by_scalar(
 # ----------------------------------------------------------------------
 
 
+def ordered_block_specs(blocks: list[BlockOrbitalSpec]) -> list[BlockOrbitalSpec]:
+    """Return the block records in emitted orbital order.
+
+    The order :func:`initial_orbital_partition` walks: spin channels in
+    the module's canonical walk order (up, down, none, spinor — the same
+    fixed sequence :func:`enumerate_variational_orbitals` and the
+    representative stamping use), and within each channel every occupied
+    block before every empty one, ties kept in input order. Callers that
+    pair the emitted orbitals with position-ordered arrays check their
+    input against this.
+    """
+    return [
+        spec
+        for channel in _SPIN_ORDER
+        for filled in (True, False)
+        for spec in blocks
+        if SpinChannel(spec["spin"]) == channel and bool(spec["filled"]) == filled
+    ]
+
+
 @task
 def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[VariationalOrbital]:
     """Build the coarsest orbital partition consistent with the blocks' exact splits.
@@ -418,23 +442,25 @@ def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[Variationa
     orbital order: within each spin channel every occupied block's
     functions (blocks in input order) precede every empty block's, and
     ``index`` is the 1-based running position in that order. Channels
-    appear in first-appearance order of the input list. Each orbital
+    appear in the module's canonical walk order
+    (:func:`ordered_block_specs`), never by list position. Each orbital
     carries ``manifold`` (its block's label), ``filled`` and ``spin``
     from its block; ``group_id`` encodes the coarsest partition
     consistent with the exact splits, obtained by refining a single
     all-orbital group by ``filled``, ``spin`` and ``manifold``
     (:func:`refine_by_key` — exact refinements compose in any order),
-    with representatives stamped by the operators' walk-order
-    semantics. Scalar (tolerance) refinements are deliberately not
-    applied here: they belong with the consumers that carry the metric.
+    with representatives stamped by the operators' walk-order semantics.
+    Block labels are unique within a call and each maps onto a single
+    (spin, filling) pair, so the ``manifold`` split alone already
+    determines the partition; the ``filled`` / ``spin`` refinements add
+    no cuts for such input and instead enforce the boundary against
+    hypothetical label reuse. Scalar (tolerance) refinements are
+    deliberately not applied here: they belong with the consumers that
+    carry the metric.
 
     Raise ``ValueError`` for a block with a non-positive ``num_wann``.
     """
-    channels: list[SpinChannel] = []
     for spec in blocks:
-        spin = SpinChannel(spec["spin"])
-        if spin not in channels:
-            channels.append(spin)
         if int(spec["num_wann"]) < 1:
             raise ValueError(
                 f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
@@ -442,24 +468,21 @@ def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[Variationa
             )
 
     orbitals: list[VariationalOrbital] = []
-    for channel in channels:
-        iwann = 0
-        for filled in (True, False):
-            for spec in blocks:
-                if SpinChannel(spec["spin"]) != channel or bool(spec["filled"]) != filled:
-                    continue
-                for _ in range(int(spec["num_wann"])):
-                    iwann += 1
-                    orbitals.append(
-                        VariationalOrbital(
-                            spin=channel,
-                            index=iwann,
-                            filled=filled,
-                            group_id=1,
-                            representative=False,
-                            manifold=str(spec["label"]),
-                        )
-                    )
+    counters: dict[SpinChannel, int] = {}
+    for spec in ordered_block_specs(blocks):
+        channel = SpinChannel(spec["spin"])
+        for _ in range(int(spec["num_wann"])):
+            counters[channel] = counters.get(channel, 0) + 1
+            orbitals.append(
+                VariationalOrbital(
+                    spin=channel,
+                    index=counters[channel],
+                    filled=bool(spec["filled"]),
+                    group_id=1,
+                    representative=False,
+                    manifold=str(spec["label"]),
+                )
+            )
     for key in ("filled", "spin", "manifold"):
         orbitals = refine_by_key(orbitals, key)
     return orbitals
