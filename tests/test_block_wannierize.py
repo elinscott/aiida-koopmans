@@ -52,16 +52,18 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
     ]
 
 
-def _si_external_projectors() -> dict:
+def _si_external_projectors(alpha: float | str = 1.5) -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 
-    The fitted numeric ``alpha`` marks each projector as non-frozen, so the
-    builder derives an empty frozen list (no ``atom_proj_frozen``).
+    A fitted numeric ``alpha`` marks a projector as non-frozen; the
+    ``"UPF"`` sentinel (the majority case in upstream's shipped tables)
+    marks it as taken unmodified from the pseudopotential, which the
+    builder freezes.
     """
     return {
         "Si": [
-            {"label": "3S", "l": 0, "alpha": 1.5},
-            {"label": "3P", "l": 1, "alpha": 1.5},
+            {"label": "3S", "l": 0, "alpha": alpha},
+            {"label": "3P", "l": 1, "alpha": alpha},
         ]
     }
 
@@ -781,6 +783,41 @@ class TestWannierizeBlockBuild:
                 external_projectors_path=str(tmp_path),
             )
 
+    def test_upf_sentinel_alphas_freeze_the_projectors(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family, tmp_path
+    ):
+        """``alpha: "UPF"`` entries land in the staged frozen-projector list.
+
+        Upstream's shipped tables carry the ``"UPF"`` sentinel for most
+        projectors, so this — not the fitted-alpha case — is the common
+        real-world path: every sentinel projector must appear in
+        ``atom_proj_frozen``, here all 8 (s + p on both sites).
+        """
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            external_projectors_path=str(tmp_path),
+            external_projectors=_si_external_projectors(alpha="UPF"),
+        )
+        task = self._wannier_task(wg)
+        p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
+        inputpp = p2w["parameters"].value.get_dict()["INPUTPP"]
+        assert inputpp["atom_proj_frozen"] == list(range(1, 9))
+        assert inputpp["atom_proj_ext"] is True
+        assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
+        assert_graph_roundtrips(wg)
+
     def test_semicore_exclusions_stay_out(
         self,
         monkeypatch,
@@ -935,6 +972,73 @@ def test_projector_inputs_without_external_block_raise(
             kpoints=kmesh,
             external_projectors_path=str(tmp_path),
             external_projectors=_si_external_projectors(),
+        )
+
+
+def test_second_external_block_raises(auto_codes, silicon_structure, kmesh, kpath, tmp_path):
+    """Two external blocks per call are rejected naming the limitation.
+
+    Each block would receive the full orbital tables — they are not split
+    per block — so a second external block would wannierize the whole
+    projector manifold instead of its own bands.
+    """
+    blocks = [
+        automatic_block(
+            "block_1",
+            range(1, 5),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        ),
+        automatic_block(
+            "block_2",
+            range(5, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        ),
+    ]
+    with pytest.raises(ValueError, match="only one is supported per call"):
+        WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=blocks,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            external_projectors_path=str(tmp_path),
+            external_projectors=_si_external_projectors(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"external_projectors": {}}, "`external_projectors` is empty"),
+        ({"external_projectors_path": "  "}, "`external_projectors_path` is blank"),
+    ],
+)
+def test_degenerate_projector_inputs_raise(
+    auto_codes, silicon_structure, kmesh, kpath, tmp_path, overrides, match
+):
+    """An empty table dict or a blank path fails before any graph is built."""
+    block = automatic_block(
+        "block_1",
+        range(1, 9),
+        projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+    )
+    kwargs = {
+        "external_projectors_path": str(tmp_path),
+        "external_projectors": _si_external_projectors(),
+        **overrides,
+    }
+    with pytest.raises(ValueError, match=match):
+        WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            **kwargs,
         )
 
 

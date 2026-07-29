@@ -126,9 +126,27 @@ def validate_external_projector_inputs(
     and the per-element orbital tables (the builder derives the projector
     count and frozen list from them); any other type consumes neither, so a
     mismatch in either direction raises rather than silently ignoring the
-    given inputs.
+    given inputs. At most one external entry is allowed: the tables are not
+    split per block, so every external block would wannierize the full
+    projector manifold.
     """
-    external = any(_is_external(projection_type) for projection_type in projection_types)
+    n_external = sum(1 for projection_type in projection_types if _is_external(projection_type))
+    external = n_external > 0
+    if n_external > 1:
+        raise ValueError(
+            f"{n_external} 'atomic_projectors_external' blocks were given, but only one "
+            "is supported per call: the orbital tables are not split per block, so "
+            "every external block would wannierize the full projector manifold."
+        )
+    if external_projectors is not None and not external_projectors:
+        raise ValueError(
+            "`external_projectors` is empty; the per-element orbital tables must "
+            "contain at least one element entry."
+        )
+    if external_projectors_path is not None and not str(external_projectors_path).strip():
+        raise ValueError(
+            "`external_projectors_path` is blank; it must point at the projector directory."
+        )
     given = [
         name
         for name, value in (
