@@ -49,11 +49,15 @@ require.
 
 from __future__ import annotations
 
+import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
-from aiida_wannier90_workflows.common.types import WannierProjectionType
+from aiida_wannier90_workflows.common.types import WannierFrozenType, WannierProjectionType
+from aiida_wannier90_workflows.utils.workflows.builder.projections import (
+    guess_wannier_projection_types,
+)
 from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
@@ -111,6 +115,122 @@ def validate_projection_type(projection_type: WannierProjectionType) -> None:
         "wannierized from explicit projections ('analytic') or pseudoatomic "
         "projectors fetched from the pseudopotentials ('atomic_projectors_qe')."
     )
+
+
+# The wannier90 keywords that constrain which bands the disentangled subspace
+# is built from: the outer/frozen energy windows, the projectability-based
+# frozen-manifold selection, and the k-point spheres that localize where
+# disentanglement acts. ``dis_num_iter`` and the other ``dis_*`` convergence
+# knobs deliberately do not count -- they tune the minimization without
+# constraining the manifold.
+_DISENTANGLEMENT_CONSTRAINT_KEYS = frozenset(
+    {
+        "dis_win_min",
+        "dis_win_max",
+        "dis_froz_min",
+        "dis_froz_max",
+        "dis_froz_proj",
+        "dis_proj_min",
+        "dis_proj_max",
+        "dis_spheres",
+        "dis_spheres_num",
+        "dis_spheres_first_wann",
+    }
+)
+
+# The resolved frozen types whose protocol handling writes a constraint key
+# into the wannier90 parameters (``dis_froz_max`` and/or the
+# ``dis_froz_proj`` / ``dis_proj_*`` trio). ``ENERGY_AUTO`` is absent on
+# purpose: it computes its window at workchain runtime without setting any
+# parameter key, so the pre-dispatch check below cannot see it.
+_WINDOW_SETTING_FROZEN_TYPES = frozenset(
+    {
+        WannierFrozenType.ENERGY_FIXED,
+        WannierFrozenType.PROJECTABILITY,
+        WannierFrozenType.FIXED_PLUS_PROJECTABILITY,
+    }
+)
+
+
+class UnconstrainedDisentanglementWarning(UserWarning):
+    """A disentangling block carries no window or frozen-manifold constraint.
+
+    With ``num_bands > num_wann`` and none of the
+    ``dis_win_* / dis_froz_* / dis_proj_* / dis_spheres_*`` keywords set,
+    wannier90 free-minimizes over every included band and may silently swap
+    pool bands into the Wannier manifold.
+    """
+
+
+def _warn_unconstrained_disentanglement(label: str, num_bands: int, num_wann: int) -> None:
+    """Emit the :class:`UnconstrainedDisentanglementWarning` for one block.
+
+    The advice names only the keywords the bundled wannier90 accepts
+    (``dis_win_*`` / ``dis_froz_*`` / ``dis_spheres_*``); the
+    projectability keys silence the check when a protocol sets them but are
+    not suggested.
+    """
+    warnings.warn(
+        f"Block '{label}' includes num_bands = {num_bands} bands for "
+        f"num_wann = {num_wann} Wannier functions but sets no disentanglement "
+        "constraint (dis_win_min/dis_win_max, dis_froz_min/dis_froz_max or "
+        "dis_spheres_*): the Wannierized manifold will be chosen by spread "
+        "minimization over all included bands.",
+        UnconstrainedDisentanglementWarning,
+        stacklevel=3,
+    )
+
+
+def _disentanglement_unconstrained(
+    block: ProjectionBlock,
+    wannier90_overrides: dict[str, Any] | None,
+    electronic_type: ElectronicType,
+) -> bool:
+    """Decide pre-dispatch whether a block will free-minimize its disentanglement.
+
+    Mirror what the merged wannier90 parameters will contain without
+    building them (the nested per-block builder only runs after dispatch):
+    the flat ``wannier90`` overrides contribute their keys verbatim, and
+    the protocol contributes a window exactly when upstream's resolved
+    frozen type is one of :data:`_WINDOW_SETTING_FROZEN_TYPES`.
+    """
+    if int(block["num_bands"]) <= int(block["num_wann"]):
+        return False
+    override_keys = {str(key).lower() for key in (wannier90_overrides or {})}
+    if _DISENTANGLEMENT_CONSTRAINT_KEYS & override_keys:
+        return False
+    try:
+        _, _, frozen_type = guess_wannier_projection_types(
+            electronic_type, block["projection_type"], None, None
+        )
+    except ValueError:
+        # The per-block builder will raise the same complaint with full
+        # context; don't warn on top of an imminent failure.
+        return False
+    return frozen_type not in _WINDOW_SETTING_FROZEN_TYPES
+
+
+def _warn_unconstrained_blocks(
+    blocks: list[ProjectionBlock],
+    wannier90_overrides: dict[str, Any] | None,
+    electronic_type: ElectronicType,
+    split: bool,
+) -> None:
+    """Warn pre-dispatch for every block that will free-minimize its disentanglement.
+
+    Called from the eager :func:`WannierizeBlocks` body so the warning
+    surfaces at build time in the caller's terminal: the nested per-block
+    body (which sees the fully merged parameters) only runs daemon-side.
+    Split-mode blocks are exempt by construction — their sub-blocks are
+    derived at runtime, after the bands step.
+    """
+    if split:
+        return
+    for block in blocks:
+        if _disentanglement_unconstrained(block, wannier90_overrides, electronic_type):
+            _warn_unconstrained_disentanglement(
+                block["label"], block["num_bands"], block["num_wann"]
+            )
 
 
 class WannierizeOverrides(TypedDict, total=False):
@@ -375,6 +495,16 @@ def WannierizeBlock(
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
         if "dis_num_iter" not in (wannier90 or {}):
             w90_params["dis_num_iter"] = 5000
+        # ``w90_params`` at this point holds the full merge (protocol defaults
+        # plus the flat ``wannier90`` overrides), so any window the protocol
+        # itself set counts as a constraint too. On the production path this
+        # body runs daemon-side, where the warning lands in the worker log
+        # only; the user-visible copy is emitted pre-dispatch from
+        # :func:`WannierizeBlocks`.
+        if not _DISENTANGLEMENT_CONSTRAINT_KEYS.intersection(key.lower() for key in w90_params):
+            _warn_unconstrained_disentanglement(
+                block["label"], w90_kwargs["num_bands"], w90_kwargs["num_wann"]
+            )
     else:
         for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
             w90_params.pop(key, None)
@@ -765,6 +895,8 @@ def WannierizeBlocks(
                 threshold=split_threshold,
                 num_bands_total=sum(int(block["num_wann"]) for block in blocks),
             )
+
+    _warn_unconstrained_blocks(blocks, overrides.get("wannier90"), electronic_type, split)
 
     # --- per-block Wannierisation: native for-loop fan-out ---
     # Each iteration adds an independent per-block graph (they share only
