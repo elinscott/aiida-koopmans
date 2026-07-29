@@ -258,11 +258,17 @@ def assert_graph_roundtrips(wg):
 
 
 def automatic_block(label, include, spin=None, projection_type=None):
-    """Build a minimal automatic projection block over ``include`` bands (SCDM default)."""
+    """Build a minimal automatic projection block over ``include`` bands.
+
+    Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
+    projection source automated wannierization always uses.
+    """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
     from aiida_koopmans.types import AutomaticProjectionBlock, SpinChannel
 
+    if projection_type is None:
+        projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
     n = len(include)
     return AutomaticProjectionBlock(
         label=label,
@@ -270,7 +276,7 @@ def automatic_block(label, include, spin=None, projection_type=None):
         num_wann=n,
         num_bands=n,
         include_bands=list(include),
-        projection_type=WannierProjectionType.SCDM if projection_type is None else projection_type,
+        projection_type=projection_type,
     )
 
 
