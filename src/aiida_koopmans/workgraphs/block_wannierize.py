@@ -58,13 +58,23 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
+from aiida_koopmans.types import (
+    ParallelizationDict,
+    ProjectionBlock,
+    SpinChannel,
+    VariationalOrbital,
+    block_w90_kwargs,
+)
 from aiida_koopmans.workgraphs import (
     Codes,
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.variational_orbitals import (
+    BlockOrbitalSpec,
+    initial_orbital_partition,
+)
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
@@ -220,6 +230,16 @@ class WannierizeBlocksOutputs(TypedDict):
     * ``bands`` / ``groups`` -- split mode only: the pw.x ``bands``-run
       eigenvalues the grouping was detected on, and the detected 1-indexed
       band groups (global indices).
+    * ``orbitals`` -- one :class:`~aiida_koopmans.types.VariationalOrbital`
+      per Wannier function in per-channel iwann order (occupied ascending
+      then empty ascending — the kcw.x / kcp.x orbital order), with
+      ``manifold`` = the block label, ``filled`` / ``spin`` from the
+      block, and ``group_id`` encoding the coarsest screening partition
+      consistent with the blocks' exact splits (filling, spin and
+      manifold — :func:`~aiida_koopmans.workgraphs.variational_orbitals.initial_orbital_partition`).
+      Emitted only when every input block carries a ``filled`` occupancy
+      stamp; identical across plain and split modes (a split block's
+      orbitals keep the parent block's label as their ``manifold``).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
@@ -228,6 +248,7 @@ class WannierizeBlocksOutputs(TypedDict):
     nscf: NotRequired[PwOutputs]
     bands: NotRequired[orm.BandsData]
     groups: NotRequired[list[list[int]]]
+    orbitals: NotRequired[list[VariationalOrbital]]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
@@ -503,6 +524,46 @@ def _validate_block_projection_types(blocks: list[ProjectionBlock]) -> None:
         validate_projection_type(block["projection_type"])
 
 
+def _maybe_emit_orbital_partition(
+    outputs: WannierizeBlocksOutputs, blocks: list[ProjectionBlock]
+) -> None:
+    """Wire the initial orbital partition into ``outputs`` when the blocks carry occupancy.
+
+    Emission is gated on the caller stamping ``filled`` on every block:
+    occupancy is structural information the caller owns, so it travels
+    on the blocks and is never derived here. A partial stamping is a
+    caller bug rather than a smaller feature, so it raises. The
+    partition task takes a JSON-pure reduced view of the blocks: a full
+    block carries a non-``str`` enum (``projection_type``) that the
+    PyFunction input serializer cannot store.
+    """
+    stamped = [("filled" in block) for block in blocks]
+    if any(stamped) and not all(stamped):
+        unstamped = [
+            str(block["label"]) for block, has in zip(blocks, stamped, strict=True) if not has
+        ]
+        raise ValueError(
+            "Some blocks carry a `filled` occupancy stamp and some do not "
+            f"({unstamped}); stamp every block to emit the orbital partition, "
+            "or none to skip it."
+        )
+    if not (blocks and all(stamped)):
+        return
+    partition = initial_orbital_partition(
+        blocks=[
+            BlockOrbitalSpec(
+                label=str(block["label"]),
+                spin=SpinChannel(block["spin"]),
+                filled=bool(block["filled"]),
+                num_wann=int(block["num_wann"]),
+            )
+            for block in blocks
+        ],
+        metadata={"call_link_label": "initial_orbital_partition"},
+    )
+    outputs["orbitals"] = partition.result
+
+
 def _resolve_split_mode(
     codes: Codes,
     blocks: list[ProjectionBlock],
@@ -630,6 +691,9 @@ def WannierizeBlocks(
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
             appear as separate blocks. Each is Wannierised independently.
+            When every block carries a ``filled`` occupancy stamp, the
+            ``orbitals`` initial screening partition is emitted as well
+            (stamping only some blocks raises).
         kpoints: the explicit k-point list shared by the nscf and every
             block's wannier90 / pw2wannier90 (one node, so the k-ordering
             cannot drift between the steps).
@@ -679,8 +743,10 @@ def WannierizeBlocks(
     Returns:
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
         block label, the unified ``centres`` / ``spreads`` (plain mode), the
-        ``bands`` / ``groups`` detection outputs (split mode), and (only
-        when the scf + nscf ran here) the shared ``nscf`` outputs.
+        ``bands`` / ``groups`` detection outputs (split mode), the
+        ``orbitals`` initial partition (only when every block is stamped
+        with ``filled``), and (only when the scf + nscf ran here) the
+        shared ``nscf`` outputs.
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
@@ -831,6 +897,7 @@ def WannierizeBlocks(
         centres=collected["centres"],
         spreads=collected["spreads"],
     )
+    _maybe_emit_orbital_partition(outputs, blocks)
     if split:
         outputs["bands"] = bands_outputs["output_band"]
         outputs["groups"] = detect.result

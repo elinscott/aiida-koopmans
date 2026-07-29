@@ -74,6 +74,23 @@ class ExpandedAlphas(TypedDict):
     empty_errors: dict[str, float]
 
 
+class BlockOrbitalSpec(TypedDict):
+    """One projection block's orbital-manifold identity, JSON-pure.
+
+    The reduced view of a :class:`~aiida_koopmans.types.ProjectionBlock`
+    that :func:`initial_orbital_partition` consumes: a full block carries
+    a non-``str`` enum (``projection_type``) that the PyFunction input
+    serializer cannot store, so the graph body strips each block down to
+    the fields the partition needs — the block's label, spin channel,
+    occupancy and Wannier-function count.
+    """
+
+    label: str
+    spin: SpinChannel
+    filled: bool
+    num_wann: int
+
+
 # ----------------------------------------------------------------------
 # Pure helpers (no AiiDA, no @task)
 # ----------------------------------------------------------------------
@@ -390,6 +407,62 @@ def refine_by_scalar(
 # ----------------------------------------------------------------------
 # Public tasks
 # ----------------------------------------------------------------------
+
+
+@task
+def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[VariationalOrbital]:
+    """Build the coarsest orbital partition consistent with the blocks' exact splits.
+
+    Emit one :class:`~aiida_koopmans.types.VariationalOrbital` per
+    Wannier function, in per-channel iwann order — the kcw.x / kcp.x
+    orbital order: within each spin channel every occupied block's
+    functions (blocks in input order) precede every empty block's, and
+    ``index`` is the 1-based running position in that order. Channels
+    appear in first-appearance order of the input list. Each orbital
+    carries ``manifold`` (its block's label), ``filled`` and ``spin``
+    from its block; ``group_id`` encodes the coarsest partition
+    consistent with the exact splits, obtained by refining a single
+    all-orbital group by ``filled``, ``spin`` and ``manifold``
+    (:func:`refine_by_key` — exact refinements compose in any order),
+    with representatives stamped by the operators' walk-order
+    semantics. Scalar (tolerance) refinements are deliberately not
+    applied here: they belong with the consumers that carry the metric.
+
+    Raise ``ValueError`` for a block with a non-positive ``num_wann``.
+    """
+    channels: list[SpinChannel] = []
+    for spec in blocks:
+        spin = SpinChannel(spec["spin"])
+        if spin not in channels:
+            channels.append(spin)
+        if int(spec["num_wann"]) < 1:
+            raise ValueError(
+                f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
+                "every block must carry at least one Wannier function."
+            )
+
+    orbitals: list[VariationalOrbital] = []
+    for channel in channels:
+        iwann = 0
+        for filled in (True, False):
+            for spec in blocks:
+                if SpinChannel(spec["spin"]) != channel or bool(spec["filled"]) != filled:
+                    continue
+                for _ in range(int(spec["num_wann"])):
+                    iwann += 1
+                    orbitals.append(
+                        VariationalOrbital(
+                            spin=channel,
+                            index=iwann,
+                            filled=filled,
+                            group_id=1,
+                            representative=False,
+                            manifold=str(spec["label"]),
+                        )
+                    )
+    for key in ("filled", "spin", "manifold"):
+        orbitals = refine_by_key(orbitals, key)
+    return orbitals
 
 
 @task

@@ -228,6 +228,12 @@ class _ProjectionBlockBase(TypedDict):
     sources), and which bands it covers. ``projection_type`` is the
     discriminator (a real :class:`WannierProjectionType`, registered for
     AiiDA serialization via the ``aiida.data`` entry points).
+
+    ``filled`` is the block's occupancy (every block is purely occupied
+    or purely empty). Optional: it is stamped by callers that need the
+    initial orbital partition emitted downstream; routes that instead
+    derive occupancy from ``include_bands`` against a per-spin
+    occupied-band count (:func:`group_blocks_to_merge`) leave it unset.
     """
 
     label: str
@@ -236,6 +242,7 @@ class _ProjectionBlockBase(TypedDict):
     num_bands: int
     include_bands: list[int]
     exclude_bands: NotRequired[list[int] | None]
+    filled: NotRequired[bool]
     projection_type: WannierProjectionType
 
 

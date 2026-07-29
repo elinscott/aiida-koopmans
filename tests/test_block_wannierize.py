@@ -330,6 +330,68 @@ class TestSplitMode:
 
 
 # ----------------------------------------------------------------------
+# Initial orbital partition emission
+# ----------------------------------------------------------------------
+
+
+def _stamped_blocks() -> list[ExplicitProjectionBlock]:
+    """Build the silicon shape with the occupancy stamps the emission gate needs."""
+    return [
+        explicit_block("block_1", range(1, 5), filled=True),
+        explicit_block("block_2", range(5, 9), filled=False),
+    ]
+
+
+class TestOrbitalPartitionEmission:
+    """The ``orbitals`` socket: occupancy-stamp gating and both-mode wiring."""
+
+    def test_plain_mode_emits_the_partition(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _stamped_blocks(), kmesh)
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        # The task receives the reduced, JSON-pure block records in
+        # input-list order.
+        specs = wg.tasks["initial_orbital_partition"].inputs["blocks"].value
+        assert [s["label"] for s in specs] == ["block_1", "block_2"]
+        assert [s["filled"] for s in specs] == [True, False]
+        assert [s["num_wann"] for s in specs] == [4, 4]
+        assert_graph_roundtrips(wg)
+
+    def test_split_mode_emits_the_partition(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=_stamped_blocks(),
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            split_threshold=1.5,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_unstamped_blocks_skip_the_emission(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert "initial_orbital_partition" not in [t.name for t in wg.tasks]
+        assert not wg.outputs["orbitals"]._links
+
+    def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
+        blocks = [
+            explicit_block("block_1", range(1, 5), filled=True),
+            explicit_block("block_2", range(5, 9)),
+        ]
+        with pytest.raises(ValueError, match="block_2"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+
+# ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)
 # ----------------------------------------------------------------------
 

@@ -13,6 +13,8 @@ import pytest
 
 from aiida_koopmans.types import SpinChannel, VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
+    BlockOrbitalSpec,
+    initial_orbital_partition,
     refine_by_key,
     refine_by_labels,
     refine_by_scalar,
@@ -282,3 +284,94 @@ class TestRefinementInvariant:
         assert_refines(orbitals, refined)
         # And a second application still refines the first's output.
         assert_refines(refined, operator(refined))
+
+
+def spec(label: str, num_wann: int, *, filled: bool, spin: SpinChannel = SpinChannel.NONE):
+    """Build one reduced block record for :func:`initial_orbital_partition`."""
+    return BlockOrbitalSpec(label=label, spin=spin, filled=filled, num_wann=num_wann)
+
+
+class TestInitialOrbitalPartition:
+    """Unit tests of the emission task via its raw ``._callable``."""
+
+    def test_iwann_order_occupied_then_empty(self):
+        """One orbital per WF, indexed 1..N across the occ/emp boundary."""
+        result = initial_orbital_partition._callable(
+            blocks=[spec("occ_block", 4, filled=True), spec("emp_block", 3, filled=False)]
+        )
+        assert [o["index"] for o in result] == [1, 2, 3, 4, 5, 6, 7]
+        assert [o["filled"] for o in result] == [True] * 4 + [False] * 3
+        assert [o["manifold"] for o in result] == ["occ_block"] * 4 + ["emp_block"] * 3
+        assert all(o["spin"] == SpinChannel.NONE for o in result)
+
+    def test_empty_before_occupied_input_is_normalized(self):
+        """List position never orders the manifolds; occupancy does."""
+        result = initial_orbital_partition._callable(
+            blocks=[spec("emp_block", 3, filled=False), spec("occ_block", 4, filled=True)]
+        )
+        assert [o["manifold"] for o in result] == ["occ_block"] * 4 + ["emp_block"] * 3
+        assert [o["index"] for o in result] == [1, 2, 3, 4, 5, 6, 7]
+
+    def test_per_channel_indexing_and_channel_order(self):
+        """Channels appear in first-appearance order, each with its own 1-based iwann."""
+        result = initial_orbital_partition._callable(
+            blocks=[
+                spec("occ_dw", 2, filled=True, spin=SpinChannel.DOWN),
+                spec("occ_up", 2, filled=True, spin=SpinChannel.UP),
+                spec("emp_dw", 1, filled=False, spin=SpinChannel.DOWN),
+                spec("emp_up", 1, filled=False, spin=SpinChannel.UP),
+            ]
+        )
+        assert [o["spin"] for o in result] == [SpinChannel.DOWN] * 3 + [SpinChannel.UP] * 3
+        assert [o["index"] for o in result] == [1, 2, 3, 1, 2, 3]
+        assert [o["filled"] for o in result] == [True, True, False] * 2
+
+    def test_groups_are_the_filling_spin_manifold_splits(self):
+        """The emitted partition matches the operators applied to a single group.
+
+        The oracle is the merged refinement chain itself, run on a
+        hand-enumerated single-group substrate of the same orbitals.
+        """
+        blocks = [
+            spec("occ_a", 2, filled=True),
+            spec("occ_b", 2, filled=True),
+            spec("emp_a", 1, filled=False),
+        ]
+        result = initial_orbital_partition._callable(blocks=blocks)
+
+        expected = [
+            orb(1, manifold="occ_a"),
+            orb(2, manifold="occ_a"),
+            orb(3, manifold="occ_b"),
+            orb(4, manifold="occ_b"),
+            orb(5, filled=False, manifold="emp_a"),
+        ]
+        for key in ("filled", "spin", "manifold"):
+            expected = refine_by_key(expected, key)
+        assert result == expected
+        assert groups_of(result) == {
+            1: frozenset({0, 1}),
+            2: frozenset({2, 3}),
+            3: frozenset({4}),
+        }
+
+    def test_representatives_follow_the_walk_order(self):
+        """Filled groups elect their highest index; empty groups their lowest."""
+        result = initial_orbital_partition._callable(
+            blocks=[spec("occ", 3, filled=True), spec("emp", 2, filled=False)]
+        )
+        reps = [o["index"] for o in result if o["representative"]]
+        assert reps == [3, 4]
+
+    def test_emitted_substrate_is_json_pure(self):
+        """The list survives a JSON round-trip, the engine's storage shape."""
+        import json
+
+        result = initial_orbital_partition._callable(
+            blocks=[spec("occ", 2, filled=True), spec("emp", 1, filled=False)]
+        )
+        assert json.loads(json.dumps(result)) == result
+
+    def test_nonpositive_num_wann_raises(self):
+        with pytest.raises(ValueError, match="num_wann"):
+            initial_orbital_partition._callable(blocks=[spec("occ", 0, filled=True)])
