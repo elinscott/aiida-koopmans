@@ -52,6 +52,20 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
     ]
 
 
+def _si_external_projectors() -> dict:
+    """Silicon external-projector orbital tables: s + p per atom, 8 in total.
+
+    The fitted numeric ``alpha`` marks each projector as non-frozen, so the
+    builder derives an empty frozen list (no ``atom_proj_frozen``).
+    """
+    return {
+        "Si": [
+            {"label": "3S", "l": 0, "alpha": 1.5},
+            {"label": "3P", "l": 1, "alpha": 1.5},
+        ]
+    }
+
+
 # ----------------------------------------------------------------------
 # Graph construction: shared scf+nscf once, one WannierizeBlock per block
 # ----------------------------------------------------------------------
@@ -326,6 +340,40 @@ class TestSplitMode:
         assert detect_task.inputs["threshold"].value is None
         for populated in ("bands", "groups", "centres", "spreads"):
             assert wg.outputs[populated]._links, populated
+        assert_graph_roundtrips(wg)
+
+    def test_external_block_split_topology_forwards_projector_inputs(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family, tmp_path
+    ):
+        """An external-projector block splits and carries its projector inputs.
+
+        Like any automatic block it is a split trigger on its own, and the
+        directory path plus orbital tables must reach the nested per-block
+        graph (only the whole-block wannierisation consumes them).
+        """
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            external_projectors_path=str(tmp_path),
+            external_projectors=_si_external_projectors(),
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("detect_band_groups") == 1
+        assert "wannierize_split_block_1" in names
+        split_task = wg.tasks["wannierize_split_block_1"]
+        assert split_task.inputs["external_projectors_path"].value == str(tmp_path)
+        assert split_task.inputs["external_projectors"].value == _si_external_projectors()
         assert_graph_roundtrips(wg)
 
 
@@ -670,6 +718,69 @@ class TestWannierizeBlockBuild:
         assert inputpp["INPUTPP"]["atom_proj"] is True
         assert_graph_roundtrips(wg)
 
+    def test_external_block_stages_the_projector_inputs(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family, tmp_path
+    ):
+        """An external-projector block stages the directory and the namelist.
+
+        The pw2wannier90 step must carry the projector-directory
+        ``RemoteData`` plus the kind→element file map, and its namelist the
+        ``atom_proj_ext`` switches pointing at the staged copy; the ``.win``
+        side is plain ``auto_projections`` with the block's counts.
+        """
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            external_projectors_path=str(tmp_path),
+            external_projectors=_si_external_projectors(),
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert params["auto_projections"] is True
+        assert params["num_wann"] == 8
+        assert params["num_bands"] == 8
+        p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
+        inputpp = p2w["parameters"].value.get_dict()["INPUTPP"]
+        assert inputpp["atom_proj"] is True
+        assert inputpp["atom_proj_ext"] is True
+        assert inputpp["atom_proj_dir"] == "external_projectors/"
+        assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
+        assert p2w["external_projectors_list"].value.get_dict() == {"Si": "Si"}
+        # Every projector carries a fitted alpha, so none is frozen.
+        assert "atom_proj_frozen" not in inputpp
+        assert_graph_roundtrips(wg)
+
+    def test_external_block_without_projector_inputs_raises(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, tmp_path
+    ):
+        """An external block missing either projector input fails naming it."""
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        with pytest.raises(ValueError, match=r"missing: \['external_projectors'\]"):
+            WannierizeBlock.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                block=block,
+                projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+                nscf_remote_folder=nscf_scratch,
+                kpoints=kmesh,
+                external_projectors_path=str(tmp_path),
+            )
+
     def test_semicore_exclusions_stay_out(
         self,
         monkeypatch,
@@ -790,28 +901,40 @@ class TestWannierizeBlockBuild:
 
 
 @pytest.mark.parametrize(
-    ("projection_type", "match"),
-    [
-        (WannierProjectionType.SCDM, "'scdm' is not supported"),
-        (
-            WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
-            r"atomic_projectors_external.*not supported yet",
-        ),
-    ],
+    "projection_type",
+    [WannierProjectionType.SCDM, WannierProjectionType.RANDOM],
 )
 def test_unsupported_projection_types_raise(
-    wannier_codes, silicon_structure, kmesh, projection_type, match
+    wannier_codes, silicon_structure, kmesh, projection_type
 ):
     """Only explicit projections and pseudoatomic projectors are supported.
 
-    SCDM is out of scope; external pseudoatomic projectors are the intended
-    second automated source but are not wired through the per-block builder,
-    so both fail loudly before any graph is built.
+    SCDM and random starting guesses are out of scope, so both fail loudly
+    before any graph is built.
     """
     block = automatic_block("block_1", range(1, 9), projection_type=projection_type)
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=f"'{projection_type.value}' is not supported"):
         WannierizeBlocks.build(
             codes=wannier_codes, structure=silicon_structure, blocks=[block], kpoints=kmesh
+        )
+
+
+def test_projector_inputs_without_external_block_raise(
+    wannier_codes, silicon_structure, kmesh, tmp_path
+):
+    """External projector inputs without an external block are rejected.
+
+    No other projection source consumes them, so accepting them here would
+    silently ignore them.
+    """
+    with pytest.raises(ValueError, match="without any 'atomic_projectors_external' block"):
+        WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            external_projectors_path=str(tmp_path),
+            external_projectors=_si_external_projectors(),
         )
 
 

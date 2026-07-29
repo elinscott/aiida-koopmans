@@ -79,38 +79,78 @@ _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["ai
 
 #: Projection sources the block wannierization supports: explicit orbital
 #: lists, and — for automated wannierization — pseudoatomic orbitals fetched
-#: from the pseudopotentials.
+#: from the pseudopotentials or from an external projector directory.
 SUPPORTED_PROJECTION_TYPES = (
     WannierProjectionType.ANALYTIC,
     WannierProjectionType.ATOMIC_PROJECTORS_QE,
+    WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
 )
 
 
 def validate_projection_type(projection_type: WannierProjectionType) -> None:
     """Reject projection types the block wannierization does not support.
 
-    ``ATOMIC_PROJECTORS_EXTERNAL`` (pseudoatomic orbitals from an external
-    directory) is the intended second automated source, but the external
-    projector inputs are not wired through the per-block builder yet, so it
-    is rejected naming that gap; every other type (SCDM, random, ...) is out
-    of scope. Compares by ``.value``: in a graph body the enum arrives as a
-    provenance-tagged proxy, which fails the ``Enum`` constructor's by-value
-    lookup, while attribute access and ``==`` delegate cleanly.
+    Every type outside :data:`SUPPORTED_PROJECTION_TYPES` (SCDM, random,
+    ...) is out of scope. Compares by ``.value``: in a graph body the enum
+    arrives as a provenance-tagged proxy, which fails the ``Enum``
+    constructor's by-value lookup, while attribute access and ``==``
+    delegate cleanly.
     """
     value = getattr(projection_type, "value", projection_type)
     if any(value == member.value for member in SUPPORTED_PROJECTION_TYPES):
         return
-    if value == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL.value:
-        raise ValueError(
-            "Projection type 'atomic_projectors_external' is not supported yet: the "
-            "external projector directory and tables are not wired through the "
-            "per-block wannier builder."
-        )
     raise ValueError(
         f"Projection type '{value}' is not supported: blocks are "
         "wannierized from explicit projections ('analytic') or pseudoatomic "
-        "projectors fetched from the pseudopotentials ('atomic_projectors_qe')."
+        "projectors, fetched from the pseudopotentials "
+        "('atomic_projectors_qe') or from an external projector directory "
+        "('atomic_projectors_external')."
     )
+
+
+def _is_external(projection_type: WannierProjectionType) -> bool:
+    """Report whether a (possibly proxy-wrapped) type is the external source."""
+    value = getattr(projection_type, "value", projection_type)
+    return bool(value == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL.value)
+
+
+def validate_external_projector_inputs(
+    projection_types: list[WannierProjectionType],
+    external_projectors_path: str | None,
+    external_projectors: dict[str, Any] | None,
+) -> None:
+    """Pair the external projector inputs with the external projection type.
+
+    ``atomic_projectors_external`` needs both the projector directory (the
+    pw2wannier90 step remote-copies each element's ``<symbol>.dat`` from it)
+    and the per-element orbital tables (the builder derives the projector
+    count and frozen list from them); any other type consumes neither, so a
+    mismatch in either direction raises rather than silently ignoring the
+    given inputs.
+    """
+    external = any(_is_external(projection_type) for projection_type in projection_types)
+    given = [
+        name
+        for name, value in (
+            ("external_projectors_path", external_projectors_path),
+            ("external_projectors", external_projectors),
+        )
+        if value is not None
+    ]
+    if external and len(given) < 2:
+        missing = sorted({"external_projectors_path", "external_projectors"} - set(given))
+        raise ValueError(
+            "Projection type 'atomic_projectors_external' requires both "
+            "`external_projectors_path` (the directory holding one "
+            "`<element>.dat` per element) and `external_projectors` (the "
+            f"per-element orbital tables); missing: {missing}."
+        )
+    if not external and given:
+        raise ValueError(
+            "External projector inputs were given without any "
+            f"'atomic_projectors_external' block: {given}; they would be "
+            "silently ignored."
+        )
 
 
 class WannierizeOverrides(TypedDict, total=False):
@@ -299,6 +339,8 @@ def WannierizeBlock(
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
+    external_projectors_path: str | None = None,
+    external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
@@ -308,6 +350,12 @@ def WannierizeBlock(
     are ignored here). This function is the single place the flat keyword
     dicts are wrapped into the upstream builder's namespace-mirroring
     override shape.
+
+    An ``atomic_projectors_external`` block needs both external projector
+    inputs (see :func:`validate_external_projector_inputs`): the upstream
+    builder turns them into the pw2wannier90 step's projector-directory
+    ``RemoteData`` plus the ``atom_proj_ext`` namelist keywords, and sizes
+    the frozen-projector list from the orbital tables.
 
     Seeds a ``Wannier90WorkChain`` builder via ``get_builder_from_protocol``
     for this block's ``projection_type``, then:
@@ -327,13 +375,20 @@ def WannierizeBlock(
       excludes by default.
     """
     validate_projection_type(projection_type)
+    validate_external_projector_inputs(
+        [projection_type], external_projectors_path, external_projectors
+    )
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
 
     # ``.build()`` executes this body eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL
-    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str
+    # — as does the projector directory, which becomes a ``RemoteData``
+    # remote path.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+    if external_projectors_path is not None:
+        external_projectors_path = str(external_projectors_path)
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
@@ -344,6 +399,8 @@ def WannierizeBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
+        external_projectors_path=external_projectors_path,
+        external_projectors=external_projectors,
         # For koopmans we do not exclude semicore states automatically.
         exclude_semicore=False,
         # The hamiltonian-retrieval protocol override sets ``write_hr`` /
@@ -503,6 +560,24 @@ def _validate_block_projection_types(blocks: list[ProjectionBlock]) -> None:
         validate_projection_type(block["projection_type"])
 
 
+def _external_kwargs_for(
+    block: ProjectionBlock,
+    external_projectors_path: str | None,
+    external_projectors: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Select the external projector kwargs a block's wannier graph takes.
+
+    The inputs feed only the blocks that consume them; a non-external
+    block's builder would reject them.
+    """
+    if not _is_external(block["projection_type"]):
+        return {}
+    return {
+        "external_projectors_path": external_projectors_path,
+        "external_projectors": external_projectors,
+    }
+
+
 def _resolve_split_mode(
     codes: Codes,
     blocks: list[ProjectionBlock],
@@ -592,6 +667,8 @@ def WannierizeBlocks(
     wjl_options: dict[str, Any] | None = None,
     subblock_wannier90_options: dict[str, Any] | None = None,
     cubic_pw2wannier90_options: dict[str, Any] | None = None,
+    external_projectors_path: str | None = None,
+    external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
 
@@ -675,6 +752,13 @@ def WannierizeBlocks(
             ``metadata.options`` for the per-group re-wannierisation
             ``Wannier90Calculation`` (defaults to single-machine resources;
             that CalcJob has no resources default of its own).
+        external_projectors_path / external_projectors: the projector
+            directory (one ``<element>.dat`` per element, on the
+            pw2wannier90 code's computer) and the per-element orbital
+            tables. Required together by any ``atomic_projectors_external``
+            block, fed only to those blocks' wannier builders, and rejected
+            when no block consumes them
+            (:func:`validate_external_projector_inputs`).
 
     Returns:
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
@@ -685,6 +769,11 @@ def WannierizeBlocks(
     overrides = overrides or {}
     validate_parallelization(parallelization)
     _validate_block_projection_types(blocks)
+    validate_external_projector_inputs(
+        [block["projection_type"] for block in blocks],
+        external_projectors_path,
+        external_projectors,
+    )
 
     split = _resolve_split_mode(
         codes=codes,
@@ -777,6 +866,7 @@ def WannierizeBlocks(
     block_outputs: dict[str, Any] = {}
     collect_inputs: dict[str, Any] = {}
     for i, block in enumerate(blocks):
+        external_kwargs = _external_kwargs_for(block, external_projectors_path, external_projectors)
         if split:
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
@@ -797,6 +887,7 @@ def WannierizeBlocks(
                 wjl_options=wjl_options,
                 wannier90_options=subblock_wannier90_options,
                 pw2wannier90_options=cubic_pw2wannier90_options,
+                **external_kwargs,
                 metadata={"call_link_label": f"wannierize_split_{block['label']}"},
             )
         else:
@@ -814,6 +905,7 @@ def WannierizeBlocks(
                 electronic_type=electronic_type,
                 spin_type=spin_type,
                 parallelization=parallelization,
+                **external_kwargs,
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
         # Both per-block graphs return the flat WannierizeBlockOutputs
