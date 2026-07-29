@@ -77,6 +77,41 @@ from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 # ``aiida.chk`` to unitarily rotate the per-block manifolds, so force it.
 _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["aiida.chk"]}
 
+#: Projection sources the block wannierization supports: explicit orbital
+#: lists, and — for automated wannierization — pseudoatomic orbitals fetched
+#: from the pseudopotentials.
+SUPPORTED_PROJECTION_TYPES = (
+    WannierProjectionType.ANALYTIC,
+    WannierProjectionType.ATOMIC_PROJECTORS_QE,
+)
+
+
+def validate_projection_type(projection_type: WannierProjectionType) -> None:
+    """Reject projection types the block wannierization does not support.
+
+    ``ATOMIC_PROJECTORS_EXTERNAL`` (pseudoatomic orbitals from an external
+    directory) is the intended second automated source, but the external
+    projector inputs are not wired through the per-block builder yet, so it
+    is rejected naming that gap; every other type (SCDM, random, ...) is out
+    of scope. Compares by ``.value``: in a graph body the enum arrives as a
+    provenance-tagged proxy, which fails the ``Enum`` constructor's by-value
+    lookup, while attribute access and ``==`` delegate cleanly.
+    """
+    value = getattr(projection_type, "value", projection_type)
+    if any(value == member.value for member in SUPPORTED_PROJECTION_TYPES):
+        return
+    if value == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL.value:
+        raise ValueError(
+            "Projection type 'atomic_projectors_external' is not supported yet: the "
+            "external projector directory and tables are not wired through the "
+            "per-block wannier builder."
+        )
+    raise ValueError(
+        f"Projection type '{value}' is not supported: blocks are "
+        "wannierized from explicit projections ('analytic') or pseudoatomic "
+        "projectors fetched from the pseudopotentials ('atomic_projectors_qe')."
+    )
+
 
 class WannierizeOverrides(TypedDict, total=False):
     """Flat, semantic overrides for :func:`WannierizeBlocks` / :func:`WannierizeBlock`.
@@ -291,6 +326,7 @@ def WannierizeBlock(
       picks them up), and force-retrieves ``aiida.chk``, which upstream
       excludes by default.
     """
+    validate_projection_type(projection_type)
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
 
@@ -308,6 +344,8 @@ def WannierizeBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
+        # For koopmans we do not exclude semicore states automatically.
+        exclude_semicore=False,
         # The hamiltonian-retrieval protocol override sets ``write_hr`` /
         # ``write_tb`` and the hr retrieve handling.
         retrieve_hamiltonian=True,
@@ -324,6 +362,10 @@ def WannierizeBlock(
     w90_params["num_bands"] = w90_kwargs["num_bands"]
     if "exclude_bands" in w90_kwargs:
         w90_params["exclude_bands"] = w90_kwargs["exclude_bands"]
+    else:
+        # A block that excludes nothing must not inherit an exclusion the
+        # protocol machinery may have seeded.
+        w90_params.pop("exclude_bands", None)
     # Per-block disentanglement handling: a block with extra bands genuinely
     # disentangles, so give it wannier90's real default iteration budget (the
     # aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
@@ -455,6 +497,12 @@ def collect_wannier_functions(
     return CollectedWannierFunctions(centres=centres, spreads=spreads)
 
 
+def _validate_block_projection_types(blocks: list[ProjectionBlock]) -> None:
+    """Reject any block whose projection type is unsupported."""
+    for block in blocks:
+        validate_projection_type(block["projection_type"])
+
+
 def _resolve_split_mode(
     codes: Codes,
     blocks: list[ProjectionBlock],
@@ -559,8 +607,7 @@ def WannierizeBlocks(
 
     The automated block-splitting mode triggers when a gap threshold was
     requested (``split_threshold``) or when any block uses automatic
-    projections, whose band grouping only exists at runtime (that arm is
-    forward-looking — no caller routes automatic blocks through here yet).
+    projections, whose band grouping only exists at runtime.
     In split mode a pw.x ``bands`` step runs along the required
     ``bands_kpoints`` off the internal scf density, the runtime
     ``detect_band_groups`` task turns the eigenvalues into energy-separated
@@ -577,8 +624,8 @@ def WannierizeBlocks(
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
-            ``pw2wannier90``; ``projwfc`` is needed only for projection types
-            that run projwfc (e.g. SCDM / energy-auto frozen window).
+            ``pw2wannier90``; ``projwfc`` is accepted but unused by the
+            supported projection types (:data:`SUPPORTED_PROJECTION_TYPES`).
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
@@ -637,6 +684,7 @@ def WannierizeBlocks(
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
+    _validate_block_projection_types(blocks)
 
     split = _resolve_split_mode(
         codes=codes,

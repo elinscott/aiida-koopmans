@@ -293,6 +293,41 @@ class TestSplitMode:
         assert not plain.outputs["groups"]._links
         assert_graph_roundtrips(plain)
 
+    def test_automatic_block_split_topology(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """A single atomic-projector block routes through the split machinery.
+
+        No threshold is set: the automatic block is the trigger on its own,
+        and the detection still runs (it always opens a group at the
+        occupied/empty boundary).
+        """
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert names.count("detect_band_groups") == 1
+        assert "wannierize_split_block_1" in names
+        detect_task = wg.tasks["detect_band_groups"]
+        # The detection covers the block's Wannierised manifold; with no
+        # threshold only the occupied/empty boundary splits it.
+        assert detect_task.inputs["num_bands_total"].value == 8
+        assert detect_task.inputs["threshold"].value is None
+        for populated in ("bands", "groups", "centres", "spreads"):
+            assert wg.outputs[populated]._links, populated
+        assert_graph_roundtrips(wg)
+
 
 # ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)
@@ -602,6 +637,106 @@ class TestWannierizeBlockBuild:
         assert params["write_xyz"] is True
         assert "mp_grid" not in params
 
+    def test_automatic_block_relies_on_the_projection_type(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """An atomic-projector block sets ``auto_projections``, no orbital list.
+
+        The block's counts stay authoritative: no protocol-seeded
+        ``exclude_bands`` survives, and the pw2wannier90 namelist carries the
+        matching ``atom_proj`` so the amn width equals ``num_wann``.
+        """
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert params["auto_projections"] is True
+        assert params["num_wann"] == 8
+        assert params["num_bands"] == 8
+        assert "exclude_bands" not in params
+        assert task.inputs["wannier90"]["wannier90"]["projections"].value is None
+        inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
+        assert inputpp["INPUTPP"]["atom_proj"] is True
+        assert_graph_roundtrips(wg)
+
+    def test_semicore_exclusions_stay_out(
+        self,
+        monkeypatch,
+        wannier_codes,
+        silicon_structure,
+        kmesh,
+        nscf_scratch,
+        fake_cutoffs_family,
+    ):
+        """A curated semicore table must not leak into the block's inputs.
+
+        With semicore handling active, the upstream protocol would exclude
+        the semicore bands and shrink the pw2wannier90 atomic-projector set
+        (``atom_proj_exclude``) — both behind the block bookkeeping's back.
+        The bundled tables match pseudos by md5, so a curated entry is
+        simulated by patching the lookup.
+        """
+        import aiida_wannier90_workflows.utils.pseudo as upstream_pseudo
+
+        monkeypatch.setattr(
+            upstream_pseudo,
+            "get_pseudo_orbitals",
+            lambda *args, **kwargs: {"Si": {"pswfcs": ["3S", "3P"], "semicores": ["3S"]}},
+        )
+        block = automatic_block(
+            "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert "exclude_bands" not in params
+        assert params["num_wann"] == 8
+        inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
+        assert "atom_proj_exclude" not in inputpp["INPUTPP"]
+
+    def test_no_exclusion_block_drops_global_exclude_bands(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A global ``exclude_bands`` override must not stick to a no-exclusion block.
+
+        The flat ``wannier90`` overrides apply to every block, but the block
+        bookkeeping is the exclusion authority: a block that excludes
+        nothing drops the seeded key.
+        """
+        block = explicit_block("block_1", range(1, 5))
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"exclude_bands": [9, 10]}},
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert "exclude_bands" not in params
+
     def test_disentangling_block_gets_the_default_iteration_budget(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
@@ -652,6 +787,32 @@ class TestWannierizeBlockBuild:
         ):
             assert wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
+
+
+@pytest.mark.parametrize(
+    ("projection_type", "match"),
+    [
+        (WannierProjectionType.SCDM, "'scdm' is not supported"),
+        (
+            WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+            r"atomic_projectors_external.*not supported yet",
+        ),
+    ],
+)
+def test_unsupported_projection_types_raise(
+    wannier_codes, silicon_structure, kmesh, projection_type, match
+):
+    """Only explicit projections and pseudoatomic projectors are supported.
+
+    SCDM is out of scope; external pseudoatomic projectors are the intended
+    second automated source but are not wired through the per-block builder,
+    so both fail loudly before any graph is built.
+    """
+    block = automatic_block("block_1", range(1, 9), projection_type=projection_type)
+    with pytest.raises(ValueError, match=match):
+        WannierizeBlocks.build(
+            codes=wannier_codes, structure=silicon_structure, blocks=[block], kpoints=kmesh
+        )
 
 
 def test_unknown_parallelization_code_raises(wannier_codes, silicon_structure, kmesh):
