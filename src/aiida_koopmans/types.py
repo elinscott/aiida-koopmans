@@ -99,6 +99,13 @@ class VariationalOrbital(TypedDict):
     than a :class:`SpinChannel` enum, so compare with ``==`` not
     ``is`` (``SpinChannel`` subclasses ``str``, so
     ``o["spin"] == SpinChannel.UP`` holds but ``is`` does not).
+
+    ``manifold`` is the label of the projection block the orbital's
+    Wannier function belongs to, set by callers that build orbitals
+    from projection blocks. Workflows without blocks have no such
+    label, so it is ``NotRequired``; the partition operator
+    :func:`~aiida_koopmans.workgraphs.variational_orbitals.refine_by_key`
+    demands it on every orbital before splitting on it.
     """
 
     spin: SpinChannel
@@ -106,6 +113,7 @@ class VariationalOrbital(TypedDict):
     filled: bool
     group_id: int
     representative: bool
+    manifold: NotRequired[str]  # projection-block label; set by block-building callers
 
 
 def map_key_for(orbital: VariationalOrbital) -> str:

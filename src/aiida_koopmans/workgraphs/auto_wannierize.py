@@ -19,9 +19,13 @@ nested :func:`WannierizeAndSplitBlock` graph per block; when that nested body
 runs the groups are concrete values and ordinary ``if`` / ``for`` build the
 branch. This module holds the split-specific pieces only.
 
-Scope (mirroring the PR that introduces this module): explicitly-projected
-blocks and a single spin channel. Implicit/automatic projections and the
-``_u_dis.mat`` merge of a disentangled parent block are follow-ups.
+Scope: a single spin channel. Blocks may be explicitly projected (ANALYTIC)
+or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
+run relies on ``projection_type`` alone). The ``_u_dis.mat`` merge of a
+disentangled parent block is a follow-up: a block routed through the split
+must carry no disentanglement pool (``num_bands == num_wann``), and the
+runtime group restriction rejects one that does (the detected groups cover
+only the Wannierised manifold, never the pool above it).
 """
 
 from __future__ import annotations
