@@ -8,10 +8,15 @@ per block plus a single shared ``scf_nscf`` task.
 """
 
 import pytest
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeBlocks
+from aiida_koopmans.workgraphs.block_wannierize import (
+    UnconstrainedDisentanglementWarning,
+    WannierizeBlock,
+    WannierizeBlocks,
+)
 from tests.fixtures import assert_graph_roundtrips, automatic_block, explicit_block
 
 # ----------------------------------------------------------------------
@@ -861,3 +866,80 @@ def test_bands_seed_does_not_mutate_the_nscf_override(
     captured = wg.tasks.scf_nscf.inputs.overrides.value
     control = captured["nscf"]["pw"]["parameters"]["CONTROL"]
     assert control.get("calculation") != "bands"
+
+
+class TestUnconstrainedDisentanglementWarning:
+    """The pre-dispatch warning fires at parent-graph build, where users see it.
+
+    The nested per-block body only runs daemon-side, so these assert around
+    ``WannierizeBlocks.build`` — the path the dispatcher takes.
+    """
+
+    @staticmethod
+    def _pool_block():
+        """Build a block whose 4 Wannier functions sit under 6 included bands."""
+        return ExplicitProjectionBlock(
+            label="block_1",
+            spin=SpinChannel.NONE,
+            num_wann=4,
+            num_bands=6,
+            projection_type=WannierProjectionType.ANALYTIC,
+            projections=["Si: sp3"],
+        )
+
+    def _build(self, codes, structure, blocks, kpoints, **kwargs):
+        return WannierizeBlocks.build(
+            codes=codes,
+            structure=structure,
+            blocks=blocks,
+            kpoints=kpoints,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            **kwargs,
+        )
+
+    def test_pool_carrying_block_warns_at_build(self, wannier_codes, silicon_structure, kmesh):
+        """num_bands > num_wann without any window/frozen key warns at build time."""
+        with pytest.warns(
+            UnconstrainedDisentanglementWarning,
+            match=r"Block 'block_1' includes num_bands = 6 .* num_wann = 4",
+        ):
+            self._build(wannier_codes, silicon_structure, [self._pool_block()], kmesh)
+
+    def test_supplied_window_silences_the_warning(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """A dis_froz_max in the flat wannier90 overrides counts as a constraint."""
+        self._build(
+            wannier_codes,
+            silicon_structure,
+            [self._pool_block()],
+            kmesh,
+            overrides={"wannier90": {"dis_froz_max": 10.6}},
+        )
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]
+
+    def test_non_disentangling_block_does_not_warn(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """num_bands == num_wann cannot disentangle: no warning."""
+        self._build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]
+
+    def test_metal_protocol_window_silences_the_warning(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """METAL resolves the ENERGY_FIXED frozen type, whose protocol sets dis_froz_max."""
+        self._build(
+            wannier_codes,
+            silicon_structure,
+            [self._pool_block()],
+            kmesh,
+            electronic_type=ElectronicType.METAL,
+        )
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]
