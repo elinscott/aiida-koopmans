@@ -789,25 +789,29 @@ class TestWannierizeBlockBuild:
         assert_graph_roundtrips(wg)
 
 
-def test_unsupported_projection_types_raise(wannier_codes, silicon_structure, kmesh):
+@pytest.mark.parametrize(
+    ("projection_type", "match"),
+    [
+        (WannierProjectionType.SCDM, "'scdm' is not supported"),
+        (
+            WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+            r"atomic_projectors_external.*not supported yet",
+        ),
+    ],
+)
+def test_unsupported_projection_types_raise(
+    wannier_codes, silicon_structure, kmesh, projection_type, match
+):
     """Only explicit projections and pseudoatomic projectors are supported.
 
     SCDM is out of scope; external pseudoatomic projectors are the intended
     second automated source but are not wired through the per-block builder,
     so both fail loudly before any graph is built.
     """
-    scdm = automatic_block("block_1", range(1, 9), projection_type=WannierProjectionType.SCDM)
-    with pytest.raises(ValueError, match="'scdm' is not supported"):
+    block = automatic_block("block_1", range(1, 9), projection_type=projection_type)
+    with pytest.raises(ValueError, match=match):
         WannierizeBlocks.build(
-            codes=wannier_codes, structure=silicon_structure, blocks=[scdm], kpoints=kmesh
-        )
-
-    external = automatic_block(
-        "block_1", range(1, 9), projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL
-    )
-    with pytest.raises(ValueError, match=r"atomic_projectors_external.*not supported yet"):
-        WannierizeBlocks.build(
-            codes=wannier_codes, structure=silicon_structure, blocks=[external], kpoints=kmesh
+            codes=wannier_codes, structure=silicon_structure, blocks=[block], kpoints=kmesh
         )
 
 
