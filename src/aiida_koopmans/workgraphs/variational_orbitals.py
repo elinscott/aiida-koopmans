@@ -6,7 +6,8 @@ copied onto the rest of the group.
 
 The model is a partition of the orbitals into screening-equivalence
 groups, encoded in ``group_id``; every grouping criterion is a view of
-that one object. :func:`refine_by_key` (exact categorical splits) and
+that one object. :func:`refine_by_key` / :func:`refine_by_labels`
+(exact categorical splits) and
 :func:`refine_by_scalar` (per-group sort-and-cut with a tolerance,
 i.e. single linkage) only ever split existing groups, never merge
 them, so exact refinements compose in any order and both operators
@@ -251,39 +252,18 @@ def _renumber_and_stamp(
     return out
 
 
-def refine_by_key(
-    orbitals: list[VariationalOrbital],
-    key: str | Sequence[Hashable],
+def _refine_by_categories(
+    orbitals: list[VariationalOrbital], labels: list[Hashable]
 ) -> list[VariationalOrbital]:
-    """Split every existing group by equality of a categorical property.
+    """Split every existing group by equality of per-orbital labels.
 
-    ``key`` is either the name of a :class:`~aiida_koopmans.types.VariationalOrbital`
-    field (``"filled"``, ``"spin"``, ``"manifold"``, ...) or an explicit
-    per-orbital sequence of hashable labels aligned with ``orbitals``
-    (e.g. user-supplied group membership). Two orbitals stay in the same
-    group only if they already shared one *and* their labels compare
-    equal — a label shared across two existing groups never merges them,
-    which gives user-supplied groups intersection semantics.
-
-    Return a new list (inputs untouched) with group ids renumbered
-    canonically and representatives restamped. Raise ``ValueError`` when
-    a named field is absent from any orbital, an explicit label sequence
-    does not match ``orbitals`` in length, a label is unhashable, or any
-    orbital carries no ``group_id``.
+    Shared core of :func:`refine_by_key` and :func:`refine_by_labels`:
+    two orbitals stay in the same group only if they already shared one
+    *and* their labels compare equal, so a label shared across two
+    existing groups never merges them. Raise ``ValueError`` for an
+    unhashable label or an orbital without ``group_id``.
     """
     _require_group_ids(orbitals)
-    if isinstance(key, str):
-        missing = [i for i, o in enumerate(orbitals) if key not in o]
-        if missing:
-            raise ValueError(
-                f"Cannot refine by {key!r}: orbital(s) at position(s) {missing} "
-                f"carry no {key!r} field."
-            )
-        labels: list[Hashable] = [o[key] for o in orbitals]  # type: ignore[literal-required]
-    else:
-        labels = list(key)
-        if len(labels) != len(orbitals):
-            raise ValueError(f"Got {len(labels)} labels for {len(orbitals)} orbitals.")
     for pos, label in enumerate(labels):
         try:
             hash(label)
@@ -298,6 +278,55 @@ def refine_by_key(
     return _renumber_and_stamp(orbitals, subkeys)
 
 
+def refine_by_key(
+    orbitals: list[VariationalOrbital],
+    key: str,
+) -> list[VariationalOrbital]:
+    """Split every existing group by equality of one orbital field.
+
+    ``key`` names a :class:`~aiida_koopmans.types.VariationalOrbital`
+    field (``"filled"``, ``"spin"``, ``"manifold"``, ...); orbitals in
+    the same group whose values for that field differ are separated.
+    For categorical labels that live outside the orbital records use
+    :func:`refine_by_labels`.
+
+    Return a new list (inputs untouched) with group ids renumbered
+    canonically and representatives restamped. Raise ``ValueError`` when
+    the field is absent from any orbital or any orbital carries no
+    ``group_id``.
+    """
+    missing = [i for i, o in enumerate(orbitals) if key not in o]
+    if missing:
+        raise ValueError(
+            f"Cannot refine by {key!r}: orbital(s) at position(s) {missing} carry no {key!r} field."
+        )
+    labels = cast("list[Hashable]", [o[key] for o in orbitals])  # type: ignore[literal-required]
+    return _refine_by_categories(orbitals, labels)
+
+
+def refine_by_labels(
+    orbitals: list[VariationalOrbital],
+    labels: Sequence[Hashable],
+) -> list[VariationalOrbital]:
+    """Split every existing group by equality of externally supplied labels.
+
+    ``labels`` is aligned with ``orbitals`` (one hashable label per
+    orbital) — the categorical counterpart of :func:`refine_by_scalar`'s
+    ``values``, e.g. user-supplied group membership. A label shared
+    across two existing groups never merges them, which gives
+    user-supplied groups intersection semantics.
+
+    Return a new list (inputs untouched) with group ids renumbered
+    canonically and representatives restamped. Raise ``ValueError`` when
+    the lengths mismatch, a label is unhashable, or any orbital carries
+    no ``group_id``.
+    """
+    label_list = list(labels)
+    if len(label_list) != len(orbitals):
+        raise ValueError(f"Got {len(label_list)} labels for {len(orbitals)} orbitals.")
+    return _refine_by_categories(orbitals, label_list)
+
+
 def refine_by_scalar(
     orbitals: list[VariationalOrbital],
     values: Sequence[float],
@@ -307,13 +336,11 @@ def refine_by_scalar(
 
     Sort each group's members by their value and cut wherever adjacent
     values differ by more than ``tol``; the connected runs become the
-    subgroups (single-linkage clustering). The cut condition is a strict
-    floating-point ``>``: a gap that compares equal to ``tol`` does not
-    cut, but a decimal gap only nominally equal to ``tol`` may compare
-    greater (in IEEE-754, ``1.3 - 1.0 > 0.3``). Groups are processed
-    independently, so a value belonging to another group can never
-    bridge two members of this one — apply after all exact refinements
-    (:func:`refine_by_key`).
+    subgroups (single-linkage clustering). The cut is a strict ``>``
+    comparison in floating point. Groups are processed independently,
+    so a value belonging to another group can never bridge two members
+    of this one — apply after all exact refinements
+    (:func:`refine_by_key` / :func:`refine_by_labels`).
 
     ``values`` is aligned with ``orbitals`` (one scalar per orbital,
     e.g. self-Hartree energies or Wannier spreads). Return a new list

@@ -1,7 +1,8 @@
 """Unit tests for the screening-equivalence partition operators.
 
-Exercise :func:`refine_by_key` / :func:`refine_by_scalar` as pure
-functions on ``list[VariationalOrbital]`` — no AiiDA profile, no graph.
+Exercise :func:`refine_by_key` / :func:`refine_by_labels` /
+:func:`refine_by_scalar` as pure functions on
+``list[VariationalOrbital]`` — no AiiDA profile, no graph.
 The graph-level uses of the grouping machinery are covered by
 ``test_kcp_workgraph`` and ``test_dfpt_workgraph``.
 """
@@ -13,6 +14,7 @@ import pytest
 from aiida_koopmans.types import SpinChannel, VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
     refine_by_key,
+    refine_by_labels,
     refine_by_scalar,
 )
 
@@ -66,24 +68,6 @@ class TestRefineByKey:
         refined = refine_by_key(orbitals, "manifold")
         assert groups_of(refined) == {1: frozenset({0, 2}), 2: frozenset({1})}
 
-    def test_explicit_labels_intersect_never_merge(self):
-        # Two existing groups; the user label "x" spans both. Refinement
-        # splits along the labels within each group but never merges the
-        # like-labelled members across the pre-existing boundary.
-        orbitals = [
-            orb(1, group_id=1),
-            orb(2, group_id=1),
-            orb(3, group_id=2),
-            orb(4, group_id=2),
-        ]
-        refined = refine_by_key(orbitals, ["x", "y", "x", "x"])
-        assert groups_of(refined) == {
-            1: frozenset({0}),
-            2: frozenset({1}),
-            3: frozenset({2, 3}),
-        }
-        assert_refines(orbitals, refined)
-
     def test_exact_refinements_commute(self):
         orbitals = [
             orb(1, spin=SpinChannel.UP),
@@ -115,13 +99,39 @@ class TestRefineByKey:
         with pytest.raises(ValueError, match="flavor"):
             refine_by_key([orb(1)], "flavor")
 
+
+class TestRefineByLabels:
+    def test_explicit_labels_intersect_never_merge(self):
+        # Two existing groups; the user label "x" spans both. Refinement
+        # splits along the labels within each group but never merges the
+        # like-labelled members across the pre-existing boundary.
+        orbitals = [
+            orb(1, group_id=1),
+            orb(2, group_id=1),
+            orb(3, group_id=2),
+            orb(4, group_id=2),
+        ]
+        refined = refine_by_labels(orbitals, ["x", "y", "x", "x"])
+        assert groups_of(refined) == {
+            1: frozenset({0}),
+            2: frozenset({1}),
+            3: frozenset({2, 3}),
+        }
+        assert_refines(orbitals, refined)
+
+    def test_idempotent(self):
+        orbitals = [orb(1), orb(2), orb(3)]
+        labels = ["a", "b", "a"]
+        once = refine_by_labels(orbitals, labels)
+        assert refine_by_labels(once, labels) == once
+
     def test_label_length_mismatch_raises(self):
         with pytest.raises(ValueError, match="2 labels for 3 orbitals"):
-            refine_by_key([orb(1), orb(2), orb(3)], ["a", "b"])
+            refine_by_labels([orb(1), orb(2), orb(3)], ["a", "b"])
 
     def test_unhashable_label_raises(self):
         with pytest.raises(ValueError, match="Unhashable label"):
-            refine_by_key([orb(1)], [["not", "hashable"]])
+            refine_by_labels([orb(1)], [["not", "hashable"]])
 
 
 class TestRefineByScalar:
@@ -255,7 +265,7 @@ class TestRefinementInvariant:
         [
             lambda orbs: refine_by_key(orbs, "filled"),
             lambda orbs: refine_by_key(orbs, "spin"),
-            lambda orbs: refine_by_key(orbs, ["u", "v", "u", "v", "u", "v"]),
+            lambda orbs: refine_by_labels(orbs, ["u", "v", "u", "v", "u", "v"]),
             lambda orbs: refine_by_scalar(orbs, [0.0, 0.2, 0.9, 1.0, 1.05, 3.0], tol=0.3),
         ],
     )
