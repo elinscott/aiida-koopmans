@@ -24,11 +24,15 @@ Within each subset, an "ill-separated" check (any inter-cluster gap
 smaller than ``2 * tol``) triggers a fallback to ``0.9 * tol`` and the
 clustering is rerun. If the tolerance shrinks below ``0.01 * default_tol``
 the algorithm raises rather than emitting unreliable groups. The two
-paths deliberately diverge for now: single linkage keeps
-:func:`refine_by_scalar` idempotent where complete linkage on chained
-data would not be, and the ill-separated guard has no operator
-equivalent — reconciling them is deferred to when the operators are
-wired in.
+paths deliberately diverge for now. Single linkage makes
+:func:`refine_by_scalar` idempotent: every adjacent gap inside a group
+it forms is at most ``tol``, so re-applying the operator finds no new
+cuts. Complete linkage instead bounds the overall cluster diameter, so
+on a chain of closely spaced values (e.g. ``0.0, 0.25, 0.5, 0.75`` at
+``tol=0.3``) it must break the chain somewhere, and re-clustering the
+resulting groups need not reproduce them. The ill-separated guard also
+has no operator equivalent — reconciling the two paths is deferred to
+when the operators are wired in.
 
 Identity-of-orbital flows through this module as
 :class:`aiida_koopmans.types.VariationalOrbital` — a ``TypedDict``
@@ -312,9 +316,12 @@ def refine_by_labels(
 
     ``labels`` is aligned with ``orbitals`` (one hashable label per
     orbital) — the categorical counterpart of :func:`refine_by_scalar`'s
-    ``values``, e.g. user-supplied group membership. A label shared
-    across two existing groups never merges them, which gives
-    user-supplied groups intersection semantics.
+    ``values``. Any hashable values work; only equality matters. For
+    example, user-supplied index groups ``[[1, 2], [3, 4]]`` over four
+    orbitals become ``labels=[0, 0, 1, 1]``, and per-block provenance
+    could be expressed as ``labels=["occ_1", "occ_1", "emp_1", "emp_1"]``.
+    A label shared across two existing groups never merges them, which
+    gives user-supplied groups intersection semantics.
 
     Return a new list (inputs untouched) with group ids renumbered
     canonically and representatives restamped. Raise ``ValueError`` when
