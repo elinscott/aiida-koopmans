@@ -227,6 +227,36 @@ def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
         )
 
 
+def test_orbital_density_dataset_builds_without_parallelization(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """Every decompose pass carries resources when no parallelization is given.
+
+    A CalcJob is rejected at creation without ``metadata.options.resources``,
+    and that rejection only surfaces once the task runs, so pin it here.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    merge_groups = [_spin_block("occ", True, "none", 4, 4)]
+    alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
+
+    wg = OrbitalDensityDatasetWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations=block_wannierizations,
+        merge_groups=merge_groups,
+        alphas=alphas,
+    )
+
+    resources = wg.tasks["decompose_occ"].inputs["metadata"]["options"]["resources"].value
+    assert resources == {"num_machines": 1}, resources
+
+
 def test_orbital_density_dataset_nspin1_omits_spin_component(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):

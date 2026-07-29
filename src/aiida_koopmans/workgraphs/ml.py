@@ -63,6 +63,11 @@ from aiida_koopmans.workgraphs.kcp import (
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
 DecomposeTask = task(Pw2wannierDecomposeCalculation)
 
+#: Fallback ``metadata.options`` for the decompose CalcJob this module creates
+#: directly. A CalcJob cannot run without ``resources``, and the descriptor
+#: route must not depend on the caller supplying a parallelization block.
+_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
+
 ML_DESCRIPTOR_TYPES = ("self_hartree", "orbital_density")
 ML_MODES = ("none", "train", "test")
 
@@ -436,6 +441,9 @@ def OrbitalDensityDatasetWorkflow(
                 decompose_inputs["u_dis_mat"] = extract_u_dis_mat(
                     block_wannierizations[label]["retrieved"]
                 ).result
+            # Seed the resources first so the pass is runnable with no
+            # parallelization block; a supplied one overwrites them.
+            decompose_inputs["metadata"]["options"] = dict(_DEFAULT_CALCJOB_OPTIONS)
             merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(
