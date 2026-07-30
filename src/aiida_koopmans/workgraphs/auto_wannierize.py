@@ -220,23 +220,6 @@ def extract_win_file(retrieved: orm.FolderData) -> orm.SinglefileData:
     return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
 
-@task.calcfunction
-def extract_wannier_input_parameters(retrieved: orm.FolderData) -> orm.Dict:
-    """Recover the resolved ``parameters`` of the run that created ``retrieved``.
-
-    The split sub-blocks inherit the parent whole-block run's convergence
-    settings, and the fully resolved set (protocol tier plus user
-    overrides) lives on the parent calculation node as its ``parameters``
-    input — so read it back off ``retrieved``'s creator. A calcfunction
-    (not a plain ``@task``): it takes an AiiDA data node, which the
-    PyFunction deserializer refuses.
-    """
-    creator = retrieved.creator
-    if creator is None:
-        raise ValueError("`retrieved` has no creating calculation to read the parameters from.")
-    return orm.Dict(creator.inputs.parameters.get_dict())
-
-
 @task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
 def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
     """Merge per-sub-block wannier90 products back into one block-wide set.
@@ -522,7 +505,6 @@ def WannierizeAndSplitBlock(
     ]
 
     win_file = extract_win_file(retrieved=whole["retrieved"]).result
-    parent_parameters = extract_wannier_input_parameters(retrieved=whole["retrieved"]).result
 
     # The wannier90 scratch holds every file the split needs: ``aiida.chk``
     # plus the ``aiida.{amn,mmn,eig}`` symlinks that aiida-wannier90 staged
@@ -551,7 +533,7 @@ def WannierizeAndSplitBlock(
         codes=codes,
         structure=structure,
         split_blocks=split["blocks"],
-        parent_parameters=parent_parameters,
+        parent_parameters=whole["wannier90_parameters"],
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,
         mp_grid=mp_grid,

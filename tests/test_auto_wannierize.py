@@ -25,7 +25,6 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     _plain_options,
     _subblock_w90_parameters,
     detect_band_groups,
-    extract_wannier_input_parameters,
     extract_win_file,
     merge_split_block_products,
 )
@@ -369,14 +368,15 @@ class TestPerBlockGraphBuild:
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
         # The split's ``blocks`` namespace feeds the nested graph, and the
-        # parent run's resolved parameters cross via the extraction task
-        # (its ``win_files`` namespace is deliberately unconsumed).
+        # whole-block run's resolved parameters cross on its explicit
+        # ``wannier90_parameters`` socket (the split's ``win_files``
+        # namespace is deliberately unconsumed).
         links = rewann_task.inputs["split_blocks"]._links
         assert len(links) == 1
         assert links[0].from_task.name == "split_wannierization"
         links = rewann_task.inputs["parent_parameters"]._links
         assert len(links) == 1
-        assert links[0].from_task.name == "extract_wannier_input_parameters"
+        assert links[0].from_task.name == "wannierize_whole_block"
 
         # The merged trio and the merged parsed Dict feed the outputs; the
         # plain-route-only folder keys stay unpopulated on the split route.
@@ -532,40 +532,6 @@ class TestExtractWinFile:
         win = extract_win_file._callable(retrieved=retrieved)
         assert win.filename == "aiida.win"
         assert win.get_content() == "num_wann = 4\n"
-
-
-class TestExtractWannierInputParameters:
-    """Recovering the resolved parameters off the creating calculation."""
-
-    def test_missing_creator_raises(self, aiida_profile):
-        from aiida.orm import FolderData
-
-        with pytest.raises(ValueError, match="no creating calculation"):
-            extract_wannier_input_parameters._callable(retrieved=FolderData().store())
-
-    def test_reads_the_parameters_from_the_creator(self, aiida_localhost):
-        """The creator's ``parameters`` input rides back out as a fresh Dict."""
-        from aiida.common.links import LinkType
-        from aiida.orm import CalcJobNode, Dict, FolderData
-
-        parameters = Dict(_PARENT_W90_PARAMETERS).store()
-        calc = CalcJobNode(
-            computer=aiida_localhost,
-            process_type="aiida.calculations:core.arithmetic.add",
-        )
-        calc.set_option("resources", {"num_machines": 1})
-        calc.base.links.add_incoming(
-            parameters, link_type=LinkType.INPUT_CALC, link_label="parameters"
-        )
-        calc.store()
-        retrieved = FolderData()
-        retrieved.base.links.add_incoming(calc, link_type=LinkType.CREATE, link_label="retrieved")
-        retrieved.store()
-        calc.seal()
-
-        result = extract_wannier_input_parameters._callable(retrieved=retrieved)
-        assert result.get_dict() == _PARENT_W90_PARAMETERS
-        assert result.uuid != parameters.uuid
 
 
 class TestMergeWannierOutputParameters:
