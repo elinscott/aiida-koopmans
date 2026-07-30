@@ -226,14 +226,18 @@ def auto_codes(aiida_localhost):
     }
 
 
-def explicit_block(label, include, projections=None, spin=None):
-    """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands."""
+def explicit_block(label, include, projections=None, spin=None, filled=None):
+    """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
+
+    ``filled`` stamps the block's occupancy when given; ``None`` leaves the
+    block unstamped (the partition-emission gate stays off).
+    """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
     from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 
     n = len(include)
-    return ExplicitProjectionBlock(
+    block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
         num_wann=n,
@@ -242,6 +246,9 @@ def explicit_block(label, include, projections=None, spin=None):
         projection_type=WannierProjectionType.ANALYTIC,
         projections=[] if projections is None else projections,
     )
+    if filled is not None:
+        block["filled"] = filled
+    return block
 
 
 def assert_graph_roundtrips(wg):
@@ -257,11 +264,13 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def automatic_block(label, include, spin=None, projection_type=None):
+def automatic_block(label, include, spin=None, projection_type=None, filled=None):
     """Build a minimal automatic projection block over ``include`` bands.
 
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
-    projection source automated wannierization always uses.
+    projection source automated wannierization always uses. ``filled``
+    stamps the block's occupancy when given; ``None`` leaves the block
+    unstamped (the partition-emission gate stays off).
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -270,7 +279,7 @@ def automatic_block(label, include, spin=None, projection_type=None):
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
     n = len(include)
-    return AutomaticProjectionBlock(
+    block = AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
         num_wann=n,
@@ -278,6 +287,9 @@ def automatic_block(label, include, spin=None, projection_type=None):
         include_bands=list(include),
         projection_type=projection_type,
     )
+    if filled is not None:
+        block["filled"] = filled
+    return block
 
 
 @pytest.fixture
@@ -349,3 +361,18 @@ def si_reference() -> dict:
     """Load the silicon reference data."""
     with open(Path(__file__).parent / "data" / "ui" / "si_ui_reference.json") as handle:
         return json.load(handle)
+
+
+def si_external_projector_tables() -> dict:
+    """Silicon external-projector orbital tables: s + p per atom, 8 in total.
+
+    The caller-synthesized shape the upstream builder consumes: one entry
+    per orbital with its ``l``, explicitly unfrozen — the upstream builder
+    stages every entry not marked ``frozen: False`` in ``atom_proj_frozen``.
+    """
+    return {
+        "Si": [
+            {"l": 0, "frozen": False},
+            {"l": 1, "frozen": False},
+        ]
+    }

@@ -69,6 +69,12 @@ class SpinChannel(str, Enum):
     polarisation, single channel).
     """
 
+    # Declaration order is the canonical channel walk order: iterating
+    # the enum IS the ordering authority for representative stamping and
+    # orbital emission. The position of NONE relative to UP/DOWN is
+    # immaterial — the channels are mutually exclusive spin regimes, so
+    # no calculation ever walks NONE alongside UP/DOWN; what matters is
+    # only UP before DOWN.
     NONE = "none"
     UP = "up"
     DOWN = "down"
@@ -228,6 +234,12 @@ class _ProjectionBlockBase(TypedDict):
     sources), and which bands it covers. ``projection_type`` is the
     discriminator (a real :class:`WannierProjectionType`, registered for
     AiiDA serialization via the ``aiida.data`` entry points).
+
+    ``filled`` is the block's occupancy (every block is purely occupied
+    or purely empty). Optional: it is stamped by callers that need the
+    initial orbital partition emitted downstream; routes that instead
+    derive occupancy from ``include_bands`` against a per-spin
+    occupied-band count (:func:`group_blocks_to_merge`) leave it unset.
     """
 
     label: str
@@ -236,6 +248,7 @@ class _ProjectionBlockBase(TypedDict):
     num_bands: int
     include_bands: list[int]
     exclude_bands: NotRequired[list[int] | None]
+    filled: NotRequired[bool]
     projection_type: WannierProjectionType
 
 
@@ -266,6 +279,49 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
 # Analytic blocks carry ``projections``; automatic blocks do not, so
 # ``"projections" in block`` narrows the union to the explicit arm.
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
+
+
+class ProjectionBlockId(TypedDict):
+    """Identity-and-shape view of a :class:`ProjectionBlock`.
+
+    Carries what downstream bookkeeping needs to enumerate a block's
+    orbitals — the label, channel, occupancy, and Wannier-function
+    count — and nothing else. Two reasons this view exists instead of
+    passing full blocks:
+
+    * provenance stays slim: the enumeration consumers never read
+      ``projections`` / ``include_bands`` / ``num_bands``, so storing
+      them on every partition task input would be noise;
+    * a list of full blocks cannot ride a PyFunction input regardless:
+      ``aiida-pythonjob`` dispatches its serializer registry on the
+      *outer* type only, so ``list`` maps straight to ``orm.List`` and
+      JSON storage rejects the nested ``projection_type`` enum — the
+      registered top-level serializer for that enum (its ``EnumData``
+      entry point) is never consulted for container internals. This
+      JSON-pure view needs no registry at all. Reported upstream as
+      https://github.com/aiidateam/aiida-pythonjob/issues/83 — once
+      containers consult the registry, this second reason falls away
+      and the view can be reconsidered.
+    """
+
+    label: str
+    spin: SpinChannel
+    filled: bool
+    num_wann: int
+
+
+def validate_projection_block_id(spec: ProjectionBlockId) -> None:
+    """Reject a block view whose shape cannot describe real orbitals.
+
+    Lives beside the type because a ``TypedDict`` cannot validate at
+    runtime; every consumer that trusts the shape calls this first.
+    Raise ``ValueError`` for a non-positive ``num_wann``.
+    """
+    if int(spec["num_wann"]) < 1:
+        raise ValueError(
+            f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
+            "every block must carry at least one Wannier function."
+        )
 
 
 class MergeGroup(TypedDict):

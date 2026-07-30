@@ -8,11 +8,21 @@ per block plus a single shared ``scf_nscf`` task.
 """
 
 import pytest
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock, WannierizeBlocks
-from tests.fixtures import assert_graph_roundtrips, automatic_block, explicit_block
+from aiida_koopmans.workgraphs.block_wannierize import (
+    UnconstrainedDisentanglementWarning,
+    WannierizeBlock,
+    WannierizeBlocks,
+)
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    automatic_block,
+    explicit_block,
+    si_external_projector_tables,
+)
 
 # ----------------------------------------------------------------------
 # Fixtures: structures, block shapes (``wannier_codes`` is shared, see fixtures.py)
@@ -327,6 +337,146 @@ class TestSplitMode:
         for populated in ("bands", "groups", "centres", "spreads"):
             assert wg.outputs[populated]._links, populated
         assert_graph_roundtrips(wg)
+
+    def test_external_block_split_topology_forwards_projector_inputs(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family, tmp_path
+    ):
+        """An external-projector block splits and carries its projector inputs.
+
+        Like any automatic block it is a split trigger on its own, and the
+        directory path plus orbital tables must reach the nested per-block
+        graph (only the whole-block wannierisation consumes them).
+        """
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            external_projectors_path=str(tmp_path),
+            external_projectors=si_external_projector_tables(),
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("detect_band_groups") == 1
+        assert "wannierize_split_block_1" in names
+        split_task = wg.tasks["wannierize_split_block_1"]
+        assert split_task.inputs["external_projectors_path"].value == str(tmp_path)
+        assert split_task.inputs["external_projectors"].value == si_external_projector_tables()
+        assert_graph_roundtrips(wg)
+
+
+# ----------------------------------------------------------------------
+# Initial orbital partition emission
+# ----------------------------------------------------------------------
+
+
+def _stamped_blocks() -> list[ExplicitProjectionBlock]:
+    """Build the silicon shape with the occupancy stamps the emission gate needs."""
+    return [
+        explicit_block("block_1", range(1, 5), filled=True),
+        explicit_block("block_2", range(5, 9), filled=False),
+    ]
+
+
+class TestOrbitalPartitionEmission:
+    """The ``orbitals`` socket: occupancy-stamp gating and both-mode wiring."""
+
+    def test_plain_mode_emits_the_partition(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _stamped_blocks(), kmesh)
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        # The task receives the reduced, JSON-pure block records in
+        # input-list order.
+        specs = wg.tasks["initial_orbital_partition"].inputs["blocks"].value
+        assert [s["label"] for s in specs] == ["block_1", "block_2"]
+        assert [s["filled"] for s in specs] == [True, False]
+        assert [s["num_wann"] for s in specs] == [4, 4]
+        assert_graph_roundtrips(wg)
+
+    def test_split_mode_emits_the_partition(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=_stamped_blocks(),
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            split_threshold=1.5,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_unstamped_blocks_skip_the_emission(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert "initial_orbital_partition" not in [t.name for t in wg.tasks]
+        assert not wg.outputs["orbitals"]._links
+
+    def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
+        blocks = [
+            explicit_block("block_1", range(1, 5), filled=True),
+            explicit_block("block_2", range(5, 9)),
+        ]
+        with pytest.raises(ValueError, match="block_2"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_blocks_out_of_emitted_order_raise(self, wannier_codes, silicon_structure, kmesh):
+        """Non-channel-contiguous input would mis-pair `orbitals` against `spreads`.
+
+        The partition walks channels contiguously (up, occupied-then-empty,
+        then down) while `spreads` / `centres` concatenate in input-list
+        order; interleaving the channels makes the two orders diverge, so
+        the build must refuse rather than let a positional consumer
+        mis-align silently.
+        """
+        blocks = [
+            explicit_block("occ_up", range(1, 3), spin=SpinChannel.UP, filled=True),
+            explicit_block("occ_dw", range(1, 3), spin=SpinChannel.DOWN, filled=True),
+            explicit_block("emp_up", range(3, 4), spin=SpinChannel.UP, filled=False),
+            explicit_block("emp_dw", range(3, 4), spin=SpinChannel.DOWN, filled=False),
+        ]
+        with pytest.raises(ValueError, match="emitted orbital order"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_partition_task_runs_through_the_engine(self, aiida_profile):
+        """The reduced specs and the emitted substrate survive engine storage."""
+        from aiida import orm
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.variational_orbitals import initial_orbital_partition
+
+        wg = WorkGraph("initial_orbital_partition_unit")
+        wg.add_task(
+            initial_orbital_partition,
+            name="partition",
+            blocks=[
+                {"label": "occ", "spin": SpinChannel.NONE, "filled": True, "num_wann": 2},
+                {"label": "emp", "spin": SpinChannel.NONE, "filled": False, "num_wann": 1},
+            ],
+        )
+        wg.run()
+        node = wg.tasks.partition.outputs.result.value
+        assert isinstance(node, orm.List)
+        orbitals = node.get_list()
+        assert [o["index"] for o in orbitals] == [1, 2, 3]
+        assert [o["group_id"] for o in orbitals] == [1, 1, 2]
+        # Storage degrades the str-enum spin to a plain str; `==` still
+        # holds (`is` would not), which is the comparison consumers use.
+        assert all(o["spin"] == SpinChannel.NONE for o in orbitals)
 
 
 # ----------------------------------------------------------------------
@@ -670,6 +820,70 @@ class TestWannierizeBlockBuild:
         assert inputpp["INPUTPP"]["atom_proj"] is True
         assert_graph_roundtrips(wg)
 
+    def test_external_block_stages_the_projector_inputs(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family, tmp_path
+    ):
+        """An external-projector block stages the directory and the namelist.
+
+        The pw2wannier90 step must carry the projector-directory
+        ``RemoteData`` plus the kind→element file map, and its namelist the
+        ``atom_proj_ext`` switches pointing at the staged copy; the ``.win``
+        side is plain ``auto_projections`` with the block's counts.
+        """
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            external_projectors_path=str(tmp_path),
+            external_projectors=si_external_projector_tables(),
+        )
+        task = self._wannier_task(wg)
+        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        assert params["auto_projections"] is True
+        assert params["num_wann"] == 8
+        assert params["num_bands"] == 8
+        p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
+        inputpp = p2w["parameters"].value.get_dict()["INPUTPP"]
+        assert inputpp["atom_proj"] is True
+        assert inputpp["atom_proj_ext"] is True
+        assert inputpp["atom_proj_dir"] == "external_projectors/"
+        assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
+        assert p2w["external_projectors_list"].value.get_dict() == {"Si": "Si"}
+        # No entry triggers upstream's frozen-list selection, so the
+        # namelist never carries atom_proj_frozen.
+        assert "atom_proj_frozen" not in inputpp
+        assert_graph_roundtrips(wg)
+
+    def test_external_block_without_projector_inputs_raises(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, tmp_path
+    ):
+        """An external block missing either projector input fails naming it."""
+        block = automatic_block(
+            "block_1",
+            range(1, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        )
+        with pytest.raises(ValueError, match=r"missing: \['external_projectors'\]"):
+            WannierizeBlock.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                block=block,
+                projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+                nscf_remote_folder=nscf_scratch,
+                kpoints=kmesh,
+                external_projectors_path=str(tmp_path),
+            )
+
     def test_semicore_exclusions_stay_out(
         self,
         monkeypatch,
@@ -790,28 +1004,107 @@ class TestWannierizeBlockBuild:
 
 
 @pytest.mark.parametrize(
-    ("projection_type", "match"),
-    [
-        (WannierProjectionType.SCDM, "'scdm' is not supported"),
-        (
-            WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
-            r"atomic_projectors_external.*not supported yet",
-        ),
-    ],
+    "projection_type",
+    [WannierProjectionType.SCDM, WannierProjectionType.RANDOM],
 )
 def test_unsupported_projection_types_raise(
-    wannier_codes, silicon_structure, kmesh, projection_type, match
+    wannier_codes, silicon_structure, kmesh, projection_type
 ):
     """Only explicit projections and pseudoatomic projectors are supported.
 
-    SCDM is out of scope; external pseudoatomic projectors are the intended
-    second automated source but are not wired through the per-block builder,
-    so both fail loudly before any graph is built.
+    SCDM and random starting guesses are out of scope, so both fail loudly
+    before any graph is built.
     """
     block = automatic_block("block_1", range(1, 9), projection_type=projection_type)
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=f"'{projection_type.value}' is not supported"):
         WannierizeBlocks.build(
             codes=wannier_codes, structure=silicon_structure, blocks=[block], kpoints=kmesh
+        )
+
+
+def test_projector_inputs_without_external_block_raise(
+    wannier_codes, silicon_structure, kmesh, tmp_path
+):
+    """External projector inputs without an external block are rejected.
+
+    No other projection source consumes them, so accepting them here would
+    silently ignore them.
+    """
+    with pytest.raises(ValueError, match="without any 'atomic_projectors_external' block"):
+        WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            external_projectors_path=str(tmp_path),
+            external_projectors=si_external_projector_tables(),
+        )
+
+
+def test_second_external_block_raises(auto_codes, silicon_structure, kmesh, kpath, tmp_path):
+    """Two external blocks per call are rejected naming the limitation.
+
+    Each block would receive the full orbital tables — they are not split
+    per block — so a second external block would wannierize the whole
+    projector manifold instead of its own bands.
+    """
+    blocks = [
+        automatic_block(
+            "block_1",
+            range(1, 5),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        ),
+        automatic_block(
+            "block_2",
+            range(5, 9),
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+        ),
+    ]
+    with pytest.raises(ValueError, match="only one is supported per call"):
+        WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=blocks,
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            external_projectors_path=str(tmp_path),
+            external_projectors=si_external_projector_tables(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"external_projectors": {}}, "`external_projectors` is empty"),
+        ({"external_projectors_path": "  "}, "`external_projectors_path` is blank"),
+    ],
+)
+def test_degenerate_projector_inputs_raise(
+    auto_codes, silicon_structure, kmesh, kpath, tmp_path, overrides, match
+):
+    """An empty table dict or a blank path fails before any graph is built."""
+    block = automatic_block(
+        "block_1",
+        range(1, 9),
+        projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
+    )
+    kwargs = {
+        "external_projectors_path": str(tmp_path),
+        "external_projectors": si_external_projector_tables(),
+        **overrides,
+    }
+    with pytest.raises(ValueError, match=match):
+        WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[block],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            **kwargs,
         )
 
 
@@ -861,3 +1154,80 @@ def test_bands_seed_does_not_mutate_the_nscf_override(
     captured = wg.tasks.scf_nscf.inputs.overrides.value
     control = captured["nscf"]["pw"]["parameters"]["CONTROL"]
     assert control.get("calculation") != "bands"
+
+
+class TestUnconstrainedDisentanglementWarning:
+    """The pre-dispatch warning fires at parent-graph build, where users see it.
+
+    The nested per-block body only runs daemon-side, so these assert around
+    ``WannierizeBlocks.build`` — the path the dispatcher takes.
+    """
+
+    @staticmethod
+    def _pool_block():
+        """Build a block whose 4 Wannier functions sit under 6 included bands."""
+        return ExplicitProjectionBlock(
+            label="block_1",
+            spin=SpinChannel.NONE,
+            num_wann=4,
+            num_bands=6,
+            projection_type=WannierProjectionType.ANALYTIC,
+            projections=["Si: sp3"],
+        )
+
+    def _build(self, codes, structure, blocks, kpoints, **kwargs):
+        return WannierizeBlocks.build(
+            codes=codes,
+            structure=structure,
+            blocks=blocks,
+            kpoints=kpoints,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            **kwargs,
+        )
+
+    def test_pool_carrying_block_warns_at_build(self, wannier_codes, silicon_structure, kmesh):
+        """num_bands > num_wann without any window/frozen key warns at build time."""
+        with pytest.warns(
+            UnconstrainedDisentanglementWarning,
+            match=r"Block 'block_1' includes num_bands = 6 .* num_wann = 4",
+        ):
+            self._build(wannier_codes, silicon_structure, [self._pool_block()], kmesh)
+
+    def test_supplied_window_silences_the_warning(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """A dis_froz_max in the flat wannier90 overrides counts as a constraint."""
+        self._build(
+            wannier_codes,
+            silicon_structure,
+            [self._pool_block()],
+            kmesh,
+            overrides={"wannier90": {"dis_froz_max": 10.6}},
+        )
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]
+
+    def test_non_disentangling_block_does_not_warn(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """num_bands == num_wann cannot disentangle: no warning."""
+        self._build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]
+
+    def test_metal_protocol_window_silences_the_warning(
+        self, wannier_codes, silicon_structure, kmesh, recwarn
+    ):
+        """METAL resolves the ENERGY_FIXED frozen type, whose protocol sets dis_froz_max."""
+        self._build(
+            wannier_codes,
+            silicon_structure,
+            [self._pool_block()],
+            kmesh,
+            electronic_type=ElectronicType.METAL,
+        )
+        assert not [
+            w for w in recwarn if issubclass(w.category, UnconstrainedDisentanglementWarning)
+        ]

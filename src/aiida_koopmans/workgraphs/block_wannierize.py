@@ -49,22 +49,37 @@ require.
 
 from __future__ import annotations
 
+import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
-from aiida_wannier90_workflows.common.types import WannierProjectionType
+from aiida_wannier90_workflows.common.types import WannierFrozenType, WannierProjectionType
+from aiida_wannier90_workflows.utils.workflows.builder.projections import (
+    guess_wannier_projection_types,
+)
 from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_w90_kwargs
+from aiida_koopmans.types import (
+    ParallelizationDict,
+    ProjectionBlock,
+    ProjectionBlockId,
+    SpinChannel,
+    VariationalOrbital,
+    block_w90_kwargs,
+)
 from aiida_koopmans.workgraphs import (
     Codes,
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.variational_orbitals import (
+    initial_orbital_partition,
+    ordered_block_specs,
+)
 from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
@@ -79,38 +94,212 @@ _W90_RETRIEVE_SETTINGS: dict[str, list[str]] = {"additional_retrieve_list": ["ai
 
 #: Projection sources the block wannierization supports: explicit orbital
 #: lists, and — for automated wannierization — pseudoatomic orbitals fetched
-#: from the pseudopotentials.
+#: from the pseudopotentials or from an external projector directory.
 SUPPORTED_PROJECTION_TYPES = (
     WannierProjectionType.ANALYTIC,
     WannierProjectionType.ATOMIC_PROJECTORS_QE,
+    WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
 )
 
 
 def validate_projection_type(projection_type: WannierProjectionType) -> None:
     """Reject projection types the block wannierization does not support.
 
-    ``ATOMIC_PROJECTORS_EXTERNAL`` (pseudoatomic orbitals from an external
-    directory) is the intended second automated source, but the external
-    projector inputs are not wired through the per-block builder yet, so it
-    is rejected naming that gap; every other type (SCDM, random, ...) is out
-    of scope. Compares by ``.value``: in a graph body the enum arrives as a
-    provenance-tagged proxy, which fails the ``Enum`` constructor's by-value
-    lookup, while attribute access and ``==`` delegate cleanly.
+    Every type outside :data:`SUPPORTED_PROJECTION_TYPES` (SCDM, random,
+    ...) is out of scope. Compares by ``.value``: in a graph body the enum
+    arrives as a provenance-tagged proxy, which fails the ``Enum``
+    constructor's by-value lookup, while attribute access and ``==``
+    delegate cleanly.
     """
     value = getattr(projection_type, "value", projection_type)
     if any(value == member.value for member in SUPPORTED_PROJECTION_TYPES):
         return
-    if value == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL.value:
-        raise ValueError(
-            "Projection type 'atomic_projectors_external' is not supported yet: the "
-            "external projector directory and tables are not wired through the "
-            "per-block wannier builder."
-        )
     raise ValueError(
         f"Projection type '{value}' is not supported: blocks are "
         "wannierized from explicit projections ('analytic') or pseudoatomic "
-        "projectors fetched from the pseudopotentials ('atomic_projectors_qe')."
+        "projectors, fetched from the pseudopotentials "
+        "('atomic_projectors_qe') or from an external projector directory "
+        "('atomic_projectors_external')."
     )
+
+
+def _is_external(projection_type: WannierProjectionType) -> bool:
+    """Report whether a (possibly proxy-wrapped) type is the external source."""
+    value = getattr(projection_type, "value", projection_type)
+    return bool(value == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL.value)
+
+
+def validate_external_projector_inputs(
+    projection_types: list[WannierProjectionType],
+    external_projectors_path: str | None,
+    external_projectors: dict[str, Any] | None,
+) -> None:
+    """Pair the external projector inputs with the external projection type.
+
+    ``atomic_projectors_external`` needs both the projector directory (the
+    pw2wannier90 step remote-copies each element's ``<symbol>.dat`` from it)
+    and the per-element orbital tables (the builder derives the projector
+    count from them); any other type consumes neither, so a
+    mismatch in either direction raises rather than silently ignoring the
+    given inputs. At most one external entry is allowed: the tables are not
+    split per block, so every external block would wannierize the full
+    projector manifold.
+    """
+    n_external = sum(1 for projection_type in projection_types if _is_external(projection_type))
+    external = n_external > 0
+    if n_external > 1:
+        raise ValueError(
+            f"{n_external} 'atomic_projectors_external' blocks were given, but only one "
+            "is supported per call: the orbital tables are not split per block, so "
+            "every external block would wannierize the full projector manifold."
+        )
+    if external_projectors is not None and not external_projectors:
+        raise ValueError(
+            "`external_projectors` is empty; the per-element orbital tables must "
+            "contain at least one element entry."
+        )
+    if external_projectors_path is not None and not str(external_projectors_path).strip():
+        raise ValueError(
+            "`external_projectors_path` is blank; it must point at the projector directory."
+        )
+    given = [
+        name
+        for name, value in (
+            ("external_projectors_path", external_projectors_path),
+            ("external_projectors", external_projectors),
+        )
+        if value is not None
+    ]
+    if external and len(given) < 2:
+        missing = sorted({"external_projectors_path", "external_projectors"} - set(given))
+        raise ValueError(
+            "Projection type 'atomic_projectors_external' requires both "
+            "`external_projectors_path` (the directory holding one "
+            "`<element>.dat` per element) and `external_projectors` (the "
+            f"per-element orbital tables); missing: {missing}."
+        )
+    if not external and given:
+        raise ValueError(
+            "External projector inputs were given without any "
+            f"'atomic_projectors_external' block: {given}; they would be "
+            "silently ignored."
+        )
+
+
+# The wannier90 keywords that constrain which bands the disentangled subspace
+# is built from: the outer/frozen energy windows, the projectability-based
+# frozen-manifold selection, and the k-point spheres that localize where
+# disentanglement acts. ``dis_num_iter`` and the other ``dis_*`` convergence
+# knobs deliberately do not count -- they tune the minimization without
+# constraining the manifold.
+_DISENTANGLEMENT_CONSTRAINT_KEYS = frozenset(
+    {
+        "dis_win_min",
+        "dis_win_max",
+        "dis_froz_min",
+        "dis_froz_max",
+        "dis_froz_proj",
+        "dis_proj_min",
+        "dis_proj_max",
+        "dis_spheres",
+        "dis_spheres_num",
+        "dis_spheres_first_wann",
+    }
+)
+
+# The resolved frozen types whose protocol handling writes a constraint key
+# into the wannier90 parameters (``dis_froz_max`` and/or the
+# ``dis_froz_proj`` / ``dis_proj_*`` trio). ``ENERGY_AUTO`` is absent on
+# purpose: it computes its window at workchain runtime without setting any
+# parameter key, so the pre-dispatch check below cannot see it.
+_WINDOW_SETTING_FROZEN_TYPES = frozenset(
+    {
+        WannierFrozenType.ENERGY_FIXED,
+        WannierFrozenType.PROJECTABILITY,
+        WannierFrozenType.FIXED_PLUS_PROJECTABILITY,
+    }
+)
+
+
+class UnconstrainedDisentanglementWarning(UserWarning):
+    """A disentangling block carries no window or frozen-manifold constraint.
+
+    With ``num_bands > num_wann`` and none of the
+    ``dis_win_* / dis_froz_* / dis_proj_* / dis_spheres_*`` keywords set,
+    wannier90 free-minimizes over every included band and may silently swap
+    pool bands into the Wannier manifold.
+    """
+
+
+def _warn_unconstrained_disentanglement(label: str, num_bands: int, num_wann: int) -> None:
+    """Emit the :class:`UnconstrainedDisentanglementWarning` for one block.
+
+    The advice names only the keywords the bundled wannier90 accepts
+    (``dis_win_*`` / ``dis_froz_*`` / ``dis_spheres_*``); the
+    projectability keys silence the check when a protocol sets them but are
+    not suggested.
+    """
+    warnings.warn(
+        f"Block '{label}' includes num_bands = {num_bands} bands for "
+        f"num_wann = {num_wann} Wannier functions but sets no disentanglement "
+        "constraint (dis_win_min/dis_win_max, dis_froz_min/dis_froz_max or "
+        "dis_spheres_*): the Wannierized manifold will be chosen by spread "
+        "minimization over all included bands.",
+        UnconstrainedDisentanglementWarning,
+        stacklevel=3,
+    )
+
+
+def _disentanglement_unconstrained(
+    block: ProjectionBlock,
+    wannier90_overrides: dict[str, Any] | None,
+    electronic_type: ElectronicType,
+) -> bool:
+    """Decide pre-dispatch whether a block will free-minimize its disentanglement.
+
+    Mirror what the merged wannier90 parameters will contain without
+    building them (the nested per-block builder only runs after dispatch):
+    the flat ``wannier90`` overrides contribute their keys verbatim, and
+    the protocol contributes a window exactly when upstream's resolved
+    frozen type is one of :data:`_WINDOW_SETTING_FROZEN_TYPES`.
+    """
+    if int(block["num_bands"]) <= int(block["num_wann"]):
+        return False
+    override_keys = {str(key).lower() for key in (wannier90_overrides or {})}
+    if _DISENTANGLEMENT_CONSTRAINT_KEYS & override_keys:
+        return False
+    try:
+        _, _, frozen_type = guess_wannier_projection_types(
+            electronic_type, block["projection_type"], None, None
+        )
+    except ValueError:
+        # The per-block builder will raise the same complaint with full
+        # context; don't warn on top of an imminent failure.
+        return False
+    return frozen_type not in _WINDOW_SETTING_FROZEN_TYPES
+
+
+def _warn_unconstrained_blocks(
+    blocks: list[ProjectionBlock],
+    wannier90_overrides: dict[str, Any] | None,
+    electronic_type: ElectronicType,
+    split: bool,
+) -> None:
+    """Warn pre-dispatch for every block that will free-minimize its disentanglement.
+
+    Called from the eager :func:`WannierizeBlocks` body so the warning
+    surfaces at build time in the caller's terminal: the nested per-block
+    body (which sees the fully merged parameters) only runs daemon-side.
+    Split-mode blocks are exempt by construction — their sub-blocks are
+    derived at runtime, after the bands step.
+    """
+    if split:
+        return
+    for block in blocks:
+        if _disentanglement_unconstrained(block, wannier90_overrides, electronic_type):
+            _warn_unconstrained_disentanglement(
+                block["label"], block["num_bands"], block["num_wann"]
+            )
 
 
 class WannierizeOverrides(TypedDict, total=False):
@@ -220,6 +409,19 @@ class WannierizeBlocksOutputs(TypedDict):
     * ``bands`` / ``groups`` -- split mode only: the pw.x ``bands``-run
       eigenvalues the grouping was detected on, and the detected 1-indexed
       band groups (global indices).
+    * ``orbitals`` -- one :class:`~aiida_koopmans.types.VariationalOrbital`
+      per Wannier function in per-channel iwann order (occupied ascending
+      then empty ascending — the kcw.x / kcp.x orbital order), with
+      ``manifold`` = the block label, ``filled`` / ``spin`` from the
+      block, and ``group_id`` encoding the coarsest screening partition
+      consistent with the blocks' exact splits (filling, spin and
+      manifold — :func:`~aiida_koopmans.workgraphs.variational_orbitals.initial_orbital_partition`).
+      Emitted only when every input block carries a ``filled`` occupancy
+      stamp; identical across plain and split modes (a split block's
+      orbitals keep the parent block's label as their ``manifold``).
+      Engine storage returns the list with each orbital's ``spin``
+      degraded to a plain ``str`` — consumers compare with ``==``, never
+      ``is`` (see :class:`~aiida_koopmans.types.VariationalOrbital`).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
@@ -228,6 +430,7 @@ class WannierizeBlocksOutputs(TypedDict):
     nscf: NotRequired[PwOutputs]
     bands: NotRequired[orm.BandsData]
     groups: NotRequired[list[list[int]]]
+    orbitals: NotRequired[list[VariationalOrbital]]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
@@ -299,6 +502,8 @@ def WannierizeBlock(
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
+    external_projectors_path: str | None = None,
+    external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
     """Wannierise a single projection block off the shared nscf scratch.
 
@@ -308,6 +513,12 @@ def WannierizeBlock(
     are ignored here). This function is the single place the flat keyword
     dicts are wrapped into the upstream builder's namespace-mirroring
     override shape.
+
+    An ``atomic_projectors_external`` block needs both external projector
+    inputs (see :func:`validate_external_projector_inputs`): the upstream
+    builder turns them into the pw2wannier90 step's projector-directory
+    ``RemoteData`` plus the ``atom_proj_ext`` namelist keywords, and sizes
+    the projector count from the orbital tables.
 
     Seeds a ``Wannier90WorkChain`` builder via ``get_builder_from_protocol``
     for this block's ``projection_type``, then:
@@ -327,13 +538,20 @@ def WannierizeBlock(
       excludes by default.
     """
     validate_projection_type(projection_type)
+    validate_external_projector_inputs(
+        [projection_type], external_projectors_path, external_projectors
+    )
     overrides = overrides or {}
     wannier90 = overrides.get("wannier90")
 
     # ``.build()`` executes this body eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL
-    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str
+    # — as does the projector directory, which becomes a ``RemoteData``
+    # remote path.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+    if external_projectors_path is not None:
+        external_projectors_path = str(external_projectors_path)
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
@@ -344,6 +562,8 @@ def WannierizeBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         projection_type=projection_type,
+        external_projectors_path=external_projectors_path,
+        external_projectors=external_projectors,
         # For koopmans we do not exclude semicore states automatically.
         exclude_semicore=False,
         # The hamiltonian-retrieval protocol override sets ``write_hr`` /
@@ -375,6 +595,16 @@ def WannierizeBlock(
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
         if "dis_num_iter" not in (wannier90 or {}):
             w90_params["dis_num_iter"] = 5000
+        # ``w90_params`` at this point holds the full merge (protocol defaults
+        # plus the flat ``wannier90`` overrides), so any window the protocol
+        # itself set counts as a constraint too. On the production path this
+        # body runs daemon-side, where the warning lands in the worker log
+        # only; the user-visible copy is emitted pre-dispatch from
+        # :func:`WannierizeBlocks`.
+        if not _DISENTANGLEMENT_CONSTRAINT_KEYS.intersection(key.lower() for key in w90_params):
+            _warn_unconstrained_disentanglement(
+                block["label"], w90_kwargs["num_bands"], w90_kwargs["num_wann"]
+            )
     else:
         for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
             w90_params.pop(key, None)
@@ -503,6 +733,79 @@ def _validate_block_projection_types(blocks: list[ProjectionBlock]) -> None:
         validate_projection_type(block["projection_type"])
 
 
+def _external_kwargs_for(
+    block: ProjectionBlock,
+    external_projectors_path: str | None,
+    external_projectors: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Select the external projector kwargs a block's wannier graph takes.
+
+    The inputs feed only the blocks that consume them; a non-external
+    block's builder would reject them.
+    """
+    if not _is_external(block["projection_type"]):
+        return {}
+    return {
+        "external_projectors_path": external_projectors_path,
+        "external_projectors": external_projectors,
+    }
+
+
+def _maybe_emit_orbital_partition(
+    outputs: WannierizeBlocksOutputs, blocks: list[ProjectionBlock]
+) -> None:
+    """Wire the initial orbital partition into ``outputs`` when the blocks carry occupancy.
+
+    Emission is gated on the caller stamping ``filled`` on every block:
+    occupancy is structural information the caller owns, so it travels
+    on the blocks and is never derived here. A partial stamping is a
+    caller bug rather than a smaller feature, so it raises. The
+    partition task takes a JSON-pure reduced view of the blocks: a full
+    block carries a non-``str`` enum (``projection_type``) that the
+    PyFunction input serializer cannot store.
+    """
+    stamped = [("filled" in block) for block in blocks]
+    if any(stamped) and not all(stamped):
+        unstamped = [
+            str(block["label"]) for block, has in zip(blocks, stamped, strict=True) if not has
+        ]
+        raise ValueError(
+            "Some blocks carry a `filled` occupancy stamp and some do not "
+            f"({unstamped}); stamp every block to emit the orbital partition, "
+            "or none to skip it."
+        )
+    if not (blocks and all(stamped)):
+        return
+    specs = [
+        ProjectionBlockId(
+            label=str(block["label"]),
+            spin=SpinChannel(block["spin"]),
+            filled=bool(block["filled"]),
+            num_wann=int(block["num_wann"]),
+        )
+        for block in blocks
+    ]
+    # The partition lists orbitals in emitted order while the unified
+    # ``spreads`` / ``centres`` concatenate in input-list order; a consumer
+    # pairing the two positionally would mis-align silently if the orders
+    # diverged, so require the input to already be the emitted order.
+    ordered = ordered_block_specs(specs)
+    if ordered != specs:
+        raise ValueError(
+            f"The blocks are not in emitted orbital order: got labels "
+            f"{[s['label'] for s in specs]} but the partition walks "
+            f"{[s['label'] for s in ordered]} (spin channels in SpinChannel declaration "
+            "order, each contiguous, with every occupied block before every empty one). Reorder "
+            "the blocks so `orbitals` stays aligned with the input-list-ordered "
+            "`spreads` / `centres`."
+        )
+    partition = initial_orbital_partition(
+        blocks=specs,
+        metadata={"call_link_label": "initial_orbital_partition"},
+    )
+    outputs["orbitals"] = partition.result
+
+
 def _resolve_split_mode(
     codes: Codes,
     blocks: list[ProjectionBlock],
@@ -592,6 +895,8 @@ def WannierizeBlocks(
     wjl_options: dict[str, Any] | None = None,
     subblock_wannier90_options: dict[str, Any] | None = None,
     cubic_pw2wannier90_options: dict[str, Any] | None = None,
+    external_projectors_path: str | None = None,
+    external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
 
@@ -630,6 +935,9 @@ def WannierizeBlocks(
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
             appear as separate blocks. Each is Wannierised independently.
+            When every block carries a ``filled`` occupancy stamp, the
+            ``orbitals`` initial screening partition is emitted as well
+            (stamping only some blocks raises).
         kpoints: the explicit k-point list shared by the nscf and every
             block's wannier90 / pw2wannier90 (one node, so the k-ordering
             cannot drift between the steps).
@@ -675,16 +983,30 @@ def WannierizeBlocks(
             ``metadata.options`` for the per-group re-wannierisation
             ``Wannier90Calculation`` (defaults to single-machine resources;
             that CalcJob has no resources default of its own).
+        external_projectors_path / external_projectors: the projector
+            directory (one ``<element>.dat`` per element, on the
+            pw2wannier90 code's computer) and the per-element orbital
+            tables. Required together by any ``atomic_projectors_external``
+            block, fed only to those blocks' wannier builders, and rejected
+            when no block consumes them
+            (:func:`validate_external_projector_inputs`).
 
     Returns:
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
         block label, the unified ``centres`` / ``spreads`` (plain mode), the
-        ``bands`` / ``groups`` detection outputs (split mode), and (only
-        when the scf + nscf ran here) the shared ``nscf`` outputs.
+        ``bands`` / ``groups`` detection outputs (split mode), the
+        ``orbitals`` initial partition (only when every block is stamped
+        with ``filled``), and (only when the scf + nscf ran here) the
+        shared ``nscf`` outputs.
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
     _validate_block_projection_types(blocks)
+    validate_external_projector_inputs(
+        [block["projection_type"] for block in blocks],
+        external_projectors_path,
+        external_projectors,
+    )
 
     split = _resolve_split_mode(
         codes=codes,
@@ -766,6 +1088,8 @@ def WannierizeBlocks(
                 num_bands_total=sum(int(block["num_wann"]) for block in blocks),
             )
 
+    _warn_unconstrained_blocks(blocks, overrides.get("wannier90"), electronic_type, split)
+
     # --- per-block Wannierisation: native for-loop fan-out ---
     # Each iteration adds an independent per-block graph (they share only
     # the read-only nscf scratch, so they run in parallel), collected into a
@@ -777,6 +1101,7 @@ def WannierizeBlocks(
     block_outputs: dict[str, Any] = {}
     collect_inputs: dict[str, Any] = {}
     for i, block in enumerate(blocks):
+        external_kwargs = _external_kwargs_for(block, external_projectors_path, external_projectors)
         if split:
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
@@ -797,6 +1122,7 @@ def WannierizeBlocks(
                 wjl_options=wjl_options,
                 wannier90_options=subblock_wannier90_options,
                 pw2wannier90_options=cubic_pw2wannier90_options,
+                **external_kwargs,
                 metadata={"call_link_label": f"wannierize_split_{block['label']}"},
             )
         else:
@@ -814,6 +1140,7 @@ def WannierizeBlocks(
                 electronic_type=electronic_type,
                 spin_type=spin_type,
                 parallelization=parallelization,
+                **external_kwargs,
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
         # Both per-block graphs return the flat WannierizeBlockOutputs
@@ -831,6 +1158,7 @@ def WannierizeBlocks(
         centres=collected["centres"],
         spreads=collected["spreads"],
     )
+    _maybe_emit_orbital_partition(outputs, blocks)
     if split:
         outputs["bands"] = bands_outputs["output_band"]
         outputs["groups"] = detect.result

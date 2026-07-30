@@ -21,7 +21,8 @@ branch. This module holds the split-specific pieces only.
 
 Scope: a single spin channel. Blocks may be explicitly projected (ANALYTIC)
 or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
-run relies on ``projection_type`` alone). The ``_u_dis.mat`` merge of a
+run relies on ``projection_type``, plus the external projector inputs for
+the external source). The ``_u_dis.mat`` merge of a
 disentangled parent block is a follow-up: a block routed through the split
 must carry no disentanglement pool (``num_bands == num_wann``), and the
 runtime group restriction rejects one that does (the detected groups cover
@@ -399,6 +400,8 @@ def WannierizeAndSplitBlock(
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
+    external_projectors_path: str | None = None,
+    external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
     """Wannierise one block, splitting it into detected groups when needed.
 
@@ -422,6 +425,12 @@ def WannierizeAndSplitBlock(
     bands, so a block that does not start at band 1 must be re-based —
     handing the split global indices would mis-address its Wannier
     functions).
+
+    The external projector inputs (required together by an
+    ``atomic_projectors_external`` block) feed only the whole-block
+    Wannierisation: the split chain regenerates ``.mmn`` at most (its cubic
+    pw2wannier90 rerun writes no ``.amn``) and the per-group re-runs are
+    preprocessing-free, so neither reads the projectors again.
     """
     overrides = overrides or {}
 
@@ -439,6 +448,8 @@ def WannierizeAndSplitBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         parallelization=parallelization,
+        external_projectors_path=external_projectors_path,
+        external_projectors=external_projectors,
         metadata={"call_link_label": "wannierize_whole_block"},
     )
 
