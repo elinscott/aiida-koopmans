@@ -91,6 +91,19 @@ class SpinChannel(str, Enum):
         return 1 if self is SpinChannel.DOWN else 0
 
 
+class MLDescriptor(str, Enum):
+    """Descriptor feeding the machine-learned screening model.
+
+    Both descriptors are derived from the variational orbitals' densities:
+    ``SELF_HARTREE`` is the scalar self-Hartree energy kcp.x reports, and
+    ``POWER_SPECTRUM`` is the rotationally-invariant power spectrum of a
+    pw2wannier90.x ``wan_mode='decompose'`` expansion of each density.
+    """
+
+    SELF_HARTREE = "self_hartree"
+    POWER_SPECTRUM = "power_spectrum"
+
+
 class VariationalOrbital(TypedDict):
     """Structured record for a single variational orbital.
 

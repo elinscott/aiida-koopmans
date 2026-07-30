@@ -10,8 +10,8 @@ Scope notes:
 
 * **Descriptor**: ``self_hartree`` reads the per-orbital self-Hartree
   energies straight off the final KI's parsed output;
-  ``orbital_density`` (power-spectrum) instead runs
-  :func:`OrbitalDensityDatasetWorkflow` per snapshot, which needs the
+  ``power_spectrum`` instead runs
+  :func:`PowerSpectrumDatasetWorkflow` per snapshot, which needs the
   Wannier-initialised DSCF route (``init_orbitals`` in ``mlwfs`` /
   ``projwfs``) and a pw2wannier90.x code carrying
   ``wan_mode='decompose'``.
@@ -42,6 +42,7 @@ from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
+    MLDescriptor,
     ParallelizationDict,
     SpinChannel,
     VariationalOrbitalType,
@@ -69,7 +70,7 @@ DecomposeTask = task(Pw2wannierDecomposeCalculation)
 #: route must not depend on the caller supplying a parallelization block.
 _DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
 
-ML_DESCRIPTOR_TYPES = ("self_hartree", "orbital_density")
+ML_DESCRIPTOR_TYPES = tuple(descriptor.value for descriptor in MLDescriptor)
 ML_MODES = ("none", "train", "test")
 
 
@@ -190,7 +191,7 @@ def evaluate_screening_model(
 # Orbital-density descriptor via pw2wannier90 ``wan_mode='decompose'``
 # ----------------------------------------------------------------------
 #
-# The ``orbital_density`` power-spectrum descriptor is built from a second
+# The ``power_spectrum`` descriptor is built from a second
 # pw2wannier90.x pass that decomposes each Wannier-function density (and the
 # group density about each Wannier centre) onto a Gaussian x spherical-harmonic
 # basis. The segment below turns a per-snapshot wannierization's retrieved
@@ -285,8 +286,8 @@ def _spin_component(group_spin: Any) -> str | None:
     return None if spin == SpinChannel.NONE else spin.value
 
 
-class OrbitalDensityDatasetOutputs(TypedDict):
-    """Outputs of :func:`OrbitalDensityDatasetWorkflow`.
+class PowerSpectrumDatasetOutputs(TypedDict):
+    """Outputs of :func:`PowerSpectrumDatasetWorkflow`.
 
     * ``dataset`` — the per-orbital :class:`SnapshotDataset` for one snapshot,
       its rows aligned with the snapshot's screening parameters across every
@@ -341,13 +342,13 @@ def align_block_descriptors(
     The single gather point of the orbital-density route: consumes the
     per-block descriptor namespace and returns a :class:`SnapshotDataset`
     whose row order matches the ``AlphaScreening`` convention (see
-    :func:`ml_helpers.assemble_orbital_density_dataset`).
+    :func:`ml_helpers.assemble_power_spectrum_dataset`).
     """
     descriptors_by_label = {
         label: array_payload(node, "descriptors").tolist()
         for label, node in block_descriptors.items()
     }
-    return ml_helpers.assemble_orbital_density_dataset(
+    return ml_helpers.assemble_power_spectrum_dataset(
         descriptors_by_label, merge_groups, cast("AlphaScreening", alphas)
     )
 
@@ -357,7 +358,7 @@ def require_wannier_route_inputs(
     block_wannierizations: dict,
     merge_groups: list,
 ) -> None:
-    """Guard the orbital_density route's Wannier-initialised-route requirement.
+    """Guard the power_spectrum route's Wannier-initialised-route requirement.
 
     The decompose descriptor route consumes the shared nscf scratch
     (``nscf_remote_folder``) and the per-block wannierizations
@@ -370,7 +371,7 @@ def require_wannier_route_inputs(
     """
     if nscf_remote_folder is None:
         raise ValueError(
-            "The orbital_density descriptor route requires `nscf_remote_folder`, "
+            "The power_spectrum descriptor route requires `nscf_remote_folder`, "
             "the shared nscf scratch that KoopmansDSCFOutputs exposes only on the "
             "Wannier-initialised DSCF route; it is absent on the molecular "
             "(KS-init) route. Use descriptor='self_hartree' for such snapshots."
@@ -383,7 +384,7 @@ def require_wannier_route_inputs(
     ]
     if missing:
         raise ValueError(
-            "The orbital_density descriptor route requires a per-block "
+            "The power_spectrum descriptor route requires a per-block "
             f"wannierization for every merge-group block, but {missing} "
             "are absent from `block_wannierizations`. These are produced only by "
             "the Wannier-initialised DSCF route; the molecular (KS-init) route "
@@ -392,7 +393,7 @@ def require_wannier_route_inputs(
 
 
 @task.graph
-def OrbitalDensityDatasetWorkflow(
+def PowerSpectrumDatasetWorkflow(
     code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
@@ -400,7 +401,7 @@ def OrbitalDensityDatasetWorkflow(
     alphas: AlphaScreening,
     decompose_parameters: dict | None = None,
     parallelization: ParallelizationDict | None = None,
-) -> OrbitalDensityDatasetOutputs:
+) -> PowerSpectrumDatasetOutputs:
     """Build one snapshot's orbital-density dataset from its Wannierization.
 
     Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
@@ -471,14 +472,14 @@ def OrbitalDensityDatasetWorkflow(
         merge_groups=merge_groups,
         alphas=alphas,
     )
-    return OrbitalDensityDatasetOutputs(dataset=dataset)
+    return PowerSpectrumDatasetOutputs(dataset=dataset)
 
 
-def require_orbital_density_route(
+def require_power_spectrum_route(
     init_orbitals: Any,
     pw2wannier90_code: Any,
 ) -> None:
-    """Guard the trajectory-level requirements of the orbital_density descriptor.
+    """Guard the trajectory-level requirements of the power_spectrum descriptor.
 
     The descriptor is built from a pw2wannier90.x ``wan_mode='decompose'``
     pass over each snapshot's per-block Wannierizations, so it needs both a
@@ -491,7 +492,7 @@ def require_orbital_density_route(
     orbitals = VariationalOrbitalType(init_orbitals)
     if orbitals not in (VariationalOrbitalType.MLWFS, VariationalOrbitalType.PROJWFS):
         raise ValueError(
-            f"descriptor='orbital_density' requires the Wannier-initialised DSCF "
+            f"descriptor='power_spectrum' requires the Wannier-initialised DSCF "
             f"route (init_orbitals='mlwfs' or 'projwfs'), but init_orbitals="
             f"{orbitals.value!r}. That route is what produces the per-block "
             f"Wannierizations the decompose pass decomposes; the molecular "
@@ -500,7 +501,7 @@ def require_orbital_density_route(
         )
     if pw2wannier90_code is None:
         raise ValueError(
-            "descriptor='orbital_density' requires `pw2wannier90_code`, a "
+            "descriptor='power_spectrum' requires `pw2wannier90_code`, a "
             "pw2wannier90.x code built with wan_mode='decompose'. "
             "Use descriptor='self_hartree' if no such code is available."
         )
@@ -518,12 +519,12 @@ def build_snapshot_dataset(
     """Wire one snapshot's ``(descriptor, alpha)`` dataset for the chosen descriptor.
 
     ``self_hartree`` reads the pairs off the final KI's parsed output;
-    ``orbital_density`` runs the decompose segment over the snapshot's
+    ``power_spectrum`` runs the decompose segment over the snapshot's
     per-block Wannierizations. Both return a :class:`SnapshotDataset`
     namespace whose rows follow the snapshot's alpha order.
     """
-    if descriptor == "orbital_density":
-        return OrbitalDensityDatasetWorkflow(
+    if descriptor == MLDescriptor.POWER_SPECTRUM:
+        return PowerSpectrumDatasetWorkflow(
             code=pw2wannier90_code,
             nscf_remote_folder=dscf["nscf_remote_folder"],
             block_wannierizations=dscf["block_wannierizations"],
@@ -591,8 +592,8 @@ def TrajectoryWorkflow(
 
     ``descriptor`` selects what those pairs are built from.
     ``'self_hartree'`` reads the per-orbital self-Hartree energies off the
-    final KI's parsed output. ``'orbital_density'`` instead runs
-    :func:`OrbitalDensityDatasetWorkflow` per snapshot, decomposing each
+    final KI's parsed output. ``'power_spectrum'`` instead runs
+    :func:`PowerSpectrumDatasetWorkflow` per snapshot, decomposing each
     block's Wannier functions with a pw2wannier90.x
     ``wan_mode='decompose'`` pass; it therefore needs ``pw2wannier90_code``
     (a decompose-capable build) and the Wannier-initialised DSCF route, and
@@ -608,8 +609,8 @@ def TrajectoryWorkflow(
     if ml_mode != "none":
         if descriptor not in ML_DESCRIPTOR_TYPES:
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
-        if descriptor == "orbital_density":
-            require_orbital_density_route(init_orbitals, pw2wannier90_code)
+        if descriptor == MLDescriptor.POWER_SPECTRUM:
+            require_power_spectrum_route(init_orbitals, pw2wannier90_code)
     if ml_mode == "test" and ml_model is None:
         raise ValueError("ml_mode='test' requires a trained `ml_model`")
 

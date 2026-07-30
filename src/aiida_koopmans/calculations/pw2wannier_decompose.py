@@ -6,7 +6,7 @@ Gaussian-radial x real-spherical-harmonic basis about its own centre --
 entirely in reciprocal space (Quantum ESPRESSO ``wann-decompose`` branch;
 ``PP/src/pw2wannier90_decompose.f90``). It replaces the legacy kcp.x
 real-space orbital-density postprocessing as the source of the
-``orbital_density`` power-spectrum descriptor.
+``power_spectrum`` descriptor.
 
 Upstream ``aiida-quantumespresso`` provides a ``Pw2wannier90Calculation``,
 but it cannot stage the wannier90 read-back files this mode requires

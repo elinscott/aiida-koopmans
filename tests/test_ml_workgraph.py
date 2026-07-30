@@ -174,7 +174,7 @@ class TestTrajectoryGraphBuild:
                 ml_mode="test",
             )
 
-    def test_orbital_density_on_molecular_route_raises(
+    def test_power_spectrum_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """The KS-init route wannierizes nothing, so it cannot feed the decompose pass."""
@@ -184,10 +184,10 @@ class TestTrajectoryGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_mode="train",
-                descriptor="orbital_density",
+                descriptor="power_spectrum",
             )
 
-    def test_orbital_density_without_code_raises(
+    def test_power_spectrum_without_code_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """The Wannier route still needs a decompose-capable pw2wannier90.x."""
@@ -197,18 +197,18 @@ class TestTrajectoryGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_mode="train",
-                descriptor="orbital_density",
+                descriptor="power_spectrum",
                 init_orbitals=VariationalOrbitalType.MLWFS,
             )
 
-    def test_orbital_density_routes_to_decompose_segment(
+    def test_power_spectrum_routes_to_decompose_segment(
         self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
     ):
-        """`orbital_density` swaps the self-Hartree extraction for the decompose segment.
+        """`power_spectrum` swaps the self-Hartree extraction for the decompose segment.
 
         The discriminator against a guard flip that silently keeps the old
         descriptor: assert the per-snapshot dataset comes from
-        ``OrbitalDensityDatasetWorkflow`` and that no
+        ``PowerSpectrumDatasetWorkflow`` and that no
         ``extract_snapshot_dataset`` survives anywhere in the graph.
         """
         p2w = aiida_local_code_factory(
@@ -219,7 +219,7 @@ class TestTrajectoryGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="train",
-            descriptor="orbital_density",
+            descriptor="power_spectrum",
             init_orbitals=VariationalOrbitalType.MLWFS,
             pw2wannier90_code=p2w,
         )

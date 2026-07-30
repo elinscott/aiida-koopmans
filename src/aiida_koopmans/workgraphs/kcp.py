@@ -114,8 +114,8 @@ class KoopmansDSCFOutputs(TypedDict):
       were grouped into, which fixes the band order every per-orbital
       quantity (alphas included) is reported in.
 
-    Together these are the inputs the ``orbital_density`` ML descriptor route
-    (:func:`~aiida_koopmans.workgraphs.ml.OrbitalDensityDatasetWorkflow`)
+    Together these are the inputs the ``power_spectrum`` ML descriptor route
+    (:func:`~aiida_koopmans.workgraphs.ml.PowerSpectrumDatasetWorkflow`)
     consumes.
 
     Contract for consumers: these three keys are present **only** on the
@@ -123,7 +123,7 @@ class KoopmansDSCFOutputs(TypedDict):
     so ``outputs["nscf_remote_folder"]`` / ``outputs["block_wannierizations"]``
     / ``outputs["merge_groups"]``
     raise ``KeyError``. Guard with ``.get`` or a route check before indexing;
-    ``OrbitalDensityDatasetWorkflow`` does this via
+    ``PowerSpectrumDatasetWorkflow`` does this via
     :func:`~aiida_koopmans.workgraphs.ml.require_wannier_route_inputs`, which
     raises a descriptive ``ValueError`` when the route requirement is unmet.
     """
@@ -965,7 +965,7 @@ def KoopmansDSCFWorkflow(
     initial_evc_occupied1 = None
     initial_evc_occupied2 = None
     # The primitive nscf scratch + per-block Wannierization outputs the
-    # orbital_density ML descriptor route consumes; only the Wannier route
+    # power_spectrum ML descriptor route consumes; only the Wannier route
     # produces them.
     nscf_remote_folder = None
     block_wannierizations = None

@@ -81,19 +81,19 @@ def test_extract_u_dis_mat_missing_file_raises(aiida_profile):
         extract_u_dis_mat._callable.run_get_node(retrieved=folder)
 
 
-def test_orbital_density_dataset_workflow_fans_out_per_block(
+def test_power_spectrum_dataset_workflow_fans_out_per_block(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
     """The multi-block segment builds a decompose pass per block plus a gather.
 
     Construction-level (nothing runs): mirrors the ``self_hartree`` route's
     graph-build tests. The end-to-end WF-to-alpha alignment is exercised by
-    the pure-python `assemble_orbital_density_dataset` discriminator tests in
+    the pure-python `assemble_power_spectrum_dataset` discriminator tests in
     `test_ml_helpers.py`; running the graph awaits a daemon regression.
     """
     from aiida import orm
 
-    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDatasetWorkflow
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
@@ -116,7 +116,7 @@ def test_orbital_density_dataset_workflow_fans_out_per_block(
     ]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
 
-    wg = OrbitalDensityDatasetWorkflow.build(
+    wg = PowerSpectrumDatasetWorkflow.build(
         code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=blocks,
@@ -157,7 +157,7 @@ def _block_wannierization(label, *, with_u_dis):
     }
 
 
-def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
+def test_power_spectrum_dataset_workflow_threads_nnkp_udis_spin(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
     """The fan-out wires nnkp always, u_dis only for disentangling blocks, spin per channel.
@@ -170,7 +170,7 @@ def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
     """
     from aiida import orm
 
-    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDatasetWorkflow
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
@@ -192,7 +192,7 @@ def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
         "empty": {"up": [0.5], "down": [0.5]},
     }
 
-    wg = OrbitalDensityDatasetWorkflow.build(
+    wg = PowerSpectrumDatasetWorkflow.build(
         code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
@@ -227,7 +227,7 @@ def test_orbital_density_dataset_workflow_threads_nnkp_udis_spin(
         )
 
 
-def test_orbital_density_dataset_builds_without_parallelization(
+def test_power_spectrum_dataset_builds_without_parallelization(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
     """Every decompose pass carries resources when no parallelization is given.
@@ -237,7 +237,7 @@ def test_orbital_density_dataset_builds_without_parallelization(
     """
     from aiida import orm
 
-    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDatasetWorkflow
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
@@ -245,7 +245,7 @@ def test_orbital_density_dataset_builds_without_parallelization(
     merge_groups = [_spin_block("occ", True, "none", 4, 4)]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
-    wg = OrbitalDensityDatasetWorkflow.build(
+    wg = PowerSpectrumDatasetWorkflow.build(
         code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
@@ -257,13 +257,13 @@ def test_orbital_density_dataset_builds_without_parallelization(
     assert resources == {"num_machines": 1}, resources
 
 
-def test_orbital_density_dataset_nspin1_omits_spin_component(
+def test_power_spectrum_dataset_nspin1_omits_spin_component(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
     """On an nspin=1 (spin=none) scratch no ``spin_component`` is injected."""
     from aiida import orm
 
-    from aiida_koopmans.workgraphs.ml import OrbitalDensityDatasetWorkflow
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDatasetWorkflow
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
@@ -271,7 +271,7 @@ def test_orbital_density_dataset_nspin1_omits_spin_component(
     merge_groups = [_spin_block("occ", True, "none", 4, 4)]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
-    wg = OrbitalDensityDatasetWorkflow.build(
+    wg = PowerSpectrumDatasetWorkflow.build(
         code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
@@ -340,7 +340,7 @@ def test_align_block_descriptors_orders_by_alphascreening(aiida_profile):
 
 
 def test_require_wannier_route_inputs_missing_scratch_raises():
-    """The orbital_density route names the requirement when the nscf scratch is absent."""
+    """The power_spectrum route names the requirement when the nscf scratch is absent."""
     from aiida_koopmans.workgraphs.ml import require_wannier_route_inputs
 
     # Molecular (KS-init) route: KoopmansDSCFOutputs omits nscf_remote_folder.

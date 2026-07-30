@@ -630,7 +630,7 @@ def format_group_centres_file(centres: Sequence[Sequence[float]]) -> str:
     return header + "".join(f"{c[0]:.10f} {c[1]:.10f} {c[2]:.10f}\n" for c in centres)
 
 
-def build_orbital_density_dataset(
+def build_power_spectrum_dataset(
     descriptors: Sequence[Sequence[float]],
     alphas: Sequence[float],
     filled: Sequence[bool],
@@ -686,7 +686,7 @@ def _gather_channel_rows(
     return rows
 
 
-def assemble_orbital_density_dataset(
+def assemble_power_spectrum_dataset(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
     merge_groups: Sequence[Mapping[str, Any]],
     alphas: AlphaScreening,

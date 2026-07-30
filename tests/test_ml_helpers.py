@@ -456,8 +456,8 @@ class TestDecomposeCrossPower:
         with pytest.raises(ValueError, match="same shape"):
             ml_helpers.cross_power_spectra(np.zeros((2, 8)), np.zeros((2, 9)), 2, 1)
 
-    def test_build_orbital_density_dataset(self):
-        ds = ml_helpers.build_orbital_density_dataset(
+    def test_build_power_spectrum_dataset(self):
+        ds = ml_helpers.build_power_spectrum_dataset(
             descriptors=[[1.0, 2.0], [3.0, 4.0]],
             alphas=[0.5, 0.6],
             filled=[True, False],
@@ -468,15 +468,15 @@ class TestDecomposeCrossPower:
         assert ds["filled"] == [True, False]
         assert ds["labels"] == ["orb_1", "emp_orb_1"]
 
-    def test_build_orbital_density_dataset_length_mismatch(self):
+    def test_build_power_spectrum_dataset_length_mismatch(self):
         with pytest.raises(ValueError, match="same length"):
-            ml_helpers.build_orbital_density_dataset(
+            ml_helpers.build_power_spectrum_dataset(
                 descriptors=[[1.0]], alphas=[0.5, 0.6], filled=[True], labels=["a"]
             )
 
 
 class TestAssembleOrbitalDensityDataset:
-    """Block-to-alpha alignment for the orbital_density (decompose) route.
+    """Block-to-alpha alignment for the power_spectrum (decompose) route.
 
     These tests are the discriminators the live-daemon regression will later
     corroborate: blocks carry distinguishable descriptor values so a wrong
@@ -492,7 +492,7 @@ class TestAssembleOrbitalDensityDataset:
             {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
         ]
         alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5, 0.6]}}
-        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        ds = ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
         assert ds["descriptors"] == [[1.0], [2.0], [10.0], [20.0]]
         assert ds["alpha_targets"] == [0.1, 0.2, 0.5, 0.6]
         assert ds["filled"] == [True, True, False, False]
@@ -505,7 +505,7 @@ class TestAssembleOrbitalDensityDataset:
             {"filled": True, "spin": "none", "blocks": [{"label": "a"}, {"label": "b"}]},
         ]
         alphas = {"filled": {"none": [0.1, 0.2, 0.3]}, "empty": {}}
-        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        ds = ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
         assert ds["descriptors"] == [[1.0], [2.0], [3.0]]
         assert ds["filled"] == [True, True, True]
 
@@ -527,7 +527,7 @@ class TestAssembleOrbitalDensityDataset:
             "filled": {"up": [0.1], "down": [0.3]},
             "empty": {"up": [0.2], "down": [0.4]},
         }
-        ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        ds = ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
         # up (filled, empty) then down (filled, empty), regardless of group list order.
         assert ds["descriptors"] == [[1.0], [2.0], [11.0], [12.0]]
         assert ds["alpha_targets"] == [0.1, 0.2, 0.3, 0.4]
@@ -540,13 +540,13 @@ class TestAssembleOrbitalDensityDataset:
         merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
         alphas = {"filled": {"none": [0.1]}, "empty": {}}  # 2 WFs vs 1 alpha
         with pytest.raises(ValueError, match="Filled Wannier-function / alpha mismatch"):
-            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+            ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
 
     def test_missing_block_descriptors_raises(self):
         merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
         alphas = {"filled": {"none": [0.1]}, "empty": {}}
         with pytest.raises(ValueError, match="No descriptors for block `occ`"):
-            ml_helpers.assemble_orbital_density_dataset({}, merge_groups, alphas)
+            ml_helpers.assemble_power_spectrum_dataset({}, merge_groups, alphas)
 
     def test_row_layout_matches_self_hartree_route(self):
         """Parity: labels/filled/alpha order match build_snapshot_dataset exactly.
@@ -558,13 +558,13 @@ class TestAssembleOrbitalDensityDataset:
         alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5]}}
         # self_hartree reference (descriptors are the per-orbital SH scalars).
         sh_ref = ml_helpers.build_snapshot_dataset([[7.0, 8.0, 9.0]], alphas)
-        # orbital_density: one occ block (2 WFs) + one emp block (1 WF).
+        # power_spectrum: one occ block (2 WFs) + one emp block (1 WF).
         block_descriptors = {"occ": [[1.0], [2.0]], "emp": [[3.0]]}
         merge_groups = [
             {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
             {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
         ]
-        od = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+        od = ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
         assert od["labels"] == sh_ref["labels"]
         assert od["filled"] == sh_ref["filled"]
         assert od["alpha_targets"] == sh_ref["alpha_targets"]
@@ -572,7 +572,7 @@ class TestAssembleOrbitalDensityDataset:
     def test_no_channels_raises(self):
         """Empty alphas (no spin channels) is a hard error."""
         with pytest.raises(ValueError, match="no spin channels"):
-            ml_helpers.assemble_orbital_density_dataset({}, [], {"filled": {}, "empty": {}})
+            ml_helpers.assemble_power_spectrum_dataset({}, [], {"filled": {}, "empty": {}})
 
     def test_empty_channel_mismatch_raises(self):
         """An empty-orbital / alpha mismatch is caught after the filled check passes."""
@@ -584,14 +584,14 @@ class TestAssembleOrbitalDensityDataset:
         # filled matches (1 WF / 1 alpha) so the empty guard (2 WFs / 1 alpha) is what fires.
         alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
         with pytest.raises(ValueError, match="Empty Wannier-function / alpha mismatch"):
-            ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
+            ml_helpers.assemble_power_spectrum_dataset(block_descriptors, merge_groups, alphas)
 
     def test_non_string_channel_key_raises(self):
         """A non-string spin-channel key is rejected before it corrupts labels."""
         # A stray integer key would otherwise produce a ``"123_orb_1"`` label.
         alphas = {"filled": {123: [0.1]}, "empty": {}}
         with pytest.raises(ValueError, match="Unrecognized spin-channel key"):
-            ml_helpers.assemble_orbital_density_dataset({"occ": [[1.0]]}, [], alphas)
+            ml_helpers.assemble_power_spectrum_dataset({"occ": [[1.0]]}, [], alphas)
 
 
 class TestCentresHelpers:
