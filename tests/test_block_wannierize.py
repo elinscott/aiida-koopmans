@@ -335,6 +335,112 @@ class TestSplitMode:
 
 
 # ----------------------------------------------------------------------
+# Initial orbital partition emission
+# ----------------------------------------------------------------------
+
+
+def _stamped_blocks() -> list[ExplicitProjectionBlock]:
+    """Build the silicon shape with the occupancy stamps the emission gate needs."""
+    return [
+        explicit_block("block_1", range(1, 5), filled=True),
+        explicit_block("block_2", range(5, 9), filled=False),
+    ]
+
+
+class TestOrbitalPartitionEmission:
+    """The ``orbitals`` socket: occupancy-stamp gating and both-mode wiring."""
+
+    def test_plain_mode_emits_the_partition(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _stamped_blocks(), kmesh)
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        # The task receives the reduced, JSON-pure block records in
+        # input-list order.
+        specs = wg.tasks["initial_orbital_partition"].inputs["blocks"].value
+        assert [s["label"] for s in specs] == ["block_1", "block_2"]
+        assert [s["filled"] for s in specs] == [True, False]
+        assert [s["num_wann"] for s in specs] == [4, 4]
+        assert_graph_roundtrips(wg)
+
+    def test_split_mode_emits_the_partition(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=_stamped_blocks(),
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            split_threshold=1.5,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("initial_orbital_partition") == 1
+        assert wg.outputs["orbitals"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_unstamped_blocks_skip_the_emission(self, wannier_codes, silicon_structure, kmesh):
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert "initial_orbital_partition" not in [t.name for t in wg.tasks]
+        assert not wg.outputs["orbitals"]._links
+
+    def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
+        blocks = [
+            explicit_block("block_1", range(1, 5), filled=True),
+            explicit_block("block_2", range(5, 9)),
+        ]
+        with pytest.raises(ValueError, match="block_2"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_blocks_out_of_emitted_order_raise(self, wannier_codes, silicon_structure, kmesh):
+        """Non-channel-contiguous input would mis-pair `orbitals` against `spreads`.
+
+        The partition walks channels contiguously (up, occupied-then-empty,
+        then down) while `spreads` / `centres` concatenate in input-list
+        order; interleaving the channels makes the two orders diverge, so
+        the build must refuse rather than let a positional consumer
+        mis-align silently.
+        """
+        blocks = [
+            explicit_block("occ_up", range(1, 3), spin=SpinChannel.UP, filled=True),
+            explicit_block("occ_dw", range(1, 3), spin=SpinChannel.DOWN, filled=True),
+            explicit_block("emp_up", range(3, 4), spin=SpinChannel.UP, filled=False),
+            explicit_block("emp_dw", range(3, 4), spin=SpinChannel.DOWN, filled=False),
+        ]
+        with pytest.raises(ValueError, match="emitted orbital order"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_partition_task_runs_through_the_engine(self, aiida_profile):
+        """The reduced specs and the emitted substrate survive engine storage."""
+        from aiida import orm
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.variational_orbitals import initial_orbital_partition
+
+        wg = WorkGraph("initial_orbital_partition_unit")
+        wg.add_task(
+            initial_orbital_partition,
+            name="partition",
+            blocks=[
+                {"label": "occ", "spin": SpinChannel.NONE, "filled": True, "num_wann": 2},
+                {"label": "emp", "spin": SpinChannel.NONE, "filled": False, "num_wann": 1},
+            ],
+        )
+        wg.run()
+        node = wg.tasks.partition.outputs.result.value
+        assert isinstance(node, orm.List)
+        orbitals = node.get_list()
+        assert [o["index"] for o in orbitals] == [1, 2, 3]
+        assert [o["group_id"] for o in orbitals] == [1, 1, 2]
+        # Storage degrades the str-enum spin to a plain str; `==` still
+        # holds (`is` would not), which is the comparison consumers use.
+        assert all(o["spin"] == SpinChannel.NONE for o in orbitals)
+
+
+# ----------------------------------------------------------------------
 # collect_wannier_functions (raw callable, no engine)
 # ----------------------------------------------------------------------
 
