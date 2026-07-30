@@ -2019,6 +2019,12 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
         si_args["current_alphas"] = self.ALPHAS
         trial_wg = ScreeningIteration.build(**si_args)
 
+        # The first-orbital-dependent-run marker only reaches the
+        # namelist for KIPZ (it gates the molecular inner-loop CG pass),
+        # so compare it directly — otherwise the KI parametrizations
+        # would not notice the skip path forgetting it.
+        assert rfk.inputs.is_first_iteration.value == si_args["is_first_iteration"]
+
         final_wg = RunFinalKI.build(
             **numeric,
             correction=correction,
