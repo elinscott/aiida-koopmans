@@ -8,12 +8,13 @@ training/evaluation ``@task`` that consumes the dynamic namespace.
 
 Scope notes:
 
-* **Descriptor**: ``self_hartree`` only. The ``orbital_density``
-  (power-spectrum) descriptor needs the trial KI's real-space
-  orbital-density files, which the ``KcpCalculation`` does not currently
-  print/retrieve — the descriptor math lives in
-  :mod:`aiida_koopmans.ml_helpers` (``compute_decomposition`` /
-  ``compute_power_spectrum``) and can be wired once retrieval lands.
+* **Descriptor**: ``self_hartree`` reads the per-orbital self-Hartree
+  energies straight off the final KI's parsed output;
+  ``power_spectrum`` instead runs
+  :func:`PowerSpectrumDatasetWorkflow` per snapshot, which needs the
+  Wannier-initialised DSCF route (``init_orbitals`` in ``mlwfs`` /
+  ``projwfs``) and a pw2wannier90.x code carrying
+  ``wan_mode='decompose'``.
 * **Modes**: ``train`` (fit a model on the computed alphas) and ``test``
   (compare a previously trained model's predictions against freshly
   computed alphas). ``predict`` mode (inject predicted alphas and skip the
@@ -31,6 +32,7 @@ from __future__ import annotations
 import io
 from typing import Annotated, Any, TypedDict, cast
 
+import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
@@ -40,12 +42,21 @@ from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
+    MLDescriptor,
+    MLMode,
     ParallelizationDict,
     SpinChannel,
     VariationalOrbitalType,
 )
-from aiida_koopmans.workgraphs import merge_parallelization_into_inputs, validate_parallelization
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
+from aiida_koopmans.workgraphs import (
+    Codes,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    WannierizeOverrides,
+)
 from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
@@ -55,8 +66,13 @@ from aiida_koopmans.workgraphs.kcp import (
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
 DecomposeTask = task(Pw2wannierDecomposeCalculation)
 
-ML_DESCRIPTOR_TYPES = ("self_hartree", "orbital_density")
-ML_MODES = ("none", "train", "test")
+#: Fallback ``metadata.options`` for the decompose CalcJob this module creates
+#: directly. A CalcJob cannot run without ``resources``, and the descriptor
+#: route must not depend on the caller supplying a parallelization block.
+_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
+
+ML_DESCRIPTOR_TYPES = tuple(descriptor.value for descriptor in MLDescriptor)
+ML_MODES = tuple(mode.value for mode in MLMode)
 
 
 class TrainOutputs(TypedDict):
@@ -102,7 +118,7 @@ def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> Snapsh
     first, then empty — the same layout as the per-spin alpha lists).
 
     The ``SnapshotDataset`` return fans out into one output socket per key
-    (``descriptors`` / ``alphas`` / ``filled`` / ``labels``).
+    (``descriptors`` / ``alpha_targets`` / ``filled`` / ``labels``).
     """
     orbital_data = parameters.get("orbital_data") or {}
     self_hartrees = orbital_data.get("self-Hartree") or []
@@ -135,7 +151,7 @@ def train_screening_model(
         descriptor=descriptor,
     )
     predicted = ml_helpers.predict_screening(model, merged)
-    metrics = ml_helpers.evaluate_predictions(merged["alphas"], predicted)
+    metrics = ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted)
     return TrainOutputs(model=model, metrics=metrics)
 
 
@@ -162,10 +178,10 @@ def evaluate_screening_model(
     merged = ml_helpers.concatenate_datasets(datasets)
     predicted = ml_helpers.predict_screening(model, merged)
     evaluation = {
-        "metrics": ml_helpers.evaluate_predictions(merged["alphas"], predicted),
+        "metrics": ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted),
         "predictions": {
             "labels": merged["labels"],
-            "computed": merged["alphas"],
+            "computed": merged["alpha_targets"],
             "predicted": predicted,
         },
     }
@@ -173,10 +189,10 @@ def evaluate_screening_model(
 
 
 # ----------------------------------------------------------------------
-# Orbital-density descriptor via pw2wannier90 ``wan_mode='decompose'``
+# Power-spectrum descriptor via pw2wannier90 ``wan_mode='decompose'``
 # ----------------------------------------------------------------------
 #
-# The ``orbital_density`` power-spectrum descriptor is built from a second
+# The ``power_spectrum`` descriptor is built from a second
 # pw2wannier90.x pass that decomposes each Wannier-function density (and the
 # group density about each Wannier centre) onto a Gaussian x spherical-harmonic
 # basis. The segment below turns a per-snapshot wannierization's retrieved
@@ -271,8 +287,8 @@ def _spin_component(group_spin: Any) -> str | None:
     return None if spin == SpinChannel.NONE else spin.value
 
 
-class OrbitalDensityDatasetOutputs(TypedDict):
-    """Outputs of :func:`OrbitalDensityDatasetWorkflow`.
+class PowerSpectrumDatasetOutputs(TypedDict):
+    """Outputs of :func:`PowerSpectrumDatasetWorkflow`.
 
     * ``dataset`` — the per-orbital :class:`SnapshotDataset` for one snapshot,
       its rows aligned with the snapshot's screening parameters across every
@@ -280,6 +296,18 @@ class OrbitalDensityDatasetOutputs(TypedDict):
     """
 
     dataset: SnapshotDataset
+
+
+def array_payload(value: Any, name: str) -> np.ndarray:
+    """Return the ``name`` array of *value*, node or already-deserialized.
+
+    A single-array ``orm.ArrayData`` socket reaches a task body as a bare
+    ``numpy`` array, because ``aiida-pythonjob`` deserializes it on the way
+    in; the node itself arrives when the callable is invoked directly.
+    """
+    if hasattr(value, "get_array"):
+        return value.get_array(name)
+    return np.asarray(value)
 
 
 @task
@@ -296,8 +324,8 @@ def compute_block_descriptors(
     """
     n_max = int(output_parameters["n_max"])
     l_max = int(output_parameters["l_max"])
-    coeff = coefficients.get_array("coefficients")
-    group = group_coefficients.get_array("group_coefficients")
+    coeff = array_payload(coefficients, "coefficients")
+    group = array_payload(group_coefficients, "group_coefficients")
     power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
     out = orm.ArrayData()
     out.set_array("descriptors", power)
@@ -308,19 +336,20 @@ def compute_block_descriptors(
 def align_block_descriptors(
     block_descriptors: Annotated[dict, dynamic(orm.ArrayData)],
     merge_groups: list,
-    alphas: dict,
+    alphas: AlphaScreening,
 ) -> SnapshotDataset:
     """Gather the per-block descriptors and align them with the alphas.
 
     The single gather point of the orbital-density route: consumes the
     per-block descriptor namespace and returns a :class:`SnapshotDataset`
     whose row order matches the ``AlphaScreening`` convention (see
-    :func:`ml_helpers.assemble_orbital_density_dataset`).
+    :func:`ml_helpers.assemble_power_spectrum_dataset`).
     """
     descriptors_by_label = {
-        label: node.get_array("descriptors").tolist() for label, node in block_descriptors.items()
+        label: array_payload(node, "descriptors").tolist()
+        for label, node in block_descriptors.items()
     }
-    return ml_helpers.assemble_orbital_density_dataset(
+    return ml_helpers.assemble_power_spectrum_dataset(
         descriptors_by_label, merge_groups, cast("AlphaScreening", alphas)
     )
 
@@ -330,7 +359,7 @@ def require_wannier_route_inputs(
     block_wannierizations: dict,
     merge_groups: list,
 ) -> None:
-    """Guard the orbital_density route's Wannier-initialised-route requirement.
+    """Guard the power_spectrum route's Wannier-initialised-route requirement.
 
     The decompose descriptor route consumes the shared nscf scratch
     (``nscf_remote_folder``) and the per-block wannierizations
@@ -343,7 +372,7 @@ def require_wannier_route_inputs(
     """
     if nscf_remote_folder is None:
         raise ValueError(
-            "The orbital_density descriptor route requires `nscf_remote_folder`, "
+            "The power_spectrum descriptor route requires `nscf_remote_folder`, "
             "the shared nscf scratch that KoopmansDSCFOutputs exposes only on the "
             "Wannier-initialised DSCF route; it is absent on the molecular "
             "(KS-init) route. Use descriptor='self_hartree' for such snapshots."
@@ -356,7 +385,7 @@ def require_wannier_route_inputs(
     ]
     if missing:
         raise ValueError(
-            "The orbital_density descriptor route requires a per-block "
+            "The power_spectrum descriptor route requires a per-block "
             f"wannierization for every merge-group block, but {missing} "
             "are absent from `block_wannierizations`. These are produced only by "
             "the Wannier-initialised DSCF route; the molecular (KS-init) route "
@@ -365,15 +394,15 @@ def require_wannier_route_inputs(
 
 
 @task.graph
-def OrbitalDensityDatasetWorkflow(
+def PowerSpectrumDatasetWorkflow(
     code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     merge_groups: list,
-    alphas: dict,
+    alphas: AlphaScreening,
     decompose_parameters: dict | None = None,
     parallelization: ParallelizationDict | None = None,
-) -> OrbitalDensityDatasetOutputs:
+) -> PowerSpectrumDatasetOutputs:
     """Build one snapshot's orbital-density dataset from its Wannierization.
 
     Fans a ``wan_mode='decompose'`` pw2wannier90.x pass out over every
@@ -428,6 +457,9 @@ def OrbitalDensityDatasetWorkflow(
                 decompose_inputs["u_dis_mat"] = extract_u_dis_mat(
                     block_wannierizations[label]["retrieved"]
                 ).result
+            # Seed the resources first so the pass is runnable with no
+            # parallelization block; a supplied one overwrites them.
+            decompose_inputs["metadata"]["options"] = dict(_DEFAULT_CALCJOB_OPTIONS)
             merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(
@@ -441,7 +473,69 @@ def OrbitalDensityDatasetWorkflow(
         merge_groups=merge_groups,
         alphas=alphas,
     )
-    return OrbitalDensityDatasetOutputs(dataset=dataset)
+    return PowerSpectrumDatasetOutputs(dataset=dataset)
+
+
+def require_power_spectrum_route(
+    init_orbitals: Any,
+    pw2wannier90_code: Any,
+) -> None:
+    """Guard the trajectory-level requirements of the power_spectrum descriptor.
+
+    The descriptor is built from a pw2wannier90.x ``wan_mode='decompose'``
+    pass over each snapshot's per-block Wannierizations, so it needs both a
+    Wannier-initialised DSCF route to produce them and a code to run the
+    pass with. Raise here — at graph build, before any snapshot is
+    launched — rather than letting the requirement surface per snapshot
+    once the fan-out is already running. Kept as a plain function so both
+    failure paths are unit-testable without building the graph.
+    """
+    orbitals = VariationalOrbitalType(init_orbitals)
+    if orbitals not in (VariationalOrbitalType.MLWFS, VariationalOrbitalType.PROJWFS):
+        raise ValueError(
+            f"descriptor='power_spectrum' requires the Wannier-initialised DSCF "
+            f"route (init_orbitals='mlwfs' or 'projwfs'), but init_orbitals="
+            f"{orbitals.value!r}. That route is what produces the per-block "
+            f"Wannierizations the decompose pass decomposes; the molecular "
+            f"(Kohn-Sham) route wannierizes nothing. Use "
+            f"descriptor='self_hartree' for such snapshots."
+        )
+    if pw2wannier90_code is None:
+        raise ValueError(
+            "descriptor='power_spectrum' requires `pw2wannier90_code`, a "
+            "pw2wannier90.x code built with wan_mode='decompose'. "
+            "Use descriptor='self_hartree' if no such code is available."
+        )
+
+
+def build_snapshot_dataset(
+    descriptor: str,
+    dscf: Any,
+    *,
+    label: str,
+    pw2wannier90_code: orm.AbstractCode | None,
+    decompose_parameters: dict | None,
+    parallelization: ParallelizationDict | None,
+) -> Any:
+    """Wire one snapshot's ``(descriptor, alpha)`` dataset for the chosen descriptor.
+
+    ``self_hartree`` reads the pairs off the final KI's parsed output;
+    ``power_spectrum`` runs the decompose segment over the snapshot's
+    per-block Wannierizations. Both return a :class:`SnapshotDataset`
+    namespace whose rows follow the snapshot's alpha order.
+    """
+    if descriptor == MLDescriptor.POWER_SPECTRUM:
+        return PowerSpectrumDatasetWorkflow(
+            code=pw2wannier90_code,
+            nscf_remote_folder=dscf["nscf_remote_folder"],
+            block_wannierizations=dscf["block_wannierizations"],
+            merge_groups=dscf["merge_groups"],
+            alphas=dscf["alphas"],
+            decompose_parameters=decompose_parameters,
+            parallelization=parallelization,
+            metadata={"call_link_label": f"descriptors_{label}"},
+        )["dataset"]
+    return extract_snapshot_dataset(parameters=dscf["parameters"], alphas=dscf["alphas"])
 
 
 @task.graph
@@ -461,6 +555,15 @@ def TrajectoryWorkflow(
     initial_alpha: float = 0.6,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
+    codes: Codes | None = None,
+    blocks: list | None = None,
+    kgrid: list[int] | None = None,
+    kpoints: orm.KpointsData | None = None,
+    gamma_only: bool = False,
+    wannier_protocol: str | None = None,
+    wannier_overrides: WannierizeOverrides | None = None,
+    mp_correction: bool | None = None,
+    eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
     ml_mode: str = "none",
@@ -468,6 +571,8 @@ def TrajectoryWorkflow(
     estimator: str = "ridge_regression",
     descriptor: str = "self_hartree",
     occ_and_emp_together: bool = True,
+    pw2wannier90_code: orm.AbstractCode | None = None,
+    decompose_parameters: dict | None = None,
 ) -> TrajectoryOutputs:
     """Run the Koopmans DSCF workflow on every snapshot, then train/test an ML model.
 
@@ -480,35 +585,34 @@ def TrajectoryWorkflow(
     ``ml_mode``:
 
     * ``"none"`` — just run the snapshots.
-    * ``"train"`` — additionally extract per-orbital ``(self-Hartree,
+    * ``"train"`` — additionally extract per-orbital ``(descriptor,
       alpha)`` pairs from every snapshot and fit a screening model; the
       fitted model is the ``model`` output.
     * ``"test"`` — extract the same pairs and score the supplied
       ``ml_model`` against the computed alphas.
+
+    ``descriptor`` selects what those pairs are built from.
+    ``'self_hartree'`` reads the per-orbital self-Hartree energies off the
+    final KI's parsed output. ``'power_spectrum'`` instead runs
+    :func:`PowerSpectrumDatasetWorkflow` per snapshot, decomposing each
+    block's Wannier functions with a pw2wannier90.x
+    ``wan_mode='decompose'`` pass; it therefore needs ``pw2wannier90_code``
+    (a decompose-capable build) and the Wannier-initialised DSCF route, and
+    accepts the basis settings (``n_max`` / ``l_max`` / ``r_min`` /
+    ``r_max``) through ``decompose_parameters``. Both descriptors return
+    rows in the same per-orbital order, the one the snapshot's ``alphas``
+    are reported in.
     """
     validate_parallelization(parallelization)
 
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
-    if ml_mode != "none":
+    if ml_mode != MLMode.NONE:
         if descriptor not in ML_DESCRIPTOR_TYPES:
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
-        if descriptor != "self_hartree":
-            raise NotImplementedError(
-                "The `orbital_density` (power-spectrum) descriptor is implemented "
-                "but gated pending live alignment validation. The full route is "
-                "built and unit-tested — `OrbitalDensityDatasetWorkflow` fans a "
-                "pw2wannier90 wan_mode='decompose' pass out over the per-block "
-                "wannierizations now exposed on `KoopmansDSCFOutputs` "
-                "(`nscf_remote_folder` / `block_wannierizations`), and "
-                "`ml_helpers.assemble_orbital_density_dataset` aligns the per-block "
-                "descriptors with the alphas. The decompose math is reproduced to "
-                "machine precision, but the per-block Wannier-function-to-alpha "
-                "ordering has not yet been confirmed by a live daemon regression "
-                "against the legacy reference, so the guard stays until it is. Use "
-                "`descriptor='self_hartree'` in the meantime."
-            )
-    if ml_mode == "test" and ml_model is None:
+        if descriptor == MLDescriptor.POWER_SPECTRUM:
+            require_power_spectrum_route(init_orbitals, pw2wannier90_code)
+    if ml_mode == MLMode.TEST and ml_model is None:
         raise ValueError("ml_mode='test' requires a trained `ml_model`")
 
     snapshot_outputs: dict[str, KoopmansDSCFOutputs] = {}
@@ -532,6 +636,15 @@ def TrajectoryWorkflow(
             initial_alpha=initial_alpha,
             spin_polarized=spin_polarized,
             orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
+            codes=codes,
+            blocks=blocks,
+            kgrid=kgrid,
+            kpoints=kpoints,
+            gamma_only=gamma_only,
+            wannier_protocol=wannier_protocol,
+            wannier_overrides=wannier_overrides,
+            mp_correction=mp_correction,
+            eps_inf=eps_inf,
             overrides=overrides,
             parallelization=parallelization,
             metadata={"call_link_label": f"dscf_{label}"},
@@ -545,15 +658,19 @@ def TrajectoryWorkflow(
             alphas=dscf["alphas"],
         )
 
-        if ml_mode != "none":
+        if ml_mode != MLMode.NONE:
             # The whole SnapshotDataset output namespace becomes the entry
             # (one socket per key), mirroring the channel-keyed DFPT wiring.
-            datasets[label] = extract_snapshot_dataset(
-                parameters=dscf["parameters"],
-                alphas=dscf["alphas"],
+            datasets[label] = build_snapshot_dataset(
+                descriptor,
+                dscf,
+                label=label,
+                pw2wannier90_code=pw2wannier90_code,
+                decompose_parameters=decompose_parameters,
+                parallelization=parallelization,
             )
 
-    if ml_mode == "train":
+    if ml_mode == MLMode.TRAIN:
         trained = train_screening_model(
             datasets=datasets,
             estimator=estimator,
@@ -562,7 +679,7 @@ def TrajectoryWorkflow(
         )
         model_output: dict = trained["model"]
         evaluation: dict = trained["metrics"]
-    elif ml_mode == "test":
+    elif ml_mode == MLMode.TEST:
         evaluated = evaluate_screening_model(datasets=datasets, model=ml_model)
         model_output = evaluated["model"]
         evaluation = evaluated["evaluation"]

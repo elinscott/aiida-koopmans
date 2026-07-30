@@ -7,9 +7,28 @@ time.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
+from aiida_workgraph import task
 
 from aiida_koopmans.types import Correction, VariationalOrbitalType
+
+
+class PreRenameDataset(TypedDict):
+    """The dataset shape as it was before the screening column was renamed."""
+
+    descriptors: list
+    alphas: list
+    filled: list
+    labels: list
+
+
+@task
+def pre_rename_dataset() -> PreRenameDataset:
+    """Emit a dataset whose screening column reuses the namespace name."""
+    return {"descriptors": [[1.0]], "alphas": [0.6], "filled": [True], "labels": ["orb_1"]}
+
 
 # ----------------------------------------------------------------------
 # extract_snapshot_dataset — plain-python callable
@@ -30,7 +49,7 @@ class TestExtractSnapshotDataset:
         alphas = {"filled": {"none": [0.6, 0.7]}, "empty": {"none": [0.5]}}
         dataset = self._call(parameters, alphas)
         assert dataset["descriptors"] == [[-1.0], [-2.0], [-3.0]]
-        assert dataset["alphas"] == [0.6, 0.7, 0.5]
+        assert dataset["alpha_targets"] == [0.6, 0.7, 0.5]
         assert dataset["filled"] == [True, True, False]
 
     def test_missing_orbital_data_raises(self):
@@ -65,6 +84,7 @@ class TestTrajectoryGraphBuild:
         from aiida_koopmans.workgraphs.ml import TrajectoryWorkflow
 
         snapshots = {f"snapshot_{i + 1}": ozone_structure for i in range(n_snapshots)}
+        ml_kwargs.setdefault("init_orbitals", VariationalOrbitalType.KOHN_SHAM)
         return TrajectoryWorkflow.build(
             code=kcp_code,
             snapshots=snapshots,
@@ -75,7 +95,6 @@ class TestTrajectoryGraphBuild:
             nspin=2,
             tot_magnetization=None,
             correction=Correction.KI,
-            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
@@ -101,7 +120,7 @@ class TestTrajectoryGraphBuild:
         # The SnapshotDataset return fans out into one output socket per key.
         extract = next(t for t in wg.tasks if "extract_snapshot_dataset" in t.name)
         socket_names = {s._name for s in extract.outputs}
-        assert {"descriptors", "alphas", "filled", "labels"} <= socket_names, socket_names
+        assert {"descriptors", "alpha_targets", "filled", "labels"} <= socket_names, socket_names
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
@@ -129,7 +148,7 @@ class TestTrajectoryGraphBuild:
         model = ml_helpers.fit_screening_model(
             {
                 "descriptors": [[-1.0], [-2.0]],
-                "alphas": [0.6, 0.7],
+                "alpha_targets": [0.6, 0.7],
                 "filled": [True, False],
                 "labels": ["orb_1", "orb_2"],
             },
@@ -155,17 +174,61 @@ class TestTrajectoryGraphBuild:
                 ml_mode="test",
             )
 
-    def test_orbital_density_descriptor_raises(
+    def test_power_spectrum_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        with pytest.raises(NotImplementedError, match="orbital_density"):
+        """The KS-init route wannierizes nothing, so it cannot feed the decompose pass."""
+        with pytest.raises(ValueError, match="init_orbitals"):
             self._build_wg(
                 ozone_structure=ozone_structure,
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_mode="train",
-                descriptor="orbital_density",
+                descriptor="power_spectrum",
             )
+
+    def test_power_spectrum_without_code_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The Wannier route still needs a decompose-capable pw2wannier90.x."""
+        with pytest.raises(ValueError, match="pw2wannier90_code"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="train",
+                descriptor="power_spectrum",
+                init_orbitals=VariationalOrbitalType.MLWFS,
+            )
+
+    def test_power_spectrum_routes_to_decompose_segment(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
+    ):
+        """`power_spectrum` swaps the self-Hartree extraction for the decompose segment.
+
+        The discriminator against a guard flip that silently keeps the old
+        descriptor: assert the per-snapshot dataset comes from
+        ``PowerSpectrumDatasetWorkflow`` and that no
+        ``extract_snapshot_dataset`` survives anywhere in the graph.
+        """
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="train",
+            descriptor="power_spectrum",
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            pw2wannier90_code=p2w,
+        )
+        names = _all_task_names(wg)
+
+        assert any("descriptors_snapshot_1" in n for n in names), names
+        assert any("descriptors_snapshot_2" in n for n in names), names
+        assert not any("extract_snapshot_dataset" in n for n in names), names
+        assert sum(1 for n in names if "train_screening_model" in n) == 1, names
 
     def test_unknown_ml_mode_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
         with pytest.raises(ValueError, match="ml_mode"):
@@ -190,3 +253,88 @@ class TestTrajectoryGraphBuild:
                 ecutrho=260.0,
                 nbnd=10,
             )
+
+
+class TestSharedOutputSpecCollision:
+    """Dataset columns must not be shadowed by the screening namespace ports.
+
+    Every python task in one daemon worker validates its outputs against a
+    single, process-wide port specification. Emitting a namespace output
+    leaves a namespace port behind on it under that name, and a namespace
+    port only accepts a mapping -- so any later task emitting a plain list
+    under the same name is rejected. The screening layer emits ``alphas``
+    and ``errors`` as namespaces, so the dataset's flat columns must not
+    reuse either name.
+    """
+
+    SCREENING_NAMESPACES = ("alphas", "errors")
+
+    @staticmethod
+    def _shared_output_ports():
+        from aiida_pythonjob.calculations.pyfunction import PyFunction
+
+        return PyFunction.spec().outputs
+
+    @staticmethod
+    def _run_pre_rename(name):
+        """Run the pre-rename dataset shape and return its process node."""
+        from aiida_workgraph import WorkGraph
+
+        wg = WorkGraph(name)
+        wg.add_task(pre_rename_dataset, name="dataset")
+        wg.run()
+        children = [link.node for link in wg.process.base.links.get_outgoing().all()]
+        return next(node for node in children if hasattr(node, "exception"))
+
+    def test_dataset_runs_with_screening_namespace_ports_present(self, aiida_profile_clean):
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.ml import extract_snapshot_dataset
+
+        shared = self._shared_output_ports()
+        for name in self.SCREENING_NAMESPACES:
+            shared.get_port(name, create_dynamically=True)
+        try:
+            wg = WorkGraph("dataset_after_screening_namespaces")
+            wg.add_task(
+                extract_snapshot_dataset,
+                name="extract",
+                parameters={"orbital_data": {"self-Hartree": [[-1.0, -2.0, -3.0]]}},
+                alphas={"filled": {"none": [0.6, 0.7]}, "empty": {"none": [0.5]}},
+            )
+            wg.run()
+            children = [link.node for link in wg.process.base.links.get_outgoing().all()]
+            extract = next(node for node in children if hasattr(node, "is_finished_ok"))
+            assert extract.is_finished_ok, extract.exception
+        finally:
+            for name in self.SCREENING_NAMESPACES:
+                shared.ports.pop(name, None)
+
+    def test_the_old_column_name_is_rejected_in_that_state(self, aiida_profile_clean):
+        """Positive control: the state injected above really is hostile.
+
+        Without this, a passing sibling test could mean the injected ports
+        are inert rather than that the column rename dodges them.
+        """
+        shared = self._shared_output_ports()
+        for name in self.SCREENING_NAMESPACES:
+            shared.get_port(name, create_dynamically=True)
+        # Run the rejected case first and the accepted case second: a
+        # successful run is a valid cache source, so the opposite order
+        # would serve the second run from the cache and prove nothing.
+        try:
+            blocked = self._run_pre_rename("pre_rename_with_screening_namespaces")
+            assert blocked.exception is not None, "pre-rename shape unexpectedly succeeded"
+            assert "not sub class of `Mapping`" in blocked.exception, blocked.exception
+        finally:
+            for name in self.SCREENING_NAMESPACES:
+                shared.ports.pop(name, None)
+
+        allowed = self._run_pre_rename("pre_rename_without_screening_namespaces")
+        assert allowed.is_finished_ok, allowed.exception
+
+    def test_dataset_columns_avoid_the_screening_namespace_names(self):
+        from aiida_koopmans.ml_helpers import SnapshotDataset
+
+        columns = set(SnapshotDataset.__annotations__)
+        assert not columns & set(self.SCREENING_NAMESPACES), columns

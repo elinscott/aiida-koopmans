@@ -110,16 +110,20 @@ class KoopmansDSCFOutputs(TypedDict):
     * ``block_wannierizations`` — the per-block Wannierization outputs
       (keyed by block label), each holding the ``retrieved`` folder with
       the ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
+    * ``merge_groups`` — the ``(filled, spin, blocks)`` partition the blocks
+      were grouped into, which fixes the band order every per-orbital
+      quantity (alphas included) is reported in.
 
-    Together these are the inputs the ``orbital_density`` ML descriptor route
-    (:func:`~aiida_koopmans.workgraphs.ml.OrbitalDensityDatasetWorkflow`)
+    Together these are the inputs the ``power_spectrum`` ML descriptor route
+    (:func:`~aiida_koopmans.workgraphs.ml.PowerSpectrumDatasetWorkflow`)
     consumes.
 
-    Contract for consumers: these two keys are present **only** on the
+    Contract for consumers: these three keys are present **only** on the
     Wannier-initialised route. On the molecular (KS-init) route they are absent,
     so ``outputs["nscf_remote_folder"]`` / ``outputs["block_wannierizations"]``
+    / ``outputs["merge_groups"]``
     raise ``KeyError``. Guard with ``.get`` or a route check before indexing;
-    ``OrbitalDensityDatasetWorkflow`` does this via
+    ``PowerSpectrumDatasetWorkflow`` does this via
     :func:`~aiida_koopmans.workgraphs.ml.require_wannier_route_inputs`, which
     raises a descriptive ``ValueError`` when the route requirement is unmet.
     """
@@ -132,6 +136,7 @@ class KoopmansDSCFOutputs(TypedDict):
     alphas: AlphaScreening
     nscf_remote_folder: NotRequired[orm.RemoteData]
     block_wannierizations: NotRequired[Annotated[dict, dynamic(WannierizeBlockOutputs)]]
+    merge_groups: NotRequired[list]
 
 
 @dataclass(frozen=True)
@@ -960,10 +965,11 @@ def KoopmansDSCFWorkflow(
     initial_evc_occupied1 = None
     initial_evc_occupied2 = None
     # The primitive nscf scratch + per-block Wannierization outputs the
-    # orbital_density ML descriptor route consumes; only the Wannier route
+    # power_spectrum ML descriptor route consumes; only the Wannier route
     # produces them.
     nscf_remote_folder = None
     block_wannierizations = None
+    merge_groups = None
     if wannier_init:
         init = MlwfInitialization(
             codes={**cast("dict", codes), "kcp": code},
@@ -994,6 +1000,7 @@ def KoopmansDSCFWorkflow(
         initial_evc_occupied2 = init["evc_occupied2"]
         nscf_remote_folder = init["nscf_remote_folder"]
         block_wannierizations = init["block_wannierizations"]
+        merge_groups = init["merge_groups"]
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -1172,6 +1179,7 @@ def KoopmansDSCFWorkflow(
     if wannier_init:
         outputs["nscf_remote_folder"] = cast("orm.RemoteData", nscf_remote_folder)
         outputs["block_wannierizations"] = cast("dict", block_wannierizations)
+        outputs["merge_groups"] = cast("list", merge_groups)
     return outputs
 
 

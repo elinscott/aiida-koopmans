@@ -630,7 +630,7 @@ def format_group_centres_file(centres: Sequence[Sequence[float]]) -> str:
     return header + "".join(f"{c[0]:.10f} {c[1]:.10f} {c[2]:.10f}\n" for c in centres)
 
 
-def build_orbital_density_dataset(
+def build_power_spectrum_dataset(
     descriptors: Sequence[Sequence[float]],
     alphas: Sequence[float],
     filled: Sequence[bool],
@@ -654,7 +654,7 @@ def build_orbital_density_dataset(
         )
     return {
         "descriptors": [[float(x) for x in row] for row in descriptors],
-        "alphas": [float(a) for a in alphas],
+        "alpha_targets": [float(a) for a in alphas],
         "filled": [bool(f) for f in filled],
         "labels": [str(label) for label in labels],
     }
@@ -686,7 +686,7 @@ def _gather_channel_rows(
     return rows
 
 
-def assemble_orbital_density_dataset(
+def assemble_power_spectrum_dataset(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
     merge_groups: Sequence[Mapping[str, Any]],
     alphas: AlphaScreening,
@@ -738,7 +738,7 @@ def assemble_orbital_density_dataset(
             "`SpinChannel` members or the strings 'none'/'up'/'down'."
         )
 
-    dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    dataset: SnapshotDataset = {"descriptors": [], "alpha_targets": [], "filled": [], "labels": []}
     for channel in channels:
         filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
         empty_rows = _gather_channel_rows(merge_groups, block_descriptors, False, channel)
@@ -761,7 +761,7 @@ def assemble_orbital_density_dataset(
         channel_alphas = channel_filled + channel_empty
         for i, (row, alpha) in enumerate(zip(rows, channel_alphas, strict=True)):
             dataset["descriptors"].append(row)
-            dataset["alphas"].append(alpha)
+            dataset["alpha_targets"].append(alpha)
             dataset["filled"].append(i < len(filled_rows))
             dataset["labels"].append(f"{prefix}orb_{i + 1}")
     return dataset
@@ -858,10 +858,19 @@ class SnapshotDataset(TypedDict):
     vector, the screening parameter it was computed to have, whether it is
     a filled orbital, and its ``orb_<n>`` / ``up_orb_<n>``-style label
     (``snapshot:label`` after :func:`concatenate_datasets`).
+
+    The screening column is ``alpha_targets`` rather than ``alphas``
+    because a task output name must not be a name that another task emits
+    as a *namespace*: every python task in a daemon worker validates its
+    outputs against one shared, process-wide port specification, so a
+    namespace port left there under a given name makes a later plain-list
+    output of that same name fail validation. The screening layer emits
+    ``alphas`` as a namespace (``filled`` / ``empty``), so this flat column
+    carries a name of its own.
     """
 
     descriptors: list[list[float]]
-    alphas: list[float]
+    alpha_targets: list[float]
     filled: list[bool]
     labels: list[str]
 
@@ -894,7 +903,7 @@ def build_snapshot_dataset(
     if not channels:
         raise ValueError("No screening parameters provided: `alphas` has no spin channels")
 
-    dataset: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    dataset: SnapshotDataset = {"descriptors": [], "alpha_targets": [], "filled": [], "labels": []}
     for channel in channels:
         try:
             spin_index = _SPIN_KEY_TO_INDEX[channel]
@@ -923,7 +932,7 @@ def build_snapshot_dataset(
             zip(sh_block, [*channel_filled, *channel_empty], strict=True)
         ):
             dataset["descriptors"].append([float(sh)])
-            dataset["alphas"].append(float(alpha))
+            dataset["alpha_targets"].append(float(alpha))
             dataset["filled"].append(i < len(channel_filled))
             dataset["labels"].append(f"{prefix}orb_{i + 1}")
     return dataset
@@ -931,11 +940,11 @@ def build_snapshot_dataset(
 
 def concatenate_datasets(datasets: Mapping[str, SnapshotDataset]) -> SnapshotDataset:
     """Merge per-snapshot datasets into one, prefixing labels with the snapshot key."""
-    merged: SnapshotDataset = {"descriptors": [], "alphas": [], "filled": [], "labels": []}
+    merged: SnapshotDataset = {"descriptors": [], "alpha_targets": [], "filled": [], "labels": []}
     for snapshot_label in sorted(datasets):
         dataset = datasets[snapshot_label]
         merged["descriptors"] += list(dataset["descriptors"])
-        merged["alphas"] += list(dataset["alphas"])
+        merged["alpha_targets"] += list(dataset["alpha_targets"])
         merged["filled"] += list(dataset["filled"])
         merged["labels"] += [f"{snapshot_label}:{label}" for label in dataset["labels"]]
     return merged
@@ -954,7 +963,9 @@ def fit_screening_model(
     """
     submodels: dict[str, dict[str, Any]] = {}
     if occ_and_emp_together:
-        submodels["all"] = fit_estimator(dataset["descriptors"], dataset["alphas"], estimator_type)
+        submodels["all"] = fit_estimator(
+            dataset["descriptors"], dataset["alpha_targets"], estimator_type
+        )
     else:
         for key, want_filled in (("occ", True), ("emp", False)):
             rows = [i for i, filled in enumerate(dataset["filled"]) if filled == want_filled]
@@ -965,7 +976,7 @@ def fit_screening_model(
                 )
             submodels[key] = fit_estimator(
                 [dataset["descriptors"][i] for i in rows],
-                [dataset["alphas"][i] for i in rows],
+                [dataset["alpha_targets"][i] for i in rows],
                 estimator_type,
             )
     return {
@@ -978,7 +989,7 @@ def fit_screening_model(
 
 def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[float]:
     """Predict screening parameters for every orbital row of ``dataset``."""
-    predictions = np.empty(len(dataset["alphas"]), dtype=float)
+    predictions = np.empty(len(dataset["alpha_targets"]), dtype=float)
     if model.get("occ_and_emp_together", True):
         predictions[:] = predict_estimator(model["submodels"]["all"], dataset["descriptors"])
     else:
