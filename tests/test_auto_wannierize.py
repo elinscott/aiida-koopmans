@@ -174,6 +174,28 @@ class TestParseWinConvergence:
         """An ``=`` line inside a begin/end block is not a keyword."""
         assert _parse_win_convergence(_EMITTED_SUBBLOCK_WIN)["num_iter"] == 2000
 
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "num_iter = 2000 ! converge harder",
+            "num_iter = 2000 # converge harder",
+            "num_iter : 2000",
+            "num_iter 2000",
+            "num_iter = 2000,",
+            "NUM_ITER = 2000",
+        ],
+    )
+    def test_wannier90_keyword_forms(self, line):
+        """Separators (``=``/``:``/whitespace), comments, commas and case."""
+        assert _parse_win_convergence(line + "\n") == {"num_iter": 2000}
+
+    def test_full_line_comment_is_ignored(self):
+        assert _parse_win_convergence("! num_iter = 50\n# num_iter = 60\n") == {}
+
+    def test_unparseable_value_raises(self):
+        with pytest.raises(ValueError, match=r"Cannot parse the value 'lots' .* 'num_iter'"):
+            _parse_win_convergence("num_iter = lots\n")
+
 
 class TestMergeWinConvergence:
     """Emitted convergence keywords merge under the built parameters."""
@@ -191,7 +213,7 @@ class TestMergeWinConvergence:
 
         base = _subblock_w90_parameters(2, [4, 4, 4], None)
         merged = merge_win_convergence._callable(
-            win_file=self._win_file(), parameters=Dict(base)
+            win_file=self._win_file(), parameters=Dict(base), group=0
         ).get_dict()
         assert merged["num_iter"] == 2000
         assert merged["num_cg_steps"] == 200
@@ -207,10 +229,28 @@ class TestMergeWinConvergence:
 
         base = _subblock_w90_parameters(2, [4, 4, 4], {"num_iter": 500})
         merged = merge_win_convergence._callable(
-            win_file=self._win_file(), parameters=Dict(base)
+            win_file=self._win_file(), parameters=Dict(base), group=0
         ).get_dict()
         assert merged["num_iter"] == 500
         assert merged["num_cg_steps"] == 200
+
+    def test_keywordless_win_raises(self, aiida_profile):
+        """A ``.win`` with no convergence keywords must fail, not no-op.
+
+        Proceeding silently would hand the group's run exactly the
+        compiled-in wannier90 defaults this merge exists to prevent.
+        """
+        import io as _io
+
+        from aiida.orm import Dict, SinglefileData
+
+        win = SinglefileData(
+            _io.BytesIO(b"num_wann = 2\nbegin projections\nend projections\n"),
+            filename="aiida.win",
+        )
+        base = _subblock_w90_parameters(2, [4, 4, 4], None)
+        with pytest.raises(ValueError, match=r"group 3 .* none of the expected"):
+            merge_win_convergence._callable(win_file=win, parameters=Dict(base), group=3)
 
     def test_without_the_merge_the_parameters_lack_convergence_keywords(self):
         """Negative control: the base builder alone emits no convergence set.

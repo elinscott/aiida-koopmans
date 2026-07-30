@@ -287,14 +287,40 @@ def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
     return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
 
 
+def _win_keyword_tokens(line: str) -> tuple[str, str] | None:
+    """Split one lowercase ``.win`` header line into a ``(keyword, value)`` pair.
+
+    Return ``None`` for lines that carry no keyword assignment (blank,
+    comment-only, valueless). ``!`` / ``#`` inline comments and trailing
+    commas are stripped; the ``=``, ``:`` and whitespace separator forms
+    are all accepted.
+    """
+    for marker in ("!", "#"):
+        index = line.find(marker)
+        if index != -1:
+            line = line[:index].strip()
+    if not line:
+        return None
+    key, separator, value = line.partition("=")
+    if not separator:
+        key, separator, value = line.partition(":")
+    if not separator:
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            return None
+        key, value = parts
+    return key.strip(), value.strip().rstrip(",").strip()
+
+
 def _parse_win_convergence(content: str) -> dict[str, int | float]:
     """Extract the harvested convergence keywords from a ``.win`` file.
 
-    Scan the ``key = value`` header lines only (``begin``/``end`` blocks are
+    Scan the keyword header lines only (``begin``/``end`` blocks are
     skipped) and keep the :data:`_HARVESTED_CONVERGENCE_KEYS`, converted to
-    their value types. The input is the WannierIO.jl-emitted per-block
-    ``.win`` (``=``-separated, lowercase keywords); values may use the
-    Fortran ``d`` exponent marker.
+    their value types. The wannier90 keyword forms are accepted in full
+    (see :func:`_win_keyword_tokens`); values may use the Fortran ``d``
+    exponent marker. An unparseable value for a harvested keyword raises
+    rather than being dropped.
     """
     harvested: dict[str, int | float] = {}
     in_block = False
@@ -306,17 +332,29 @@ def _parse_win_convergence(content: str) -> dict[str, int | float]:
         if stripped.startswith("end"):
             in_block = False
             continue
-        if in_block or "=" not in stripped:
+        if in_block:
             continue
-        key, _, value = (part.strip() for part in stripped.partition("="))
+        tokens = _win_keyword_tokens(stripped)
+        if tokens is None:
+            continue
+        key, value = tokens
         converter = _HARVESTED_CONVERGENCE_KEYS.get(key)
-        if converter is not None:
-            harvested[key] = converter(float(value.replace("d", "e")))
+        if converter is None:
+            continue
+        try:
+            number = float(value.replace("d", "e"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot parse the value {value!r} of the .win keyword {key!r}."
+            ) from exc
+        harvested[key] = converter(number)
     return harvested
 
 
 @task.calcfunction
-def merge_win_convergence(win_file: orm.SinglefileData, parameters: orm.Dict) -> orm.Dict:
+def merge_win_convergence(
+    win_file: orm.SinglefileData, parameters: orm.Dict, group: int
+) -> orm.Dict:
     """Merge the split-emitted convergence keywords under built parameters.
 
     ``mrwf`` writes each sub-block a ``.win`` whose convergence keywords
@@ -324,9 +362,19 @@ def merge_win_convergence(win_file: orm.SinglefileData, parameters: orm.Dict) ->
     sized for re-Wannierizing that sub-block — far tighter than wannier90's
     compiled-in defaults, which the run would otherwise fall back to.
     ``parameters`` (the :func:`_subblock_w90_parameters` product, including
-    any user overrides) wins wherever both define a keyword.
+    any user overrides) wins wherever both define a keyword. A ``win_file``
+    carrying none of the expected keywords raises: silently proceeding
+    would hand ``group``'s run exactly the compiled-in defaults this merge
+    exists to prevent, and the emitting format is not under our control.
     """
-    merged: dict[str, Any] = dict(_parse_win_convergence(win_file.get_content(mode="r")))
+    harvested = _parse_win_convergence(win_file.get_content(mode="r"))
+    if not harvested:
+        raise ValueError(
+            f"The split-emitted .win for group {int(group)} carries none of the expected "
+            f"convergence keywords {tuple(_HARVESTED_CONVERGENCE_KEYS)}; refusing to "
+            "fall back to wannier90's compiled-in defaults."
+        )
+    merged: dict[str, Any] = dict(harvested)
     merged.update(parameters.get_dict())
     return orm.Dict(merged)
 
@@ -411,6 +459,7 @@ def RewannierizeSplitBlocks(
         parameters = merge_win_convergence(
             win_file=split_win_files[f"block_{i}"],
             parameters=_subblock_w90_parameters(int(num_wann), mp_grid, wannier90_overrides),
+            group=i,
             metadata={"call_link_label": f"merge_win_convergence_{i}"},
         ).result
         rewannierized = Wannier90CalcStep(
