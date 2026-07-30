@@ -62,11 +62,6 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-# Canonical spin-channel walk order, shared by every ordering decision in
-# this module (representative stamping, orbital emission). The enum's
-# declaration order IS the walk order, so the enum stays the single
-# authority and this alias only names the intent.
-_SPIN_ORDER = tuple(SpinChannel)
 
 
 class ExpandedAlphas(TypedDict):
@@ -207,22 +202,22 @@ def _stamp_representatives(orbitals: list[VariationalOrbital]) -> None:
     otherwise leave its group with no representative at all.
     """
     seen: set[int] = set()
-    unknown = {str(o["spin"]) for o in orbitals if o["spin"] not in _SPIN_ORDER}
+    unknown = {str(o["spin"]) for o in orbitals if o["spin"] not in SpinChannel}
     if unknown:
         raise ValueError(
             f"Unrecognized spin value(s) {sorted(unknown)}; expected one of "
-            f"{[s.value for s in _SPIN_ORDER]}."
+            f"{[s.value for s in SpinChannel]}."
         )
 
     walk_order: list[VariationalOrbital] = []
-    for spin in _SPIN_ORDER:
+    for spin in SpinChannel:
         walk_order.extend(
             sorted(
                 (o for o in orbitals if o["spin"] == spin and o["filled"]),
                 key=lambda o: -o["index"],
             )
         )
-    for spin in _SPIN_ORDER:
+    for spin in SpinChannel:
         walk_order.extend(
             sorted(
                 (o for o in orbitals if o["spin"] == spin and not o["filled"]),
@@ -416,7 +411,7 @@ def ordered_block_specs(blocks: list[ProjectionBlockId]) -> list[ProjectionBlock
     """
     return [
         spec
-        for channel in _SPIN_ORDER
+        for channel in SpinChannel
         for filled in (True, False)
         for spec in blocks
         if SpinChannel(spec["spin"]) == channel and bool(spec["filled"]) == filled
