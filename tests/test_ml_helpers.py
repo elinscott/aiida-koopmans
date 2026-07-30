@@ -273,7 +273,7 @@ class TestBuildSnapshotDataset:
         alphas = {"filled": {"none": [0.6, 0.7, 0.8]}, "empty": {"none": [0.5, 0.4]}}
         ds = ml_helpers.build_snapshot_dataset(sh, alphas)
         assert ds["descriptors"] == [[-1.0], [-2.0], [-3.0], [-4.0], [-5.0]]
-        assert ds["alphas"] == [0.6, 0.7, 0.8, 0.5, 0.4]
+        assert ds["alpha_targets"] == [0.6, 0.7, 0.8, 0.5, 0.4]
         assert ds["filled"] == [True, True, True, False, False]
         assert ds["labels"] == ["orb_1", "orb_2", "orb_3", "orb_4", "orb_5"]
 
@@ -287,7 +287,7 @@ class TestBuildSnapshotDataset:
         # up channel first (spin index 0), then down.
         assert ds["labels"] == ["up_orb_1", "up_orb_2", "down_orb_1", "down_orb_2"]
         assert ds["descriptors"] == [[-1.0], [-2.0], [-3.0], [-4.0]]
-        assert ds["alphas"] == [0.6, 0.5, 0.61, 0.51]
+        assert ds["alpha_targets"] == [0.6, 0.5, 0.61, 0.51]
         assert ds["filled"] == [True, False, True, False]
 
     def test_count_mismatch_raises(self):
@@ -309,12 +309,22 @@ class TestBuildSnapshotDataset:
 
 class TestConcatenateDatasets:
     def test_merge_prefixes_labels_and_sorts_snapshots(self):
-        ds1 = {"descriptors": [[1.0]], "alphas": [0.6], "filled": [True], "labels": ["orb_1"]}
-        ds2 = {"descriptors": [[2.0]], "alphas": [0.7], "filled": [False], "labels": ["orb_2"]}
+        ds1 = {
+            "descriptors": [[1.0]],
+            "alpha_targets": [0.6],
+            "filled": [True],
+            "labels": ["orb_1"],
+        }
+        ds2 = {
+            "descriptors": [[2.0]],
+            "alpha_targets": [0.7],
+            "filled": [False],
+            "labels": ["orb_2"],
+        }
         merged = ml_helpers.concatenate_datasets({"snapshot_2": ds2, "snapshot_1": ds1})
         assert merged["labels"] == ["snapshot_1:orb_1", "snapshot_2:orb_2"]
         assert merged["descriptors"] == [[1.0], [2.0]]
-        assert merged["alphas"] == [0.6, 0.7]
+        assert merged["alpha_targets"] == [0.6, 0.7]
         assert merged["filled"] == [True, False]
 
 
@@ -331,7 +341,7 @@ def _screening_dataset(n=12, seed=3):
     alphas = [0.1 * s + (0.9 if f else 0.3) for s, f in zip(sh, filled, strict=True)]
     return {
         "descriptors": [[float(s)] for s in sh],
-        "alphas": [float(a) for a in alphas],
+        "alpha_targets": [float(a) for a in alphas],
         "filled": filled,
         "labels": [f"orb_{i + 1}" for i in range(n)],
     }
@@ -344,7 +354,7 @@ class TestScreeningModel:
         # A single linear model can't capture the occ/emp offset exactly, but
         # the fit must be finite and unbiased on average.
         pred = ml_helpers.predict_screening(model, ds)
-        metrics = ml_helpers.evaluate_predictions(ds["alphas"], pred)
+        metrics = ml_helpers.evaluate_predictions(ds["alpha_targets"], pred)
         assert metrics["n_samples"] == 12
         assert np.isfinite(metrics["rmse"])
 
@@ -352,7 +362,7 @@ class TestScreeningModel:
         ds = _screening_dataset()
         model = ml_helpers.fit_screening_model(ds, "linear_regression", occ_and_emp_together=False)
         pred = ml_helpers.predict_screening(model, ds)
-        metrics = ml_helpers.evaluate_predictions(ds["alphas"], pred)
+        metrics = ml_helpers.evaluate_predictions(ds["alpha_targets"], pred)
         # Each submodel sees an exactly linear law -> near-perfect recovery.
         assert metrics["max_abs_error"] < 1e-8
 
@@ -454,7 +464,7 @@ class TestDecomposeCrossPower:
             labels=["orb_1", "emp_orb_1"],
         )
         assert ds["descriptors"] == [[1.0, 2.0], [3.0, 4.0]]
-        assert ds["alphas"] == [0.5, 0.6]
+        assert ds["alpha_targets"] == [0.5, 0.6]
         assert ds["filled"] == [True, False]
         assert ds["labels"] == ["orb_1", "emp_orb_1"]
 
@@ -484,7 +494,7 @@ class TestAssembleOrbitalDensityDataset:
         alphas = {"filled": {"none": [0.1, 0.2]}, "empty": {"none": [0.5, 0.6]}}
         ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
         assert ds["descriptors"] == [[1.0], [2.0], [10.0], [20.0]]
-        assert ds["alphas"] == [0.1, 0.2, 0.5, 0.6]
+        assert ds["alpha_targets"] == [0.1, 0.2, 0.5, 0.6]
         assert ds["filled"] == [True, True, False, False]
         assert ds["labels"] == ["orb_1", "orb_2", "orb_3", "orb_4"]
 
@@ -520,7 +530,7 @@ class TestAssembleOrbitalDensityDataset:
         ds = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
         # up (filled, empty) then down (filled, empty), regardless of group list order.
         assert ds["descriptors"] == [[1.0], [2.0], [11.0], [12.0]]
-        assert ds["alphas"] == [0.1, 0.2, 0.3, 0.4]
+        assert ds["alpha_targets"] == [0.1, 0.2, 0.3, 0.4]
         assert ds["filled"] == [True, False, True, False]
         assert ds["labels"] == ["up_orb_1", "up_orb_2", "down_orb_1", "down_orb_2"]
 
@@ -557,7 +567,7 @@ class TestAssembleOrbitalDensityDataset:
         od = ml_helpers.assemble_orbital_density_dataset(block_descriptors, merge_groups, alphas)
         assert od["labels"] == sh_ref["labels"]
         assert od["filled"] == sh_ref["filled"]
-        assert od["alphas"] == sh_ref["alphas"]
+        assert od["alpha_targets"] == sh_ref["alpha_targets"]
 
     def test_no_channels_raises(self):
         """Empty alphas (no spin channels) is a hard error."""

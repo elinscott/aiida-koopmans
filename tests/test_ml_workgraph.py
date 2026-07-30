@@ -30,7 +30,7 @@ class TestExtractSnapshotDataset:
         alphas = {"filled": {"none": [0.6, 0.7]}, "empty": {"none": [0.5]}}
         dataset = self._call(parameters, alphas)
         assert dataset["descriptors"] == [[-1.0], [-2.0], [-3.0]]
-        assert dataset["alphas"] == [0.6, 0.7, 0.5]
+        assert dataset["alpha_targets"] == [0.6, 0.7, 0.5]
         assert dataset["filled"] == [True, True, False]
 
     def test_missing_orbital_data_raises(self):
@@ -101,7 +101,7 @@ class TestTrajectoryGraphBuild:
         # The SnapshotDataset return fans out into one output socket per key.
         extract = next(t for t in wg.tasks if "extract_snapshot_dataset" in t.name)
         socket_names = {s._name for s in extract.outputs}
-        assert {"descriptors", "alphas", "filled", "labels"} <= socket_names, socket_names
+        assert {"descriptors", "alpha_targets", "filled", "labels"} <= socket_names, socket_names
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
@@ -129,7 +129,7 @@ class TestTrajectoryGraphBuild:
         model = ml_helpers.fit_screening_model(
             {
                 "descriptors": [[-1.0], [-2.0]],
-                "alphas": [0.6, 0.7],
+                "alpha_targets": [0.6, 0.7],
                 "filled": [True, False],
                 "labels": ["orb_1", "orb_2"],
             },
@@ -234,3 +234,54 @@ class TestTrajectoryGraphBuild:
                 ecutrho=260.0,
                 nbnd=10,
             )
+
+
+class TestSharedOutputSpecCollision:
+    """Dataset columns must not be shadowed by the screening namespace ports.
+
+    Every python task in one daemon worker validates its outputs against a
+    single, process-wide port specification. Emitting a namespace output
+    leaves a namespace port behind on it under that name, and a namespace
+    port only accepts a mapping -- so any later task emitting a plain list
+    under the same name is rejected. The screening layer emits ``alphas``
+    and ``errors`` as namespaces, so the dataset's flat columns must not
+    reuse either name.
+    """
+
+    SCREENING_NAMESPACES = ("alphas", "errors")
+
+    @staticmethod
+    def _shared_output_ports():
+        from aiida_pythonjob.calculations.pyfunction import PyFunction
+
+        return PyFunction.spec().outputs
+
+    def test_dataset_runs_with_screening_namespace_ports_present(self, aiida_profile_clean):
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.ml import extract_snapshot_dataset
+
+        shared = self._shared_output_ports()
+        for name in self.SCREENING_NAMESPACES:
+            shared.get_port(name, create_dynamically=True)
+        try:
+            wg = WorkGraph("dataset_after_screening_namespaces")
+            wg.add_task(
+                extract_snapshot_dataset,
+                name="extract",
+                parameters={"orbital_data": {"self-Hartree": [[-1.0, -2.0, -3.0]]}},
+                alphas={"filled": {"none": [0.6, 0.7]}, "empty": {"none": [0.5]}},
+            )
+            wg.run()
+            children = [link.node for link in wg.process.base.links.get_outgoing().all()]
+            extract = next(node for node in children if hasattr(node, "is_finished_ok"))
+            assert extract.is_finished_ok, extract.exception
+        finally:
+            for name in self.SCREENING_NAMESPACES:
+                shared.ports.pop(name, None)
+
+    def test_dataset_columns_avoid_the_screening_namespace_names(self):
+        from aiida_koopmans.ml_helpers import SnapshotDataset
+
+        columns = set(SnapshotDataset.__annotations__)
+        assert not columns & set(self.SCREENING_NAMESPACES), columns
