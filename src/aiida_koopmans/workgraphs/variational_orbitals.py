@@ -63,7 +63,6 @@ if TYPE_CHECKING:
     import numpy as np
 
 
-
 class ExpandedAlphas(TypedDict):
     """Per-orbital alpha + error dicts after broadcasting from representatives.
 
