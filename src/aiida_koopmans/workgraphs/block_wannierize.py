@@ -925,6 +925,18 @@ def _resolve_split_mode(
             "folder, and an external nscf scratch carries no scf density to run "
             "it from."
         )
+    disentangling = [
+        str(block["label"]) for block in blocks if int(block["num_bands"]) > int(block["num_wann"])
+    ]
+    if disentangling:
+        raise NotImplementedError(
+            f"Block(s) {disentangling} read more bands than they Wannierise, which "
+            "would disentangle them; splitting a disentangled block is not "
+            "supported. The split re-Wannierises each group from the parent's "
+            "gauge alone, so the parent's disentanglement matrix has nowhere to "
+            "go. Lower the nscf band count to the Wannier-function count, or drop "
+            "`split_threshold`."
+        )
     if mp_grid is None:
         raise ValueError(
             "Split mode requires `mp_grid`: the per-group re-Wannierisation "

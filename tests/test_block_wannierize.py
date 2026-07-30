@@ -124,6 +124,46 @@ class TestBlockWannierizeGraphBuild:
         assert pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 20
         assert "wannier90" not in pw_overrides
 
+    def test_shared_nscf_bands_reach_every_block(self, wannier_codes, silicon_structure, kmesh):
+        """The internal nscf's eigenvalues are linked into each per-block graph.
+
+        This default is the only way the frozen-window clamp is ever reached
+        in production: no caller passes ``nscf_bands`` explicitly, so a
+        per-block test that supplies it by hand exercises the leaf and skips
+        the wiring. Assert the link itself rather than a value — at build
+        time the socket carries an unresolved output of ``scf_nscf``.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        block_tasks = [t.name for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for name in block_tasks:
+            links = wg.tasks[name].inputs["nscf_bands"]._links
+            assert [str(link) for link in links] == [
+                f'TaskLink(from="scf_nscf.nscf_output_band", to="{name}.nscf_bands")'
+            ]
+
+    def test_external_scratch_leaves_the_bands_socket_to_the_caller(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    ):
+        """With no internal nscf there are no eigenvalues to default to."""
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+        )
+        socket = wg.tasks["wannierize_block_1"].inputs["nscf_bands"]
+        assert not socket._links
+        assert socket.value is None
+
     def test_external_scratch_skips_the_internal_scf_nscf(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote
     ):
@@ -184,6 +224,22 @@ class TestSplitMode:
         """The trigger is the threshold; the k-path is a requirement, not the trigger."""
         with pytest.raises(ValueError, match="bands_kpoints"):
             self._build_split(auto_codes, silicon_structure, kmesh, bands_kpoints=None)
+
+    def test_disentangling_block_cannot_be_split(self, auto_codes, silicon_structure, kmesh, kpath):
+        """A parent block with a pool is rejected before the split chain is built.
+
+        The per-group re-Wannierisation reads only the parent's gauge
+        products, so the parent's disentanglement matrix would be dropped
+        silently. Without this guard the chain assembles and runs: the
+        rejection used to fall out of the group restriction refusing an
+        ``include_bands`` list that reached into the pool, and narrowing
+        ``include_bands`` to the Wannier manifold removed that side effect.
+        """
+        blocks = [explicit_block("block_1", range(1, 9), projections=["Si: sp3"], num_bands=12)]
+        with pytest.raises(NotImplementedError, match="splitting a disentangled block"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, kpath=kpath, blocks=blocks, num_occ_bands=4
+            )
 
     def test_automatic_block_triggers_the_split_path(self, auto_codes, silicon_structure, kmesh):
         """An automatic-projections block alone selects split mode.
