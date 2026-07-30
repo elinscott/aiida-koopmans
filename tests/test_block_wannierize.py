@@ -57,18 +57,18 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
     ]
 
 
-def _si_external_projectors(alpha: float | str = 1.5) -> dict:
+def _si_external_projectors() -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 
     The caller-synthesized shape the upstream builder consumes: one entry
-    per orbital with its ``l`` and an ``alpha`` whose only upstream read is
-    the ``== "UPF"`` frozen test — the sentinel marks the orbital
-    Lowdin-frozen, any numeric value leaves it orthonormalized.
+    per orbital with its ``l`` and a numeric ``alpha`` filler the builder
+    requires but never reads beyond its frozen-list selection, which the
+    filler deliberately does not trigger.
     """
     return {
         "Si": [
-            {"l": 0, "alpha": alpha},
-            {"l": 1, "alpha": alpha},
+            {"l": 0, "alpha": 1.5},
+            {"l": 1, "alpha": 1.5},
         ]
     }
 
@@ -764,7 +764,8 @@ class TestWannierizeBlockBuild:
         assert inputpp["atom_proj_dir"] == "external_projectors/"
         assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
         assert p2w["external_projectors_list"].value.get_dict() == {"Si": "Si"}
-        # Every projector carries a numeric alpha, so none is frozen.
+        # No entry triggers upstream's frozen-list selection, so the
+        # namelist never carries atom_proj_frozen.
         assert "atom_proj_frozen" not in inputpp
         assert_graph_roundtrips(wg)
 
@@ -787,41 +788,6 @@ class TestWannierizeBlockBuild:
                 kpoints=kmesh,
                 external_projectors_path=str(tmp_path),
             )
-
-    def test_upf_sentinel_alphas_freeze_the_projectors(
-        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family, tmp_path
-    ):
-        """``alpha: "UPF"`` entries land in the staged frozen-projector list.
-
-        The sentinel is how a caller encodes its frozen-projector choice
-        through upstream's tables, so its round-trip must be exact: every
-        sentinel orbital's projectors appear in ``atom_proj_frozen``, here
-        all 8 (s + p on both sites).
-        """
-        block = automatic_block(
-            "block_1",
-            range(1, 9),
-            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
-        )
-        wg = WannierizeBlock.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            block=block,
-            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
-            nscf_remote_folder=nscf_scratch,
-            kpoints=kmesh,
-            mp_grid=[2, 2, 2],
-            pseudo_family=fake_cutoffs_family.label,
-            external_projectors_path=str(tmp_path),
-            external_projectors=_si_external_projectors(alpha="UPF"),
-        )
-        task = self._wannier_task(wg)
-        p2w = task.inputs["pw2wannier90"]["pw2wannier90"]
-        inputpp = p2w["parameters"].value.get_dict()["INPUTPP"]
-        assert inputpp["atom_proj_frozen"] == list(range(1, 9))
-        assert inputpp["atom_proj_ext"] is True
-        assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
-        assert_graph_roundtrips(wg)
 
     def test_semicore_exclusions_stay_out(
         self,

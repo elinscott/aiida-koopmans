@@ -128,7 +128,7 @@ def validate_external_projector_inputs(
     ``atomic_projectors_external`` needs both the projector directory (the
     pw2wannier90 step remote-copies each element's ``<symbol>.dat`` from it)
     and the per-element orbital tables (the builder derives the projector
-    count and frozen list from them); any other type consumes neither, so a
+    count from them); any other type consumes neither, so a
     mismatch in either direction raises rather than silently ignoring the
     given inputs. At most one external entry is allowed: the tables are not
     split per block, so every external block would wannierize the full
@@ -493,7 +493,7 @@ def WannierizeBlock(
     inputs (see :func:`validate_external_projector_inputs`): the upstream
     builder turns them into the pw2wannier90 step's projector-directory
     ``RemoteData`` plus the ``atom_proj_ext`` namelist keywords, and sizes
-    the frozen-projector list from the orbital tables.
+    the projector count from the orbital tables.
 
     Seeds a ``Wannier90WorkChain`` builder via ``get_builder_from_protocol``
     for this block's ``projection_type``, then:
