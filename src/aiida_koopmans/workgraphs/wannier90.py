@@ -196,6 +196,13 @@ def Wannierize(
     """
     validate_parallelization(parallelization)
 
+    if exclude_semicore and projection_type == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL:
+        raise ValueError(
+            "`exclude_semicore` is not supported with external projectors: the "
+            "upstream semicore selection reads a per-orbital `label` the "
+            "synthesized projector tables do not carry."
+        )
+
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
     # protocol builder's pseudo-family QueryBuilder can bind it.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None

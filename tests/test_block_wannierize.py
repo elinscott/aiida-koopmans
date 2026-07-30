@@ -17,7 +17,12 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlock,
     WannierizeBlocks,
 )
-from tests.fixtures import assert_graph_roundtrips, automatic_block, explicit_block
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    automatic_block,
+    explicit_block,
+    si_external_projector_tables,
+)
 
 # ----------------------------------------------------------------------
 # Fixtures: structures, block shapes (``wannier_codes`` is shared, see fixtures.py)
@@ -55,23 +60,6 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
         explicit_block("block_4", range(13, 17)),
         explicit_block("block_5", range(17, 21)),  # empty
     ]
-
-
-def _si_external_projectors() -> dict:
-    """Silicon external-projector orbital tables: s + p per atom, 8 in total.
-
-    The caller-synthesized shape the upstream builder consumes: one entry
-    per orbital with its ``l`` and a numeric ``alpha``. The ``alpha`` is
-    load-bearing: the upstream builder defaults a missing key to ``"UPF"``
-    and stages every such orbital in ``atom_proj_frozen``, which this
-    fixture — like the production tables — deliberately avoids.
-    """
-    return {
-        "Si": [
-            {"l": 0, "alpha": 1.5},
-            {"l": 1, "alpha": 1.5},
-        ]
-    }
 
 
 # ----------------------------------------------------------------------
@@ -374,14 +362,14 @@ class TestSplitMode:
             bands_kpoints=kpath,
             num_occ_bands=4,
             external_projectors_path=str(tmp_path),
-            external_projectors=_si_external_projectors(),
+            external_projectors=si_external_projector_tables(),
         )
         names = [t.name for t in wg.tasks]
         assert names.count("detect_band_groups") == 1
         assert "wannierize_split_block_1" in names
         split_task = wg.tasks["wannierize_split_block_1"]
         assert split_task.inputs["external_projectors_path"].value == str(tmp_path)
-        assert split_task.inputs["external_projectors"].value == _si_external_projectors()
+        assert split_task.inputs["external_projectors"].value == si_external_projector_tables()
         assert_graph_roundtrips(wg)
 
 
@@ -857,7 +845,7 @@ class TestWannierizeBlockBuild:
             mp_grid=[2, 2, 2],
             pseudo_family=fake_cutoffs_family.label,
             external_projectors_path=str(tmp_path),
-            external_projectors=_si_external_projectors(),
+            external_projectors=si_external_projector_tables(),
         )
         task = self._wannier_task(wg)
         params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
@@ -1049,7 +1037,7 @@ def test_projector_inputs_without_external_block_raise(
             blocks=_silicon_blocks(),
             kpoints=kmesh,
             external_projectors_path=str(tmp_path),
-            external_projectors=_si_external_projectors(),
+            external_projectors=si_external_projector_tables(),
         )
 
 
@@ -1082,7 +1070,7 @@ def test_second_external_block_raises(auto_codes, silicon_structure, kmesh, kpat
             bands_kpoints=kpath,
             num_occ_bands=4,
             external_projectors_path=str(tmp_path),
-            external_projectors=_si_external_projectors(),
+            external_projectors=si_external_projector_tables(),
         )
 
 
@@ -1104,7 +1092,7 @@ def test_degenerate_projector_inputs_raise(
     )
     kwargs = {
         "external_projectors_path": str(tmp_path),
-        "external_projectors": _si_external_projectors(),
+        "external_projectors": si_external_projector_tables(),
         **overrides,
     }
     with pytest.raises(ValueError, match=match):
