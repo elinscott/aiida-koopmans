@@ -183,9 +183,9 @@ def Wannierize(
         exclude_semicore: If True, exclude semicore states from Wannierisation.
         external_projectors_path: Path to directory containing external projector
             files. Required when projection_type is ATOMIC_PROJECTORS_EXTERNAL.
-        external_projectors: Dictionary describing external projectors (from
-            projectors.json). Required when projection_type is
-            ATOMIC_PROJECTORS_EXTERNAL.
+        external_projectors: Per-element orbital tables describing the external
+            projectors, passed through to the upstream builder. Required when
+            projection_type is ATOMIC_PROJECTORS_EXTERNAL.
         plot_wannier_functions: If True, plot Wannier functions as xsf files.
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
         retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.
@@ -195,6 +195,13 @@ def Wannierize(
         Dict with outputs from the Wannier90WorkChain.
     """
     validate_parallelization(parallelization)
+
+    if exclude_semicore and projection_type == WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL:
+        raise ValueError(
+            "`exclude_semicore` is not supported with external projectors: the "
+            "upstream semicore selection reads a per-orbital `label` the "
+            "synthesized projector tables do not carry."
+        )
 
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
     # protocol builder's pseudo-family QueryBuilder can bind it.

@@ -361,3 +361,18 @@ def si_reference() -> dict:
     """Load the silicon reference data."""
     with open(Path(__file__).parent / "data" / "ui" / "si_ui_reference.json") as handle:
         return json.load(handle)
+
+
+def si_external_projector_tables() -> dict:
+    """Silicon external-projector orbital tables: s + p per atom, 8 in total.
+
+    The caller-synthesized shape the upstream builder consumes: one entry
+    per orbital with its ``l``, explicitly unfrozen — the upstream builder
+    stages every entry not marked ``frozen: False`` in ``atom_proj_frozen``.
+    """
+    return {
+        "Si": [
+            {"l": 0, "frozen": False},
+            {"l": 1, "frozen": False},
+        ]
+    }
