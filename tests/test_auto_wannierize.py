@@ -96,12 +96,32 @@ class TestGroupRestriction:
         assert groups_to_wannier_indices([[1, 2]], [1, 2]) == [[1, 2]]
 
 
+#: Resolved wannier90 parameters of a parent whole-block run (the protocol
+#: machinery's convergence set plus structural and disentanglement keys the
+#: sub-blocks must not inherit).
+_PARENT_W90_PARAMETERS = {
+    "num_iter": 4000,
+    "num_cg_steps": 200,
+    "conv_tol": 4.0e-7,
+    "conv_window": 3,
+    "dis_num_iter": 4000,
+    "dis_conv_tol": 4.0e-7,
+    "dis_froz_max": 10.0,
+    "num_wann": 28,
+    "num_bands": 28,
+    "mp_grid": [4, 4, 4],
+    "exclude_bands": [29, 30],
+    "auto_projections": True,
+}
+
+
 class TestSubblockParameters:
     def test_forced_keys_and_dis_stripping(self):
         params = _subblock_w90_parameters(
             4,
             [2, 2, 2],
             {"dis_froz_max": 10.0, "dis_num_iter": 200, "num_iter": 500, "exclude_bands": [9]},
+            _PARENT_W90_PARAMETERS,
         )
         assert params["num_wann"] == 4
         assert params["num_bands"] == 4
@@ -115,6 +135,55 @@ class TestSubblockParameters:
         assert "dis_froz_max" not in params
         assert "dis_num_iter" not in params
         assert "exclude_bands" not in params
+
+    def test_parent_convergence_is_inherited(self):
+        """The parent run's resolved convergence settings carry over."""
+        params = _subblock_w90_parameters(4, [2, 2, 2], None, _PARENT_W90_PARAMETERS)
+        assert params["num_iter"] == 4000
+        assert params["num_cg_steps"] == 200
+        assert params["conv_tol"] == 4.0e-7
+        assert params["conv_window"] == 3
+
+    def test_moderate_protocol_defaults_are_inherited(self):
+        """Pin the copy against the actual protocol machinery's parameters."""
+        from aiida_wannier90_workflows.workflows.base.wannier90 import Wannier90BaseWorkChain
+
+        parent = Wannier90BaseWorkChain.get_protocol_inputs(protocol="moderate")["wannier90"][
+            "parameters"
+        ]
+        params = _subblock_w90_parameters(4, [2, 2, 2], None, parent)
+        assert params["num_iter"] == 4000
+        assert params["num_cg_steps"] == 200
+        assert params["conv_window"] == 3
+        # ``conv_tol`` enters the resolved set only via the builder (from the
+        # per-atom meta-parameter), so the raw protocol inputs lack it and
+        # the copy takes what is present.
+        assert "conv_tol" not in params
+        assert "dis_num_iter" not in params
+
+    def test_user_override_wins_over_the_parent(self):
+        params = _subblock_w90_parameters(4, [2, 2, 2], {"num_iter": 500}, _PARENT_W90_PARAMETERS)
+        assert params["num_iter"] == 500
+        assert params["num_cg_steps"] == 200
+
+    def test_parent_structural_and_dis_keys_do_not_leak(self):
+        """Only the convergence allowlist crosses; counts and dis_* stay."""
+        params = _subblock_w90_parameters(4, [2, 2, 2], None, _PARENT_W90_PARAMETERS)
+        assert params["num_wann"] == 4
+        assert params["num_bands"] == 4
+        assert params["mp_grid"] == [2, 2, 2]
+        assert "exclude_bands" not in params
+        assert "auto_projections" not in params
+        assert not any(key.startswith("dis_") for key in params)
+
+    def test_convergence_free_parent_raises(self):
+        """A parent set with no convergence keywords must fail, not no-op.
+
+        Proceeding silently would hand the sub-block runs exactly the
+        compiled-in wannier90 defaults this copy exists to prevent.
+        """
+        with pytest.raises(ValueError, match=r"none of the .* convergence keywords"):
+            _subblock_w90_parameters(4, [2, 2, 2], None, {"num_wann": 28, "dis_num_iter": 4000})
 
 
 # ----------------------------------------------------------------------
@@ -298,6 +367,17 @@ class TestPerBlockGraphBuild:
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
+        # The split's ``blocks`` namespace feeds the nested graph, and the
+        # whole-block run's resolved parameters cross on its explicit
+        # ``wannier90_parameters`` socket (the split's ``win_files``
+        # namespace is deliberately unconsumed).
+        links = rewann_task.inputs["split_blocks"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "split_wannierization"
+        links = rewann_task.inputs["parent_parameters"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "wannierize_whole_block"
+
         # The merged trio and the merged parsed Dict feed the outputs; the
         # plain-route-only folder keys stay unpopulated on the split route.
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
@@ -330,7 +410,7 @@ class TestRewannierizeSplitBlocksBuild:
     def test_one_wannier90_per_group_and_merge(
         self, auto_codes, silicon_structure, kmesh, aiida_profile
     ):
-        from aiida.orm import FolderData
+        from aiida.orm import Dict, FolderData
 
         from aiida_koopmans.workgraphs.auto_wannierize import RewannierizeSplitBlocks
 
@@ -342,6 +422,7 @@ class TestRewannierizeSplitBlocksBuild:
             codes=auto_codes,
             structure=silicon_structure,
             split_blocks=split_blocks,
+            parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
@@ -355,7 +436,8 @@ class TestRewannierizeSplitBlocksBuild:
 
         # Each re-wannierisation is preprocessing-free (local_input_folder
         # wired from the split's per-block folder) with num_bands == num_wann
-        # and no disentanglement keys; user minimisation settings propagate.
+        # and no disentanglement keys; the parent's convergence settings are
+        # inherited and user minimisation settings win over them.
         for i, w90_task in enumerate(sorted(w90_tasks, key=lambda t: t.name)):
             params = w90_task.inputs["parameters"].value
             params = params.get_dict() if hasattr(params, "get_dict") else dict(params)
@@ -366,9 +448,13 @@ class TestRewannierizeSplitBlocksBuild:
             assert params["write_u_matrices"] is True
             assert params["write_xyz"] is True
             assert params["num_iter"] == 500
+            assert params["num_cg_steps"] == 200
+            assert params["conv_tol"] == 4.0e-7
+            assert params["conv_window"] == 3
             assert not any(key.startswith("dis_") for key in params)
             folder = w90_task.inputs["local_input_folder"].value
             assert folder.uuid == split_blocks[f"block_{i}"].uuid
+        assert_graph_roundtrips(wg)
 
 
 # ----------------------------------------------------------------------

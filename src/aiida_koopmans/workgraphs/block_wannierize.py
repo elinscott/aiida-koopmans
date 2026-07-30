@@ -366,6 +366,12 @@ class WannierizeBlockOutputs(TypedDict):
       ``aiida_hr.dat``, ``aiida.chk``, ``aiida_u.mat``, ``aiida_centres.xyz``
       and, when the block disentangles, ``aiida_u_dis.mat``).
     * ``remote_folder`` -- the wannier90 ``RemoteData`` scratch.
+    * ``wannier90_parameters`` -- the resolved ``.win`` parameter Dict fed
+      to the wannier90 run (protocol defaults, user overrides and the
+      per-block structural keys merged). The split route consumes the
+      whole-block run's copy internally — it seeds the sub-block
+      convergence settings — and leaves the entry field unpopulated (the
+      set describes the pre-split run).
     """
 
     u_file: orm.SinglefileData
@@ -375,6 +381,7 @@ class WannierizeBlockOutputs(TypedDict):
     output_parameters: orm.Dict
     retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]
+    wannier90_parameters: NotRequired[orm.Dict]
 
 
 class CollectedWannierFunctions(TypedDict):
@@ -485,6 +492,20 @@ def extract_wannier_output_files(retrieved: orm.FolderData) -> dict:
         "hr_file": _single("aiida_hr.dat"),
         "centres_file": _single("aiida_centres.xyz"),
     }
+
+
+@task.calcfunction
+def emit_wannier90_parameters(parameters: orm.Dict) -> orm.Dict:
+    """Emit the block's merged wannier90 parameters as an explicit socket.
+
+    The merged set (protocol defaults, flat user overrides and the
+    per-block structural keys) both feeds the wannier90 step and rides out
+    of the graph as the ``wannier90_parameters`` output — a graph output
+    must be a task socket, and this hop makes the resolved Dict one, so
+    consumers (the split route's sub-block seeding) read the explicit
+    parameters instead of walking provenance.
+    """
+    return orm.Dict(parameters.get_dict())
 
 
 @task.graph
@@ -625,7 +646,13 @@ def WannierizeBlock(
         w90_params["mp_grid"] = mp_grid
     else:
         w90_params.pop("mp_grid", None)
-    w90["parameters"] = orm.Dict(w90_params)
+    # Route the merged parameters through a task so the same node both feeds
+    # the wannier90 step and rides out as the ``wannier90_parameters``
+    # output (a graph output must be a task socket).
+    w90_parameters = emit_wannier90_parameters(
+        parameters=w90_params, metadata={"call_link_label": "emit_wannier90_parameters"}
+    ).result
+    w90["parameters"] = w90_parameters
 
     # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic
     # blocks rely on ``projection_type`` alone (no ``projections`` key).
@@ -678,6 +705,7 @@ def WannierizeBlock(
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],
         output_parameters=outputs["wannier90"]["output_parameters"],
+        wannier90_parameters=w90_parameters,
     )
 
 

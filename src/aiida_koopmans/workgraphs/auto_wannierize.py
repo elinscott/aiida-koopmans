@@ -81,6 +81,17 @@ _DIS_KEYS = (
     "dis_conv_window",
 )
 
+#: Convergence keywords copied from the parent whole-block run's resolved
+#: wannier90 parameters into each split sub-block. The upstream protocol
+#: always sets them (``num_iter`` / ``num_cg_steps`` / ``conv_window`` per
+#: tier, ``conv_tol`` derived from its per-atom meta-parameter); without the
+#: copy the re-Wannierizations would run at wannier90's compiled-in defaults
+#: (``num_iter = 100``, ``num_cg_steps = 5``), which can leave a sub-block
+#: far from its spread minimum. The parent's ``dis_*`` keywords stay behind
+#: (``num_bands == num_wann``: nothing to disentangle), and the structural
+#: keys are rebuilt per block by :func:`_subblock_w90_parameters`.
+_PARENT_CONVERGENCE_KEYS = ("num_iter", "num_cg_steps", "conv_tol", "conv_window")
+
 #: Fallback ``metadata.options`` for the raw CalcJobs this module creates
 #: directly (the protocol-built steps carry their own defaults). A CalcJob
 #: cannot run without ``resources``; MPI behaviour follows the code node.
@@ -274,20 +285,38 @@ def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
 
 
 def _subblock_w90_parameters(
-    num_wann: int, mp_grid: list[int], wannier90_overrides: dict[str, Any] | None
+    num_wann: int,
+    mp_grid: list[int],
+    wannier90_overrides: dict[str, Any] | None,
+    parent_parameters: dict[str, Any],
 ) -> dict[str, Any]:
     """Wannier90 parameters for re-Wannierising one split sub-block.
 
     The sub-block reads the split ``.amn`` / ``.mmn`` / ``.eig`` directly
     (``num_bands == num_wann``, no preprocessing, no disentanglement, no
     band exclusion — the split files already cover exactly the group's
-    bands). User ``.win`` keywords propagate, minus the per-block counts
-    and the disentanglement set.
+    bands). The convergence settings are copied from ``parent_parameters``
+    (the parent whole-block run's resolved set, carrying the protocol tier
+    and any user overrides); explicit user ``.win`` keywords then
+    propagate on top, minus the per-block counts and the disentanglement
+    set. A parent carrying none of the convergence keywords raises:
+    silently proceeding would hand the run wannier90's compiled-in
+    defaults.
     """
-    dropped = (*_DIS_KEYS, "num_wann", "num_bands", "exclude_bands", "projections")
-    params = {
-        key: value for key, value in (wannier90_overrides or {}).items() if key not in dropped
+    convergence = {
+        key: parent_parameters[key] for key in _PARENT_CONVERGENCE_KEYS if key in parent_parameters
     }
+    if not convergence:
+        raise ValueError(
+            "The parent Wannierization's resolved parameters carry none of the "
+            f"expected convergence keywords {_PARENT_CONVERGENCE_KEYS}; refusing "
+            "to fall back to wannier90's compiled-in defaults."
+        )
+    dropped = (*_DIS_KEYS, "num_wann", "num_bands", "exclude_bands", "projections")
+    params = dict(convergence)
+    params.update(
+        {key: value for key, value in (wannier90_overrides or {}).items() if key not in dropped}
+    )
     params.update(
         num_wann=int(num_wann),
         num_bands=int(num_wann),
@@ -325,6 +354,7 @@ def RewannierizeSplitBlocks(
     codes: Codes,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
+    parent_parameters: orm.Dict,
     group_sizes: list[int],
     kpoints: orm.KpointsData,
     mp_grid: list[int],
@@ -339,17 +369,29 @@ def RewannierizeSplitBlocks(
     ``{"block_0": FolderData, ...}`` dict and the per-group fan-out is a
     native ``for`` loop. Each sub-block runs a preprocessing-free
     ``Wannier90Calculation`` on the split ``.amn``/``.mmn``/``.eig``
-    (``local_input_folder``), then the ``_u.mat`` / ``_hr.dat`` /
-    ``_centres.xyz`` products are merged block-diagonally and the parsed
-    per-group ``output_parameters`` are concatenated in group order.
+    (``local_input_folder``), its convergence settings copied from
+    ``parent_parameters`` (the whole-block run's resolved wannier90
+    parameters) with the caller's overrides on top; then the ``_u.mat``
+    / ``_hr.dat`` / ``_centres.xyz`` products are merged block-diagonally
+    and the parsed per-group ``output_parameters`` are concatenated in
+    group order.
     """
+    # Deferred bodies receive the resolved ``orm.Dict`` node; eager builds
+    # hand the graph input over as a plain mapping already.
+    parent_w90_parameters = (
+        parent_parameters.get_dict()
+        if hasattr(parent_parameters, "get_dict")
+        else dict(parent_parameters)
+    )
     subblock_retrieved: dict[str, Any] = {}
     subblock_parameters: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
         rewannierized = Wannier90CalcStep(
             code=codes["wannier90"],
             structure=structure,
-            parameters=_subblock_w90_parameters(int(num_wann), mp_grid, wannier90_overrides),
+            parameters=_subblock_w90_parameters(
+                int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
+            ),
             kpoints=kpoints,
             local_input_folder=split_blocks[f"block_{i}"],
             metadata={
@@ -494,10 +536,15 @@ def WannierizeAndSplitBlock(
 
     # The split's ``blocks`` namespace keys only exist once it has run, so
     # the re-Wannierisation consumes the whole namespace in a nested graph.
+    # The split also emits per-block ``win_files``; they are deliberately
+    # unconsumed — WannierIO.jl substitutes its own convergence values in
+    # them, so the parent run's resolved parameters are the trustworthy
+    # source for the sub-block settings.
     rewannierized = RewannierizeSplitBlocks(
         codes=codes,
         structure=structure,
         split_blocks=split["blocks"],
+        parent_parameters=whole["wannier90_parameters"],
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,
         mp_grid=mp_grid,

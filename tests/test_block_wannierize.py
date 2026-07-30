@@ -255,8 +255,8 @@ class TestSplitMode:
         populated-ness is read off the links.
         """
         # Every entry declares the full flat contract; the plain-route-only
-        # folder keys (retrieved / remote_folder) stay unpopulated at
-        # runtime on split entries.
+        # keys (retrieved / remote_folder / wannier90_parameters) stay
+        # unpopulated at runtime on split entries.
         expected_entry = {
             "u_file",
             "hr_file",
@@ -265,6 +265,7 @@ class TestSplitMode:
             "remote_folder",
             "nnkp_file",
             "output_parameters",
+            "wannier90_parameters",
         }
 
         wg = self._build_split(
@@ -654,9 +655,17 @@ class TestWannierizeBlockBuild:
 
     @staticmethod
     def _wannier_task(wg):
-        matches = [t for t in wg.tasks if "annier90" in t.name]
+        matches = [
+            t for t in wg.tasks if "annier90" in t.name and t.name != "emit_wannier90_parameters"
+        ]
         assert matches, f"no wannier90 task among {[t.name for t in wg.tasks]}"
         return matches[0]
+
+    @staticmethod
+    def _w90_parameters(wg):
+        """Return the merged parameters the emit task feeds the wannier90 step."""
+        value = wg.tasks["emit_wannier90_parameters"].inputs["parameters"].value
+        return value.get_dict() if hasattr(value, "get_dict") else dict(value)
 
     def test_parallelization_reaches_wannier_and_pw2wannier_steps(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
@@ -725,7 +734,7 @@ class TestWannierizeBlockBuild:
         )
         task = self._wannier_task(wg)
 
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert params["dis_froz_max"] == 10.6
         # A disentangling block keeps a user-supplied iteration budget instead
         # of the 5000-iteration default.
@@ -760,6 +769,21 @@ class TestWannierizeBlockBuild:
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
 
+    def test_parameters_ride_an_explicit_socket(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """One emitted Dict both feeds the wannier90 step and exits the graph."""
+        block = explicit_block("block_1", range(1, 5))
+        wg = self._build_block(
+            wannier_codes, silicon_structure, kmesh, nscf_scratch, block, fake_cutoffs_family.label
+        )
+        task = self._wannier_task(wg)
+        links = task.inputs["wannier90"]["wannier90"]["parameters"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "emit_wannier90_parameters"
+        assert wg.outputs["wannier90_parameters"]._links
+        assert_graph_roundtrips(wg)
+
     def test_no_overrides_defaults(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
@@ -774,9 +798,7 @@ class TestWannierizeBlockBuild:
             block,
             fake_cutoffs_family.label,
         )
-        task = self._wannier_task(wg)
-
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert params["num_wann"] == 4
         assert params["num_bands"] == 4
         assert params["exclude_bands"] == [9, 10]
@@ -810,7 +832,7 @@ class TestWannierizeBlockBuild:
             pseudo_family=fake_cutoffs_family.label,
         )
         task = self._wannier_task(wg)
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert params["auto_projections"] is True
         assert params["num_wann"] == 8
         assert params["num_bands"] == 8
@@ -922,7 +944,7 @@ class TestWannierizeBlockBuild:
             pseudo_family=fake_cutoffs_family.label,
         )
         task = self._wannier_task(wg)
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert "exclude_bands" not in params
         assert params["num_wann"] == 8
         inputpp = task.inputs["pw2wannier90"]["pw2wannier90"]["parameters"].value.get_dict()
@@ -947,8 +969,7 @@ class TestWannierizeBlockBuild:
             fake_cutoffs_family.label,
             overrides={"wannier90": {"exclude_bands": [9, 10]}},
         )
-        task = self._wannier_task(wg)
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert "exclude_bands" not in params
 
     def test_disentangling_block_gets_the_default_iteration_budget(
@@ -971,8 +992,7 @@ class TestWannierizeBlockBuild:
             block,
             fake_cutoffs_family.label,
         )
-        task = self._wannier_task(wg)
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert params["dis_num_iter"] == 5000
 
     def test_gauge_products_are_extracted(
