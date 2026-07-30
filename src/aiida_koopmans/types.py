@@ -187,9 +187,14 @@ class AlphaScreening(TypedDict):
     *optional* graph input: a namespace socket built from a TypedDict
     whose keys are required reports those keys missing whenever the
     whole payload is omitted, which would block every calculation that
-    does not supply per-orbital alphas. A payload that is supplied is
-    still all-or-nothing — :func:`_validate_alpha_screening` demands
-    both fields and rejects a partial one.
+    does not supply per-orbital alphas.
+
+    This shape also types the ``alphas`` *outputs*, whose members are
+    therefore no longer marked required either. Nothing is weakened in
+    practice: every producer emits both fields, and
+    ``_validate_alpha_screening`` rejects a partial payload wherever one
+    is consumed — a supplied payload is all-or-nothing regardless of
+    what the socket metadata asserts.
     """
 
     filled: NotRequired[dict[SpinChannel, list[float]]]
