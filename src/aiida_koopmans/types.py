@@ -298,7 +298,10 @@ class ProjectionBlockId(TypedDict):
       JSON storage rejects the nested ``projection_type`` enum — the
       registered top-level serializer for that enum (its ``EnumData``
       entry point) is never consulted for container internals. This
-      JSON-pure view needs no registry at all.
+      JSON-pure view needs no registry at all. Reported upstream as
+      https://github.com/aiidateam/aiida-pythonjob/issues/83 — once
+      containers consult the registry, this second reason falls away
+      and the view can be reconsidered.
     """
 
     label: str
