@@ -2250,9 +2250,12 @@ def _normalized_alpha_channels(alphas: AlphaScreening) -> dict[str, dict[str, li
     ``orm.Dict``) — only mapping-protocol access is used — and returns
     a plain ``{field: {channel_tag: [float, ...]}}`` copy.
     """
+    # The payload may be any mapping-protocol transit form, not just the
+    # declared TypedDict; widen for the duck-typed access below.
+    payload = cast("dict[str, Any]", alphas)
     norm: dict[str, dict[str, list[float]]] = {}
     for field in ("filled", "empty"):
-        per_spin = alphas.get(field) if hasattr(alphas, "get") else None
+        per_spin = payload.get(field) if hasattr(payload, "get") else None
         if per_spin is None:
             raise ValueError(
                 "Per-orbital alphas must be a mapping with 'filled' and 'empty' "
