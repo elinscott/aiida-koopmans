@@ -43,6 +43,7 @@ from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
     MLDescriptor,
+    MLMode,
     ParallelizationDict,
     SpinChannel,
     VariationalOrbitalType,
@@ -71,7 +72,7 @@ DecomposeTask = task(Pw2wannierDecomposeCalculation)
 _DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
 
 ML_DESCRIPTOR_TYPES = tuple(descriptor.value for descriptor in MLDescriptor)
-ML_MODES = ("none", "train", "test")
+ML_MODES = tuple(mode.value for mode in MLMode)
 
 
 class TrainOutputs(TypedDict):
@@ -188,7 +189,7 @@ def evaluate_screening_model(
 
 
 # ----------------------------------------------------------------------
-# Orbital-density descriptor via pw2wannier90 ``wan_mode='decompose'``
+# Power-spectrum descriptor via pw2wannier90 ``wan_mode='decompose'``
 # ----------------------------------------------------------------------
 #
 # The ``power_spectrum`` descriptor is built from a second
@@ -606,12 +607,12 @@ def TrajectoryWorkflow(
 
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
-    if ml_mode != "none":
+    if ml_mode != MLMode.NONE:
         if descriptor not in ML_DESCRIPTOR_TYPES:
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
         if descriptor == MLDescriptor.POWER_SPECTRUM:
             require_power_spectrum_route(init_orbitals, pw2wannier90_code)
-    if ml_mode == "test" and ml_model is None:
+    if ml_mode == MLMode.TEST and ml_model is None:
         raise ValueError("ml_mode='test' requires a trained `ml_model`")
 
     snapshot_outputs: dict[str, KoopmansDSCFOutputs] = {}
@@ -657,7 +658,7 @@ def TrajectoryWorkflow(
             alphas=dscf["alphas"],
         )
 
-        if ml_mode != "none":
+        if ml_mode != MLMode.NONE:
             # The whole SnapshotDataset output namespace becomes the entry
             # (one socket per key), mirroring the channel-keyed DFPT wiring.
             datasets[label] = build_snapshot_dataset(
@@ -669,7 +670,7 @@ def TrajectoryWorkflow(
                 parallelization=parallelization,
             )
 
-    if ml_mode == "train":
+    if ml_mode == MLMode.TRAIN:
         trained = train_screening_model(
             datasets=datasets,
             estimator=estimator,
@@ -678,7 +679,7 @@ def TrajectoryWorkflow(
         )
         model_output: dict = trained["model"]
         evaluation: dict = trained["metrics"]
-    elif ml_mode == "test":
+    elif ml_mode == MLMode.TEST:
         evaluated = evaluate_screening_model(datasets=datasets, model=ml_model)
         model_output = evaluated["model"]
         evaluation = evaluated["evaluation"]

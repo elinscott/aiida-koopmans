@@ -91,6 +91,19 @@ class SpinChannel(str, Enum):
         return 1 if self is SpinChannel.DOWN else 0
 
 
+class MLMode(str, Enum):
+    """What the trajectory workflow does with the machine-learning dataset.
+
+    ``NONE`` just runs the snapshots; ``TRAIN`` fits a screening model on
+    the computed alphas; ``TEST`` scores a previously trained model
+    against them. Prediction is not implemented.
+    """
+
+    NONE = "none"
+    TRAIN = "train"
+    TEST = "test"
+
+
 class MLDescriptor(str, Enum):
     """Descriptor feeding the machine-learned screening model.
 
