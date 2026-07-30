@@ -32,6 +32,7 @@ from __future__ import annotations
 import io
 from typing import Annotated, Any, TypedDict, cast
 
+import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
@@ -115,7 +116,7 @@ def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> Snapsh
     first, then empty — the same layout as the per-spin alpha lists).
 
     The ``SnapshotDataset`` return fans out into one output socket per key
-    (``descriptors`` / ``alphas`` / ``filled`` / ``labels``).
+    (``descriptors`` / ``alpha_targets`` / ``filled`` / ``labels``).
     """
     orbital_data = parameters.get("orbital_data") or {}
     self_hartrees = orbital_data.get("self-Hartree") or []
@@ -148,7 +149,7 @@ def train_screening_model(
         descriptor=descriptor,
     )
     predicted = ml_helpers.predict_screening(model, merged)
-    metrics = ml_helpers.evaluate_predictions(merged["alphas"], predicted)
+    metrics = ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted)
     return TrainOutputs(model=model, metrics=metrics)
 
 
@@ -175,10 +176,10 @@ def evaluate_screening_model(
     merged = ml_helpers.concatenate_datasets(datasets)
     predicted = ml_helpers.predict_screening(model, merged)
     evaluation = {
-        "metrics": ml_helpers.evaluate_predictions(merged["alphas"], predicted),
+        "metrics": ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted),
         "predictions": {
             "labels": merged["labels"],
-            "computed": merged["alphas"],
+            "computed": merged["alpha_targets"],
             "predicted": predicted,
         },
     }
@@ -295,6 +296,18 @@ class OrbitalDensityDatasetOutputs(TypedDict):
     dataset: SnapshotDataset
 
 
+def array_payload(value: Any, name: str) -> np.ndarray:
+    """Return the ``name`` array of *value*, node or already-deserialized.
+
+    A single-array ``orm.ArrayData`` socket reaches a task body as a bare
+    ``numpy`` array, because ``aiida-pythonjob`` deserializes it on the way
+    in; the node itself arrives when the callable is invoked directly.
+    """
+    if hasattr(value, "get_array"):
+        return value.get_array(name)
+    return np.asarray(value)
+
+
 @task
 def compute_block_descriptors(
     coefficients: orm.ArrayData,
@@ -309,8 +322,8 @@ def compute_block_descriptors(
     """
     n_max = int(output_parameters["n_max"])
     l_max = int(output_parameters["l_max"])
-    coeff = coefficients.get_array("coefficients")
-    group = group_coefficients.get_array("group_coefficients")
+    coeff = array_payload(coefficients, "coefficients")
+    group = array_payload(group_coefficients, "group_coefficients")
     power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
     out = orm.ArrayData()
     out.set_array("descriptors", power)
@@ -331,7 +344,8 @@ def align_block_descriptors(
     :func:`ml_helpers.assemble_orbital_density_dataset`).
     """
     descriptors_by_label = {
-        label: node.get_array("descriptors").tolist() for label, node in block_descriptors.items()
+        label: array_payload(node, "descriptors").tolist()
+        for label, node in block_descriptors.items()
     }
     return ml_helpers.assemble_orbital_density_dataset(
         descriptors_by_label, merge_groups, cast("AlphaScreening", alphas)

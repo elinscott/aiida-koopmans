@@ -335,7 +335,7 @@ def test_align_block_descriptors_orders_by_alphascreening(aiida_profile):
         alphas=alphas,
     )
     assert ds["descriptors"] == [[1.0], [2.0], [10.0]]
-    assert ds["alphas"] == [0.1, 0.2, 0.5]
+    assert ds["alpha_targets"] == [0.1, 0.2, 0.5]
     assert ds["filled"] == [True, True, False]
 
 
@@ -364,3 +364,60 @@ def test_require_wannier_route_inputs_accepts_complete_inputs():
 
     merge_groups = [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}]
     assert require_wannier_route_inputs(object(), {"occ": object()}, merge_groups) is None
+
+
+class TestArrayInputShapes:
+    """The descriptor tasks take an array socket whichever shape it arrives in.
+
+    ``aiida-pythonjob`` deserializes a single-array ``ArrayData`` input to a
+    bare ``numpy`` array before the body runs, so a task that only knew how
+    to unwrap a node died on the live decompose route.
+    """
+
+    @staticmethod
+    def _output_parameters():
+        return {"n_max": 2, "l_max": 1}
+
+    def test_compute_block_descriptors_accepts_bare_arrays(self):
+        import numpy as np
+
+        from aiida_koopmans.workgraphs.ml import compute_block_descriptors
+
+        coefficients = np.arange(16, dtype=float).reshape(2, 8)
+        group = np.arange(16, dtype=float).reshape(2, 8) + 0.5
+        out = compute_block_descriptors._callable(
+            coefficients=coefficients,
+            group_coefficients=group,
+            output_parameters=self._output_parameters(),
+        )
+        assert out.get_array("descriptors").shape[0] == 2
+
+    def test_compute_block_descriptors_accepts_nodes(self, aiida_profile):
+        import numpy as np
+        from aiida import orm
+
+        from aiida_koopmans.workgraphs.ml import compute_block_descriptors
+
+        coefficients = orm.ArrayData()
+        coefficients.set_array("coefficients", np.arange(16, dtype=float).reshape(2, 8))
+        group = orm.ArrayData()
+        group.set_array("group_coefficients", np.arange(16, dtype=float).reshape(2, 8) + 0.5)
+        out = compute_block_descriptors._callable(
+            coefficients=coefficients,
+            group_coefficients=group,
+            output_parameters=self._output_parameters(),
+        )
+        assert out.get_array("descriptors").shape[0] == 2
+
+    def test_align_block_descriptors_accepts_bare_arrays(self):
+        import numpy as np
+
+        from aiida_koopmans.workgraphs.ml import align_block_descriptors
+
+        dataset = align_block_descriptors._callable(
+            block_descriptors={"occ": np.array([[1.0, 2.0]])},
+            merge_groups=[{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}],
+            alphas={"filled": {"none": [0.6]}, "empty": {}},
+        )
+        assert dataset["descriptors"] == [[1.0, 2.0]]
+        assert dataset["alpha_targets"] == [0.6]
