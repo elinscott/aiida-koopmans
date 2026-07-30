@@ -18,8 +18,10 @@ Scope notes:
 * **Modes**: ``train`` (fit a model on the computed alphas) and ``test``
   (compare a previously trained model's predictions against freshly
   computed alphas). ``predict`` mode (inject predicted alphas and skip the
-  Delta-SCF refinement) is blocked on the ``KoopmansDSCFWorkflow``
-  interface, which accepts only a scalar ``initial_alpha``.
+  Delta-SCF refinement) is not wired here yet — the
+  ``KoopmansDSCFWorkflow`` side is ready (per-orbital ``alphas`` +
+  ``calculate_alpha=False``), but this workflow does not build the
+  per-snapshot predictions to feed it.
 * **Alphas**: read directly from ``KoopmansDSCFOutputs["alphas"]`` — the
   converged screening parameters the final KI consumed, exposed at the
   DSCF workflow level.

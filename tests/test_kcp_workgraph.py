@@ -21,6 +21,10 @@ from aiida_koopmans.workgraphs.kcp import (
     _build_n_plus_1_parameters,
     _build_orbdep_parameters,
     _build_print_parameters,
+    _ks_variational_overlay,
+    _stage_wannier_seed,
+    _validate_alpha_inputs,
+    _validate_alpha_screening,
     _validate_scope,
 )
 
@@ -128,6 +132,138 @@ class TestValidateScope:
                 fix_spin_contamination=False,
                 structure=periodic_ozone_structure,
             )
+
+
+# ----------------------------------------------------------------------
+# Per-orbital alpha injection — input-consistency and payload validators
+# ----------------------------------------------------------------------
+
+
+_OZONE_ALPHAS = {
+    "filled": {"none": [0.6] * 9},
+    "empty": {"none": [0.7]},
+}
+
+
+class TestValidateAlphaScreening:
+    def test_closed_shell_payload_passes(self):
+        _validate_alpha_screening(_OZONE_ALPHAS, nelup=9, neldw=9, nbnd=10)
+
+    def test_spin_polarized_payload_passes(self):
+        _validate_alpha_screening(
+            {
+                "filled": {"up": [0.6] * 7, "down": [0.6] * 5},
+                "empty": {"up": [0.7], "down": [0.7] * 3},
+            },
+            nelup=7,
+            neldw=5,
+            nbnd=8,
+        )
+
+    def test_enum_keys_accepted(self):
+        # ``AlphaScreening`` declares ``dict[SpinChannel, ...]``; enum keys
+        # must validate the same as their post-round-trip string form.
+        _validate_alpha_screening(
+            {
+                "filled": {SpinChannel.NONE: [0.6] * 9},
+                "empty": {SpinChannel.NONE: [0.7]},
+            },
+            nelup=9,
+            neldw=9,
+            nbnd=10,
+        )
+
+    def test_missing_field_raises(self):
+        with pytest.raises(ValueError, match="missing 'empty'"):
+            _validate_alpha_screening({"filled": {"none": [0.6]}})
+
+    def test_unknown_channel_raises(self):
+        with pytest.raises(ValueError, match="Unknown spin channel 'spinor'"):
+            _validate_alpha_screening({"filled": {"spinor": [0.6]}, "empty": {"spinor": [0.7]}})
+
+    def test_mixed_channels_raise(self):
+        with pytest.raises(ValueError, match="mix"):
+            _validate_alpha_screening({"filled": {"none": [0.6]}, "empty": {"up": [0.7]}})
+
+    def test_non_numeric_entries_raise(self):
+        with pytest.raises(ValueError, match="list of numbers"):
+            _validate_alpha_screening({"filled": {"none": ["high"]}, "empty": {"none": []}})
+
+    def test_wrong_filled_count_raises(self):
+        with pytest.raises(ValueError, match=r"has 8 entries but .* 9 filled"):
+            _validate_alpha_screening(
+                {"filled": {"none": [0.6] * 8}, "empty": {"none": [0.7]}},
+                nelup=9,
+                neldw=9,
+                nbnd=10,
+            )
+
+    def test_single_channel_open_shell_raises(self):
+        with pytest.raises(ValueError, match="closed shell"):
+            _validate_alpha_screening(
+                {"filled": {"none": [0.6] * 7}, "empty": {"none": [0.7]}},
+                nelup=7,
+                neldw=5,
+                nbnd=8,
+            )
+
+    def test_absent_channel_allowed_when_empty_manifold_is_empty(self):
+        # nbnd == nelup: no empty orbitals, so the gather legitimately
+        # produces no ``empty`` channel at all.
+        _validate_alpha_screening(
+            {"filled": {"none": [0.6] * 9}, "empty": {}}, nelup=9, neldw=9, nbnd=9
+        )
+
+    def test_counts_skipped_when_unknown(self):
+        # Wrong lengths pass the structure-only check (counts unknown at
+        # the outer build); they are caught downstream where the electron
+        # counts are concrete.
+        _validate_alpha_screening({"filled": {"none": [0.6] * 3}, "empty": {"none": []}})
+
+
+class TestValidateAlphaInputs:
+    def test_scalar_only_passes(self):
+        _validate_alpha_inputs(initial_alpha=0.6, alphas=None, calculate_alpha=True)
+
+    def test_per_orbital_only_passes(self):
+        _validate_alpha_inputs(initial_alpha=None, alphas=_OZONE_ALPHAS, calculate_alpha=True)
+        _validate_alpha_inputs(initial_alpha=None, alphas=_OZONE_ALPHAS, calculate_alpha=False)
+
+    def test_scalar_and_per_orbital_conflict(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            _validate_alpha_inputs(initial_alpha=0.6, alphas=_OZONE_ALPHAS, calculate_alpha=True)
+
+    def test_skip_without_per_orbital_alphas_raises(self):
+        with pytest.raises(ValueError, match="calculate_alpha=False"):
+            _validate_alpha_inputs(initial_alpha=None, alphas=None, calculate_alpha=False)
+        with pytest.raises(ValueError, match="calculate_alpha=False"):
+            _validate_alpha_inputs(initial_alpha=0.6, alphas=None, calculate_alpha=False)
+
+
+class TestVariationalSeedHelpers:
+    def test_ks_overlay_nspin2(self):
+        assert _ks_variational_overlay(2) == {
+            "evc1": "evc01",
+            "evc2": "evc02",
+            "evc_empty1": "evc0_empty1",
+            "evc_empty2": "evc0_empty2",
+        }
+
+    def test_ks_overlay_nspin1(self):
+        assert _ks_variational_overlay(1) == {"evc1": "evc01", "evc_empty1": "evc0_empty1"}
+
+    def test_stage_wannier_seed_requires_both_files(self):
+        parameters = {"SYSTEM": {}}
+        assert _stage_wannier_seed(parameters, None, None) is None
+        assert _stage_wannier_seed(parameters, object(), None) is None
+        assert "restart_from_wannier_pwscf" not in parameters["SYSTEM"]
+
+    def test_stage_wannier_seed_switches_restart_flag(self):
+        parameters = {"SYSTEM": {}}
+        evc1, evc2 = object(), object()
+        staged = _stage_wannier_seed(parameters, evc1, evc2)
+        assert staged == {"evc_occupied1": evc1, "evc_occupied2": evc2}
+        assert parameters["SYSTEM"]["restart_from_wannier_pwscf"] is True
 
 
 # ----------------------------------------------------------------------
@@ -729,25 +865,29 @@ class TestKoopmansDSCFGraphBuild:
     surfaces without needing a real kcp.x install.
     """
 
-    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, spin_polarized=False):
+    def _build_wg(
+        self, *, ozone_structure, kcp_code, ozone_pseudo_family, spin_polarized=False, **overrides
+    ):
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
-        return KoopmansDSCFWorkflow.build(
-            code=kcp_code,
-            structure=ozone_structure,
-            pseudo_family=ozone_pseudo_family,
-            ecutwfc=65.0,
-            ecutrho=260.0,
-            nbnd=10,
-            nspin=2,
-            tot_magnetization=None,
-            correction=Correction.KI,
-            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
-            alpha_numsteps=1,
-            fix_spin_contamination=False,
-            initial_alpha=0.6,
-            spin_polarized=spin_polarized,
-        )
+        inputs = {
+            "code": kcp_code,
+            "structure": ozone_structure,
+            "pseudo_family": ozone_pseudo_family,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "nspin": 2,
+            "tot_magnetization": None,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+            "alpha_numsteps": 1,
+            "fix_spin_contamination": False,
+            "initial_alpha": 0.6,
+            "spin_polarized": spin_polarized,
+        }
+        inputs.update(overrides)
+        return KoopmansDSCFWorkflow.build(**inputs)
 
     def _all_link_labels(self, wg) -> list[str]:
         """Walk every task (recursing into sub-graphs) and collect call_link_labels."""
@@ -1361,6 +1501,151 @@ class TestKoopmansDSCFGraphBuild:
         assert set(closed["filled"]) == {SpinChannel.NONE}
         assert len(closed["filled"][SpinChannel.NONE]) == 9
         assert len(closed["empty"][SpinChannel.NONE]) == 1
+
+    def test_injected_alphas_skip_screening_loop(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``calculate_alpha=False`` + per-orbital alphas: no screening at all.
+
+        The graph must contain no ``ComputeScreeningParameters`` (hence no
+        trial KI and no Delta-SCF fan-out); the final KI is still present
+        and the ``alphas`` output is fed by the ``injected_alphas`` echo
+        task (a graph cannot echo a raw input as an output).
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            initial_alpha=None,
+            alphas=_OZONE_ALPHAS,
+            calculate_alpha=False,
+        )
+        labels = self._all_link_labels(wg)
+        assert not any("ComputeScreeningParameters" in s for s in labels), labels
+        assert any("RunFinalKI" in s for s in labels), labels
+        assert any("injected_alphas" in s for s in labels), labels
+        # The DFT init chain still runs (the final KI parents on it).
+        assert any("dft_init" in s for s in labels), labels
+
+    def test_injected_alphas_seed_refinement_loop(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``calculate_alpha=True`` + per-orbital alphas: loop runs, seeded.
+
+        The screening sub-graph is still built, but its uniform-alpha
+        generator must be absent — the caller's per-orbital payload feeds
+        the first iteration directly.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            initial_alpha=None,
+            alphas=_OZONE_ALPHAS,
+            calculate_alpha=True,
+        )
+        labels = self._all_link_labels(wg)
+        assert any("ComputeScreeningParameters" in s for s in labels), labels
+        assert not any("injected_alphas" in s for s in labels), labels
+
+        # The generator suppression is only visible when the sub-graph's
+        # deferred body runs — build it directly with concrete inputs.
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import ComputeScreeningParameters
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = ComputeScreeningParameters.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            initial_alphas=_OZONE_ALPHAS,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            dft_remote=dummy_remote,
+        )
+        sub_labels = self._all_link_labels(sub_wg)
+        assert not any("generate_alphas" in s for s in sub_labels), sub_labels
+        assert any("ScreeningIteration" in s for s in sub_labels), sub_labels
+
+    def test_scalar_and_per_orbital_alphas_conflict_at_build(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                initial_alpha=0.6,
+                alphas=_OZONE_ALPHAS,
+            )
+
+    def test_skip_screening_without_alphas_raises_at_build(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(ValueError, match="calculate_alpha=False"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                calculate_alpha=False,
+            )
+
+    def test_run_final_ki_rejects_count_mismatch(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Injected alphas that don't match the manifolds fail loudly.
+
+        ``RunFinalKI``'s body re-validates the payload against the
+        concrete electron counts — a wrong-length channel must raise a
+        named mismatch instead of writing a corrupt ``file_alpharef``.
+        """
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import RunFinalKI
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        with pytest.raises(ValueError, match=r"has 8 entries but .* 9 filled"):
+            RunFinalKI.build(
+                code=kcp_code,
+                structure=ozone_structure,
+                pseudos=pseudos,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+                nspin=2,
+                nelec=18,
+                nelup=9,
+                neldw=9,
+                correction=Correction.KI,
+                alphas={"filled": {"none": [0.6] * 8}, "empty": {"none": [0.7]}},
+                parent_folder=dummy_remote,
+            )
 
     def test_spin_polarized_init_is_single_step(
         self, ozone_structure, kcp_code, ozone_pseudo_family

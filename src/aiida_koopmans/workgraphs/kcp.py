@@ -11,9 +11,11 @@ supercell kcp.x; see ``mlwf_init.py``). Unsupported combinations raise
 
 ``KoopmansDSCFWorkflow`` runs a DFT initialisation, a trial KI pass, a
 per-orbital Delta-SCF loop that refines the screening parameters, and a
-final KI with the converged alphas. Spin-symmetrisation
-(``fix_spin_contamination=True``) is not yet supported and is rejected at
-build time.
+final KI with the converged alphas. Caller-supplied per-orbital ``alphas``
+either seed the refinement loop or — with ``calculate_alpha=False`` —
+replace it entirely (the final KI consumes them verbatim).
+Spin-symmetrisation (``fix_spin_contamination=True``) is not yet supported
+and is rejected at build time.
 """
 
 from __future__ import annotations
@@ -92,8 +94,10 @@ class KoopmansDSCFOutputs(TypedDict):
     """A full KI-DSCF workflow's outputs, with the Wannier-route-only extras.
 
     The always-present sockets are :class:`KIFinalOutputs` plus ``alphas`` —
-    the converged per-orbital screening parameters the final KI consumed (in
-    the :class:`~aiida_koopmans.types.AlphaScreening` shape). Exposed at the
+    the per-orbital screening parameters the final KI consumed (in the
+    :class:`~aiida_koopmans.types.AlphaScreening` shape): the converged
+    Delta-SCF results, or the caller-injected values when
+    ``calculate_alpha=False`` skipped the refinement loop. Exposed at the
     workflow level so consumers (e.g. the ML trajectory workflow's training
     targets) read them directly instead of walking provenance. ``alphas`` is
     an *input* of the final KI — :func:`RunFinalKI` cannot echo a graph input
@@ -840,7 +844,9 @@ def KoopmansDSCFWorkflow(
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
-    initial_alpha: float = 0.6,
+    initial_alpha: float | None = None,
+    alphas: AlphaScreening | None = None,
+    calculate_alpha: bool = True,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     codes: Codes | None = None,
@@ -863,6 +869,18 @@ def KoopmansDSCFWorkflow(
     filled orbital and one ``dft_n+1_dummy → pz_print → dft_n+1``
     triplet for each empty orbital) refines every alpha; a final KI
     then re-runs with the converged alphas.
+
+    The starting screening parameters come from exactly one of two
+    mutually exclusive inputs: the uniform scalar ``initial_alpha``
+    (0.6 when neither is given) or the per-orbital ``alphas`` (an
+    :class:`~aiida_koopmans.types.AlphaScreening` payload, per spin
+    channel with the filled and empty manifolds separate — the same
+    layout the workflow's own ``alphas`` output uses). With
+    ``calculate_alpha=False`` the refinement loop is skipped entirely:
+    no trial KI, no Delta-SCF fan-out — the final KI parents directly
+    on the DFT init (taking over the trial's variational-orbital
+    seeding) and applies the caller-supplied per-orbital ``alphas``
+    verbatim, which that switch therefore requires.
 
     Two initialisation routes select on ``init_orbitals``:
 
@@ -901,6 +919,11 @@ def KoopmansDSCFWorkflow(
         kgrid=kgrid,
         kpoints=kpoints,
         codes=codes,
+    )
+    _validate_alpha_inputs(
+        initial_alpha=initial_alpha,
+        alphas=alphas,
+        calculate_alpha=calculate_alpha,
     )
 
     dft_overrides = overrides.get("dft") if overrides else None
@@ -1103,39 +1126,64 @@ def KoopmansDSCFWorkflow(
         )
         dft_remote = dft["remote_folder"]
 
-    screening = ComputeScreeningParameters(
-        code=code,
-        structure=run_structure,
-        pseudos=pseudos,
-        ecutwfc=ecutwfc,
-        ecutrho=ecutrho,
-        nbnd=run_nbnd,
-        nspin=nspin,
-        nelec=nelec,
-        nelup=nelup,
-        neldw=neldw,
-        tot_magnetization=run_tot_magnetization,
-        initial_alpha=initial_alpha,
-        correction=correction,
-        init_orbitals=init_orbitals,
-        spin_polarized=spin_polarized,
-        alpha_numsteps=alpha_numsteps,
-        self_hartree_tol=orbital_groups_self_hartree_tol,
-        dft_remote=dft_remote,
-        initial_evc_occupied1=initial_evc_occupied1,
-        initial_evc_occupied2=initial_evc_occupied2,
-        mp_correction=mp_correction,
-        eps_inf=eps_inf,
-        overrides=overrides,
-        parallelization=parallelization,
-    )
+    if calculate_alpha:
+        screening = ComputeScreeningParameters(
+            code=code,
+            structure=run_structure,
+            pseudos=pseudos,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
+            nbnd=run_nbnd,
+            nspin=nspin,
+            nelec=nelec,
+            nelup=nelup,
+            neldw=neldw,
+            tot_magnetization=run_tot_magnetization,
+            initial_alpha=0.6 if initial_alpha is None else initial_alpha,
+            initial_alphas=alphas,
+            correction=correction,
+            init_orbitals=init_orbitals,
+            spin_polarized=spin_polarized,
+            alpha_numsteps=alpha_numsteps,
+            self_hartree_tol=orbital_groups_self_hartree_tol,
+            dft_remote=dft_remote,
+            initial_evc_occupied1=initial_evc_occupied1,
+            initial_evc_occupied2=initial_evc_occupied2,
+            mp_correction=mp_correction,
+            eps_inf=eps_inf,
+            overrides=overrides,
+            parallelization=parallelization,
+        )
+        # The final KI restarts from the *last iteration's* trial KI save
+        # so it inherits the converged variational orbital basis (not the
+        # bare DFT save); no overlay / staging is needed there.
+        final_alphas = screening["alphas"]
+        final_parent = screening["trial_remote"]
+        final_overlay = None
+        final_evc_occupied1 = None
+        final_evc_occupied2 = None
+        first_orbdep_run = False
+    else:
+        # Screening skipped: the final KI is the first orbital-dependent
+        # run after the DFT init, so it takes over the trial KI's seeding
+        # role — parented on the init save with the KS-as-variational
+        # overlay (molecular route) or the folded Wannier wavefunction
+        # staging (periodic route) — and applies the caller-supplied
+        # per-orbital alphas verbatim.
+        final_alphas = alphas
+        final_parent = dft_remote
+        final_overlay = (
+            _ks_variational_overlay(nspin)
+            if init_orbitals == VariationalOrbitalType.KOHN_SHAM
+            else None
+        )
+        final_evc_occupied1 = initial_evc_occupied1
+        final_evc_occupied2 = initial_evc_occupied2
+        first_orbdep_run = True
 
     # ------------------------------------------------------------------
-    # Final KI: applies the converged screening parameters to produce
-    # the Koopmans-corrected spectrum. Restarts from the *last
-    # iteration's* trial KI save (``screening["trial_remote"]``) so it
-    # inherits the converged variational orbital basis (not the bare DFT
-    # save).
+    # Final KI: applies the screening parameters to produce the
+    # Koopmans-corrected spectrum.
     #
     # Built via a ``RunFinalKI`` @task.graph wrapper rather than inline
     # ``KcpStep(...)`` because the parameter-builder arithmetic
@@ -1143,10 +1191,9 @@ def KoopmansDSCFWorkflow(
     # Here at the workflow level ``nelec`` is a socket (output of
     # ``count_electrons_task``); the @task.graph boundary unwraps it.
     #
-    # ``alphas`` and ``parent_folder`` are wired explicitly from the
-    # ``screening`` outputs at the call site so the provenance graph
-    # shows that the final KI consumes the converged DSCF screening
-    # parameters.
+    # ``alphas`` and ``parent_folder`` are wired explicitly at the call
+    # site so the provenance graph shows what the final KI consumes:
+    # the converged DSCF screening parameters, or the injected ones.
     # ------------------------------------------------------------------
     ki_final = RunFinalKI(
         code=code,
@@ -1161,18 +1208,31 @@ def KoopmansDSCFWorkflow(
         neldw=neldw,
         tot_magnetization=run_tot_magnetization,
         correction=correction,
-        alphas=screening["alphas"],
-        parent_folder=screening["trial_remote"],
+        alphas=final_alphas,
+        parent_folder=final_parent,
+        variational_orbital_overlays=final_overlay,
+        initial_evc_occupied1=final_evc_occupied1,
+        initial_evc_occupied2=final_evc_occupied2,
+        is_first_iteration=first_orbdep_run,
         overrides=overrides.get("ki") if overrides else None,
         parallelization=parallelization,
     )
+    if calculate_alpha:
+        out_alphas = screening["alphas"]
+    else:
+        # A graph cannot echo a raw input as an output; route the injected
+        # alphas through a task so the ``alphas`` output is a socket.
+        out_alphas = echo_alpha_screening(
+            alphas=alphas,
+            metadata={"call_link_label": "injected_alphas"},
+        )
     outputs = KoopmansDSCFOutputs(
         parameters=ki_final["parameters"],
         eigenvalues=ki_final["eigenvalues"],
         lambdas=ki_final["lambdas"],
         bare_lambdas=ki_final["bare_lambdas"],
         remote_folder=ki_final["remote_folder"],
-        alphas=screening["alphas"],
+        alphas=out_alphas,
     )
     # The Wannier-route-only sockets: present only when the descriptor route
     # can be fed (the molecular Kohn-Sham route runs no wannierization).
@@ -1200,10 +1260,14 @@ def RunFinalKI(
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
+    variational_orbital_overlays: dict[str, str] | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
+    is_first_iteration: bool = False,
     overrides: KcpNamelistOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> KIFinalOutputs:
-    """Apply the converged screening parameters via a final KI run.
+    """Apply the screening parameters via a final KI run.
 
     Thin wrapper around a single ``KcpCalculation``. Exists as its own
     ``@task.graph`` so the parameter-builder arithmetic (``conv_thr =
@@ -1213,11 +1277,25 @@ def RunFinalKI(
     socket-valued parameters dict can't be serialised into the
     ``KcpCalculation``'s attributes.
 
+    When the screening loop is skipped (``calculate_alpha=False``) this
+    run parents directly on the DFT init and takes over the trial KI's
+    variational-orbital seeding: ``variational_orbital_overlays``
+    carries the KS-as-variational overlay (molecular route),
+    ``initial_evc_occupied{1,2}`` the folded Wannier staging (periodic
+    route), and ``is_first_iteration=True`` marks it the first
+    orbital-dependent run after the init (KIPZ's molecular inner-loop
+    CG pass keys off it, matching the trial-KI convention).
+
     The wrapper's ``call_link_label`` and the inner CalcJob's
     ``ki_final`` are both prettified to ``"KI Final"`` in the progress
     table — the suppression rule in ``add_process_rows`` then collapses
     the wrapper-and-child pair into a single row.
     """
+    # Deferred body: the counts are concrete here, so caller-injected
+    # alphas whose per-channel lists don't match the manifolds fail with
+    # a named mismatch instead of a corrupt ``file_alpharef``.
+    if nelup is not None and neldw is not None:
+        _validate_alpha_screening(alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
     base = _kcp_base_inputs(
         structure,
         nspin=nspin,
@@ -1228,7 +1306,12 @@ def RunFinalKI(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    ki_parameters = _build_orbdep_parameters(base, nbnd=nbnd, correction=correction)
+    ki_parameters = _build_orbdep_parameters(
+        base, nbnd=nbnd, correction=correction, is_first_iteration=is_first_iteration
+    )
+    read_wavefunctions = _stage_wannier_seed(
+        ki_parameters, initial_evc_occupied1, initial_evc_occupied2
+    )
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
     final_inputs = _build_kcp_inputs(
@@ -1239,6 +1322,8 @@ def RunFinalKI(
         parallelization=parallelization,
         alphas=alphas,
         parent_folder=parent_folder,
+        variational_orbital_overlays=variational_orbital_overlays,
+        read_wavefunctions=read_wavefunctions,
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
     )
     final = KcpStep(**final_inputs)
@@ -1690,13 +1775,9 @@ def ScreeningIteration(
         correction=correction,
         is_first_iteration=is_first_iteration,
     )
-    read_wavefunctions: dict[str, Any] | None = None
-    if initial_evc_occupied1 is not None and initial_evc_occupied2 is not None:
-        ki_parameters["SYSTEM"]["restart_from_wannier_pwscf"] = True
-        read_wavefunctions = {
-            "evc_occupied1": initial_evc_occupied1,
-            "evc_occupied2": initial_evc_occupied2,
-        }
+    read_wavefunctions = _stage_wannier_seed(
+        ki_parameters, initial_evc_occupied1, initial_evc_occupied2
+    )
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
@@ -1897,6 +1978,7 @@ def ComputeScreeningParameters(
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
+    initial_alphas: AlphaScreening | None = None,
     spin_polarized: bool = False,
     alpha_numsteps: int = 1,
     alpha_conv_thr: float = 1.0e-3,
@@ -1918,8 +2000,9 @@ def ComputeScreeningParameters(
     computing them.
 
     The first iteration's trial KI restarts from ``dft_remote`` (the DFT
-    init's ``remote_folder``) with the uniform ``initial_alpha`` guess and
-    receives the KS-as-variational overlay (for ``init_orbitals='kohn-sham'``)
+    init's ``remote_folder``) with the starting alphas — the per-orbital
+    ``initial_alphas`` seed when given, else the uniform ``initial_alpha``
+    guess — and receives the KS-as-variational overlay (for ``init_orbitals='kohn-sham'``)
     or, for the periodic Wannier init, the folded ``evc_occupied{n}.dat``
     staging via ``initial_evc_occupied{1,2}``. Subsequent iterations restart
     from the previous iteration's trial KI save and consume the previous
@@ -1949,17 +2032,24 @@ def ComputeScreeningParameters(
     else:
         empty_overrides_dict = None
 
-    # Uniform-``initial_alpha`` payload feeds the first iteration's trial
-    # KI (and its empty-orbital ``pz_print``). Subsequent iterations
-    # consume the previous iteration's gathered alphas via the recursive
-    # ``RefineScreeningParameters`` below.
-    initial_alphas = generate_alphas(
-        alpha_guess=initial_alpha,
-        nbnd=nbnd,
-        nelup=nelup,
-        neldw=neldw,
-        spin_polarized=spin_polarized,
-    )
+    # Starting-alpha payload for the first iteration's trial KI (and its
+    # empty-orbital ``pz_print``): the caller's per-orbital seed when
+    # given, otherwise a uniform-``initial_alpha`` payload. Subsequent
+    # iterations consume the previous iteration's gathered alphas via the
+    # recursive ``RefineScreeningParameters`` below.
+    if initial_alphas is None:
+        initial_alphas = generate_alphas(
+            alpha_guess=initial_alpha,
+            nbnd=nbnd,
+            nelup=nelup,
+            neldw=neldw,
+            spin_polarized=spin_polarized,
+        )
+    else:
+        # Deferred body: the counts are concrete here, so a seed whose
+        # per-channel lists don't match the manifolds fails with a named
+        # mismatch instead of an IndexError deep in the fan-out.
+        _validate_alpha_screening(initial_alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
 
     base = _kcp_base_inputs(
         structure,
@@ -1980,13 +2070,7 @@ def ComputeScreeningParameters(
     # the primary parent walk.
     ks_overlay: dict[str, str] | None = None
     if init_orbitals == VariationalOrbitalType.KOHN_SHAM:
-        nspin_overlay_iter = (1, 2) if nspin == 2 else (1,)
-        # Stems only — the CalcJob appends ``.dat`` at submission time
-        # (AiiDA's attribute store rejects Dict keys containing ``.``).
-        ks_overlay = {
-            **{f"evc{i}": f"evc0{i}" for i in nspin_overlay_iter},
-            **{f"evc_empty{i}": f"evc0_empty{i}" for i in nspin_overlay_iter},
-        }
+        ks_overlay = _ks_variational_overlay(nspin)
 
     # ------------------------------------------------------------------
     # Alpha-refinement. The first iteration is unrolled here (it differs
@@ -2150,6 +2234,135 @@ def _validate_scope(
         )
 
 
+# Spin channels kcp.x's ``file_alpharef`` machinery understands. ``spinor``
+# (noncollinear) is a kcw.x-only regime and is rejected here.
+_ALPHA_CHANNELS = (SpinChannel.NONE.value, SpinChannel.UP.value, SpinChannel.DOWN.value)
+
+
+def _normalized_alpha_channels(alphas: AlphaScreening) -> dict[str, dict[str, list[float]]]:
+    """Normalize an :class:`AlphaScreening` payload, checking its shape.
+
+    ``filled`` and ``empty`` must both be present, each a mapping from a
+    kcp.x spin channel — ``'none'`` (closed-shell single channel) or
+    ``'up'`` / ``'down'`` (spin-polarized), never mixed — to a list of
+    numbers. Accepts the payload in any of its transit forms (plain
+    nested dict, ``TaggedValue``-proxied graph input, per-field
+    ``orm.Dict``) — only mapping-protocol access is used — and returns
+    a plain ``{field: {channel_tag: [float, ...]}}`` copy.
+    """
+    norm: dict[str, dict[str, list[float]]] = {}
+    for field in ("filled", "empty"):
+        per_spin = alphas.get(field) if hasattr(alphas, "get") else None
+        if per_spin is None:
+            raise ValueError(
+                "Per-orbital alphas must be a mapping with 'filled' and 'empty' "
+                f"entries (missing {field!r}); see aiida_koopmans.types.AlphaScreening."
+            )
+        norm[field] = {}
+        for key, values in dict(per_spin.items()).items():
+            try:
+                tag = SpinChannel(key).value
+            except ValueError:
+                tag = None
+            if tag not in _ALPHA_CHANNELS:
+                raise ValueError(
+                    f"Unknown spin channel {key!r} in alphas[{field!r}]; the kcp.x "
+                    f"stream accepts {list(_ALPHA_CHANNELS)}."
+                )
+            try:
+                norm[field][tag] = [float(v) for v in values]
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"alphas[{field!r}][{key!r}] must be a list of numbers, got {values!r}."
+                ) from exc
+    channels = set(norm["filled"]) | set(norm["empty"])
+    if SpinChannel.NONE.value in channels and len(channels) > 1:
+        raise ValueError(
+            "Per-orbital alphas mix the closed-shell 'none' channel with "
+            "per-spin 'up'/'down' channels; use one convention throughout."
+        )
+    return norm
+
+
+def _validate_alpha_screening(
+    alphas: AlphaScreening,
+    *,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    nbnd: int | None = None,
+) -> None:
+    """Check an :class:`AlphaScreening` payload's shape (and, when known, its counts).
+
+    The structural checks (:func:`_normalized_alpha_channels`) always
+    run. When the electron counts are known (``nelup`` / ``neldw`` /
+    ``nbnd`` all given) the per-channel list lengths are checked against
+    them; a channel may be absent only when its expected length is zero.
+    """
+    norm = _normalized_alpha_channels(alphas)
+    if nelup is None or neldw is None or nbnd is None:
+        return
+    channels = set(norm["filled"]) | set(norm["empty"])
+    if SpinChannel.NONE.value in channels or not channels:
+        if nelup != neldw:
+            raise ValueError(
+                "Single-channel ('none') alphas require a closed shell, but "
+                f"nelup={nelup} != neldw={neldw}; supply 'up'/'down' channels."
+            )
+        expected = {
+            ("filled", SpinChannel.NONE.value): nelup,
+            ("empty", SpinChannel.NONE.value): nbnd - nelup,
+        }
+    else:
+        expected = {
+            ("filled", SpinChannel.UP.value): nelup,
+            ("filled", SpinChannel.DOWN.value): neldw,
+            ("empty", SpinChannel.UP.value): nbnd - nelup,
+            ("empty", SpinChannel.DOWN.value): nbnd - neldw,
+        }
+    for (field, tag), count in expected.items():
+        got = len(norm[field].get(tag, []))
+        if got != count:
+            raise ValueError(
+                f"alphas[{field!r}][{tag!r}] has {got} entries but the "
+                f"calculation has {count} {field} orbitals in that channel "
+                f"(nelup={nelup}, neldw={neldw}, nbnd={nbnd})."
+            )
+
+
+def _validate_alpha_inputs(
+    *,
+    initial_alpha: float | None,
+    alphas: AlphaScreening | None,
+    calculate_alpha: bool,
+) -> None:
+    """Fail fast on inconsistent screening-parameter inputs.
+
+    ``initial_alpha`` (uniform scalar seed) and ``alphas`` (per-orbital
+    values) are mutually exclusive ways of choosing the starting alphas;
+    skipping the refinement loop (``calculate_alpha=False``) is only
+    meaningful when the per-orbital values to apply are given explicitly.
+    The per-orbital shape check runs here too, so malformed payloads fail
+    at build time; the count check (which needs the runtime electron
+    counts) happens downstream in :func:`RunFinalKI` /
+    :func:`ComputeScreeningParameters`.
+    """
+    if alphas is not None and initial_alpha is not None:
+        raise ValueError(
+            "Both a scalar initial_alpha and per-orbital alphas were given; "
+            "they are mutually exclusive ways of choosing the starting "
+            "screening parameters. Supply exactly one."
+        )
+    if not calculate_alpha and alphas is None:
+        raise ValueError(
+            "calculate_alpha=False skips the Delta-SCF screening loop, so the "
+            "per-orbital alphas to apply must be supplied via the `alphas` "
+            "input (a uniform scalar would be applied unrefined — spell that "
+            "out per orbital if it is really what you want)."
+        )
+    if alphas is not None:
+        _validate_alpha_screening(alphas)
+
+
 # ----------------------------------------------------------------------
 # Parameter builders
 # ----------------------------------------------------------------------
@@ -2216,6 +2429,46 @@ def _spin_swap_save_overlay(*, nspin: int) -> dict[str, str]:
         ("evc0_empty2", "evc0_empty1"),
     ]
     return dict(pairs)
+
+
+def _ks_variational_overlay(nspin: int) -> dict[str, str]:
+    """``variational_orbital_overlays`` payload for the KS-as-variational seed.
+
+    Maps the DFT init's ``evcN`` / ``evc_emptyN`` save files onto the
+    variational-orbital slots (``evc0N`` / ``evc0_emptyN``) of the first
+    orbital-dependent run parented on that save. Stems only — the CalcJob
+    appends ``.dat`` at submission time (AiiDA's attribute store rejects
+    Dict keys containing ``.``).
+    """
+    per_spin = (1, 2) if nspin == 2 else (1,)
+    return {
+        **{f"evc{i}": f"evc0{i}" for i in per_spin},
+        **{f"evc_empty{i}": f"evc0_empty{i}" for i in per_spin},
+    }
+
+
+def _stage_wannier_seed(
+    parameters: dict[str, Any],
+    evc_occupied1: orm.SinglefileData | None,
+    evc_occupied2: orm.SinglefileData | None,
+) -> dict[str, Any] | None:
+    """Wire the folded Wannier ``evc_occupied{n}.dat`` seed into a KI parameter dict.
+
+    When both files are given, switch ``SYSTEM.restart_from_wannier_pwscf``
+    on (mutating ``parameters`` in place) and return the
+    ``read_wavefunctions`` staging map for :func:`_build_kcp_inputs`;
+    otherwise leave the parameters untouched and return ``None``. Used by
+    whichever orbital-dependent run directly follows the Wannier-seeded
+    DFT init — the first trial KI, or the final KI when the screening
+    loop is skipped.
+    """
+    if evc_occupied1 is None or evc_occupied2 is None:
+        return None
+    parameters["SYSTEM"]["restart_from_wannier_pwscf"] = True
+    return {
+        "evc_occupied1": evc_occupied1,
+        "evc_occupied2": evc_occupied2,
+    }
 
 
 def _kcp_base_inputs(
