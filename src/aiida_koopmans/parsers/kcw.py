@@ -142,8 +142,8 @@ class KcwScreenParser(KcwBaseParser):
 
     (a trailing ``*`` on ``iwann*`` marks orbitals whose alpha was copied
     from another member of the same spread group -- they are included). The
-    ``alpha`` column becomes the ``alphas`` ``orm.List`` output; the other
-    columns land in ``output_parameters``.
+    ``alpha`` column becomes the ``alpha_values`` ``orm.List`` output; the
+    other columns land in ``output_parameters``.
     """
 
     def _parse_mode(self, stdout: str, results: dict[str, Any]):
@@ -176,7 +176,7 @@ class KcwScreenParser(KcwBaseParser):
 
         if not alphas:
             return self.exit_codes.ERROR_OUTPUT_ALPHAS_MISSING
-        self.out("alphas", orm.List(list=alphas))
+        self.out("alpha_values", orm.List(list=alphas))
         return None
 
 

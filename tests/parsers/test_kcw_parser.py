@@ -62,7 +62,7 @@ def test_screen_parser_extracts_alphas(
 
     assert calcfunction.is_finished_ok, calcfunction.exit_message
 
-    alphas = results["alphas"].get_list()
+    alphas = results["alpha_values"].get_list()
     # 8 orbitals: 4 occupied (spread group alpha 0.14357807) + 4 empty
     # (alpha 0.09079424) -- the ``iwann*`` group-copied lines included.
     assert len(alphas) == 8

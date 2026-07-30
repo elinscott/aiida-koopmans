@@ -335,10 +335,10 @@ class KcwScreenCalculation(KcwCalculation):
 
     @classmethod
     def define(cls, spec):
-        """Add the screen-specific ``alphas`` output."""
+        """Add the screen-specific ``alpha_values`` output."""
         super().define(spec)
         spec.output(
-            "alphas",
+            "alpha_values",
             valid_type=orm.List,
             required=True,
             help=(

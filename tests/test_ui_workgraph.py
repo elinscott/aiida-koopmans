@@ -90,4 +90,4 @@ class TestRun:
 
         dos = wg.tasks.compute_dos_from_bands.outputs
         assert np.allclose(dos.energies.value.get_list(), si_reference["dos_energies"], atol=1e-10)
-        assert np.allclose(dos.dos.value.get_list(), si_reference["dos_values"], atol=1e-8)
+        assert np.allclose(dos.dos_values.value.get_list(), si_reference["dos_values"], atol=1e-8)

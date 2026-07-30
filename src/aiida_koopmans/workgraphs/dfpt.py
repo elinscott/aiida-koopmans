@@ -312,8 +312,9 @@ def single_orbital_alpha(alphas: list) -> float:
     """Extract the one alpha an ``SCREEN.i_orb`` screen run computed.
 
     A single-orbital kcw.x run prints exactly one ``iwann ... alpha ...``
-    line, so its ``alphas`` output is a one-entry list; anything else means
-    the run did not honour ``i_orb`` and must not be broadcast to a group.
+    line, so its ``alpha_values`` output is a one-entry list; anything else
+    means the run did not honour ``i_orb`` and must not be broadcast to a
+    group.
     """
     if len(alphas) != 1:
         raise ValueError(
@@ -355,12 +356,12 @@ def alphas_in_orbital_order(
 class GroupedKcwScreeningOutputs(TypedDict):
     """Outputs of :func:`GroupedKcwScreening`.
 
-    ``alphas`` is the full per-orbital screening-parameter list (occupied
-    then empty, group representatives broadcast onto their members), ready
-    for the ham step.
+    ``alpha_values`` is the full per-orbital screening-parameter list
+    (occupied then empty, group representatives broadcast onto their
+    members), ready for the ham step.
     """
 
-    alphas: list
+    alpha_values: list
 
 
 @task.graph
@@ -420,7 +421,7 @@ def GroupedKcwScreening(
         merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
         alpha = single_orbital_alpha(
-            alphas=screen["alphas"],
+            alphas=screen["alpha_values"],
             metadata={"call_link_label": f"alpha_{key}"},
         )
         if orbital["filled"]:
@@ -440,7 +441,7 @@ def GroupedKcwScreening(
         empty_alphas=expanded["empty_alphas"],
         metadata={"call_link_label": "alphas_in_orbital_order"},
     )
-    return GroupedKcwScreeningOutputs(alphas=ordered.result)
+    return GroupedKcwScreeningOutputs(alpha_values=ordered.result)
 
 
 @task
@@ -458,8 +459,8 @@ def alphas_from_guess(alpha_guess: list) -> list:
 class ChannelResults(TypedDict, total=False):
     """Results of one kcw.x chain (one spin channel).
 
-    * ``alphas`` -- the screening parameters fed to the ham step (computed by
-      screen, or the caller's guess when screening was skipped).
+    * ``alpha_values`` -- the screening parameters fed to the ham step
+      (computed by screen, or the caller's guess when screening was skipped).
     * ``screen_parameters`` -- screen-step scalars (:class:`KcwScreenParameters`;
       absent when screening was skipped via ``alpha_guess`` or fanned out
       into per-representative ``i_orb`` runs via ``group_orbitals_tol``).
@@ -474,11 +475,15 @@ class ChannelResults(TypedDict, total=False):
     by :class:`KcwScreenParameters` / :class:`KcwHamParameters`; they are
     annotated as plain ``dict`` here because a TypedDict annotation on a
     ``@task.graph`` output is read as a nested namespace socket rather than a
-    leaf ``orm.Dict``. ``alphas`` is annotated as a plain ``list`` so callers
-    receive the deserialized python value at the graph boundary.
+    leaf ``orm.Dict``. ``alpha_values`` is annotated as a plain ``list`` so
+    callers receive the deserialized python value at the graph boundary; the
+    name is deliberately distinct from the ``alphas`` *namespace* the kcp.x
+    screening layer emits — every python task in a daemon worker validates
+    its outputs against one shared process-wide port specification, so a
+    namespace and a leaf may never share a name.
     """
 
-    alphas: list
+    alpha_values: list
     screen_parameters: dict
     ham_parameters: dict
     bands: orm.BandsData
@@ -829,7 +834,7 @@ def RunDFPT(
             parallelization=parallelization,
             metadata={"call_link_label": "grouped_screen"},
         )
-        alphas = grouped["alphas"]
+        alphas = grouped["alpha_values"]
     else:
         # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
         screen_namelist["check_spread"] = bool(check_spread)
@@ -842,7 +847,7 @@ def RunDFPT(
         }
         merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
-        alphas = screen["alphas"]
+        alphas = screen["alpha_values"]
         outputs["screen_parameters"] = screen["output_parameters"]
 
     do_bands = bands_kpoints is not None
@@ -867,7 +872,7 @@ def RunDFPT(
     merge_parallelization_into_inputs(ham_inputs, parallelization, "kcw", pools=False)
     ham = KcwHamStep(**ham_inputs)
 
-    outputs["alphas"] = alphas
+    outputs["alpha_values"] = alphas
     outputs["ham_parameters"] = ham["output_parameters"]
     if do_bands:
         outputs["bands"] = ham["bands"]

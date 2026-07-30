@@ -36,10 +36,18 @@ from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 
 
 class DensityOfStates(TypedDict):
-    """A Gaussian-smearing total DOS on a uniform energy grid (both in eV)."""
+    """A Gaussian-smearing total DOS on a uniform energy grid (both in eV).
+
+    The DOS column is ``dos_values`` rather than ``dos``: every python task
+    in a daemon worker validates its outputs against one shared process-wide
+    port specification, and ``dos`` already names output *namespaces* (this
+    dict itself under :class:`UnfoldAndInterpolateOutputs`, and the wrapped
+    ``PdosWorkChain``), so a leaf of the same name would fail validation
+    after a cache hit plants the namespace port.
+    """
 
     energies: list[float]
-    dos: list[float]
+    dos_values: list[float]
 
 
 class UnfoldAndInterpolateOutputs(TypedDict):
@@ -118,7 +126,7 @@ def compute_dos_from_bands(
         emax=plotting.get("Emax"),
         npts=int(plotting.get("nstep", 1000)) + 1,
     )
-    return DensityOfStates(energies=grid.tolist(), dos=dos.tolist())
+    return DensityOfStates(energies=grid.tolist(), dos_values=dos.tolist())
 
 
 @task.graph

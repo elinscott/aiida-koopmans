@@ -348,7 +348,7 @@ class TestSinglepointDFPTBuild:
         channel_keys = [ns._name for ns in wg.outputs.channels]
         assert channel_keys == ["none"]
         result_keys = [s._name for s in wg.outputs.channels.none]
-        for expected in ("alphas", "screen_parameters", "ham_parameters", "bands"):
+        for expected in ("alpha_values", "screen_parameters", "ham_parameters", "bands"):
             assert expected in result_keys
 
         # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
@@ -499,7 +499,7 @@ class TestSinglepointDFPTBuild:
         assert channel_keys == ["down", "up"]
         for key in ("up", "down"):
             result_keys = [s._name for s in wg.outputs.channels[key]]
-            assert "alphas" in result_keys
+            assert "alpha_values" in result_keys
             assert "ham_parameters" in result_keys
 
         # nspin=2 is still forced, but the magnetization is the caller's.
