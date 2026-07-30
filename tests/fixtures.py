@@ -226,11 +226,21 @@ def auto_codes(aiida_localhost):
     }
 
 
-def explicit_block(label, include, projections=None, spin=None, filled=None):
+def explicit_block(
+    label,
+    include,
+    projections=None,
+    spin=None,
+    filled=None,
+    num_bands=None,
+    exclude_bands=None,
+):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
 
     ``filled`` stamps the block's occupancy when given; ``None`` leaves the
-    block unstamped (the partition-emission gate stays off).
+    block unstamped (the partition-emission gate stays off). ``num_bands``
+    beyond ``len(include)`` gives the block a disentanglement pool, in which
+    case ``exclude_bands`` names only the bands below it.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -241,14 +251,30 @@ def explicit_block(label, include, projections=None, spin=None, filled=None):
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
         num_wann=n,
-        num_bands=n,
+        num_bands=n if num_bands is None else num_bands,
         include_bands=list(include),
         projection_type=WannierProjectionType.ANALYTIC,
         projections=[] if projections is None else projections,
     )
+    if exclude_bands is not None:
+        block["exclude_bands"] = list(exclude_bands)
     if filled is not None:
         block["filled"] = filled
     return block
+
+
+def bands_data(array):
+    """Wrap an eigenvalue array (2D or 3D) in a ``BandsData``."""
+    from aiida.orm import BandsData, KpointsData
+
+    array = np.asarray(array, dtype=float)
+    nkpts = array.shape[-2]
+    kpts = KpointsData()
+    kpts.set_kpoints([[i / max(nkpts, 1), 0.0, 0.0] for i in range(nkpts)])
+    bands = BandsData()
+    bands.set_kpointsdata(kpts)
+    bands.set_bands(array)
+    return bands
 
 
 def assert_graph_roundtrips(wg):

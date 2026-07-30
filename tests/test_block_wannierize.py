@@ -20,6 +20,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from tests.fixtures import (
     assert_graph_roundtrips,
     automatic_block,
+    bands_data,
     explicit_block,
     si_external_projector_tables,
 )
@@ -640,6 +641,7 @@ class TestWannierizeBlockBuild:
         pseudo_family,
         overrides=None,
         mp_grid=None,
+        nscf_bands=None,
     ):
         return WannierizeBlock.build(
             codes=codes,
@@ -651,6 +653,7 @@ class TestWannierizeBlockBuild:
             mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             overrides=overrides,
+            nscf_bands=nscf_bands,
         )
 
     @staticmethod
@@ -994,6 +997,131 @@ class TestWannierizeBlockBuild:
         )
         params = self._w90_parameters(wg)
         assert params["dis_num_iter"] == 5000
+
+    def test_disentangling_block_hands_the_base_workchain_its_bands(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A pool-carrying block wires ``bands``, which turns on the frozen-window clamp.
+
+        ``Wannier90BaseWorkChain`` lowers ``dis_froz_max`` to just under the
+        first band above the manifold, but only when it has eigenvalues to
+        read; upstream never supplies them to a workchain whose scf/nscf are
+        skipped, as these per-block ones are.
+        """
+        bands = bands_data([[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]])
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            nscf_bands=bands,
+        )
+        assert wg.tasks["wannier90"].inputs["wannier90"]["bands"].value.uuid == bands.uuid
+
+    def test_non_disentangling_block_leaves_the_bands_socket_empty(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """num_bands == num_wann has its windows stripped, so there is nothing to clamp."""
+        bands = bands_data([[0.0, 1.0, 2.0, 3.0]])
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"])
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            nscf_bands=bands,
+        )
+        assert wg.tasks["wannier90"].inputs["wannier90"]["bands"].value is None
+
+    def test_spin_resolved_block_names_its_channel(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A spin-resolved block also sends ``current_spin``.
+
+        The eigenvalues of a collinear nscf arrive as one array per channel;
+        without the channel name the clamp would read the wrong plane.
+        """
+        bands = bands_data([[[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]], [[0.1, 1.1, 2.1, 3.1, 8.1, 9.1]]])
+        block = explicit_block(
+            "occ_up_1",
+            range(1, 5),
+            projections=["Si: sp3"],
+            spin=SpinChannel.UP,
+            num_bands=6,
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            nscf_bands=bands,
+        )
+        w90_inputs = wg.tasks["wannier90"].inputs["wannier90"]
+        assert w90_inputs["bands"].value.uuid == bands.uuid
+        assert w90_inputs["current_spin"].value.value == "up"
+
+    def test_pool_block_accounts_for_every_nscf_band(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """``len(exclude_bands) + num_bands`` reproduces the pw.x band count.
+
+        wann2kcp.x reads the ``.chk`` against that count and refuses a
+        mismatch, and the clamp reads the same two keys to work out which
+        bands sit above the manifold — so a pool block must still account for
+        every nscf band, just with the pool inside ``num_bands`` rather than
+        inside the exclusions.
+        """
+        nbnd = 6
+        block = explicit_block(
+            "block_1",
+            range(3, 5),
+            projections=["Si: sp3"],
+            num_bands=4,
+            exclude_bands=[1, 2],
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            nscf_bands=bands_data([[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]]),
+        )
+        params = self._w90_parameters(wg)
+        assert params["num_wann"] == 2
+        assert params["num_bands"] == 4
+        assert params["exclude_bands"] == [1, 2]
+        assert len(params["exclude_bands"]) + params["num_bands"] == nbnd
+
+    def test_clamped_block_without_a_window_still_warns(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Wiring the bands does not itself count as a disentanglement constraint.
+
+        The clamp only lowers a ``dis_froz_max`` that is already there, so a
+        block with no window at all is still free-minimizing and the warning
+        must keep firing — the pre-dispatch check and the clamp agree on
+        which blocks are constrained.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        with pytest.warns(UnconstrainedDisentanglementWarning, match="block_1"):
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                nscf_bands=bands_data([[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]]),
+            )
 
     def test_gauge_products_are_extracted(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family

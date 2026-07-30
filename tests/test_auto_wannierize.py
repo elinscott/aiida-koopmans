@@ -29,7 +29,7 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     merge_split_block_products,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from tests.fixtures import assert_graph_roundtrips
+from tests.fixtures import assert_graph_roundtrips, bands_data
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -94,6 +94,23 @@ class TestGroupRestriction:
         """Global band groups map to 1-based positions within the block."""
         assert groups_to_wannier_indices([[5, 6], [7, 8]], [5, 6, 7, 8]) == [[1, 2], [3, 4]]
         assert groups_to_wannier_indices([[1, 2]], [1, 2]) == [[1, 2]]
+
+    def test_pool_carrying_block_restricts_and_rebases(self):
+        """A block reading pool bands still restricts to its own manifold.
+
+        The detection only ever runs over the Wannierised manifold, so a
+        block whose ``include_bands`` reached into its disentanglement pool
+        would report bands no group can cover (asserted below) and take the
+        split down at runtime. Naming only the eight Wannier bands keeps the
+        restriction total and the rebased indices addressed at the block's
+        own Wannier functions — which is what Wannier.jl splits.
+        """
+        groups = [[1, 2, 3, 4], [5, 6, 7, 8]]
+        manifold = [1, 2, 3, 4, 5, 6, 7, 8]
+        assert restrict_groups_to_block(groups, manifold) == groups
+        assert groups_to_wannier_indices(groups, manifold) == groups
+        with pytest.raises(ValueError, match="must span every"):
+            restrict_groups_to_block(groups, [*manifold, 9, 10, 11, 12])
 
 
 #: Resolved wannier90 parameters of a parent whole-block run (the protocol
@@ -462,27 +479,13 @@ class TestRewannierizeSplitBlocksBuild:
 # ----------------------------------------------------------------------
 
 
-def _bands_data(array):
-    """Wrap an eigenvalue array (2D or 3D) in a ``BandsData``."""
-    from aiida.orm import BandsData, KpointsData
-
-    array = np.asarray(array, dtype=float)
-    nkpts = array.shape[-2]
-    kpts = KpointsData()
-    kpts.set_kpoints([[i / max(nkpts, 1), 0.0, 0.0] for i in range(nkpts)])
-    bands = BandsData()
-    bands.set_kpointsdata(kpts)
-    bands.set_bands(array)
-    return bands
-
-
 class TestDetectBandGroupsCalcfunction:
     """The runtime wrapper reshapes the eigenvalues before grouping."""
 
     def test_truncates_to_the_wannierised_manifold(self, aiida_profile):
         """``num_bands_total`` drops the disentanglement pool above the manifold."""
         # Band 5 sits far above the manifold; it must not influence the groups.
-        bands = _bands_data([[0.0, 0.1, 5.0, 5.1, 20.0]])
+        bands = bands_data([[0.0, 0.1, 5.0, 5.1, 20.0]])
         groups = detect_band_groups._callable(
             bands=bands, num_occ_bands=2, threshold=2.0, num_bands_total=4
         )
@@ -492,7 +495,7 @@ class TestDetectBandGroupsCalcfunction:
         """A 3D (spin-resolved) bands array is indexed by ``spin_channel_index``."""
         spin_up = [[0.0, 0.5, 4.0, 4.6], [0.4, 0.9, 4.5, 4.9]]  # 2 eV gap -> two groups
         spin_down = [[0.0, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7]]  # no gap -> one group
-        bands = _bands_data([spin_up, spin_down])
+        bands = bands_data([spin_up, spin_down])
         assert detect_band_groups._callable(
             bands=bands, threshold=2.0, spin_channel_index=0
         ).get_list() == [[1, 2], [3, 4]]
