@@ -61,3 +61,20 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 - `aiida-wannier90>=2.2.0`, `aiida-wannier90-workflows>=2.5.0[optimization]` — Wannier pipeline
 
 Local editable installs from sibling paths during development.
+
+## Public text (PR bodies, commit messages, issues)
+
+Public text explains; the diff shows. PR bodies use `## Problem / ## Changes /
+## Testing`. Problem states the failure as an outsider-readable scenario
+("when Wannierizing the empty states of a water molecule in a periodic box,
+..."), never session codenames, database PKs, or scratch paths. Changes list
+*conceptual* decisions, not mechanical enumerations; where it helps, show a
+before/after example of what the user sees. Testing says what each check
+establishes and why it discriminates — never bare pass counts. Causal and
+parity claims are graded (reproduced / code-read / theory) and only
+reproduced claims are asserted plainly. No Claude session URLs anywhere; the
+Co-Authored-By trailer stays. Squash-merge messages in 50/72 (subject ≤50
+chars including the `(#N)`, body wrapped at 72); the body opens with one
+sentence pairing the symptom with the fix ("X was silently doing Y; now
+Z."), then bullet-point details. Symptom not mechanism; enumerations as
+bullet lists.
