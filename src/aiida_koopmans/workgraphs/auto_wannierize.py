@@ -80,6 +80,21 @@ _DIS_KEYS = (
     "dis_conv_window",
 )
 
+#: Convergence keywords (with their value types) harvested from the ``.win``
+#: that ``mrwf`` writes next to each split sub-block. Without them the
+#: re-Wannierization would run at wannier90's compiled-in defaults
+#: (``num_iter = 100``, ``num_cg_steps = 5``), which can leave a sub-block far
+#: from its spread minimum. The emitted file also carries ``dis_*`` keywords
+#: (meaningless here: ``num_bands == num_wann``), ``fermi_energy``, the
+#: per-block counts and the ``write_*`` / ``auto_projections`` toggles — all
+#: owned by :func:`_subblock_w90_parameters` instead.
+_HARVESTED_CONVERGENCE_KEYS: dict[str, type] = {
+    "num_iter": int,
+    "num_cg_steps": int,
+    "conv_window": int,
+    "conv_tol": float,
+}
+
 #: Fallback ``metadata.options`` for the raw CalcJobs this module creates
 #: directly (the protocol-built steps carry their own defaults). A CalcJob
 #: cannot run without ``resources``; MPI behaviour follows the code node.
@@ -272,6 +287,50 @@ def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
     return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
 
 
+def _parse_win_convergence(content: str) -> dict[str, int | float]:
+    """Extract the harvested convergence keywords from a ``.win`` file.
+
+    Scan the ``key = value`` header lines only (``begin``/``end`` blocks are
+    skipped) and keep the :data:`_HARVESTED_CONVERGENCE_KEYS`, converted to
+    their value types. The input is the WannierIO.jl-emitted per-block
+    ``.win`` (``=``-separated, lowercase keywords); values may use the
+    Fortran ``d`` exponent marker.
+    """
+    harvested: dict[str, int | float] = {}
+    in_block = False
+    for line in content.splitlines():
+        stripped = line.strip().lower()
+        if stripped.startswith("begin"):
+            in_block = True
+            continue
+        if stripped.startswith("end"):
+            in_block = False
+            continue
+        if in_block or "=" not in stripped:
+            continue
+        key, _, value = (part.strip() for part in stripped.partition("="))
+        converter = _HARVESTED_CONVERGENCE_KEYS.get(key)
+        if converter is not None:
+            harvested[key] = converter(float(value.replace("d", "e")))
+    return harvested
+
+
+@task.calcfunction
+def merge_win_convergence(win_file: orm.SinglefileData, parameters: orm.Dict) -> orm.Dict:
+    """Merge the split-emitted convergence keywords under built parameters.
+
+    ``mrwf`` writes each sub-block a ``.win`` whose convergence keywords
+    (``num_iter`` / ``num_cg_steps`` / ``conv_tol`` / ``conv_window``) are
+    sized for re-Wannierizing that sub-block — far tighter than wannier90's
+    compiled-in defaults, which the run would otherwise fall back to.
+    ``parameters`` (the :func:`_subblock_w90_parameters` product, including
+    any user overrides) wins wherever both define a keyword.
+    """
+    merged: dict[str, Any] = dict(_parse_win_convergence(win_file.get_content(mode="r")))
+    merged.update(parameters.get_dict())
+    return orm.Dict(merged)
+
+
 def _subblock_w90_parameters(
     num_wann: int, mp_grid: list[int], wannier90_overrides: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -324,6 +383,7 @@ def RewannierizeSplitBlocks(
     codes: Codes,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
+    split_win_files: Annotated[dict, dynamic(orm.SinglefileData)],
     group_sizes: list[int],
     kpoints: orm.KpointsData,
     mp_grid: list[int],
@@ -338,17 +398,25 @@ def RewannierizeSplitBlocks(
     ``{"block_0": FolderData, ...}`` dict and the per-group fan-out is a
     native ``for`` loop. Each sub-block runs a preprocessing-free
     ``Wannier90Calculation`` on the split ``.amn``/``.mmn``/``.eig``
-    (``local_input_folder``), then the ``_u.mat`` / ``_hr.dat`` /
-    ``_centres.xyz`` products are merged block-diagonally and the parsed
-    per-group ``output_parameters`` are concatenated in group order.
+    (``local_input_folder``), its parameters merging the convergence
+    keywords from the split's emitted per-block ``.win``
+    (``split_win_files``) under the caller's overrides; then the ``_u.mat``
+    / ``_hr.dat`` / ``_centres.xyz`` products are merged block-diagonally
+    and the parsed per-group ``output_parameters`` are concatenated in
+    group order.
     """
     subblock_retrieved: dict[str, Any] = {}
     subblock_parameters: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
+        parameters = merge_win_convergence(
+            win_file=split_win_files[f"block_{i}"],
+            parameters=_subblock_w90_parameters(int(num_wann), mp_grid, wannier90_overrides),
+            metadata={"call_link_label": f"merge_win_convergence_{i}"},
+        ).result
         rewannierized = Wannier90CalcStep(
             code=codes["wannier90"],
             structure=structure,
-            parameters=_subblock_w90_parameters(int(num_wann), mp_grid, wannier90_overrides),
+            parameters=parameters,
             kpoints=kpoints,
             local_input_folder=split_blocks[f"block_{i}"],
             metadata={
@@ -487,6 +555,7 @@ def WannierizeAndSplitBlock(
         codes=codes,
         structure=structure,
         split_blocks=split["blocks"],
+        split_win_files=split["win_files"],
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,
         mp_grid=mp_grid,

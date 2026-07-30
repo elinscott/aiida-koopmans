@@ -22,11 +22,13 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.auto_wannierize import (
     WannierizeAndSplitBlock,
+    _parse_win_convergence,
     _plain_options,
     _subblock_w90_parameters,
     detect_band_groups,
     extract_win_file,
     merge_split_block_products,
+    merge_win_convergence,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 from tests.fixtures import assert_graph_roundtrips
@@ -115,6 +117,110 @@ class TestSubblockParameters:
         assert "dis_froz_max" not in params
         assert "dis_num_iter" not in params
         assert "exclude_bands" not in params
+
+
+#: Keyword header of the ``.win`` that ``mrwf`` (WannierIO.jl) writes next to
+#: each split sub-block, followed by a structure block carrying an ``=`` line
+#: that must not be mistaken for a keyword.
+_EMITTED_SUBBLOCK_WIN = """\
+# Created by WannierIO.jl
+
+conv_tol = 4.0e-7
+conv_window = 3
+dis_conv_tol = 4.0e-7
+dis_num_iter = 0
+fermi_energy = 9.2768886075
+mp_grid = 4  4  4
+num_cg_steps = 200
+num_iter = 2000
+num_wann = 2
+write_hr = true
+write_u_matrices = .true.
+auto_projections = true
+
+begin unit_cell_cart
+angstrom
+num_iter = 999
+end unit_cell_cart
+"""
+
+
+class TestParseWinConvergence:
+    """Harvesting the convergence keywords from the split-emitted ``.win``."""
+
+    def test_extracts_convergence_keywords_with_types(self):
+        harvested = _parse_win_convergence(_EMITTED_SUBBLOCK_WIN)
+        assert harvested == {
+            "num_iter": 2000,
+            "num_cg_steps": 200,
+            "conv_window": 3,
+            "conv_tol": 4.0e-7,
+        }
+        assert isinstance(harvested["num_iter"], int)
+        assert isinstance(harvested["num_cg_steps"], int)
+        assert isinstance(harvested["conv_window"], int)
+        assert isinstance(harvested["conv_tol"], float)
+
+    def test_non_convergence_keywords_are_not_harvested(self):
+        """Counts, toggles and dis_* stay owned by the parameter builder."""
+        harvested = _parse_win_convergence(_EMITTED_SUBBLOCK_WIN)
+        for key in ("num_wann", "mp_grid", "write_hr", "dis_num_iter", "fermi_energy"):
+            assert key not in harvested
+
+    def test_fortran_exponent_marker(self):
+        assert _parse_win_convergence("conv_tol =   4.0000000000d-07\n") == {"conv_tol": 4.0e-7}
+
+    def test_block_contents_are_skipped(self):
+        """An ``=`` line inside a begin/end block is not a keyword."""
+        assert _parse_win_convergence(_EMITTED_SUBBLOCK_WIN)["num_iter"] == 2000
+
+
+class TestMergeWinConvergence:
+    """Emitted convergence keywords merge under the built parameters."""
+
+    @staticmethod
+    def _win_file():
+        import io as _io
+
+        from aiida.orm import SinglefileData
+
+        return SinglefileData(_io.BytesIO(_EMITTED_SUBBLOCK_WIN.encode()), filename="aiida.win")
+
+    def test_emitted_keywords_fill_the_gaps(self, aiida_profile):
+        from aiida.orm import Dict
+
+        base = _subblock_w90_parameters(2, [4, 4, 4], None)
+        merged = merge_win_convergence._callable(
+            win_file=self._win_file(), parameters=Dict(base)
+        ).get_dict()
+        assert merged["num_iter"] == 2000
+        assert merged["num_cg_steps"] == 200
+        assert merged["conv_window"] == 3
+        assert merged["conv_tol"] == 4.0e-7
+        # The built parameters ride along untouched.
+        assert merged["num_wann"] == 2
+        assert merged["num_bands"] == 2
+        assert merged["mp_grid"] == [4, 4, 4]
+
+    def test_user_override_wins(self, aiida_profile):
+        from aiida.orm import Dict
+
+        base = _subblock_w90_parameters(2, [4, 4, 4], {"num_iter": 500})
+        merged = merge_win_convergence._callable(
+            win_file=self._win_file(), parameters=Dict(base)
+        ).get_dict()
+        assert merged["num_iter"] == 500
+        assert merged["num_cg_steps"] == 200
+
+    def test_without_the_merge_the_parameters_lack_convergence_keywords(self):
+        """Negative control: the base builder alone emits no convergence set.
+
+        This pins the defect the harvest fixes — dropping the merge would
+        hand wannier90 its compiled-in ``num_iter``/``num_cg_steps``.
+        """
+        base = _subblock_w90_parameters(2, [4, 4, 4], None)
+        for key in ("num_iter", "num_cg_steps", "conv_tol", "conv_window"):
+            assert key not in base
 
 
 # ----------------------------------------------------------------------
@@ -298,6 +404,14 @@ class TestPerBlockGraphBuild:
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
 
+        # Both dynamic namespaces of the split feed the nested graph: the
+        # per-block folders and the emitted per-block ``.win`` files (whose
+        # convergence keywords seed the re-wannierisations).
+        for namespace in ("split_blocks", "split_win_files"):
+            links = rewann_task.inputs[namespace]._links
+            assert len(links) == 1, namespace
+            assert links[0].from_task.name == "split_wannierization", namespace
+
         # The merged trio and the merged parsed Dict feed the outputs; the
         # plain-route-only folder keys stay unpopulated on the split route.
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
@@ -330,7 +444,9 @@ class TestRewannierizeSplitBlocksBuild:
     def test_one_wannier90_per_group_and_merge(
         self, auto_codes, silicon_structure, kmesh, aiida_profile
     ):
-        from aiida.orm import FolderData
+        import io as _io
+
+        from aiida.orm import FolderData, SinglefileData
 
         from aiida_koopmans.workgraphs.auto_wannierize import RewannierizeSplitBlocks
 
@@ -338,10 +454,17 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
+        split_win_files = {
+            f"block_{i}": SinglefileData(
+                _io.BytesIO(_EMITTED_SUBBLOCK_WIN.encode()), filename="aiida.win"
+            ).store()
+            for i in range(2)
+        }
         wg = RewannierizeSplitBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
             split_blocks=split_blocks,
+            split_win_files=split_win_files,
             group_sizes=[4, 4],
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
@@ -354,10 +477,20 @@ class TestRewannierizeSplitBlocksBuild:
         assert len(w90_tasks) == 2
 
         # Each re-wannierisation is preprocessing-free (local_input_folder
-        # wired from the split's per-block folder) with num_bands == num_wann
-        # and no disentanglement keys; user minimisation settings propagate.
+        # wired from the split's per-block folder). Its parameters are the
+        # merge of the split-emitted convergence keywords under the built
+        # set: each wannier90 ``parameters`` is wired from the per-group
+        # ``merge_win_convergence`` task, which reads the group's emitted
+        # ``.win`` and the built base parameters (num_bands == num_wann, no
+        # disentanglement keys, user minimisation settings propagating).
         for i, w90_task in enumerate(sorted(w90_tasks, key=lambda t: t.name)):
-            params = w90_task.inputs["parameters"].value
+            merge_task = wg.tasks[f"merge_win_convergence_{i}"]
+            links = w90_task.inputs["parameters"]._links
+            assert len(links) == 1
+            assert links[0].from_task.name == merge_task.name
+            assert merge_task.inputs["win_file"].value.uuid == split_win_files[f"block_{i}"].uuid
+
+            params = merge_task.inputs["parameters"].value
             params = params.get_dict() if hasattr(params, "get_dict") else dict(params)
             assert params["num_wann"] == 4
             assert params["num_bands"] == 4
@@ -369,6 +502,7 @@ class TestRewannierizeSplitBlocksBuild:
             assert not any(key.startswith("dis_") for key in params)
             folder = w90_task.inputs["local_input_folder"].value
             assert folder.uuid == split_blocks[f"block_{i}"].uuid
+        assert_graph_roundtrips(wg)
 
 
 # ----------------------------------------------------------------------
