@@ -407,10 +407,10 @@ def ordered_block_specs(blocks: list[ProjectionBlockId]) -> list[ProjectionBlock
     """Return the block records in emitted orbital order.
 
     The order :func:`initial_orbital_partition` walks: spin channels in
-    the module's canonical walk order (up, down, none, spinor — the same
-    fixed sequence :func:`enumerate_variational_orbitals` and the
-    representative stamping use), and within each channel every occupied
-    block before every empty one, ties kept in input order. Callers that
+    the canonical walk order (:class:`SpinChannel` declaration order —
+    the same fixed sequence :func:`enumerate_variational_orbitals` and
+    the representative stamping use), and within each channel every
+    occupied block before every empty one, ties kept in input order. Callers that
     pair the emitted orbitals with position-ordered arrays check their
     input against this.
     """

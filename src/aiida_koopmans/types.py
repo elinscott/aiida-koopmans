@@ -69,12 +69,15 @@ class SpinChannel(str, Enum):
     polarisation, single channel).
     """
 
-    # Declaration order is the canonical channel walk order (up, down,
-    # unpolarized, spinor): iterating the enum IS the ordering authority
-    # for representative stamping and orbital emission.
+    # Declaration order is the canonical channel walk order: iterating
+    # the enum IS the ordering authority for representative stamping and
+    # orbital emission. The position of NONE relative to UP/DOWN is
+    # immaterial — the channels are mutually exclusive spin regimes, so
+    # no calculation ever walks NONE alongside UP/DOWN; what matters is
+    # only UP before DOWN.
+    NONE = "none"
     UP = "up"
     DOWN = "down"
-    NONE = "none"
     SPINOR = "spinor"
 
     @property
@@ -283,9 +286,19 @@ class ProjectionBlockId(TypedDict):
 
     Carries what downstream bookkeeping needs to enumerate a block's
     orbitals — the label, channel, occupancy, and Wannier-function
-    count — and nothing else, so it stays JSON-pure: a full block's
-    ``projection_type`` enum cannot pass the PyFunction input
-    serializer, but this view can.
+    count — and nothing else. Two reasons this view exists instead of
+    passing full blocks:
+
+    * provenance stays slim: the enumeration consumers never read
+      ``projections`` / ``include_bands`` / ``num_bands``, so storing
+      them on every partition task input would be noise;
+    * a list of full blocks cannot ride a PyFunction input regardless:
+      ``aiida-pythonjob`` dispatches its serializer registry on the
+      *outer* type only, so ``list`` maps straight to ``orm.List`` and
+      JSON storage rejects the nested ``projection_type`` enum — the
+      registered top-level serializer for that enum (its ``EnumData``
+      entry point) is never consulted for container internals. This
+      JSON-pure view needs no registry at all.
     """
 
     label: str

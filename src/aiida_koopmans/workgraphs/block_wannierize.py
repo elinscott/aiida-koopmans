@@ -571,8 +571,8 @@ def _maybe_emit_orbital_partition(
         raise ValueError(
             f"The blocks are not in emitted orbital order: got labels "
             f"{[s['label'] for s in specs]} but the partition walks "
-            f"{[s['label'] for s in ordered]} (spin channels up, down, none — each "
-            "contiguous, with every occupied block before every empty one). Reorder "
+            f"{[s['label'] for s in ordered]} (spin channels in SpinChannel declaration "
+            "order, each contiguous, with every occupied block before every empty one). Reorder "
             "the blocks so `orbitals` stays aligned with the input-list-ordered "
             "`spreads` / `centres`."
         )
