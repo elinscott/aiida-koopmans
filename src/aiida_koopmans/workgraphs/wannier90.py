@@ -183,9 +183,9 @@ def Wannierize(
         exclude_semicore: If True, exclude semicore states from Wannierisation.
         external_projectors_path: Path to directory containing external projector
             files. Required when projection_type is ATOMIC_PROJECTORS_EXTERNAL.
-        external_projectors: Dictionary describing external projectors (from
-            projectors.json). Required when projection_type is
-            ATOMIC_PROJECTORS_EXTERNAL.
+        external_projectors: Per-element orbital tables describing the external
+            projectors (entries with ``l`` and ``alpha``). Required when
+            projection_type is ATOMIC_PROJECTORS_EXTERNAL.
         plot_wannier_functions: If True, plot Wannier functions as xsf files.
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
         retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.

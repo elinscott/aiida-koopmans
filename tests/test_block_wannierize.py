@@ -60,15 +60,15 @@ def _zno_blocks() -> list[ExplicitProjectionBlock]:
 def _si_external_projectors(alpha: float | str = 1.5) -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 
-    A fitted numeric ``alpha`` marks a projector as non-frozen; the
-    ``"UPF"`` sentinel (the majority case in upstream's shipped tables)
-    marks it as taken unmodified from the pseudopotential, which the
-    builder freezes.
+    The caller-synthesized shape the upstream builder consumes: one entry
+    per orbital with its ``l`` and an ``alpha`` whose only upstream read is
+    the ``== "UPF"`` frozen test — the sentinel marks the orbital
+    Lowdin-frozen, any numeric value leaves it orthonormalized.
     """
     return {
         "Si": [
-            {"label": "3S", "l": 0, "alpha": alpha},
-            {"label": "3P", "l": 1, "alpha": alpha},
+            {"l": 0, "alpha": alpha},
+            {"l": 1, "alpha": alpha},
         ]
     }
 
@@ -764,7 +764,7 @@ class TestWannierizeBlockBuild:
         assert inputpp["atom_proj_dir"] == "external_projectors/"
         assert p2w["external_projectors_path"].value.get_remote_path() == str(tmp_path)
         assert p2w["external_projectors_list"].value.get_dict() == {"Si": "Si"}
-        # Every projector carries a fitted alpha, so none is frozen.
+        # Every projector carries a numeric alpha, so none is frozen.
         assert "atom_proj_frozen" not in inputpp
         assert_graph_roundtrips(wg)
 
@@ -793,10 +793,10 @@ class TestWannierizeBlockBuild:
     ):
         """``alpha: "UPF"`` entries land in the staged frozen-projector list.
 
-        Upstream's shipped tables carry the ``"UPF"`` sentinel for most
-        projectors, so this — not the fitted-alpha case — is the common
-        real-world path: every sentinel projector must appear in
-        ``atom_proj_frozen``, here all 8 (s + p on both sites).
+        The sentinel is how a caller encodes its frozen-projector choice
+        through upstream's tables, so its round-trip must be exact: every
+        sentinel orbital's projectors appear in ``atom_proj_frozen``, here
+        all 8 (s + p on both sites).
         """
         block = automatic_block(
             "block_1",
