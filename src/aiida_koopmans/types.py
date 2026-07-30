@@ -69,9 +69,12 @@ class SpinChannel(str, Enum):
     polarisation, single channel).
     """
 
-    NONE = "none"
+    # Declaration order is the canonical channel walk order (up, down,
+    # unpolarized, spinor): iterating the enum IS the ordering authority
+    # for representative stamping and orbital emission.
     UP = "up"
     DOWN = "down"
+    NONE = "none"
     SPINOR = "spinor"
 
     @property
@@ -273,6 +276,36 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
 # Analytic blocks carry ``projections``; automatic blocks do not, so
 # ``"projections" in block`` narrows the union to the explicit arm.
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
+
+
+class ProjectionBlockId(TypedDict):
+    """Identity-and-shape view of a :class:`ProjectionBlock`.
+
+    Carries what downstream bookkeeping needs to enumerate a block's
+    orbitals — the label, channel, occupancy, and Wannier-function
+    count — and nothing else, so it stays JSON-pure: a full block's
+    ``projection_type`` enum cannot pass the PyFunction input
+    serializer, but this view can.
+    """
+
+    label: str
+    spin: SpinChannel
+    filled: bool
+    num_wann: int
+
+
+def validate_projection_block_id(spec: ProjectionBlockId) -> None:
+    """Reject a block view whose shape cannot describe real orbitals.
+
+    Lives beside the type because a ``TypedDict`` cannot validate at
+    runtime; every consumer that trusts the shape calls this first.
+    Raise ``ValueError`` for a non-positive ``num_wann``.
+    """
+    if int(spec["num_wann"]) < 1:
+        raise ValueError(
+            f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
+            "every block must carry at least one Wannier function."
+        )
 
 
 class MergeGroup(TypedDict):

@@ -49,7 +49,13 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from aiida_workgraph import dynamic, task
 
-from aiida_koopmans.types import SpinChannel, VariationalOrbital, map_key_for
+from aiida_koopmans.types import (
+    ProjectionBlockId,
+    SpinChannel,
+    VariationalOrbital,
+    map_key_for,
+    validate_projection_block_id,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -57,9 +63,10 @@ if TYPE_CHECKING:
     import numpy as np
 
 # Canonical spin-channel walk order, shared by every ordering decision in
-# this module (representative stamping, orbital emission) so no two
-# consumers of the substrate can disagree about channel sequence.
-_SPIN_ORDER = (SpinChannel.UP, SpinChannel.DOWN, SpinChannel.NONE, SpinChannel.SPINOR)
+# this module (representative stamping, orbital emission). The enum's
+# declaration order IS the walk order, so the enum stays the single
+# authority and this alias only names the intent.
+_SPIN_ORDER = tuple(SpinChannel)
 
 
 class ExpandedAlphas(TypedDict):
@@ -77,23 +84,6 @@ class ExpandedAlphas(TypedDict):
     empty_alphas: dict[str, float]
     filled_errors: dict[str, float]
     empty_errors: dict[str, float]
-
-
-class BlockOrbitalSpec(TypedDict):
-    """One projection block's orbital-manifold identity, JSON-pure.
-
-    The reduced view of a :class:`~aiida_koopmans.types.ProjectionBlock`
-    that :func:`initial_orbital_partition` consumes: a full block carries
-    a non-``str`` enum (``projection_type``) that the PyFunction input
-    serializer cannot store, so the graph body strips each block down to
-    the fields the partition needs — the block's label, spin channel,
-    occupancy and Wannier-function count.
-    """
-
-    label: str
-    spin: SpinChannel
-    filled: bool
-    num_wann: int
 
 
 # ----------------------------------------------------------------------
@@ -413,7 +403,7 @@ def refine_by_scalar(
 # ----------------------------------------------------------------------
 
 
-def ordered_block_specs(blocks: list[BlockOrbitalSpec]) -> list[BlockOrbitalSpec]:
+def ordered_block_specs(blocks: list[ProjectionBlockId]) -> list[ProjectionBlockId]:
     """Return the block records in emitted orbital order.
 
     The order :func:`initial_orbital_partition` walks: spin channels in
@@ -434,7 +424,7 @@ def ordered_block_specs(blocks: list[BlockOrbitalSpec]) -> list[BlockOrbitalSpec
 
 
 @task
-def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[VariationalOrbital]:
+def initial_orbital_partition(blocks: list[ProjectionBlockId]) -> list[VariationalOrbital]:
     """Build the coarsest orbital partition consistent with the blocks' exact splits.
 
     Emit one :class:`~aiida_koopmans.types.VariationalOrbital` per
@@ -461,11 +451,7 @@ def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[Variationa
     Raise ``ValueError`` for a block with a non-positive ``num_wann``.
     """
     for spec in blocks:
-        if int(spec["num_wann"]) < 1:
-            raise ValueError(
-                f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
-                "every block must carry at least one Wannier function."
-            )
+        validate_projection_block_id(spec)
 
     orbitals: list[VariationalOrbital] = []
     counters: dict[SpinChannel, int] = {}
@@ -479,6 +465,8 @@ def initial_orbital_partition(blocks: list[BlockOrbitalSpec]) -> list[Variationa
                     index=counters[channel],
                     filled=bool(spec["filled"]),
                     group_id=1,
+                    # Placeholder: the refinement chain below restamps
+                    # representatives; it is the single authority for them.
                     representative=False,
                     manifold=str(spec["label"]),
                 )

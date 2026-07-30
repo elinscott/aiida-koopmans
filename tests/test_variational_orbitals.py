@@ -13,7 +13,7 @@ import pytest
 
 from aiida_koopmans.types import SpinChannel, VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
-    BlockOrbitalSpec,
+    ProjectionBlockId,
     initial_orbital_partition,
     refine_by_key,
     refine_by_labels,
@@ -288,7 +288,7 @@ class TestRefinementInvariant:
 
 def spec(label: str, num_wann: int, *, filled: bool, spin: SpinChannel = SpinChannel.NONE):
     """Build one reduced block record for :func:`initial_orbital_partition`."""
-    return BlockOrbitalSpec(label=label, spin=spin, filled=filled, num_wann=num_wann)
+    return ProjectionBlockId(label=label, spin=spin, filled=filled, num_wann=num_wann)
 
 
 class TestInitialOrbitalPartition:

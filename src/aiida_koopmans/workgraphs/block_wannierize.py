@@ -61,6 +61,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.types import (
     ParallelizationDict,
     ProjectionBlock,
+    ProjectionBlockId,
     SpinChannel,
     VariationalOrbital,
     block_w90_kwargs,
@@ -72,7 +73,6 @@ from aiida_koopmans.workgraphs import (
 )
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
-    BlockOrbitalSpec,
     initial_orbital_partition,
     ordered_block_specs,
 )
@@ -554,7 +554,7 @@ def _maybe_emit_orbital_partition(
     if not (blocks and all(stamped)):
         return
     specs = [
-        BlockOrbitalSpec(
+        ProjectionBlockId(
             label=str(block["label"]),
             spin=SpinChannel(block["spin"]),
             filled=bool(block["filled"]),
