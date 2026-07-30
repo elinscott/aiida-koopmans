@@ -7,9 +7,28 @@ time.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 import pytest
+from aiida_workgraph import task
 
 from aiida_koopmans.types import Correction, VariationalOrbitalType
+
+
+class PreRenameDataset(TypedDict):
+    """The dataset shape as it was before the screening column was renamed."""
+
+    descriptors: list
+    alphas: list
+    filled: list
+    labels: list
+
+
+@task
+def pre_rename_dataset() -> PreRenameDataset:
+    """Emit a dataset whose screening column reuses the namespace name."""
+    return {"descriptors": [[1.0]], "alphas": [0.6], "filled": [True], "labels": ["orb_1"]}
+
 
 # ----------------------------------------------------------------------
 # extract_snapshot_dataset — plain-python callable
@@ -256,6 +275,17 @@ class TestSharedOutputSpecCollision:
 
         return PyFunction.spec().outputs
 
+    @staticmethod
+    def _run_pre_rename(name):
+        """Run the pre-rename dataset shape and return its process node."""
+        from aiida_workgraph import WorkGraph
+
+        wg = WorkGraph(name)
+        wg.add_task(pre_rename_dataset, name="dataset")
+        wg.run()
+        children = [link.node for link in wg.process.base.links.get_outgoing().all()]
+        return next(node for node in children if hasattr(node, "exception"))
+
     def test_dataset_runs_with_screening_namespace_ports_present(self, aiida_profile_clean):
         from aiida_workgraph import WorkGraph
 
@@ -279,6 +309,29 @@ class TestSharedOutputSpecCollision:
         finally:
             for name in self.SCREENING_NAMESPACES:
                 shared.ports.pop(name, None)
+
+    def test_the_old_column_name_is_rejected_in_that_state(self, aiida_profile_clean):
+        """Positive control: the state injected above really is hostile.
+
+        Without this, a passing sibling test could mean the injected ports
+        are inert rather than that the column rename dodges them.
+        """
+        shared = self._shared_output_ports()
+        for name in self.SCREENING_NAMESPACES:
+            shared.get_port(name, create_dynamically=True)
+        # Run the rejected case first and the accepted case second: a
+        # successful run is a valid cache source, so the opposite order
+        # would serve the second run from the cache and prove nothing.
+        try:
+            blocked = self._run_pre_rename("pre_rename_with_screening_namespaces")
+            assert blocked.exception is not None, "pre-rename shape unexpectedly succeeded"
+            assert "not sub class of `Mapping`" in blocked.exception, blocked.exception
+        finally:
+            for name in self.SCREENING_NAMESPACES:
+                shared.ports.pop(name, None)
+
+        allowed = self._run_pre_rename("pre_rename_without_screening_namespaces")
+        assert allowed.is_finished_ok, allowed.exception
 
     def test_dataset_columns_avoid_the_screening_namespace_names(self):
         from aiida_koopmans.ml_helpers import SnapshotDataset
