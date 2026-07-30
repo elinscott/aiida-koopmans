@@ -61,14 +61,12 @@ def _si_external_projectors() -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 
     The caller-synthesized shape the upstream builder consumes: one entry
-    per orbital with its ``l`` and a numeric ``alpha`` filler the builder
-    requires but never reads beyond its frozen-list selection, which the
-    filler deliberately does not trigger.
+    per orbital carrying its ``l``.
     """
     return {
         "Si": [
-            {"l": 0, "alpha": 1.5},
-            {"l": 1, "alpha": 1.5},
+            {"l": 0},
+            {"l": 1},
         ]
     }
 

@@ -184,7 +184,7 @@ def Wannierize(
         external_projectors_path: Path to directory containing external projector
             files. Required when projection_type is ATOMIC_PROJECTORS_EXTERNAL.
         external_projectors: Per-element orbital tables describing the external
-            projectors (entries with ``l`` and ``alpha``). Required when
+            projectors, passed through to the upstream builder. Required when
             projection_type is ATOMIC_PROJECTORS_EXTERNAL.
         plot_wannier_functions: If True, plot Wannier functions as xsf files.
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
