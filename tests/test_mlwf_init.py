@@ -14,12 +14,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import (
     Correction,
-    ExplicitProjectionBlock,
-    SpinChannel,
     VariationalOrbitalType,
 )
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs
@@ -29,6 +26,7 @@ from aiida_koopmans.workgraphs.mlwf_init import (
     _build_dft_init_from_wannier_parameters,
     check_wannier_initialization,
 )
+from tests.fixtures import ozone_projection_blocks as _ozone_blocks
 
 # ----------------------------------------------------------------------
 # Consistency check
@@ -165,51 +163,6 @@ class TestDftInitFromWannierParameters:
 # ----------------------------------------------------------------------
 # Graph construction
 # ----------------------------------------------------------------------
-
-
-def _ozone_blocks():
-    """Periodic-ozone projections: 9 occupied + 1 empty band, nspin=1."""
-
-    def _block(label, include):
-        n = len(include)
-        return ExplicitProjectionBlock(
-            label=label,
-            spin=SpinChannel.NONE,
-            num_wann=n,
-            num_bands=n,
-            include_bands=list(include),
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=[],
-        )
-
-    return [_block("block_occ", range(1, 10)), _block("block_emp", range(10, 11))]
-
-
-@pytest.fixture
-def mlwf_codes(aiida_localhost):
-    """Return stand-in InstalledCode nodes for the full mlwfs-init code set."""
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("mlwf-pw", "quantumespresso.pw"),
-        "wannier90": _code("mlwf-w90", "wannier90.wannier90"),
-        "pw2wannier90": _code("mlwf-p2w", "quantumespresso.pw2wannier90"),
-        "projwfc": _code("mlwf-pjw", "quantumespresso.projwfc"),
-        "wann2kcp": _code("mlwf-w2k", "koopmans.wann2kcp"),
-        "merge_evc": _code("mlwf-merge", "koopmans.merge_evc"),
-    }
 
 
 @pytest.fixture

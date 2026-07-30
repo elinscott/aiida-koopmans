@@ -924,6 +924,7 @@ def KoopmansDSCFWorkflow(
         initial_alpha=initial_alpha,
         alphas=alphas,
         calculate_alpha=calculate_alpha,
+        spin_polarized=spin_polarized,
     )
 
     dft_overrides = overrides.get("dft") if overrides else None
@@ -2047,9 +2048,16 @@ def ComputeScreeningParameters(
         )
     else:
         # Deferred body: the counts are concrete here, so a seed whose
-        # per-channel lists don't match the manifolds fails with a named
-        # mismatch instead of an IndexError deep in the fan-out.
-        _validate_alpha_screening(initial_alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
+        # channel convention or per-channel lists don't match the run
+        # fails with a named mismatch instead of an IndexError / KeyError
+        # deep in the fan-out.
+        _validate_alpha_screening(
+            initial_alphas,
+            nelup=nelup,
+            neldw=neldw,
+            nbnd=nbnd,
+            spin_polarized=spin_polarized,
+        )
 
     base = _kcp_base_inputs(
         structure,
@@ -2239,7 +2247,9 @@ def _validate_scope(
 _ALPHA_CHANNELS = (SpinChannel.NONE.value, SpinChannel.UP.value, SpinChannel.DOWN.value)
 
 
-def _normalized_alpha_channels(alphas: AlphaScreening) -> dict[str, dict[str, list[float]]]:
+def _normalized_alpha_channels(
+    alphas: AlphaScreening,
+) -> dict[str, dict[str, list[float]]]:
     """Normalize an :class:`AlphaScreening` payload, checking its shape.
 
     ``filled`` and ``empty`` must both be present, each a mapping from a
@@ -2293,18 +2303,41 @@ def _validate_alpha_screening(
     nelup: int | None = None,
     neldw: int | None = None,
     nbnd: int | None = None,
+    spin_polarized: bool | None = None,
 ) -> None:
     """Check an :class:`AlphaScreening` payload's shape (and, when known, its counts).
 
     The structural checks (:func:`_normalized_alpha_channels`) always
-    run. When the electron counts are known (``nelup`` / ``neldw`` /
-    ``nbnd`` all given) the per-channel list lengths are checked against
-    them; a channel may be absent only when its expected length is zero.
+    run. When ``spin_polarized`` is given, the payload's channel
+    convention must match it: spin-polarized runs walk ``'up'`` /
+    ``'down'`` and closed-shell runs the single ``'none'`` channel — a
+    mismatch would otherwise surface only as a bare ``KeyError`` deep in
+    the per-orbital fan-out. When the electron counts are known
+    (``nelup`` / ``neldw`` / ``nbnd`` all given) the per-channel list
+    lengths are checked against them; a channel may be absent only when
+    its expected length is zero.
+
+    Limitation: a filled/empty swap is undetectable by the count check
+    when the two manifolds have the same size (e.g. ``nelup == nbnd -
+    nelup``) — the caller owns that ordering.
     """
     norm = _normalized_alpha_channels(alphas)
+    channels = set(norm["filled"]) | set(norm["empty"])
+    if spin_polarized is not None and channels:
+        if spin_polarized and SpinChannel.NONE.value in channels:
+            raise ValueError(
+                "This calculation is spin-polarized (spin_polarized=True) but the "
+                "per-orbital alphas use the closed-shell 'none' channel; supply "
+                "'up' and 'down' channels instead."
+            )
+        if not spin_polarized and channels - {SpinChannel.NONE.value}:
+            raise ValueError(
+                "This calculation is closed-shell (spin_polarized=False) but the "
+                f"per-orbital alphas use per-spin channels {sorted(channels)}; "
+                "supply the single 'none' channel instead."
+            )
     if nelup is None or neldw is None or nbnd is None:
         return
-    channels = set(norm["filled"]) | set(norm["empty"])
     if SpinChannel.NONE.value in channels or not channels:
         if nelup != neldw:
             raise ValueError(
@@ -2337,6 +2370,7 @@ def _validate_alpha_inputs(
     initial_alpha: float | None,
     alphas: AlphaScreening | None,
     calculate_alpha: bool,
+    spin_polarized: bool | None = None,
 ) -> None:
     """Fail fast on inconsistent screening-parameter inputs.
 
@@ -2344,10 +2378,10 @@ def _validate_alpha_inputs(
     values) are mutually exclusive ways of choosing the starting alphas;
     skipping the refinement loop (``calculate_alpha=False``) is only
     meaningful when the per-orbital values to apply are given explicitly.
-    The per-orbital shape check runs here too, so malformed payloads fail
-    at build time; the count check (which needs the runtime electron
-    counts) happens downstream in :func:`RunFinalKI` /
-    :func:`ComputeScreeningParameters`.
+    The per-orbital shape and channel-convention checks run here too, so
+    malformed payloads and a spin-convention mismatch fail at build time;
+    the count check (which needs the runtime electron counts) happens
+    downstream in :func:`RunFinalKI` / :func:`ComputeScreeningParameters`.
     """
     if alphas is not None and initial_alpha is not None:
         raise ValueError(
@@ -2363,7 +2397,7 @@ def _validate_alpha_inputs(
             "out per orbital if it is really what you want)."
         )
     if alphas is not None:
-        _validate_alpha_screening(alphas)
+        _validate_alpha_screening(alphas, spin_polarized=spin_polarized)
 
 
 # ----------------------------------------------------------------------

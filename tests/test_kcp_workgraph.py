@@ -8,7 +8,9 @@ family available.
 
 from __future__ import annotations
 
+import io
 from dataclasses import replace
+from typing import ClassVar
 
 import pytest
 
@@ -219,6 +221,24 @@ class TestValidateAlphaScreening:
         # the outer build); they are caught downstream where the electron
         # counts are concrete.
         _validate_alpha_screening({"filled": {"none": [0.6] * 3}, "empty": {"none": []}})
+
+    def test_none_channel_on_spin_polarized_run_raises(self):
+        with pytest.raises(ValueError, match=r"spin_polarized=True.*'none'"):
+            _validate_alpha_screening(_OZONE_ALPHAS, spin_polarized=True)
+
+    def test_spin_channels_on_closed_shell_run_raise(self):
+        with pytest.raises(ValueError, match="spin_polarized=False"):
+            _validate_alpha_screening(
+                {"filled": {"up": [0.6], "down": [0.6]}, "empty": {"up": [], "down": []}},
+                spin_polarized=False,
+            )
+
+    def test_matching_spin_conventions_pass(self):
+        _validate_alpha_screening(_OZONE_ALPHAS, spin_polarized=False)
+        _validate_alpha_screening(
+            {"filled": {"up": [0.6], "down": [0.6]}, "empty": {"up": [0.7], "down": [0.7]}},
+            spin_polarized=True,
+        )
 
 
 class TestValidateAlphaInputs:
@@ -889,6 +909,23 @@ class TestKoopmansDSCFGraphBuild:
         inputs.update(overrides)
         return KoopmansDSCFWorkflow.build(**inputs)
 
+    @staticmethod
+    def _find_task(wg, name: str):
+        """Return the (possibly nested) task with the given name."""
+
+        def _walk(tasks):
+            for t in tasks:
+                if t.name == name:
+                    return t
+                found = _walk(getattr(t, "children", None) or [])
+                if found is not None:
+                    return found
+            return None
+
+        found = _walk(wg.tasks)
+        assert found is not None, [t.name for t in wg.tasks]
+        return found
+
     def _all_link_labels(self, wg) -> list[str]:
         """Walk every task (recursing into sub-graphs) and collect call_link_labels."""
         labels: list[str] = []
@@ -1527,6 +1564,79 @@ class TestKoopmansDSCFGraphBuild:
         # The DFT init chain still runs (the final KI parents on it).
         assert any("dft_init" in s for s in labels), labels
 
+        # The final KI must take over the trial KI's seeding role: on
+        # the molecular route that means the KS-as-variational overlay
+        # and the first-orbital-dependent-run marker. A skip branch that
+        # silently drops either would still build — pin the socket
+        # values.
+        rfk = self._find_task(wg, "RunFinalKI")
+        assert rfk.inputs.variational_orbital_overlays.value == _ks_variational_overlay(2)
+        assert rfk.inputs.is_first_iteration.value is True
+        assert rfk.inputs.initial_evc_occupied1.value is None
+
+    def test_default_build_passes_the_pre_run_input_check(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Omitting the optional per-orbital alphas leaves no missing inputs.
+
+        ``check_before_run`` runs on every real submission (both
+        ``WorkGraph.run`` and ``WorkGraph.submit`` call it), so an input
+        namespace it considers incomplete blocks the whole workflow —
+        yet every other test here stops at ``.build()`` and cannot see
+        it. This is the only guard against that class of defect.
+
+        ``alphas`` is a genuinely optional ``AlphaScreening`` namespace:
+        the payload is all-or-nothing, so the TypedDict is total and its
+        ``filled`` / ``empty`` members are individually required *given
+        a payload*. aiida-workgraph's ``find_missing_inputs`` recurses
+        into a namespace's children without first honoring the
+        namespace's own ``_metadata.required``, so omitting the payload
+        currently reports both members missing. That is an upstream gap,
+        not something to paper over by loosening the payload's type —
+        the expected-failure branch below clears itself once the fix
+        lands.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+        )
+        missing = list(wg.find_missing_inputs(wg.inputs))
+        for t in wg.tasks:
+            missing.extend(wg.find_missing_inputs(t.inputs))
+        optional_alpha_members = {
+            "graph_inputs.alphas.filled",
+            "graph_inputs.alphas.empty",
+            "ComputeScreeningParameters.initial_alphas.filled",
+            "ComputeScreeningParameters.initial_alphas.empty",
+        }
+        if missing and set(missing) <= optional_alpha_members:
+            pytest.xfail(
+                "aiida-workgraph find_missing_inputs recurses into the children of an "
+                "optional input namespace without honoring its own required=False, so "
+                "an omitted AlphaScreening payload reports its members missing"
+            )
+        assert not missing, sorted(set(missing))
+        wg.check_before_run()
+
+    def test_spin_convention_mismatch_raises_at_build(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """A closed-shell payload on a spin-polarized build fails with a named error.
+
+        Without the convention check the mismatch would only surface as a
+        bare ``KeyError`` inside the per-orbital fan-out at runtime.
+        """
+        with pytest.raises(ValueError, match="spin_polarized=True"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                spin_polarized=True,
+                initial_alpha=None,
+                alphas=_OZONE_ALPHAS,
+            )
+
     def test_injected_alphas_seed_refinement_loop(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
@@ -1547,6 +1657,13 @@ class TestKoopmansDSCFGraphBuild:
         labels = self._all_link_labels(wg)
         assert any("ComputeScreeningParameters" in s for s in labels), labels
         assert not any("injected_alphas" in s for s in labels), labels
+
+        # The workflow must actually hand the caller's payload to the
+        # screening sub-graph — an ``initial_alphas=None`` regression at
+        # this call site would silently fall back to the uniform guess.
+        csp = self._find_task(wg, "ComputeScreeningParameters")
+        assert csp.inputs.initial_alphas.filled.value == _OZONE_ALPHAS["filled"]
+        assert csp.inputs.initial_alphas.empty.value == _OZONE_ALPHAS["empty"]
 
         # The generator suppression is only visible when the sub-graph's
         # deferred body runs — build it directly with concrete inputs.
@@ -1673,3 +1790,254 @@ class TestKoopmansDSCFGraphBuild:
             "dft_init_nspin2",
         ):
             assert not any(forbidden in label for label in labels), (forbidden, labels)
+
+
+# ----------------------------------------------------------------------
+# Skip-mode final KI vs first-iteration trial KI: concrete kcp.x inputs
+# ----------------------------------------------------------------------
+
+
+def _link_source(socket):
+    """Return ``(task_name, scoped_name)`` pairs feeding ``socket``, or ``None``."""
+    links = getattr(socket, "_links", None) or []
+    return sorted((link.from_socket._task.name, link.from_socket._scoped_name) for link in links)
+
+
+def _plain(value):
+    """Reduce a socket value to something comparable across two graph builds.
+
+    Overlay / staging payloads arrive as freshly created ``orm.Dict``
+    nodes, so identity and uuid differ between builds even when the
+    content is identical; unwrap them. ``TaggedValue`` proxies compare
+    by their wrapped value already.
+    """
+    from aiida import orm
+
+    if isinstance(value, orm.Dict):
+        return value.get_dict()
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _socket_value(socket):
+    """Return a socket's value, descending into input namespaces."""
+    from aiida_workgraph.socket import TaskSocketNamespace
+
+    if isinstance(socket, TaskSocketNamespace):
+        return {s._name: _socket_value(s) for s in socket}
+    return socket.value
+
+
+class TestSkipModeFinalKIMatchesFirstTrialKI:
+    """The skip-mode final KI must be the first-iteration trial KI in disguise.
+
+    With ``calculate_alpha=False`` the refinement loop is gone, so the
+    final KI is the first orbital-dependent run after the DFT init and
+    has to inherit *every* seeding decision the trial KI would have
+    made: the same parent save, the same variational-orbital seeding
+    (the KS-as-variational overlay on the molecular route, the folded
+    Wannier ``evc_occupied{1,2}`` staging on the periodic one) and the
+    same ``is_first_iteration`` marker that drives KIPZ's inner-loop CG
+    pass and the restart keys.
+
+    Graph-shape tests cannot see any of this: dropping the overlay or
+    the staging still produces a graph with the right tasks and links.
+    These tests therefore compare the *concrete* kcp.x inputs — the
+    namelist dicts key by key, the parent folder identity and the
+    wavefunction staging — between the two routes' first trial and the
+    skip-mode final run.
+    """
+
+    # A self-consistent set of concrete counts shared by both sub-graph
+    # builds, so any difference in the resulting namelists comes from
+    # the seeding decisions under test rather than from the inputs.
+    NBND = 10
+    NELEC = 18
+    NELUP = NELDW = 9
+    ALPHAS: ClassVar[dict] = {"filled": {"none": [0.6] * 9}, "empty": {"none": [0.7]}}
+
+    @staticmethod
+    def _pseudos(structure, pseudo_family):
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": pseudo_family})
+            .one()[0]
+        )
+        return family.get_pseudos(structure=structure)
+
+    def _numeric_args(self, structure, code, pseudos):
+        return {
+            "code": code,
+            "structure": structure,
+            "pseudos": pseudos,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": self.NBND,
+            "nspin": 2,
+            "nelec": self.NELEC,
+            "nelup": self.NELUP,
+            "neldw": self.NELDW,
+            "tot_magnetization": 0,
+        }
+
+    @staticmethod
+    def _kcp_step(wg, prefix):
+        """Return the single ``KcpStep`` task whose name starts with ``prefix``."""
+        matches = [t for t in wg.tasks if t.name.startswith(prefix)]
+        assert len(matches) == 1, (prefix, [t.name for t in wg.tasks])
+        return matches[0]
+
+    def _concrete_kcp_inputs(self, task):
+        """Return the comparable subset of a ``KcpStep``'s concrete inputs."""
+        return {
+            "parameters": _plain(task.inputs.parameters.value),
+            "overlays": _plain(_socket_value(task.inputs.variational_orbital_overlays)),
+            "read_wavefunctions": _plain(_socket_value(task.inputs.read_wavefunctions)),
+            "parent_folder": task.inputs.parent_folder.value.uuid,
+            "alphas": _plain(_socket_value(task.inputs.alphas)),
+        }
+
+    def _build_route(self, request, route, correction, *, calculate_alpha):
+        """Build a full DSCF workgraph for one route in one alpha mode."""
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        common = {
+            "code": request.getfixturevalue("kcp_code"),
+            "pseudo_family": request.getfixturevalue("ozone_pseudo_family"),
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": self.NBND,
+            "nspin": 2,
+            "correction": correction,
+        }
+        if route == "molecular":
+            common |= {
+                "structure": request.getfixturevalue("ozone_structure"),
+                "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+            }
+        else:
+            from tests.fixtures import ozone_projection_blocks
+
+            common |= {
+                "structure": request.getfixturevalue("periodic_ozone_structure"),
+                "init_orbitals": VariationalOrbitalType.MLWFS,
+                "codes": request.getfixturevalue("mlwf_codes"),
+                "blocks": ozone_projection_blocks(),
+                "kgrid": [2, 1, 1],
+                "kpoints": request.getfixturevalue("kmesh"),
+            }
+        if calculate_alpha:
+            return KoopmansDSCFWorkflow.build(initial_alpha=0.6, **common)
+        return KoopmansDSCFWorkflow.build(
+            initial_alpha=None,
+            alphas=self.ALPHAS,
+            calculate_alpha=False,
+            **common,
+        )
+
+    @pytest.mark.parametrize("correction", [Correction.KI, Correction.KIPZ])
+    @pytest.mark.parametrize("route", ["molecular", "periodic"])
+    def test_skip_mode_final_ki_inherits_the_trial_seeding(self, request, route, correction):
+        """The skip-mode final KI's kcp.x inputs equal the first trial KI's.
+
+        Discriminates three wiring regressions that leave the graph
+        shape untouched:
+
+        * dropping the KS-as-variational overlay on the skip path
+          (``final_overlay = None``) — the overlay comparison fails;
+        * dropping the Wannier ``evc_occupied`` staging and the
+          ``first_orbdep_run`` marker — the staging comparison and the
+          ``is_first_iteration``-sensitive namelist keys
+          (``restart_mode``, KIPZ's ``do_innerloop_cg``) diverge;
+        * seeding the refinement loop with ``initial_alphas=None`` —
+          checked at the workflow's call site below.
+        """
+        from aiida import orm
+
+        from aiida_koopmans.workgraphs.kcp import (
+            ComputeScreeningParameters,
+            RunFinalKI,
+            ScreeningIteration,
+        )
+
+        calc_wg = self._build_route(request, route, correction, calculate_alpha=True)
+        skip_wg = self._build_route(request, route, correction, calculate_alpha=False)
+
+        csp = TestKoopmansDSCFGraphBuild._find_task(calc_wg, "ComputeScreeningParameters")
+        rfk = TestKoopmansDSCFGraphBuild._find_task(skip_wg, "RunFinalKI")
+
+        # (1) Provenance: the final KI must parent on — and stage from —
+        # exactly the upstream sockets that feed the screening loop.
+        assert _link_source(rfk.inputs.parent_folder) == _link_source(csp.inputs.dft_remote)
+        for name in ("initial_evc_occupied1", "initial_evc_occupied2"):
+            assert _link_source(rfk.inputs[name]) == _link_source(csp.inputs[name]), name
+
+        # (2) Concrete kcp.x inputs. Both sub-graphs are expanded with
+        # the same dummy stand-ins for whatever the workflow supplies
+        # through a link, so the only thing that can differ is a
+        # seeding decision the workflow made differently on each path.
+        structure = (
+            request.getfixturevalue("ozone_structure")
+            if route == "molecular"
+            else request.getfixturevalue("periodic_ozone_structure")
+        )
+        code = request.getfixturevalue("kcp_code")
+        pseudos = self._pseudos(structure, request.getfixturevalue("ozone_pseudo_family"))
+        numeric = self._numeric_args(structure, code, pseudos)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+        evc = {
+            name: (
+                orm.SinglefileData(io.BytesIO(b"evc"), filename=f"{name}.dat")
+                if _link_source(rfk.inputs[name])
+                else None
+            )
+            for name in ("initial_evc_occupied1", "initial_evc_occupied2")
+        }
+
+        csp_wg = ComputeScreeningParameters.build(
+            **numeric,
+            initial_alpha=0.6,
+            correction=correction,
+            init_orbitals=csp.inputs.init_orbitals.value,
+            dft_remote=dummy_remote,
+            **evc,
+        )
+        si_args = {
+            sock._name: _socket_value(sock)
+            for sock in TestKoopmansDSCFGraphBuild._find_task(csp_wg, "ScreeningIteration").inputs
+            if sock._name not in ("_wait", "metadata", "monitors")
+        }
+        # The uniform-alpha generator is a task output (a socket) at this
+        # point; substitute the payload so the trial's ``file_alpharef``
+        # matches the injected one and cannot mask a seeding difference.
+        si_args["current_alphas"] = self.ALPHAS
+        trial_wg = ScreeningIteration.build(**si_args)
+
+        final_wg = RunFinalKI.build(
+            **numeric,
+            correction=correction,
+            alphas=self.ALPHAS,
+            parent_folder=dummy_remote,
+            # Seeding decisions taken verbatim from the skip-mode graph.
+            variational_orbital_overlays=_socket_value(rfk.inputs.variational_orbital_overlays),
+            initial_evc_occupied1=rfk.inputs.initial_evc_occupied1.value
+            or evc["initial_evc_occupied1"],
+            initial_evc_occupied2=rfk.inputs.initial_evc_occupied2.value
+            or evc["initial_evc_occupied2"],
+            is_first_iteration=rfk.inputs.is_first_iteration.value,
+        )
+
+        trial = self._concrete_kcp_inputs(self._kcp_step(trial_wg, "ki"))
+        final = self._concrete_kcp_inputs(self._kcp_step(final_wg, "ki"))
+
+        # Namelist comparison key by key so a failure names the culprit.
+        for namelist in sorted(set(trial["parameters"]) | set(final["parameters"])):
+            assert trial["parameters"].get(namelist) == final["parameters"].get(namelist), namelist
+        for key in ("overlays", "read_wavefunctions", "parent_folder", "alphas"):
+            assert trial[key] == final[key], key
