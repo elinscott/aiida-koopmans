@@ -1585,16 +1585,13 @@ class TestKoopmansDSCFGraphBuild:
         yet every other test here stops at ``.build()`` and cannot see
         it. This is the only guard against that class of defect.
 
-        ``alphas`` is a genuinely optional ``AlphaScreening`` namespace:
-        the payload is all-or-nothing, so the TypedDict is total and its
-        ``filled`` / ``empty`` members are individually required *given
-        a payload*. aiida-workgraph's ``find_missing_inputs`` recurses
-        into a namespace's children without first honoring the
-        namespace's own ``_metadata.required``, so omitting the payload
-        currently reports both members missing. That is an upstream gap,
-        not something to paper over by loosening the payload's type —
-        the expected-failure branch below clears itself once the fix
-        lands.
+        A namespace socket built from a TypedDict whose keys are
+        required reports those keys missing whenever the whole payload
+        is omitted, which is why ``AlphaScreening`` marks both keys
+        ``NotRequired``: the recursion into a namespace's children does
+        not consult the namespace's own optionality. A payload that *is*
+        supplied stays all-or-nothing — the validators reject a partial
+        one, so the weaker socket typing costs nothing at runtime.
         """
         wg = self._build_wg(
             ozone_structure=ozone_structure,
@@ -1604,18 +1601,6 @@ class TestKoopmansDSCFGraphBuild:
         missing = list(wg.find_missing_inputs(wg.inputs))
         for t in wg.tasks:
             missing.extend(wg.find_missing_inputs(t.inputs))
-        optional_alpha_members = {
-            "graph_inputs.alphas.filled",
-            "graph_inputs.alphas.empty",
-            "ComputeScreeningParameters.initial_alphas.filled",
-            "ComputeScreeningParameters.initial_alphas.empty",
-        }
-        if missing and set(missing) <= optional_alpha_members:
-            pytest.xfail(
-                "aiida-workgraph find_missing_inputs recurses into the children of an "
-                "optional input namespace without honoring its own required=False, so "
-                "an omitted AlphaScreening payload reports its members missing"
-            )
         assert not missing, sorted(set(missing))
         wg.check_before_run()
 

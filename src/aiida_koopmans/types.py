@@ -182,10 +182,18 @@ class AlphaScreening(TypedDict):
     (block-spin: all ``SpinChannel.UP`` entries first, then ``SpinChannel.DOWN``).
 
     For ``nspin == 1``: the only key is ``SpinChannel.NONE``.
+
+    Both keys are ``NotRequired`` so the payload can serve as an
+    *optional* graph input: a namespace socket built from a TypedDict
+    whose keys are required reports those keys missing whenever the
+    whole payload is omitted, which would block every calculation that
+    does not supply per-orbital alphas. A payload that is supplied is
+    still all-or-nothing — :func:`_validate_alpha_screening` demands
+    both fields and rejects a partial one.
     """
 
-    filled: dict[SpinChannel, list[float]]
-    empty: dict[SpinChannel, list[float]]
+    filled: NotRequired[dict[SpinChannel, list[float]]]
+    empty: NotRequired[dict[SpinChannel, list[float]]]
 
 
 # The QE code vocabulary, defined once. ``CODE_NAMES`` is the runtime tuple
