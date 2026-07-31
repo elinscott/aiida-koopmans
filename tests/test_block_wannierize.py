@@ -870,7 +870,7 @@ class TestWannierizeBlockBuild:
             external_projectors=si_external_projector_tables(),
         )
         task = self._wannier_task(wg)
-        params = task.inputs["wannier90"]["wannier90"]["parameters"].value.get_dict()
+        params = self._w90_parameters(wg)
         assert params["auto_projections"] is True
         assert params["num_wann"] == 8
         assert params["num_bands"] == 8
