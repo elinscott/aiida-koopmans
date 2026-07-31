@@ -231,14 +231,15 @@ def explicit_block(
     include,
     projections=None,
     spin=None,
-    filled=None,
+    filled=True,
     num_bands=None,
     exclude_bands=None,
 ):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
 
-    ``filled`` stamps the block's occupancy when given; ``None`` leaves the
-    block unstamped (the partition-emission gate stays off). ``num_bands``
+    ``include`` names the block's band slots, one per Wannier function.
+    ``filled`` stamps the occupancy; it defaults to an occupied block, so
+    a test whose subject is occupancy states it at the call. ``num_bands``
     beyond ``len(include)`` gives the block a disentanglement pool, in which
     case ``exclude_bands`` names only the bands below it.
     """
@@ -250,6 +251,7 @@ def explicit_block(
     block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=n,
         num_bands=n if num_bands is None else num_bands,
         include_bands=list(include),
@@ -258,8 +260,6 @@ def explicit_block(
     )
     if exclude_bands is not None:
         block["exclude_bands"] = list(exclude_bands)
-    if filled is not None:
-        block["filled"] = filled
     return block
 
 
@@ -290,13 +290,13 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def automatic_block(label, include, spin=None, projection_type=None, filled=None):
+def automatic_block(label, include, spin=None, projection_type=None, filled=True):
     """Build a minimal automatic projection block over ``include`` bands.
 
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
     projection source automated wannierization always uses. ``filled``
-    stamps the block's occupancy when given; ``None`` leaves the block
-    unstamped (the partition-emission gate stays off).
+    stamps the occupancy; it defaults to an occupied block, so a test
+    whose subject is occupancy states it at the call.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -305,17 +305,15 @@ def automatic_block(label, include, spin=None, projection_type=None, filled=None
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
     n = len(include)
-    block = AutomaticProjectionBlock(
+    return AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=n,
         num_bands=n,
         include_bands=list(include),
         projection_type=projection_type,
     )
-    if filled is not None:
-        block["filled"] = filled
-    return block
 
 
 @pytest.fixture
@@ -344,11 +342,12 @@ def ozone_projection_blocks():
 
     from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 
-    def _block(label, include):
+    def _block(label, include, filled):
         n = len(include)
         return ExplicitProjectionBlock(
             label=label,
             spin=SpinChannel.NONE,
+            filled=filled,
             num_wann=n,
             num_bands=n,
             include_bands=list(include),
@@ -356,7 +355,10 @@ def ozone_projection_blocks():
             projections=[],
         )
 
-    return [_block("block_occ", range(1, 10)), _block("block_emp", range(10, 11))]
+    return [
+        _block("block_occ", range(1, 10), filled=True),
+        _block("block_emp", range(10, 11), filled=False),
+    ]
 
 
 @pytest.fixture

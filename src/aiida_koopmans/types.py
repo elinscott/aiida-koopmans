@@ -266,31 +266,32 @@ class _ProjectionBlockBase(TypedDict):
     * ``num_wann`` -- the Wannier functions the block produces.
     * ``num_bands`` -- the bands wannier90 reads. Exceeding ``num_wann``
       is what makes the block disentangle; the excess is its pool.
-    * ``include_bands`` -- the ``num_wann`` band indices the block's
-      Wannier functions map onto, and *only* those. A pool never appears
-      here: it lives in ``num_bands`` and in the bands ``exclude_bands``
-      stops naming. Consumers read this list as the band-to-Wannier-function
-      map (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`),
-      so widening it silently mis-addresses Wannier functions.
+    * ``include_bands`` -- the ``num_wann`` band slots the block occupies,
+      ascending: where it sits in the global band ordering. They are the
+      bands its Wannier functions span only when ``num_bands ==
+      num_wann``; a disentangling block optimises its subspace out of all
+      ``num_bands`` bands, so its slots give a position and a count, not
+      an origin. Widening the list to the pool mis-addresses Wannier
+      functions wherever it is read as the band-to-Wannier-function map
+      (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`).
 
     ``exclude_bands`` names every band of the pw.x run the block does not
     read, so ``len(exclude_bands) + num_bands`` is that run's band count --
     the identity wann2kcp.x checks a ``.chk`` against.
 
-    ``filled`` is the block's occupancy (every block is purely occupied
-    or purely empty). Optional: it is stamped by callers that need the
-    initial orbital partition emitted downstream; routes that instead
-    derive occupancy from ``include_bands`` against a per-spin
-    occupied-band count (:func:`group_blocks_to_merge`) leave it unset.
+    ``filled`` is the block's occupancy: ``True`` for a purely occupied
+    block, ``False`` for a purely empty one. The producer stamps it; no
+    consumer derives it from the band slots, which for a disentangling
+    block say nothing about where the Wannier functions came from.
     """
 
     label: str
     spin: SpinChannel
+    filled: bool
     num_wann: int
     num_bands: int
     include_bands: list[int]
     exclude_bands: NotRequired[list[int] | None]
-    filled: NotRequired[bool]
     projection_type: WannierProjectionType
 
 
@@ -321,6 +322,44 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
 # Analytic blocks carry ``projections``; automatic blocks do not, so
 # ``"projections" in block`` narrows the union to the explicit arm.
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
+
+
+def validate_projection_block(block: ProjectionBlock) -> None:
+    """Reject a block whose band bookkeeping cannot describe a Wannierization.
+
+    Lives beside the type because a ``TypedDict`` cannot validate at
+    runtime; every entry point that takes blocks calls this first. The
+    rules: ``filled`` is stamped, ``num_bands >= num_wann >= 1``, and
+    ``include_bands`` holds exactly ``num_wann`` slots. Raise
+    ``ValueError`` naming the block and the rule it breaks.
+    """
+    label = block["label"]
+    if "filled" not in block:
+        raise ValueError(
+            f"Block {label!r} does not say whether it is occupied or empty; set "
+            "`filled` on it. Occupancy cannot be read back off the band slots: a "
+            "block that disentangles owns slots it does not Wannierise."
+        )
+    num_wann = int(block["num_wann"])
+    num_bands = int(block["num_bands"])
+    if num_wann < 1:
+        raise ValueError(
+            f"Block {label!r} declares num_wann = {num_wann}; every block must "
+            "carry at least one Wannier function."
+        )
+    if num_bands < num_wann:
+        raise ValueError(
+            f"Block {label!r} reads {num_bands} bands but Wannierises {num_wann} "
+            "functions; wannier90 needs at least one band per Wannier function."
+        )
+    include = list(block["include_bands"])
+    if len(include) != num_wann:
+        raise ValueError(
+            f"Block {label!r} names {len(include)} band slots ({include}) for "
+            f"{num_wann} Wannier functions; `include_bands` holds one slot per "
+            "Wannier function. A disentanglement pool belongs in `num_bands`, "
+            "not here."
+        )
 
 
 class ProjectionBlockId(TypedDict):
@@ -415,14 +454,13 @@ def group_blocks_to_merge(
 ) -> list[MergeGroup]:
     """Group blocks into occupied / empty manifolds per spin.
 
-    A block is *occupied* when all of its ``include_bands`` lie at or
-    below that spin channel's
-    occupied-band count, and *empty* when they all lie above it; a block
-    that straddles the boundary is an error (the projections must be split
-    so each block is purely occupied or purely empty).
-
+    Each block's ``filled`` stamp decides which manifold it joins.
     ``num_occ_bands`` maps each spin channel to its number of occupied
-    bands. For ``nspin == 1`` use the single key ``SpinChannel.NONE``.
+    bands (for ``nspin == 1``, the single key ``SpinChannel.NONE``) and
+    is checked, not used to classify: a channel's occupied blocks must
+    span exactly that many Wannier functions, since the merged
+    ``evc_occupied`` file seeds the whole occupied manifold of the kcp.x
+    run.
 
     Returns one :class:`MergeGroup` per ``(filled, spin)`` that has
     members, preserving the order in which blocks are first encountered so
@@ -431,6 +469,7 @@ def group_blocks_to_merge(
     groups: list[MergeGroup] = []
     index: dict[tuple[bool, SpinChannel], MergeGroup] = {}
     for block in blocks:
+        validate_projection_block(block)
         spin = SpinChannel(block["spin"])
         if spin not in num_occ_bands:
             raise KeyError(
@@ -438,25 +477,27 @@ def group_blocks_to_merge(
                 f"occupied-band count per spin channel (use SpinChannel.NONE "
                 f"for nspin==1)."
             )
-        n_occ = num_occ_bands[spin]
-        include = block["include_bands"]
-        if max(include) <= n_occ:
-            filled = True
-        elif min(include) > n_occ:
-            filled = False
-        else:
-            raise ValueError(
-                f"Block {block['label']!r} spans both the occupied and empty "
-                f"manifolds (include_bands={include}, n_occ={n_occ}). Split the "
-                f"projections so each block is purely occupied or purely empty."
-            )
-        key = (filled, spin)
+        key = (bool(block["filled"]), spin)
         group = index.get(key)
         if group is None:
-            group = MergeGroup(filled=filled, spin=spin, blocks=[])
+            group = MergeGroup(filled=key[0], spin=spin, blocks=[])
             index[key] = group
             groups.append(group)
         group["blocks"].append(block)
+    for spin in dict.fromkeys(SpinChannel(block["spin"]) for block in blocks):
+        occupied = [
+            block for block in blocks if SpinChannel(block["spin"]) == spin and block["filled"]
+        ]
+        spanned = sum(int(block["num_wann"]) for block in occupied)
+        n_occ = num_occ_bands[spin]
+        if spanned != n_occ:
+            labels = [block["label"] for block in occupied]
+            raise ValueError(
+                f"The occupied blocks of spin {spin.value!r} ({labels}) span {spanned} "
+                f"Wannier functions but the channel has {n_occ} occupied bands. Every "
+                "occupied band must be covered exactly once; check the `filled` stamps "
+                "and the projections."
+            )
     return groups
 
 

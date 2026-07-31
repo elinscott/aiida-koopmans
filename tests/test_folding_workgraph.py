@@ -12,50 +12,32 @@ from __future__ import annotations
 import io
 
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-from aiida_koopmans.types import (
-    ExplicitProjectionBlock,
-    SpinChannel,
-    group_blocks_to_merge,
-)
+from aiida_koopmans.types import SpinChannel, group_blocks_to_merge
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
+from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
 # Block / merge-group shapes
 # ----------------------------------------------------------------------
 
 
-def _block(label: str, include: range, spin: SpinChannel = SpinChannel.NONE):
-    """Build a minimal explicit block over ``include`` bands."""
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=spin,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=[],
-    )
-
-
 def _spinless_blocks():
     """Silicon-like shape: two occupied blocks + one empty block, nspin=1."""
     return [
-        _block("block_1", range(1, 3)),
-        _block("block_2", range(3, 5)),
-        _block("block_3", range(5, 9)),
+        explicit_block("block_1", range(1, 3), filled=True),
+        explicit_block("block_2", range(3, 5), filled=True),
+        explicit_block("block_3", range(5, 9), filled=False),
     ]
 
 
 def _spin_polarized_blocks():
     """One occupied + one empty block per spin channel."""
     return [
-        _block("block_1_up", range(1, 8), SpinChannel.UP),
-        _block("block_2_up", range(8, 9), SpinChannel.UP),
-        _block("block_1_down", range(1, 6), SpinChannel.DOWN),
-        _block("block_2_down", range(6, 9), SpinChannel.DOWN),
+        explicit_block("block_1_up", range(1, 8), spin=SpinChannel.UP, filled=True),
+        explicit_block("block_2_up", range(8, 9), spin=SpinChannel.UP, filled=False),
+        explicit_block("block_1_down", range(1, 6), spin=SpinChannel.DOWN, filled=True),
+        explicit_block("block_2_down", range(6, 9), spin=SpinChannel.DOWN, filled=False),
     ]
 
 

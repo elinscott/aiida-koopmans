@@ -635,6 +635,11 @@ class TestDeriveDfptManifolds:
         assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
+        # The empty block disentangles, so its two slots (bands 9-10 of a
+        # 12-band nscf) are the only thing left that could be read as an
+        # occupancy; the stamp is what says it is empty.
+        assert occ_block["filled"] is True
+        assert emp_block["filled"] is False
         assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
         assert has_disentangle is True
         assert n_orbitals == 10
@@ -700,6 +705,8 @@ class TestDeriveDfptManifolds:
         # stop at band 10 -- never in include_bands, which stays the
         # band-to-Wannier-function map of the block's own two functions.
         assert emp_blocks[1]["include_bands"] == [11, 12]
+        assert [b["filled"] for b in occ_blocks] == [True, True]
+        assert [b["filled"] for b in emp_blocks] == [False, False]
         for block in occ_blocks + emp_blocks:
             assert len(block["exclude_bands"] or []) + block["num_bands"] == 14
         assert has_disentangle is True

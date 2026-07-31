@@ -9,11 +9,10 @@ introspect its task list / wiring. Also unit-tests the
 from __future__ import annotations
 
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 from aiida_koopmans.workgraphs.ph import DielectricTask, extract_dielectric_constant
+from tests.fixtures import explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -44,19 +43,6 @@ def ph_codes(aiida_localhost):
         "pw2wannier90": _code("eps-p2w", "quantumespresso.pw2wannier90"),
         "kcw": _code("eps-kcw", "koopmans.kcw_wann2kc"),
     }
-
-
-def _block(label: str, include: range) -> ExplicitProjectionBlock:
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=SpinChannel.NONE,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=["Si:sp3"],
-    )
 
 
 # ----------------------------------------------------------------------
@@ -128,6 +114,13 @@ class TestDielectricTaskBuild:
         assert inputph["epsil"] is True
 
 
+def _si_manifolds():
+    """Return the single-occupied-manifold shape the auto-eps builds run on."""
+    return {
+        "none": {"occ": [explicit_block("occ", range(1, 5), projections=["Si:sp3"], filled=True)]}
+    }
+
+
 class TestSinglepointDFPTAutoEps:
     """eps_inf='auto' prepends the dielectric chain inside SinglepointDFPTWorkflow."""
 
@@ -136,7 +129,7 @@ class TestSinglepointDFPTAutoEps:
         wg = SinglepointDFPTWorkflow.build(
             codes=ph_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            manifolds=_si_manifolds(),
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -151,7 +144,7 @@ class TestSinglepointDFPTAutoEps:
         wg = SinglepointDFPTWorkflow.build(
             codes=ph_codes,
             structure=silicon_structure,
-            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            manifolds=_si_manifolds(),
             kpoints=kmesh,
             kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -166,7 +159,7 @@ class TestSinglepointDFPTAutoEps:
             SinglepointDFPTWorkflow.build(
                 codes=codes,
                 structure=silicon_structure,
-                manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+                manifolds=_si_manifolds(),
                 kpoints=kmesh,
                 kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",

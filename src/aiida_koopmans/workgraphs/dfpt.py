@@ -154,16 +154,18 @@ def _manifold_projection_blocks(
     first_band: int,
     nbnd: int,
     extra_bands: int,
+    filled: bool,
 ) -> list[ExplicitProjectionBlock]:
     """Materialise one manifold's per-block :class:`ExplicitProjectionBlock` list.
 
-    Blocks cover consecutive band windows starting at ``first_band``. Only
-    the *last* block absorbs the manifold's ``extra_bands`` disentanglement
-    bands (``num_bands > num_wann``), the band layout the u_dis merge in
-    :func:`prepare_kcw_wannier_files` relies on. ``include_bands`` names the
-    block's own Wannier bands and nothing else — the pool lives in
-    ``num_bands`` and in the bands ``exclude_bands`` stops naming. A single
-    -block manifold keeps the bare ``occ`` / ``emp`` label; multi-block
+    Blocks cover consecutive band windows starting at ``first_band`` and
+    carry the manifold's ``filled`` occupancy. Only the *last* block
+    absorbs the manifold's ``extra_bands`` disentanglement bands
+    (``num_bands > num_wann``), the band layout the u_dis merge in
+    :func:`prepare_kcw_wannier_files` relies on. ``include_bands`` holds
+    the block's own ``num_wann`` slots — the pool lives in ``num_bands``
+    and in the bands ``exclude_bands`` stops naming. A single-block
+    manifold keeps the bare ``occ`` / ``emp`` label; multi-block
     manifolds are numbered (``occ_1``, ``occ_up_1``, ...).
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
@@ -180,6 +182,7 @@ def _manifold_projection_blocks(
             ExplicitProjectionBlock(
                 label=label,
                 spin=spin_channel,
+                filled=filled,
                 num_wann=num_wann,
                 num_bands=num_bands,
                 include_bands=list(range(start, start + num_wann)),
@@ -263,7 +266,7 @@ def derive_dfpt_manifolds(
         f"_{spin_channel.value}" if spin_channel in (SpinChannel.UP, SpinChannel.DOWN) else ""
     )
     occ_blocks = _manifold_projection_blocks(
-        occupied, "occ", label_suffix, spin_channel, 1, nbnd, 0
+        occupied, "occ", label_suffix, spin_channel, 1, nbnd, 0, filled=True
     )
 
     emp_blocks: list[ExplicitProjectionBlock] = []
@@ -285,6 +288,7 @@ def derive_dfpt_manifolds(
             nocc + 1,
             nbnd,
             num_bands_emp - num_wann_emp,
+            filled=False,
         )
 
     return occ_blocks, emp_blocks, has_disentangle, num_wann_occ + num_wann_emp
