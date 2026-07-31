@@ -24,6 +24,7 @@ from aiida_koopmans.workgraphs import (
     Codes,
     enforce_step_calculation,
     merge_parallelization_into_existing_namespaces,
+    unwrap_enum,
     validate_parallelization,
 )
 
@@ -204,7 +205,9 @@ def Wannierize(
         )
 
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
+    # protocol builder's pseudo-family QueryBuilder can bind it, and to
+    # genuine enum members for the two enums this builder forwards into
+    # ``PwBaseWorkChain``, whose branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
@@ -213,8 +216,8 @@ def Wannierize(
         protocol=protocol,
         overrides=overrides or {},
         pseudo_family=pseudo_family,
-        electronic_type=electronic_type,
-        spin_type=spin_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
         projection_type=projection_type,
         disentanglement_type=disentanglement_type,
         frozen_type=frozen_type,
@@ -351,7 +354,9 @@ def OptimizeWannierization(
         Dict with outputs including optimal Wannier90 results and bands_distance.
     """
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
+    # protocol builder's pseudo-family QueryBuilder can bind it, and to
+    # genuine enum members for the two enums this builder forwards into
+    # ``PwBaseWorkChain``, whose branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
@@ -365,8 +370,8 @@ def OptimizeWannierization(
         protocol=protocol,
         overrides=overrides or {},
         pseudo_family=pseudo_family,
-        electronic_type=electronic_type,
-        spin_type=spin_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
         projection_type=projection_type,
         disentanglement_type=disentanglement_type,
         frozen_type=frozen_type,
