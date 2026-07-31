@@ -15,36 +15,6 @@ from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 from aiida_koopmans.workgraphs.ph import DielectricTask, extract_dielectric_constant
 
-# ----------------------------------------------------------------------
-# Fixtures
-# ----------------------------------------------------------------------
-
-
-@pytest.fixture
-def ph_codes(aiida_localhost):
-    """Stand-in codes dict for the dielectric chain (construction-only)."""
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("eps-pw", "quantumespresso.pw"),
-        "ph": _code("eps-ph", "quantumespresso.ph"),
-        "wannier90": _code("eps-w90", "wannier90.wannier90"),
-        "pw2wannier90": _code("eps-p2w", "quantumespresso.pw2wannier90"),
-        "kcw": _code("eps-kcw", "koopmans.kcw_wann2kc"),
-    }
-
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
     n = len(include)
