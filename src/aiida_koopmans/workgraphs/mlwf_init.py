@@ -265,8 +265,9 @@ def MlwfInitialization(
         pseudos: pseudopotentials resolved for the supercell kinds (the
             primitive shares them).
         blocks: projection blocks with *primitive* band indices.
-        kpoints: explicit unshifted k-mesh matching ``kgrid``, shared by the
-            nscf and every block's wannier90 / pw2wannier90.
+        kpoints: the k-mesh matching ``kgrid``. The scf samples it directly;
+            the nscf and every block's wannier90 / pw2wannier90 share its
+            expansion to an explicit list.
         kgrid: the Monkhorst-Pack grid (= supercell repeat counts).
         nelec / nelup / neldw / tot_magnetization: **supercell** electron
             counts (from ``count_electrons_task`` on ``supercell``).
@@ -311,6 +312,8 @@ def MlwfInitialization(
         # wannier90 cannot re-derive the Monkhorst-Pack dimensions from an
         # explicit k-list, so pin them from the primitive grid.
         mp_grid=list(kgrid),
+        # The scf takes the mesh itself and may reduce it by symmetry.
+        scf_kpoints=kpoints,
         pseudo_family=pseudo_family,
         protocol=wannier_protocol,
         overrides=wannier_overrides,

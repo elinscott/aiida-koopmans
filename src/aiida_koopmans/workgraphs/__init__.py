@@ -84,6 +84,25 @@ def enforce_step_calculation(params: dict[str, Any], step: str, expected: str) -
     return params
 
 
+def pin_kpoints(inputs: dict[str, Any], kpoints: orm.KpointsData | None) -> None:
+    """Replace a ``PwBaseWorkChain`` step's protocol mesh with ``kpoints``, in place.
+
+    The workchain accepts exactly one of ``kpoints`` and
+    ``kpoints_distance``, so the protocol's distance has to go rather than
+    be overruled — as does ``kpoints_force_parity``, which only qualifies
+    the distance. A ``None`` mesh leaves the protocol in charge.
+
+    Args:
+        inputs: One ``PwBaseWorkChain`` step's flattened inputs (mutated in place).
+        kpoints: The mesh (or explicit list) the step samples.
+    """
+    if kpoints is None:
+        return
+    inputs.pop("kpoints_distance", None)
+    inputs.pop("kpoints_force_parity", None)
+    inputs["kpoints"] = kpoints
+
+
 # QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil
 # decomposition) on the command line. Source-verified against Quantum ESPRESSO:
 # ``Modules/command_line_options.f90`` parses ``-nk``/``-npool`` and ``-pd``

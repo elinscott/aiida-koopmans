@@ -23,6 +23,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.workgraphs import (
     merge_parallelization_into_overrides,
+    pin_kpoints,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.pw import PwBaseStep
@@ -74,6 +75,7 @@ def DielectricTask(
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     parallelization: ParallelizationDict | None = None,
+    scf_kpoints: orm.KpointsData | None = None,
 ) -> DielectricOutputs:
     """Compute the macroscopic dielectric tensor: scf, then ph.x with epsil.
 
@@ -98,6 +100,10 @@ def DielectricTask(
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry feeds the scf step and the ``ph`` entry feeds the
             ph.x step (``metadata.options`` and ``-npool``).
+        scf_kpoints: Explicit k-points for the ground state the response is
+            taken about, replacing the protocol's ``kpoints_distance``.
+            Leave unset only where no mesh is prescribed and the protocol
+            should choose one. The q-mesh is separate and stays at Gamma.
 
     Returns:
         Dict with the scalar ``eps_inf`` (isotropic average), the full
@@ -132,6 +138,7 @@ def DielectricTask(
     )
     scf_builder.pop("clean_workdir", None)
     scf_data = get_dict_from_builder(scf_builder)
+    pin_kpoints(scf_data, scf_kpoints)
     scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
     scf_outputs = PwBaseStep(**scf_data)
 
