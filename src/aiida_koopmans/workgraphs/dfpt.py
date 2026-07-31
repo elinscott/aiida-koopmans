@@ -1075,6 +1075,7 @@ def SinglepointDFPTWorkflow(
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
+            scf_kpoints=kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             metadata={"call_link_label": "dielectric"},
