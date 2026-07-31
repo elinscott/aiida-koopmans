@@ -24,6 +24,7 @@ from aiida_koopmans.workgraphs import (
     Codes,
     enforce_step_calculation,
     merge_parallelization_into_existing_namespaces,
+    unwrap_enum,
     validate_parallelization,
 )
 
@@ -204,7 +205,8 @@ def Wannierize(
         )
 
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
+    # protocol builder's pseudo-family QueryBuilder can bind it, and to
+    # genuine enum members so its ``is``-based branches fire.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
@@ -213,11 +215,11 @@ def Wannierize(
         protocol=protocol,
         overrides=overrides or {},
         pseudo_family=pseudo_family,
-        electronic_type=electronic_type,
-        spin_type=spin_type,
-        projection_type=projection_type,
-        disentanglement_type=disentanglement_type,
-        frozen_type=frozen_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
+        projection_type=unwrap_enum(projection_type, WannierProjectionType),
+        disentanglement_type=unwrap_enum(disentanglement_type, WannierDisentanglementType),
+        frozen_type=unwrap_enum(frozen_type, WannierFrozenType),
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
         external_projectors_path=external_projectors_path,
@@ -351,25 +353,27 @@ def OptimizeWannierization(
         Dict with outputs including optimal Wannier90 results and bands_distance.
     """
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
+    # protocol builder's pseudo-family QueryBuilder can bind it, and to
+    # genuine enum members so its ``is``-based branches fire.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+    optimize_mu_reference = unwrap_enum(optimize_mu_reference, OptimizeMuReference)
 
     builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         reference_bands=reference_bands,
         bands_distance_threshold=bands_distance_threshold,
-        optimize_strategy=optimize_strategy,
-        optimize_metric=optimize_metric,
+        optimize_strategy=unwrap_enum(optimize_strategy, OptimizeStrategy),
+        optimize_metric=unwrap_enum(optimize_metric, OptimizeMetric),
         optimize_max_iterations=optimize_max_iterations,
         protocol=protocol,
         overrides=overrides or {},
         pseudo_family=pseudo_family,
-        electronic_type=electronic_type,
-        spin_type=spin_type,
-        projection_type=projection_type,
-        disentanglement_type=disentanglement_type,
-        frozen_type=frozen_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
+        projection_type=unwrap_enum(projection_type, WannierProjectionType),
+        disentanglement_type=unwrap_enum(disentanglement_type, WannierDisentanglementType),
+        frozen_type=unwrap_enum(frozen_type, WannierFrozenType),
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
         external_projectors_path=external_projectors_path,

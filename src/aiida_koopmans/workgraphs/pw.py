@@ -17,6 +17,7 @@ from aiida_koopmans.workgraphs import (
     inject_pseudo_family,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
+    unwrap_enum,
     validate_parallelization,
 )
 
@@ -90,7 +91,7 @@ def assemble_pw_base_step(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
-        electronic_type=electronic_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)

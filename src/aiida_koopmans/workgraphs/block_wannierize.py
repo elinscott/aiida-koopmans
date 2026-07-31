@@ -74,6 +74,7 @@ from aiida_koopmans.types import (
 from aiida_koopmans.workgraphs import (
     Codes,
     merge_parallelization_into_inputs,
+    unwrap_enum,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
@@ -674,7 +675,8 @@ def WannierizeBlock(
     # provenance-tagged proxies; the family label ends up bound as an SQL
     # parameter inside ``get_builder_from_protocol``, which needs a plain str
     # — as does the projector directory, which becomes a ``RemoteData``
-    # remote path.
+    # remote path — and the enums need to be genuine members so the
+    # builder's ``is``-based branches fire.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     if external_projectors_path is not None:
         external_projectors_path = str(external_projectors_path)
@@ -685,9 +687,9 @@ def WannierizeBlock(
         protocol=protocol,
         overrides=_builder_overrides(overrides),
         pseudo_family=pseudo_family,
-        electronic_type=electronic_type,
-        spin_type=spin_type,
-        projection_type=projection_type,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
+        projection_type=unwrap_enum(projection_type, WannierProjectionType),
         external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
         # For koopmans we do not exclude semicore states automatically.
