@@ -62,19 +62,61 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 
 Local editable installs from sibling paths during development.
 
-## Public text (PR bodies, commit messages, issues)
+A workaround for a dependency is a candidate bug report, most often for
+aiida-workgraph or node-graph, which are young enough that our use finds
+their edges first. An annotation shaped for the framework rather than the
+contract, a value coerced to survive a serializer, a socket restructured to
+get past a validator: say what the defect is, which package it lives in,
+and what the workaround costs — then stop. Patching upstream is the
+maintainer's call; when taken, it is a branch off their main, cherry-picked
+onto our fork's `patched` (which CI clones), plus an upstream pull request.
+A workaround that stays says what it works around.
 
-Public text explains; the diff shows. PR bodies use `## Problem / ## Changes /
-## Testing`. Problem states the failure as an outsider-readable scenario
-("when Wannierizing the empty states of a water molecule in a periodic box,
-..."), never session codenames, database PKs, or scratch paths. Changes list
-*conceptual* decisions, not mechanical enumerations; where it helps, show a
-before/after example of what the user sees. Testing says what each check
-establishes and why it discriminates — never bare pass counts. Causal and
-parity claims are graded (reproduced / code-read / theory) and only
-reproduced claims are asserted plainly. No Claude session URLs anywhere; the
-Co-Authored-By trailer stays. Squash-merge messages in 50/72 (subject ≤50
-chars including the `(#N)`, body wrapped at 72); the body opens with one
-sentence pairing the symptom with the fix ("X was silently doing Y; now
-Z."), then bullet-point details. Symptom not mechanism; enumerations as
-bullet lists.
+## Writing
+
+One standard for everything we write: docstrings, comments, error messages,
+PR bodies, commit messages, issues. Orwell's rules — short word, cut what
+can be cut, active voice, no stale figure of speech — with one carve-out:
+domain terms that carry a precise meaning (Wannier function,
+disentanglement, socket) and upstream keyword names stay. What is forbidden
+is *coined* jargon: "a pool-carrying block enters the split chain" makes
+the reader learn two terms before they learn the fact. US spelling in prose
+(Wannierize, behavior); upstream names keep their own (`guiding_centres`).
+
+**Docstrings, comments, error messages.** A docstring says what the thing
+does and what must hold for it to work.
+
+- State the rule, not a picture of it: `dis_froz_max < min_k E(num_wann +
+  1, k)`, not "the window is kept inside the block's own manifold".
+- Say what the function does, not where its result is used.
+- Document this object's contract. Another module's behaviour, and how it
+  came to be this way, both go stale silently.
+- No design justification and no restating the signature: both belong in
+  the pull request.
+- No redundant emphasis ("it is important to note", "and they must not be
+  conflated").
+- Imperative summary line, one line, full stop (ruff D401).
+- Error messages add one rule: tell the reader what to change, in their
+  vocabulary.
+
+**PR bodies, commit messages, issues.** Public text explains; the diff
+shows.
+
+- `### Problem / ### Changes / ### Testing`. Problem is a scenario an
+  outsider can picture, never session codenames, database PKs or scratch
+  paths. Changes are conceptual decisions, not enumerated helpers. Testing
+  says what each check discriminates, never bare pass counts.
+- Rename or add a heading when the change calls for it; three is the
+  default, not a form to fill in.
+- Roughly four bullets a section, none over three lines. Cut test
+  methodology, and anything Problem already said.
+- Grade claims (reproduced / code-read / theory) and assert only the
+  reproduced ones.
+- Worked examples stand alone: write the snippet a stranger could paste.
+- Check for staleness before publishing.
+- Squash messages in 50/72: subject ≤50 including `(#N)`, body wrapped at
+  72, opening with one sentence pairing symptom and fix, then bullets.
+- No Claude session URLs; the Co-Authored-By trailer stays.
+
+**Documentation** decouples orthogonal choices: never present a default
+pairing (grouping criterion ↔ screening method) as an equivalence.
