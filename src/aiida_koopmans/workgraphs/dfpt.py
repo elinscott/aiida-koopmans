@@ -1151,6 +1151,7 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides=wannier_overrides,
             nscf_remote_folder=nscf_remote_folder,
+            nscf_bands=scf_nscf["nscf_output_band"],
             parallelization=parallelization,
             metadata={"call_link_label": f"wannierize{suffix}"},
         )
