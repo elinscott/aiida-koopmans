@@ -175,10 +175,6 @@ class TestValidateAlphaScreening:
             nbnd=10,
         )
 
-    def test_missing_field_raises(self):
-        with pytest.raises(ValueError, match="missing 'empty'"):
-            _validate_alpha_screening({"filled": {"none": [0.6]}})
-
     def test_unknown_channel_raises(self):
         with pytest.raises(ValueError, match="Unknown spin channel 'spinor'"):
             _validate_alpha_screening({"filled": {"spinor": [0.6]}, "empty": {"spinor": [0.7]}})

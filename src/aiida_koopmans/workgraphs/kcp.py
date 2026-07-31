@@ -21,7 +21,6 @@ and is rejected at build time.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -2250,29 +2249,20 @@ _ALPHA_CHANNELS = (SpinChannel.NONE.value, SpinChannel.UP.value, SpinChannel.DOW
 
 
 def _normalized_alpha_channels(
-    alphas: Mapping[str, Any],
+    alphas: AlphaScreening,
 ) -> dict[str, dict[str, list[float]]]:
     """Normalize an :class:`AlphaScreening` payload, checking its shape.
 
     ``filled`` and ``empty`` must both be present, each a mapping from a
     kcp.x spin channel — ``'none'`` (closed-shell single channel) or
     ``'up'`` / ``'down'`` (spin-polarized), never mixed — to a list of
-    numbers. The parameter is typed as a bare mapping because the
-    payload arrives in several transit forms (plain nested dict,
-    ``TaggedValue``-proxied graph input, per-field ``orm.Dict``); only
-    mapping-protocol access is used. Returns a plain
-    ``{field: {channel_tag: [float, ...]}}`` copy.
+    numbers. Returns a plain ``{field: {channel_tag: [float, ...]}}``
+    copy, so callers hold ordinary dicts whatever the payload was.
     """
     norm: dict[str, dict[str, list[float]]] = {}
-    for field in ("filled", "empty"):
-        per_spin = alphas.get(field) if hasattr(alphas, "get") else None
-        if per_spin is None:
-            raise ValueError(
-                "Per-orbital alphas must be a mapping with 'filled' and 'empty' "
-                f"entries (missing {field!r}); see aiida_koopmans.types.AlphaScreening."
-            )
+    for field, per_spin in (("filled", alphas["filled"]), ("empty", alphas["empty"])):
         norm[field] = {}
-        for key, values in dict(per_spin.items()).items():
+        for key, values in per_spin.items():
             try:
                 tag = SpinChannel(key).value
             except ValueError:
