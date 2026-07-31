@@ -182,10 +182,6 @@ class AlphaScreening(TypedDict):
     (block-spin: all ``SpinChannel.UP`` entries first, then ``SpinChannel.DOWN``).
 
     For ``nspin == 1``: the only key is ``SpinChannel.NONE``.
-
-    A payload is all-or-nothing: both fields are always present, and
-    ``_validate_alpha_screening`` rejects a partial one wherever it is
-    consumed.
     """
 
     filled: dict[SpinChannel, list[float]]
