@@ -231,15 +231,15 @@ def explicit_block(
     include,
     projections=None,
     spin=None,
-    filled=True,
+    filled=None,
     num_bands=None,
     exclude_bands=None,
 ):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
 
     ``include`` names the block's band slots, one per Wannier function.
-    ``filled`` stamps the occupancy; it defaults to an occupied block, so
-    a test whose subject is occupancy states it at the call. ``num_bands``
+    ``filled`` stamps the occupancy; ``None`` leaves it unstamped, the
+    state a block is in before anything has classified it. ``num_bands``
     beyond ``len(include)`` gives the block a disentanglement pool, in which
     case ``exclude_bands`` names only the bands below it.
     """
@@ -251,7 +251,6 @@ def explicit_block(
     block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
-        filled=filled,
         num_wann=n,
         num_bands=n if num_bands is None else num_bands,
         include_bands=list(include),
@@ -260,6 +259,8 @@ def explicit_block(
     )
     if exclude_bands is not None:
         block["exclude_bands"] = list(exclude_bands)
+    if filled is not None:
+        block["filled"] = filled
     return block
 
 
@@ -290,13 +291,13 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def automatic_block(label, include, spin=None, projection_type=None, filled=True):
+def automatic_block(label, include, spin=None, projection_type=None, filled=None):
     """Build a minimal automatic projection block over ``include`` bands.
 
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
-    projection source automated wannierization always uses. ``filled``
-    stamps the occupancy; it defaults to an occupied block, so a test
-    whose subject is occupancy states it at the call.
+    projection source automated wannierization always uses, and the one
+    whose occupancy is unknown until the runtime split, so ``filled``
+    defaults to unstamped.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -305,15 +306,17 @@ def automatic_block(label, include, spin=None, projection_type=None, filled=True
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
     n = len(include)
-    return AutomaticProjectionBlock(
+    block = AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
-        filled=filled,
         num_wann=n,
         num_bands=n,
         include_bands=list(include),
         projection_type=projection_type,
     )
+    if filled is not None:
+        block["filled"] = filled
+    return block
 
 
 @pytest.fixture

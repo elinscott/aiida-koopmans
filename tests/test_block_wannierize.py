@@ -472,15 +472,32 @@ class TestOrbitalPartitionEmission:
         assert wg.outputs["orbitals"]._links
         assert_graph_roundtrips(wg)
 
-    def test_unstamped_block_is_rejected(self, wannier_codes, silicon_structure, kmesh):
-        """A block that does not state its occupancy cannot be Wannierised.
+    def test_unstamped_blocks_skip_the_emission(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """Blocks of unknown occupancy Wannierise; only the partition waits.
 
-        The partition it feeds would otherwise have to guess, and the
-        guess is unavailable for exactly the blocks that disentangle.
+        The automatic-projections shape: the pseudopotentials fix how many
+        Wannier functions the block has, but which of them are occupied is
+        settled by the band-group detection this build only schedules.
         """
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[automatic_block("block_1", range(1, 9))],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
+        assert "initial_orbital_partition" not in [t.name for t in wg.tasks]
+        assert not wg.outputs["orbitals"]._links
+
+    def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
         blocks = _silicon_blocks()
         del blocks[1]["filled"]
-        with pytest.raises(ValueError, match=r"block_2.*occupied or empty"):
+        with pytest.raises(ValueError, match="block_2"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
     def test_partition_follows_the_stamps_not_the_slots(

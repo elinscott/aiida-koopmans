@@ -102,8 +102,8 @@ class TestGroupBlocksToMerge:
         ]
 
     def test_unstamped_block_raises(self):
+        """The merge cannot proceed on a block nobody has classified."""
         block = _explicit("block_1", range(1, 5))
-        del block["filled"]
         with pytest.raises(ValueError, match="occupied or empty"):
             group_blocks_to_merge([block], {SpinChannel.NONE: 4})
 
@@ -141,11 +141,13 @@ class TestValidateProjectionBlock:
         # Four Wannier functions optimised out of six bands: four slots.
         validate_projection_block(_explicit("block_1", range(1, 5), num_bands=6, filled=True))
 
-    def test_rejects_an_unstamped_block(self):
-        block = _explicit("block_1", range(1, 5))
-        del block["filled"]
-        with pytest.raises(ValueError, match="occupied or empty"):
-            validate_projection_block(block)
+    def test_accepts_a_block_of_unknown_occupancy(self):
+        """Occupancy is not part of a block's structural bookkeeping.
+
+        A block built from atomic projectors is well-formed before anything
+        has classified it; only a consumer that needs the occupancy refuses.
+        """
+        validate_projection_block(_automatic("block_1", range(1, 5)))
 
     def test_rejects_slots_widened_into_the_pool(self):
         """A pool belongs in ``num_bands``; widening the slots mis-addresses WFs."""
