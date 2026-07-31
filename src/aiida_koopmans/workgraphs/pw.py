@@ -197,13 +197,16 @@ def RunScfNscf(
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     parallelization: ParallelizationDict | None = None,
+    scf_kpoints: orm.KpointsData | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
-    The SCF step uses protocol defaults. The NSCF step reuses the SCF
-    charge density via ``parent_folder`` and sets ``calculation = 'nscf'``.
+    Each step samples the Brillouin zone on the mesh it is given, falling
+    back to the protocol's ``kpoints_distance`` when none is. The NSCF step
+    reuses the SCF charge density via ``parent_folder`` and sets
+    ``calculation = 'nscf'``.
 
     Overrides are split by namespace: ``overrides["scf"]`` applies to the
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
@@ -218,6 +221,9 @@ def RunScfNscf(
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry sets the scf/nscf pw.x ``metadata.options`` and
             ``-npool``.
+        scf_kpoints: Explicit k-points for the SCF step, replacing the
+            protocol's ``kpoints_distance``. Leave unset only where no
+            mesh is prescribed and the protocol should choose one.
         nscf_kpoints: Explicit k-points for the NSCF step, replacing the
             protocol's ``kpoints_distance``. A wannierisation NSCF must run
             on the full (symmetry-unreduced) grid in the k-point order the
@@ -247,6 +253,7 @@ def RunScfNscf(
         overrides=overrides.setdefault("scf", {}),
         protocol=protocol,
         electronic_type=electronic_type,
+        kpoints=scf_kpoints,
     )
 
     # The nscf reuses the scf density; an explicit mesh (when given) must

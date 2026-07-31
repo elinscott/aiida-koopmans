@@ -940,6 +940,25 @@ def _maybe_emit_orbital_partition(
     outputs["orbitals"] = partition.result
 
 
+def _reject_inputs_an_external_scratch_ignores(
+    overrides: WannierizeOverrides,
+    scf_kpoints: orm.KpointsData | None,
+) -> None:
+    """Reject inputs to an scf that an external nscf scratch skips."""
+    if "scf" in overrides or "nscf" in overrides:
+        raise ValueError(
+            "scf/nscf overrides were given together with an external "
+            "nscf_remote_folder; the internal scf + nscf is skipped, so "
+            "they would be silently ignored."
+        )
+    if scf_kpoints is not None:
+        raise ValueError(
+            "scf_kpoints was given together with an external "
+            "nscf_remote_folder; no scf runs here, so the mesh would be "
+            "silently ignored. Set it on whoever ran the scf."
+        )
+
+
 def _resolve_split_mode(
     codes: Codes,
     blocks: list[ProjectionBlock],
@@ -1028,6 +1047,7 @@ def WannierizeBlocks(
     blocks: list[ProjectionBlock],
     kpoints: orm.KpointsData,
     mp_grid: list[int] | None = None,
+    scf_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -1093,6 +1113,9 @@ def WannierizeBlocks(
             ``KpointsData`` cannot represent its parent mesh, and
             wannier90 requires ``mp_grid`` in the ``.win`` (it cannot
             re-derive it from the list).
+        scf_kpoints: the mesh the shared scf samples. Unset falls back to
+            the protocol's ``kpoints_distance``. Rejected together with
+            ``nscf_remote_folder``, which skips the scf entirely.
         pseudo_family: pseudopotential family label.
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
@@ -1177,12 +1200,7 @@ def WannierizeBlocks(
 
     # --- shared scf + nscf (run once, or reuse the caller's scratch) ---
     if nscf_remote_folder is not None:
-        if "scf" in overrides or "nscf" in overrides:
-            raise ValueError(
-                "scf/nscf overrides were given together with an external "
-                "nscf_remote_folder; the internal scf + nscf is skipped, so "
-                "they would be silently ignored."
-            )
+        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
         block_bands = nscf_bands
@@ -1203,6 +1221,7 @@ def WannierizeBlocks(
             # explicit ``kpoints`` mesh, so the nscf must run on exactly that
             # grid (not the protocol's kpoints_distance-derived one).
             nscf_kpoints=kpoints,
+            scf_kpoints=scf_kpoints,
             parallelization=parallelization,
             metadata={"call_link_label": "scf_nscf"},
         )

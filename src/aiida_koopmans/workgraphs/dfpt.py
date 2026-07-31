@@ -1108,6 +1108,7 @@ def SinglepointDFPTWorkflow(
     # order — expand the mesh once and share the explicit list between the
     # nscf and every per-block wannierisation. ``mp_grid`` keeps the mesh
     # dimensions, which wannier90 cannot re-derive from an explicit list.
+    # The scf takes the mesh itself and may reduce it by symmetry.
     from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
 
     mp_grid = kpoints.get_kpoints_mesh()[0]
@@ -1120,6 +1121,7 @@ def SinglepointDFPTWorkflow(
         protocol=protocol,
         overrides=scf_nscf_overrides,
         nscf_kpoints=explicit_kpoints,
+        scf_kpoints=kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "scf_nscf"},
     )

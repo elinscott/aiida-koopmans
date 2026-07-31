@@ -21,6 +21,7 @@ import pytest
 
 from tests.fixtures import (  # noqa: F401
     auto_codes,
+    dfpt_codes,
     fake_cutoffs_family,
     fake_upf,
     generate_upf_data,
