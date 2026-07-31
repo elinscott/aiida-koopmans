@@ -261,7 +261,7 @@ class _ProjectionBlockBase(TypedDict):
     discriminator (a real :class:`WannierProjectionType`, registered for
     AiiDA serialization via the ``aiida.data`` entry points).
 
-    Three counts, three meanings, and they must not be conflated:
+    Three counts, three meanings:
 
     * ``num_wann`` -- the Wannier functions the block produces.
     * ``num_bands`` -- the bands wannier90 reads. Exceeding ``num_wann``

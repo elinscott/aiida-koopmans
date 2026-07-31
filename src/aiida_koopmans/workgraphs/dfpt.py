@@ -1151,10 +1151,6 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides=wannier_overrides,
             nscf_remote_folder=nscf_remote_folder,
-            # The scratch is shared, so the internal scf + nscf is skipped and
-            # the eigenvalues have to travel separately: a disentangling
-            # block's frozen window is checked against them.
-            nscf_bands=scf_nscf["nscf_output_band"],
             parallelization=parallelization,
             metadata={"call_link_label": f"wannierize{suffix}"},
         )
