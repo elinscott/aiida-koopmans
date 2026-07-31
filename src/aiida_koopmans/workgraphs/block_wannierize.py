@@ -1010,7 +1010,8 @@ def _resolve_split_mode(
             "would disentangle them; splitting a disentangled block is not "
             "supported. The split re-Wannierises each group from the parent's "
             "gauge alone, so the parent's disentanglement matrix has nowhere to "
-            "go. A block to be split must read exactly its `num_wann` bands."
+            "go. Lower the nscf band count so each block reads exactly its "
+            "`num_wann` bands, or drop `split_threshold`."
         )
     if mp_grid is None:
         raise ValueError(
