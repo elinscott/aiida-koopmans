@@ -16,7 +16,7 @@ from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.pw import RunScfNscf
-from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from aiida_koopmans.workgraphs.wannier90 import OptimizeWannierization, Wannierize
 
 
 def _system(task, *namespace):
@@ -117,6 +117,44 @@ class TestWannierizeOccupations:
         system = _system(wg.tasks["Wannier90WorkChain"], "scf", "pw")
         assert system["starting_magnetization"]
         assert system["nspin"] == 2
+
+
+class TestOptimizeWannierizationOccupations:
+    """The optimizing Wannierization honours ``electronic_type`` the same way."""
+
+    @staticmethod
+    def _build(fake_cutoffs_family, silicon_structure, wannier_codes, electronic_type):
+        wg = OptimizeWannierization.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            electronic_type=electronic_type,
+        )
+        return wg.tasks["Wannier90OptimizeWorkChain"]
+
+    def test_proxied_insulator_fixes_both_steps(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        task = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            wannier_codes,
+            TaggedValue(ElectronicType.INSULATOR),
+        )
+        _assert_fixed(_system(task, "scf", "pw"))
+        _assert_fixed(_system(task, "nscf", "pw"))
+
+    def test_proxied_metal_still_smears(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        task = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            wannier_codes,
+            TaggedValue(ElectronicType.METAL),
+        )
+        _assert_smeared(_system(task, "scf", "pw"))
+        _assert_smeared(_system(task, "nscf", "pw"))
 
 
 class TestRunScfNscfOccupations:
