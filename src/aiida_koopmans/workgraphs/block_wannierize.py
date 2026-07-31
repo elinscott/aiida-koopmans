@@ -675,8 +675,10 @@ def WannierizeBlock(
     # provenance-tagged proxies; the family label ends up bound as an SQL
     # parameter inside ``get_builder_from_protocol``, which needs a plain str
     # — as does the projector directory, which becomes a ``RemoteData``
-    # remote path — and the two enums forwarded on into ``PwBaseWorkChain``
-    # need to be genuine members, since its branches test them with ``is``.
+    # remote path. The two enums the builder forwards into ``PwBaseWorkChain``,
+    # whose branches test them with ``is``, are coerced to match the other
+    # builder calls; this block discards those pw namespaces below, so here
+    # the coercion changes nothing on its own.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     if external_projectors_path is not None:
         external_projectors_path = str(external_projectors_path)
