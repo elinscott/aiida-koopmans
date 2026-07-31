@@ -243,21 +243,27 @@ class TestValidateAlphaScreening:
 
 class TestValidateAlphaInputs:
     def test_scalar_only_passes(self):
-        _validate_alpha_inputs(initial_alpha=0.6, alphas=None, calculate_alpha=True)
+        _validate_alpha_inputs(initial_alpha=0.6, initial_alphas=None, calculate_alpha=True)
 
     def test_per_orbital_only_passes(self):
-        _validate_alpha_inputs(initial_alpha=None, alphas=_OZONE_ALPHAS, calculate_alpha=True)
-        _validate_alpha_inputs(initial_alpha=None, alphas=_OZONE_ALPHAS, calculate_alpha=False)
+        _validate_alpha_inputs(
+            initial_alpha=None, initial_alphas=_OZONE_ALPHAS, calculate_alpha=True
+        )
+        _validate_alpha_inputs(
+            initial_alpha=None, initial_alphas=_OZONE_ALPHAS, calculate_alpha=False
+        )
 
     def test_scalar_and_per_orbital_conflict(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
-            _validate_alpha_inputs(initial_alpha=0.6, alphas=_OZONE_ALPHAS, calculate_alpha=True)
+            _validate_alpha_inputs(
+                initial_alpha=0.6, initial_alphas=_OZONE_ALPHAS, calculate_alpha=True
+            )
 
     def test_skip_without_per_orbital_alphas_raises(self):
         with pytest.raises(ValueError, match="calculate_alpha=False"):
-            _validate_alpha_inputs(initial_alpha=None, alphas=None, calculate_alpha=False)
+            _validate_alpha_inputs(initial_alpha=None, initial_alphas=None, calculate_alpha=False)
         with pytest.raises(ValueError, match="calculate_alpha=False"):
-            _validate_alpha_inputs(initial_alpha=0.6, alphas=None, calculate_alpha=False)
+            _validate_alpha_inputs(initial_alpha=0.6, initial_alphas=None, calculate_alpha=False)
 
 
 class TestVariationalSeedHelpers:
@@ -1554,7 +1560,7 @@ class TestKoopmansDSCFGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             initial_alpha=None,
-            alphas=_OZONE_ALPHAS,
+            initial_alphas=_OZONE_ALPHAS,
             calculate_alpha=False,
         )
         labels = self._all_link_labels(wg)
@@ -1585,13 +1591,10 @@ class TestKoopmansDSCFGraphBuild:
         yet every other test here stops at ``.build()`` and cannot see
         it. This is the only guard against that class of defect.
 
-        A namespace socket built from a TypedDict whose keys are
-        required reports those keys missing whenever the whole payload
-        is omitted, which is why ``AlphaScreening`` marks both keys
-        ``NotRequired``: the recursion into a namespace's children does
-        not consult the namespace's own optionality. A payload that *is*
-        supplied stays all-or-nothing — the validators reject a partial
-        one, so the weaker socket typing costs nothing at runtime.
+        The optional per-orbital payload is a namespace socket whose own
+        keys are required, so this also pins the dependency's contract:
+        a namespace left entirely unfilled must not report its children
+        as missing (``WorkGraph.find_missing_inputs``).
         """
         wg = self._build_wg(
             ozone_structure=ozone_structure,
@@ -1619,7 +1622,7 @@ class TestKoopmansDSCFGraphBuild:
                 ozone_pseudo_family=ozone_pseudo_family,
                 spin_polarized=True,
                 initial_alpha=None,
-                alphas=_OZONE_ALPHAS,
+                initial_alphas=_OZONE_ALPHAS,
             )
 
     def test_injected_alphas_seed_refinement_loop(
@@ -1636,7 +1639,7 @@ class TestKoopmansDSCFGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             initial_alpha=None,
-            alphas=_OZONE_ALPHAS,
+            initial_alphas=_OZONE_ALPHAS,
             calculate_alpha=True,
         )
         labels = self._all_link_labels(wg)
@@ -1696,7 +1699,7 @@ class TestKoopmansDSCFGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 initial_alpha=0.6,
-                alphas=_OZONE_ALPHAS,
+                initial_alphas=_OZONE_ALPHAS,
             )
 
     def test_skip_screening_without_alphas_raises_at_build(
@@ -1921,7 +1924,7 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
             return KoopmansDSCFWorkflow.build(initial_alpha=0.6, **common)
         return KoopmansDSCFWorkflow.build(
             initial_alpha=None,
-            alphas=self.ALPHAS,
+            initial_alphas=self.ALPHAS,
             calculate_alpha=False,
             **common,
         )

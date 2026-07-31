@@ -11,15 +11,17 @@ supercell kcp.x; see ``mlwf_init.py``). Unsupported combinations raise
 
 ``KoopmansDSCFWorkflow`` runs a DFT initialisation, a trial KI pass, a
 per-orbital Delta-SCF loop that refines the screening parameters, and a
-final KI with the converged alphas. Caller-supplied per-orbital ``alphas``
-either seed the refinement loop or — with ``calculate_alpha=False`` —
-replace it entirely (the final KI consumes them verbatim).
+final KI with the converged alphas. Caller-supplied per-orbital
+``initial_alphas`` either seed the refinement loop or — with
+``calculate_alpha=False`` — replace it entirely (the final KI consumes
+them verbatim).
 Spin-symmetrisation (``fix_spin_contamination=True``) is not yet supported
 and is rejected at build time.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -845,7 +847,7 @@ def KoopmansDSCFWorkflow(
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
     initial_alpha: float | None = None,
-    alphas: AlphaScreening | None = None,
+    initial_alphas: AlphaScreening | None = None,
     calculate_alpha: bool = True,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
@@ -872,15 +874,15 @@ def KoopmansDSCFWorkflow(
 
     The starting screening parameters come from exactly one of two
     mutually exclusive inputs: the uniform scalar ``initial_alpha``
-    (0.6 when neither is given) or the per-orbital ``alphas`` (an
-    :class:`~aiida_koopmans.types.AlphaScreening` payload, per spin
+    (0.6 when neither is given) or the per-orbital ``initial_alphas``
+    (an :class:`~aiida_koopmans.types.AlphaScreening` payload, per spin
     channel with the filled and empty manifolds separate — the same
     layout the workflow's own ``alphas`` output uses). With
     ``calculate_alpha=False`` the refinement loop is skipped entirely:
     no trial KI, no Delta-SCF fan-out — the final KI parents directly
     on the DFT init (taking over the trial's variational-orbital
-    seeding) and applies the caller-supplied per-orbital ``alphas``
-    verbatim, which that switch therefore requires.
+    seeding) and applies ``initial_alphas`` verbatim, which that switch
+    therefore requires.
 
     Two initialisation routes select on ``init_orbitals``:
 
@@ -922,7 +924,7 @@ def KoopmansDSCFWorkflow(
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
-        alphas=alphas,
+        initial_alphas=initial_alphas,
         calculate_alpha=calculate_alpha,
         spin_polarized=spin_polarized,
     )
@@ -1141,7 +1143,7 @@ def KoopmansDSCFWorkflow(
             neldw=neldw,
             tot_magnetization=run_tot_magnetization,
             initial_alpha=0.6 if initial_alpha is None else initial_alpha,
-            initial_alphas=alphas,
+            initial_alphas=initial_alphas,
             correction=correction,
             init_orbitals=init_orbitals,
             spin_polarized=spin_polarized,
@@ -1171,7 +1173,7 @@ def KoopmansDSCFWorkflow(
         # overlay (molecular route) or the folded Wannier wavefunction
         # staging (periodic route) — and applies the caller-supplied
         # per-orbital alphas verbatim.
-        final_alphas = alphas
+        final_alphas = initial_alphas
         final_parent = dft_remote
         final_overlay = (
             _ks_variational_overlay(nspin)
@@ -1224,7 +1226,7 @@ def KoopmansDSCFWorkflow(
         # A graph cannot echo a raw input as an output; route the injected
         # alphas through a task so the ``alphas`` output is a socket.
         out_alphas = echo_alpha_screening(
-            alphas=alphas,
+            alphas=initial_alphas,
             metadata={"call_link_label": "injected_alphas"},
         )
     outputs = KoopmansDSCFOutputs(
@@ -2248,24 +2250,22 @@ _ALPHA_CHANNELS = (SpinChannel.NONE.value, SpinChannel.UP.value, SpinChannel.DOW
 
 
 def _normalized_alpha_channels(
-    alphas: AlphaScreening,
+    alphas: Mapping[str, Any],
 ) -> dict[str, dict[str, list[float]]]:
     """Normalize an :class:`AlphaScreening` payload, checking its shape.
 
     ``filled`` and ``empty`` must both be present, each a mapping from a
     kcp.x spin channel — ``'none'`` (closed-shell single channel) or
     ``'up'`` / ``'down'`` (spin-polarized), never mixed — to a list of
-    numbers. Accepts the payload in any of its transit forms (plain
-    nested dict, ``TaggedValue``-proxied graph input, per-field
-    ``orm.Dict``) — only mapping-protocol access is used — and returns
-    a plain ``{field: {channel_tag: [float, ...]}}`` copy.
+    numbers. The parameter is typed as a bare mapping because the
+    payload arrives in several transit forms (plain nested dict,
+    ``TaggedValue``-proxied graph input, per-field ``orm.Dict``); only
+    mapping-protocol access is used. Returns a plain
+    ``{field: {channel_tag: [float, ...]}}`` copy.
     """
-    # The payload may be any mapping-protocol transit form, not just the
-    # declared TypedDict; widen for the duck-typed access below.
-    payload = cast("dict[str, Any]", alphas)
     norm: dict[str, dict[str, list[float]]] = {}
     for field in ("filled", "empty"):
-        per_spin = payload.get(field) if hasattr(payload, "get") else None
+        per_spin = alphas.get(field) if hasattr(alphas, "get") else None
         if per_spin is None:
             raise ValueError(
                 "Per-orbital alphas must be a mapping with 'filled' and 'empty' "
@@ -2368,36 +2368,38 @@ def _validate_alpha_screening(
 def _validate_alpha_inputs(
     *,
     initial_alpha: float | None,
-    alphas: AlphaScreening | None,
+    initial_alphas: AlphaScreening | None,
     calculate_alpha: bool,
     spin_polarized: bool | None = None,
 ) -> None:
     """Fail fast on inconsistent screening-parameter inputs.
 
-    ``initial_alpha`` (uniform scalar seed) and ``alphas`` (per-orbital
-    values) are mutually exclusive ways of choosing the starting alphas;
-    skipping the refinement loop (``calculate_alpha=False``) is only
-    meaningful when the per-orbital values to apply are given explicitly.
-    The per-orbital shape and channel-convention checks run here too, so
-    malformed payloads and a spin-convention mismatch fail at build time;
-    the count check (which needs the runtime electron counts) happens
-    downstream in :func:`RunFinalKI` / :func:`ComputeScreeningParameters`.
+    ``initial_alpha`` (uniform scalar seed) and ``initial_alphas``
+    (per-orbital seed) are mutually exclusive ways of choosing the
+    starting alphas; skipping the refinement loop
+    (``calculate_alpha=False``) is only meaningful when the per-orbital
+    values to apply are given explicitly. The per-orbital shape and
+    channel-convention checks run here too, so malformed payloads and a
+    spin-convention mismatch fail at build time; the count check (which
+    needs the runtime electron counts) happens downstream in
+    :func:`RunFinalKI` / :func:`ComputeScreeningParameters`.
     """
-    if alphas is not None and initial_alpha is not None:
+    if initial_alphas is not None and initial_alpha is not None:
         raise ValueError(
-            "Both a scalar initial_alpha and per-orbital alphas were given; "
-            "they are mutually exclusive ways of choosing the starting "
+            "Both a scalar initial_alpha and per-orbital initial_alphas were "
+            "given; they are mutually exclusive ways of choosing the starting "
             "screening parameters. Supply exactly one."
         )
-    if not calculate_alpha and alphas is None:
+    if not calculate_alpha and initial_alphas is None:
         raise ValueError(
             "calculate_alpha=False skips the Delta-SCF screening loop, so the "
-            "per-orbital alphas to apply must be supplied via the `alphas` "
-            "input (a uniform scalar would be applied unrefined — spell that "
-            "out per orbital if it is really what you want)."
+            "per-orbital alphas to apply must be supplied via the "
+            "`initial_alphas` input (a uniform scalar would be applied "
+            "unrefined — spell that out per orbital if it is really what you "
+            "want)."
         )
-    if alphas is not None:
-        _validate_alpha_screening(alphas, spin_polarized=spin_polarized)
+    if initial_alphas is not None:
+        _validate_alpha_screening(initial_alphas, spin_polarized=spin_polarized)
 
 
 # ----------------------------------------------------------------------
@@ -2444,14 +2446,15 @@ def _swap_kcp_frame(
 
 
 def _spin_swap_save_overlay(*, nspin: int) -> dict[str, str]:
-    """``variational_orbital_overlays`` payload that flips spin-tagged save files.
+    """Swap the spin index of every spin-tagged save file.
 
     Returns ``{"evc02": "evc01", "evc01": "evc02", "evc_empty2": "evc_empty1",
     "evc_empty1": "evc_empty2", ...}`` -- stem-only (no ``.dat`` suffix; the
-    CalcJob appends it). Used by ``ComputeEmptyOrbitalScreeningParameter`` when the N+1
-    sub-runs run in the swapped frame but their parent (the trial KI's
-    ``RemoteData``) is in the physical frame: each spin-tagged save file
-    needs to be presented to kcp.x with its spin index flipped.
+    CalcJob appends it). Feeds the ``variational_orbital_overlays`` input of
+    ``ComputeEmptyOrbitalScreeningParameter``'s N+1 sub-runs, which run in
+    the swapped frame while their parent (the trial KI's ``RemoteData``) is
+    in the physical frame: each spin-tagged save file must be presented to
+    kcp.x with its spin index flipped.
 
     Returns an empty dict for ``nspin == 1`` (no swap meaningful).
     """
@@ -2469,13 +2472,14 @@ def _spin_swap_save_overlay(*, nspin: int) -> dict[str, str]:
 
 
 def _ks_variational_overlay(nspin: int) -> dict[str, str]:
-    """``variational_orbital_overlays`` payload for the KS-as-variational seed.
+    """Map the DFT init's Kohn-Sham save files onto the variational-orbital slots.
 
-    Maps the DFT init's ``evcN`` / ``evc_emptyN`` save files onto the
-    variational-orbital slots (``evc0N`` / ``evc0_emptyN``) of the first
-    orbital-dependent run parented on that save. Stems only — the CalcJob
-    appends ``.dat`` at submission time (AiiDA's attribute store rejects
-    Dict keys containing ``.``).
+    Renames ``evcN`` / ``evc_emptyN`` to ``evc0N`` / ``evc0_emptyN``, which
+    seeds the first orbital-dependent run parented on that save with the
+    Kohn-Sham orbitals as its variational orbitals. Feeds the
+    ``variational_orbital_overlays`` input of that run. Stems only — the
+    CalcJob appends ``.dat`` at submission time (AiiDA's attribute store
+    rejects Dict keys containing ``.``).
     """
     per_spin = (1, 2) if nspin == 2 else (1,)
     return {

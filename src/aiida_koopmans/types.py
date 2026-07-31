@@ -183,22 +183,13 @@ class AlphaScreening(TypedDict):
 
     For ``nspin == 1``: the only key is ``SpinChannel.NONE``.
 
-    Both keys are ``NotRequired`` so the payload can serve as an
-    *optional* graph input: a namespace socket built from a TypedDict
-    whose keys are required reports those keys missing whenever the
-    whole payload is omitted, which would block every calculation that
-    does not supply per-orbital alphas.
-
-    This shape also types the ``alphas`` *outputs*, whose members are
-    therefore no longer marked required either. Nothing is weakened in
-    practice: every producer emits both fields, and
-    ``_validate_alpha_screening`` rejects a partial payload wherever one
-    is consumed — a supplied payload is all-or-nothing regardless of
-    what the socket metadata asserts.
+    A payload is all-or-nothing: both fields are always present, and
+    ``_validate_alpha_screening`` rejects a partial one wherever it is
+    consumed.
     """
 
-    filled: NotRequired[dict[SpinChannel, list[float]]]
-    empty: NotRequired[dict[SpinChannel, list[float]]]
+    filled: dict[SpinChannel, list[float]]
+    empty: dict[SpinChannel, list[float]]
 
 
 # The QE code vocabulary, defined once. ``CODE_NAMES`` is the runtime tuple
