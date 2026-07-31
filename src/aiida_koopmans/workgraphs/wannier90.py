@@ -206,7 +206,8 @@ def Wannierize(
 
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
     # protocol builder's pseudo-family QueryBuilder can bind it, and to
-    # genuine enum members so its ``is``-based branches fire.
+    # genuine enum members for the two enums this builder forwards into
+    # ``PwBaseWorkChain``, whose branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     builder = Wannier90WorkChain.get_builder_from_protocol(
@@ -217,9 +218,9 @@ def Wannierize(
         pseudo_family=pseudo_family,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
         spin_type=unwrap_enum(spin_type, SpinType),
-        projection_type=unwrap_enum(projection_type, WannierProjectionType),
-        disentanglement_type=unwrap_enum(disentanglement_type, WannierDisentanglementType),
-        frozen_type=unwrap_enum(frozen_type, WannierFrozenType),
+        projection_type=projection_type,
+        disentanglement_type=disentanglement_type,
+        frozen_type=frozen_type,
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
         external_projectors_path=external_projectors_path,
@@ -354,26 +355,26 @@ def OptimizeWannierization(
     """
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
     # protocol builder's pseudo-family QueryBuilder can bind it, and to
-    # genuine enum members so its ``is``-based branches fire.
+    # genuine enum members for the two enums this builder forwards into
+    # ``PwBaseWorkChain``, whose branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-    optimize_mu_reference = unwrap_enum(optimize_mu_reference, OptimizeMuReference)
 
     builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         reference_bands=reference_bands,
         bands_distance_threshold=bands_distance_threshold,
-        optimize_strategy=unwrap_enum(optimize_strategy, OptimizeStrategy),
-        optimize_metric=unwrap_enum(optimize_metric, OptimizeMetric),
+        optimize_strategy=optimize_strategy,
+        optimize_metric=optimize_metric,
         optimize_max_iterations=optimize_max_iterations,
         protocol=protocol,
         overrides=overrides or {},
         pseudo_family=pseudo_family,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
         spin_type=unwrap_enum(spin_type, SpinType),
-        projection_type=unwrap_enum(projection_type, WannierProjectionType),
-        disentanglement_type=unwrap_enum(disentanglement_type, WannierDisentanglementType),
-        frozen_type=unwrap_enum(frozen_type, WannierFrozenType),
+        projection_type=projection_type,
+        disentanglement_type=disentanglement_type,
+        frozen_type=frozen_type,
         exclude_semicore=exclude_semicore,
         only_valence=only_valence,
         external_projectors_path=external_projectors_path,

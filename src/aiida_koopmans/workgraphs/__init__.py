@@ -25,10 +25,10 @@ def unwrap_enum[EnumT: Enum](value: Any, enum_cls: type[EnumT]) -> EnumT | None:
     Accepts a member, a proxy wrapping one, or the bare value string. A
     graph input is always a proxy, and a protocol builder that branches on
     ``argument is SomeEnum.MEMBER`` takes the wrong branch for one:
-    ``==`` forwards through the proxy, ``is`` does not. Call this on every
-    enum a graph body forwards into a builder, whether or not that body
-    runs eagerly today — where a graph sits in the call tree is the
-    caller's choice.
+    ``==`` forwards through the proxy, ``is`` does not. Call this on an
+    enum whose destination builder branches by identity, whether or not
+    the calling body runs eagerly today — where a graph sits in the call
+    tree is the caller's choice.
     """
     if value is None:
         return None

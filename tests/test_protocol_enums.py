@@ -15,8 +15,10 @@ from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs import unwrap_enum
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 from aiida_koopmans.workgraphs.pw import RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import OptimizeWannierization, Wannierize
+from tests.fixtures import explicit_block
 
 
 def _system(task, *namespace):
@@ -155,6 +157,54 @@ class TestOptimizeWannierizationOccupations:
         )
         _assert_smeared(_system(task, "scf", "pw"))
         _assert_smeared(_system(task, "nscf", "pw"))
+
+
+class TestSplitRouteBandsStepOccupations:
+    """The split route's bands step honours ``electronic_type`` as well.
+
+    Its scf and nscf sit in a nested graph, whose body has not run at build
+    time, but the bands step is assembled by a plain helper called from
+    ``WannierizeBlocks``' own body — so in production its ``electronic_type``
+    is a proxy, exactly as for a top-level graph.
+    """
+
+    @staticmethod
+    def _bands_step(auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family, **kwargs):
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[
+                explicit_block("block_1", range(1, 5), ["Si: sp3"]),
+                explicit_block("block_2", range(5, 9), ["Si: sp3"]),
+            ],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+            split_threshold=1.5,
+            pseudo_family=fake_cutoffs_family.label,
+            **kwargs,
+        )
+        return wg.tasks["bands"]
+
+    def test_default_insulator_fixes_the_bands_step(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        task = self._bands_step(auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family)
+        _assert_fixed(_system(task, "pw"))
+
+    def test_metal_still_smears_the_bands_step(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        task = self._bands_step(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            kpath,
+            fake_cutoffs_family,
+            electronic_type=ElectronicType.METAL,
+        )
+        _assert_smeared(_system(task, "pw"))
 
 
 class TestRunScfNscfOccupations:

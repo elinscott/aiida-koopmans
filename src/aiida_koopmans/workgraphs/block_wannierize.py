@@ -675,8 +675,8 @@ def WannierizeBlock(
     # provenance-tagged proxies; the family label ends up bound as an SQL
     # parameter inside ``get_builder_from_protocol``, which needs a plain str
     # — as does the projector directory, which becomes a ``RemoteData``
-    # remote path — and the enums need to be genuine members so the
-    # builder's ``is``-based branches fire.
+    # remote path — and the two enums forwarded on into ``PwBaseWorkChain``
+    # need to be genuine members, since its branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     if external_projectors_path is not None:
         external_projectors_path = str(external_projectors_path)
@@ -689,7 +689,7 @@ def WannierizeBlock(
         pseudo_family=pseudo_family,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
         spin_type=unwrap_enum(spin_type, SpinType),
-        projection_type=unwrap_enum(projection_type, WannierProjectionType),
+        projection_type=projection_type,
         external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
         # For koopmans we do not exclude semicore states automatically.
