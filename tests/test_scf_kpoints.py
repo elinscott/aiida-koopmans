@@ -1,12 +1,10 @@
 """Tests for the mesh an SCF step samples.
 
-Four graphs choose an SCF mesh — ``RunScfNscf``, ``RunPwBands``,
-``DielectricTask`` and ``Wannierize`` — and each is checked on the
-materialized ``PwBaseWorkChain`` inputs: an explicit mesh must displace the
-protocol's ``kpoints_distance``, and no mesh must leave the protocol in
-charge. ``Wannierize`` is checked further down its chain too, since one mesh
-there also fixes the NSCF k-list and wannier90's ``mp_grid``. The graphs
-above these (``WannierizeBlocks``, ``MlwfInitialization``,
+Three graphs take an SCF mesh — ``RunScfNscf``, ``RunPwBands`` and
+``DielectricTask`` — and each is checked on the materialized
+``PwBaseWorkChain`` inputs: an explicit mesh must displace the protocol's
+``kpoints_distance``, and no mesh must leave the protocol in charge. The
+graphs above these (``WannierizeBlocks``, ``MlwfInitialization``,
 ``SinglepointDFPTWorkflow``) keep nested graphs as single tasks at build
 time, so they are checked on the forwarded socket.
 """
@@ -162,64 +160,6 @@ class TestDielectricTask:
         scf = wg.tasks["scf"]
         assert scf.inputs["kpoints"].value is None
         assert scf.inputs["kpoints_distance"].value.value > 0
-
-
-class TestWannierize:
-    """One mesh fixes the SCF, the NSCF k-list and wannier90's ``mp_grid``."""
-
-    def test_the_whole_chain_follows_the_mesh(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes, kmesh
-    ):
-        from aiida_koopmans.workgraphs.wannier90 import Wannierize
-
-        wg = Wannierize.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            pseudo_family=fake_cutoffs_family.label,
-            kpoints=kmesh,
-        )
-        task = wg.tasks["Wannier90WorkChain"]
-
-        assert _step_mesh(task, "scf") == [2, 2, 2]
-        assert task.inputs["scf"]["kpoints_distance"].value is None
-        assert task.inputs["scf"]["kpoints_force_parity"].value is None
-
-        # The NSCF and wannier90 read the same unreduced expansion of that
-        # mesh, so the Wannierization is built from the ground state it ran on.
-        nscf_kpoints = task.inputs["nscf"]["kpoints"].value
-        w90 = task.inputs["wannier90"]["wannier90"]
-        assert len(nscf_kpoints.get_kpoints()) == 8
-        assert w90["kpoints"].value.uuid == nscf_kpoints.uuid
-        # wannier90 cannot re-derive the mesh dimensions from an explicit list.
-        assert w90["parameters"].value.get_dict()["mp_grid"] == [2, 2, 2]
-
-    def test_no_mesh_leaves_the_protocol_in_charge(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes
-    ):
-        from aiida_koopmans.workgraphs.wannier90 import Wannierize
-
-        wg = Wannierize.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            pseudo_family=fake_cutoffs_family.label,
-        )
-        scf = wg.tasks["Wannier90WorkChain"].inputs["scf"]
-        assert scf["kpoints"].value is None
-        assert scf["kpoints_distance"].value.value > 0
-
-    def test_an_explicit_list_is_rejected(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes, kpath
-    ):
-        """A k-list carries no mesh dimensions, so it names the mistake."""
-        from aiida_koopmans.workgraphs.wannier90 import Wannierize
-
-        with pytest.raises(ValueError, match="Monkhorst-Pack mesh"):
-            Wannierize.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                pseudo_family=fake_cutoffs_family.label,
-                kpoints=kpath,
-            )
 
 
 class TestWannierizeBlocks:

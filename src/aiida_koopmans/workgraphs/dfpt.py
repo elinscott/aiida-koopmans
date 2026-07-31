@@ -1064,8 +1064,7 @@ def SinglepointDFPTWorkflow(
         # Run a scf + ph.x dielectric chain first and feed tr(eps)/3 into the
         # screen step. The dielectric scf drops ``nbnd`` (no empty bands are
         # needed for a ground-state response) and none of the kcw spin
-        # forcing — it is an independent ground state, differing from the main
-        # chain's only in those respects and not in the mesh it samples.
+        # forcing — it is an independent ground state.
         if "ph" not in codes:
             raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
@@ -1078,7 +1077,6 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
-            scf_kpoints=kpoints,
             metadata={"call_link_label": "dielectric"},
         )
         eps_inf = dielectric["eps_inf"]
