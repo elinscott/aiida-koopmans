@@ -290,14 +290,18 @@ def _frozen_window_inputs(
 
         dis_froz_max < min_k E(num_wann + 1, k)
 
-    A user writes one ``dis_froz_max`` for the whole calculation, so nothing
-    makes it true for any particular block. ``Wannier90BaseWorkChain``
-    lowers the value for us, reading ``exclude_bands`` and ``num_wann`` back
-    out of the parameters — but only when it is given eigenvalues, which
-    upstream passes only to a workchain that runs its own scf and nscf.
-    These per-block chains run neither, so the bands travel explicitly, and
-    with them the spin channel that says which half of a collinear array to
-    read.
+    Only the block that disentangles keeps a window — the others have
+    theirs stripped — so a value written by hand reaches exactly one block,
+    per spin channel if written that way. It can still be too high, and for
+    a metal the protocol derives one from the Fermi level for the
+    calculation as a whole, which cannot know where the blocks divide.
+    Either way wannier90 stops late and blames the window rather than the
+    block. ``Wannier90BaseWorkChain`` lowers the value for us, reading
+    ``exclude_bands`` and ``num_wann`` back out of the parameters — but only
+    when it is given eigenvalues, which upstream passes only to a workchain
+    that runs its own scf and nscf. These per-block chains run neither, so
+    the bands travel explicitly, and with them the spin channel that says
+    which half of a collinear array to read.
     """
     if nscf_bands is None:
         return {}
