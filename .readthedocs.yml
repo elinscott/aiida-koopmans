@@ -17,10 +17,13 @@ build:
     # Clone the fork dependencies that [tool.uv.sources] points at as sibling
     # checkouts (mirrors the koopmans repo's RTD config — keep the lists in
     # sync with [tool.uv.sources], and drop entries as forks merge upstream).
-    - git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
-    - git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
-    - git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
-    - git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
+    # Each clone removes its destination first: Read the Docs reuses build
+    # environments, and a leftover sibling checkout makes `git clone` exit 128
+    # ("destination path already exists") before Sphinx ever runs.
+    - rm -rf ../aiida-workgraph && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
+    - rm -rf ../node-graph && git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
+    - rm -rf ../aiida-wannier90-workflows && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+    - rm -rf ../aiida-wannierjl && git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - uv venv $READTHEDOCS_VIRTUALENV_PATH
     - VIRTUAL_ENV=$READTHEDOCS_VIRTUALENV_PATH uv pip install ".[docs]"
     - python -m sphinx -T -W --keep-going -b html -d docs/_build/doctrees -D language=en docs/source $READTHEDOCS_OUTPUT/html
