@@ -160,9 +160,11 @@ def _manifold_projection_blocks(
     Blocks cover consecutive band windows starting at ``first_band``. Only
     the *last* block absorbs the manifold's ``extra_bands`` disentanglement
     bands (``num_bands > num_wann``), the band layout the u_dis merge in
-    :func:`prepare_kcw_wannier_files` relies on. A single-block manifold
-    keeps the bare ``occ`` / ``emp`` label; multi-block manifolds are
-    numbered (``occ_1``, ``occ_up_1``, ...).
+    :func:`prepare_kcw_wannier_files` relies on. ``include_bands`` names the
+    block's own Wannier bands and nothing else — the pool lives in
+    ``num_bands`` and in the bands ``exclude_bands`` stops naming. A single
+    -block manifold keeps the bare ``occ`` / ``emp`` label; multi-block
+    manifolds are numbered (``occ_1``, ``occ_up_1``, ...).
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -180,7 +182,7 @@ def _manifold_projection_blocks(
                 spin=spin_channel,
                 num_wann=num_wann,
                 num_bands=num_bands,
-                include_bands=list(range(start, end + 1)),
+                include_bands=list(range(start, start + num_wann)),
                 exclude_bands=band_range_complement(start, end, nbnd),
                 projection_type=WannierProjectionType.ANALYTIC,
                 projections=[projection_win_string(p) for p in projections],
@@ -1149,6 +1151,7 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides=wannier_overrides,
             nscf_remote_folder=nscf_remote_folder,
+            nscf_bands=scf_nscf["nscf_output_band"],
             parallelization=parallelization,
             metadata={"call_link_label": f"wannierize{suffix}"},
         )

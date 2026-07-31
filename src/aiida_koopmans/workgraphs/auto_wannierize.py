@@ -24,9 +24,11 @@ or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
 run relies on ``projection_type``, plus the external projector inputs for
 the external source). The ``_u_dis.mat`` merge of a
 disentangled parent block is a follow-up: a block routed through the split
-must carry no disentanglement pool (``num_bands == num_wann``), and the
-runtime group restriction rejects one that does (the detected groups cover
-only the Wannierised manifold, never the pool above it).
+must carry no disentanglement pool (``num_bands == num_wann``), which
+:func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
+enforces at build time. The per-group re-Wannierisation reads only the
+parent's gauge products, so a parent's disentanglement matrix would be
+dropped on the floor rather than carried into the sub-blocks.
 """
 
 from __future__ import annotations

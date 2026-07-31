@@ -696,7 +696,12 @@ class TestDeriveDfptManifolds:
         assert emp_blocks[0]["num_bands"] == 2
         assert emp_blocks[1]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert emp_blocks[1]["num_bands"] == 4
-        assert emp_blocks[1]["include_bands"] == [11, 12, 13, 14]
+        # The two pool bands show up in num_bands and in the exclusions that
+        # stop at band 10 -- never in include_bands, which stays the
+        # band-to-Wannier-function map of the block's own two functions.
+        assert emp_blocks[1]["include_bands"] == [11, 12]
+        for block in occ_blocks + emp_blocks:
+            assert len(block["exclude_bands"] or []) + block["num_bands"] == 14
         assert has_disentangle is True
         assert n_orbitals == 12
 

@@ -52,6 +52,7 @@ from __future__ import annotations
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
+import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import WannierFrozenType, WannierProjectionType
@@ -277,6 +278,106 @@ def _disentanglement_unconstrained(
         # context; don't warn on top of an imminent failure.
         return False
     return frozen_type not in _WINDOW_SETTING_FROZEN_TYPES
+
+
+def _block_eigenvalues(label: str, spin: Any, nscf_bands: orm.BandsData) -> np.ndarray:
+    """Return one block's own eigenvalues as a ``(nkpoints, nbands)`` array.
+
+    A collinear nscf emits one array per spin channel, and the block's own
+    channel selects between them. A block that names no channel cannot be
+    matched against a spin-resolved array, so that pairing raises instead
+    of picking a half.
+    """
+    eigenvalues = np.asarray(nscf_bands.get_bands(), dtype=float)
+    if eigenvalues.ndim < 3:
+        return eigenvalues
+    # In a graph body the block's fields arrive as provenance-tagged
+    # proxies, which the ``SpinChannel`` constructor's by-value lookup
+    # rejects; attribute access and ``str`` delegate cleanly.
+    channel = str(getattr(spin, "value", spin))
+    index = {SpinChannel.UP.value: 0, SpinChannel.DOWN.value: 1}.get(channel)
+    if index is None:
+        raise ValueError(
+            f"Block '{label}' names no spin channel (spin = '{channel}'), but the "
+            f"eigenvalues it was given are spin-resolved ({eigenvalues.shape[0]} "
+            "channels). Give the block the channel it belongs to, or pass that "
+            "channel's own eigenvalues."
+        )
+    return eigenvalues[index]
+
+
+def validate_frozen_window(
+    label: str,
+    parameters: dict[str, Any],
+    spin: Any,
+    nscf_bands: orm.BandsData | None,
+) -> None:
+    """Reject a frozen window that freezes more bands than the block Wannierises.
+
+    wannier90 stops unless at most ``num_wann`` bands are frozen at every
+    k-point. Numbering the bands the block reads (those left after
+    ``exclude_bands``) 1, 2, 3, ... and counting a band as frozen when
+    ``dis_froz_min <= E <= dis_froz_max`` (an unset minimum being -inf),
+    the condition on the window is::
+
+        dis_froz_max < min_k E(num_wann + 1, k)
+
+    where the numbering skips whatever sits below ``dis_froz_min``. Only a
+    disentangling block keeps a window — the others have theirs stripped —
+    so a hand-written value reaches exactly one block, per spin channel if
+    written that way, and is either right for that block or wrong. Wrong is
+    rejected here, naming the block and the largest value that would work,
+    rather than left to wannier90, which stops mid-run blaming the window
+    without saying which block it was reading or by how much it was over.
+    The window is never adjusted: it is the user's choice, made against the
+    band structure they can see.
+
+    ``parameters`` is the block's fully merged ``.win`` set, so ``num_wann``
+    and ``exclude_bands`` are read from the same place wannier90 reads them.
+    Without eigenvalues (``nscf_bands`` is None, which only happens when the
+    caller brought its own nscf scratch and no bands) there is nothing to
+    check against and the window passes unexamined.
+    """
+    froz_max = parameters.get("dis_froz_max")
+    if froz_max is None or nscf_bands is None:
+        return
+    froz_min = parameters.get("dis_froz_min")
+    num_wann = int(parameters["num_wann"])
+
+    eigenvalues = _block_eigenvalues(label, spin, nscf_bands)
+    excluded = {int(band) for band in parameters.get("exclude_bands") or ()}
+    if excluded:
+        kept = [index for index in range(eigenvalues.shape[1]) if index + 1 not in excluded]
+        eigenvalues = eigenvalues[:, kept]
+
+    inside = eigenvalues <= float(froz_max)
+    if froz_min is not None:
+        inside &= eigenvalues >= float(froz_min)
+    frozen = inside.sum(axis=1)
+    worst = int(np.argmax(frozen))
+    if int(frozen[worst]) <= num_wann:
+        return
+
+    # The largest window top that would work everywhere: at each k-point
+    # the window must stop below the band that would be its
+    # (num_wann + 1)-th frozen one, counting up from ``dis_froz_min``.
+    limits = []
+    for row in eigenvalues:
+        row = np.sort(row)
+        if froz_min is not None:
+            row = row[row >= float(froz_min)]
+        if row.size > num_wann:
+            limits.append(float(row[num_wann]))
+    window = f"dis_froz_max = {froz_max}"
+    if froz_min is not None:
+        window = f"dis_froz_min = {froz_min}, {window}"
+    raise ValueError(
+        f"Block '{label}' Wannierises num_wann = {num_wann} bands, but its frozen "
+        f"window ({window}) freezes {int(frozen[worst])} of the bands it reads at "
+        f"k-point {worst + 1} of {eigenvalues.shape[0]}. wannier90 accepts at most "
+        f"num_wann frozen bands at every k-point: lower dis_froz_max below "
+        f"{min(limits):.6f} eV, or give the block more Wannier functions."
+    )
 
 
 def _warn_unconstrained_blocks(
@@ -523,6 +624,7 @@ def WannierizeBlock(
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
+    nscf_bands: orm.BandsData | None = None,
     external_projectors_path: str | None = None,
     external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
@@ -556,7 +658,10 @@ def WannierizeBlock(
       ``aiida_hr.dat`` / ``aiida_u.mat`` / ``aiida_u_dis.mat`` /
       ``aiida_centres.xyz`` are written (upstream's default retrieve list then
       picks them up), and force-retrieves ``aiida.chk``, which upstream
-      excludes by default.
+      excludes by default;
+    * checks a disentangling block's frozen window against ``nscf_bands`` and
+      rejects one that would freeze more bands than the block Wannierises,
+      which wannier90 refuses (:func:`validate_frozen_window`).
     """
     validate_projection_type(projection_type)
     validate_external_projector_inputs(
@@ -616,6 +721,7 @@ def WannierizeBlock(
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
         if "dis_num_iter" not in (wannier90 or {}):
             w90_params["dis_num_iter"] = 5000
+        validate_frozen_window(str(block["label"]), w90_params, block["spin"], nscf_bands)
         # ``w90_params`` at this point holds the full merge (protocol defaults
         # plus the flat ``wannier90`` overrides), so any window the protocol
         # itself set counts as a constraint too. On the production path this
@@ -895,6 +1001,18 @@ def _resolve_split_mode(
             "folder, and an external nscf scratch carries no scf density to run "
             "it from."
         )
+    disentangling = [
+        str(block["label"]) for block in blocks if int(block["num_bands"]) > int(block["num_wann"])
+    ]
+    if disentangling:
+        raise NotImplementedError(
+            f"Block(s) {disentangling} read more bands than they Wannierise, which "
+            "would disentangle them; splitting a disentangled block is not "
+            "supported. The split re-Wannierises each group from the parent's "
+            "gauge alone, so the parent's disentanglement matrix has nowhere to "
+            "go. Lower the nscf band count so each block reads exactly its "
+            "`num_wann` bands, or drop `split_threshold`."
+        )
     if mp_grid is None:
         raise ValueError(
             "Split mode requires `mp_grid`: the per-group re-Wannierisation "
@@ -917,6 +1035,7 @@ def WannierizeBlocks(
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
+    nscf_bands: orm.BandsData | None = None,
     split_threshold: float | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     num_occ_bands: int | None = None,
@@ -991,6 +1110,13 @@ def WannierizeBlocks(
             through here without rerunning the ground state. Incompatible
             with split mode, which needs the internal scf's density for its
             bands step.
+        nscf_bands: the nscf eigenvalues. A disentangling block's frozen
+            window is checked against them, so a ``dis_froz_max`` that would
+            freeze more bands than the block Wannierises is rejected here
+            instead of stopping wannier90 mid-run. Defaults to the internal
+            nscf's ``output_band``; a caller supplying ``nscf_remote_folder``
+            should pass the matching bands, since without them the window
+            goes unchecked.
         split_threshold: minimum gap (eV) between consecutive bands for a
             split; setting it is one of the two split-mode triggers.
             ``None`` (with automatic-projections blocks supplying the other
@@ -1059,6 +1185,7 @@ def WannierizeBlocks(
             )
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
+        block_bands = nscf_bands
     else:
         scf_nscf_overrides: dict[str, Any] = {}
         if "scf" in overrides:
@@ -1080,6 +1207,10 @@ def WannierizeBlocks(
             metadata={"call_link_label": "scf_nscf"},
         )
         nscf_scratch = scf_nscf["nscf_remote_folder"]
+        # The eigenvalues each disentangling block's frozen window is checked
+        # against; the caller's own copy wins so a shared ground state stays
+        # the single source (the internal pair is skipped then).
+        block_bands = nscf_bands if nscf_bands is not None else scf_nscf["nscf_output_band"]
 
         # --- split mode: bands step + runtime group detection ---
         # Nested under the internal scf + nscf on purpose: split mode
@@ -1168,6 +1299,7 @@ def WannierizeBlocks(
                 electronic_type=electronic_type,
                 spin_type=spin_type,
                 parallelization=parallelization,
+                nscf_bands=block_bands,
                 **external_kwargs,
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )

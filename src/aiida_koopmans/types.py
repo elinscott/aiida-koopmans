@@ -261,6 +261,22 @@ class _ProjectionBlockBase(TypedDict):
     discriminator (a real :class:`WannierProjectionType`, registered for
     AiiDA serialization via the ``aiida.data`` entry points).
 
+    Three counts, three meanings:
+
+    * ``num_wann`` -- the Wannier functions the block produces.
+    * ``num_bands`` -- the bands wannier90 reads. Exceeding ``num_wann``
+      is what makes the block disentangle; the excess is its pool.
+    * ``include_bands`` -- the ``num_wann`` band indices the block's
+      Wannier functions map onto, and *only* those. A pool never appears
+      here: it lives in ``num_bands`` and in the bands ``exclude_bands``
+      stops naming. Consumers read this list as the band-to-Wannier-function
+      map (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`),
+      so widening it silently mis-addresses Wannier functions.
+
+    ``exclude_bands`` names every band of the pw.x run the block does not
+    read, so ``len(exclude_bands) + num_bands`` is that run's band count --
+    the identity wann2kcp.x checks a ``.chk`` against.
+
     ``filled`` is the block's occupancy (every block is purely occupied
     or purely empty). Optional: it is stamped by callers that need the
     initial orbital partition emitted downstream; routes that instead

@@ -20,6 +20,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from tests.fixtures import (
     assert_graph_roundtrips,
     automatic_block,
+    bands_data,
     explicit_block,
     si_external_projector_tables,
 )
@@ -123,6 +124,47 @@ class TestBlockWannierizeGraphBuild:
         assert pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 20
         assert "wannier90" not in pw_overrides
 
+    def test_shared_nscf_bands_reach_every_block(self, wannier_codes, silicon_structure, kmesh):
+        """The internal nscf's eigenvalues are linked into each per-block graph.
+
+        This default is the only way a block's frozen window is ever checked
+        on the plain wannierize route: no caller there passes ``nscf_bands``
+        explicitly, so a per-block test that supplies it by hand exercises
+        the check and skips the wiring. Assert the link itself rather than a
+        value — at build time the socket carries an unresolved output of
+        ``scf_nscf``.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        block_tasks = [t.name for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for name in block_tasks:
+            links = wg.tasks[name].inputs["nscf_bands"]._links
+            assert [str(link) for link in links] == [
+                f'TaskLink(from="scf_nscf.nscf_output_band", to="{name}.nscf_bands")'
+            ]
+
+    def test_external_scratch_leaves_the_bands_socket_to_the_caller(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    ):
+        """With no internal nscf there are no eigenvalues to default to."""
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+        )
+        socket = wg.tasks["wannierize_block_1"].inputs["nscf_bands"]
+        assert not socket._links
+        assert socket.value is None
+
     def test_external_scratch_skips_the_internal_scf_nscf(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote
     ):
@@ -183,6 +225,22 @@ class TestSplitMode:
         """The trigger is the threshold; the k-path is a requirement, not the trigger."""
         with pytest.raises(ValueError, match="bands_kpoints"):
             self._build_split(auto_codes, silicon_structure, kmesh, bands_kpoints=None)
+
+    def test_disentangling_block_cannot_be_split(self, auto_codes, silicon_structure, kmesh, kpath):
+        """A parent block with a pool is rejected before the split chain is built.
+
+        The per-group re-Wannierisation reads only the parent's gauge
+        products, so the parent's disentanglement matrix would be dropped
+        silently. Without this guard the chain assembles and runs: the
+        rejection used to fall out of the group restriction refusing an
+        ``include_bands`` list that reached into the pool, and narrowing
+        ``include_bands`` to the Wannier manifold removed that side effect.
+        """
+        blocks = [explicit_block("block_1", range(1, 9), projections=["Si: sp3"], num_bands=12)]
+        with pytest.raises(NotImplementedError, match="splitting a disentangled block"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, kpath=kpath, blocks=blocks, num_occ_bands=4
+            )
 
     def test_automatic_block_triggers_the_split_path(self, auto_codes, silicon_structure, kmesh):
         """An automatic-projections block alone selects split mode.
@@ -613,6 +671,13 @@ class TestExtractWannierProducts:
 # ----------------------------------------------------------------------
 
 
+#: Two k-points, six bands, for a block that Wannierises the lowest four:
+#: the fifth band drops from 8.0 to 7.5 across the pair, so a window that
+#: freezes it is over the limit at both k-points and the ceiling comes from
+#: the second.
+_POOL_BANDS = [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0], [0.5, 1.5, 2.5, 3.5, 7.5, 9.5]]
+
+
 class TestWannierizeBlockBuild:
     """Build ``WannierizeBlock`` directly so its (normally deferred) body runs.
 
@@ -640,6 +705,7 @@ class TestWannierizeBlockBuild:
         pseudo_family,
         overrides=None,
         mp_grid=None,
+        nscf_bands=None,
     ):
         return WannierizeBlock.build(
             codes=codes,
@@ -651,6 +717,7 @@ class TestWannierizeBlockBuild:
             mp_grid=mp_grid,
             pseudo_family=pseudo_family,
             overrides=overrides,
+            nscf_bands=nscf_bands,
         )
 
     @staticmethod
@@ -994,6 +1061,227 @@ class TestWannierizeBlockBuild:
         )
         params = self._w90_parameters(wg)
         assert params["dis_num_iter"] == 5000
+
+    def test_frozen_window_freezing_too_many_bands_is_rejected(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A window over the limit names the block, the count and the ceiling.
+
+        wannier90 would stop mid-run complaining about the window alone. The
+        block Wannierises four bands, and ``dis_froz_max = 8.0`` freezes five
+        at both k-points, so the message has to carry enough for the user to
+        pick a new value without reading any source: which block, how many
+        bands, where, and the largest value that fits (7.5 eV, the fifth band
+        at the second k-point).
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        with pytest.raises(ValueError) as excinfo:
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                overrides={"wannier90": {"dis_froz_max": 8.0}},
+                nscf_bands=bands_data(_POOL_BANDS),
+            )
+        message = str(excinfo.value)
+        assert "block_1" in message
+        assert "num_wann = 4" in message
+        assert "dis_froz_max = 8.0" in message
+        assert "freezes 5" in message
+        assert "k-point 1 of 2" in message
+        assert "7.500000" in message
+
+    def test_frozen_window_that_fits_is_left_untouched(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A window within the limit reaches wannier90 exactly as written.
+
+        The user picks ``dis_froz_max`` against the band structure, so a
+        value that fits is theirs to keep: nothing here may adjust it, and
+        the base workchain must not be handed the eigenvalues either, since
+        given them it would lower the window on its own.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"dis_froz_max": 4.0}},
+            nscf_bands=bands_data(_POOL_BANDS),
+        )
+        assert self._w90_parameters(wg)["dis_froz_max"] == 4.0
+        w90_inputs = wg.tasks["wannier90"].inputs["wannier90"]
+        assert w90_inputs["bands"].value is None
+        assert w90_inputs["current_spin"].value is None
+
+    def test_frozen_window_is_checked_against_the_blocks_own_spin_channel(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A collinear nscf's two channels are judged separately.
+
+        The eigenvalues arrive as one array per channel. Here the same
+        window fits the up channel and freezes a fifth band in the down one,
+        so reading the wrong half would either miss a real failure or invent
+        one.
+        """
+        bands = bands_data(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]],
+                [[0.0, 1.0, 2.0, 3.0, 3.2, 9.0]],
+            ]
+        )
+
+        def _build(spin):
+            return self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                explicit_block(
+                    f"occ_{spin.value}_1",
+                    range(1, 5),
+                    projections=["Si: sp3"],
+                    spin=spin,
+                    num_bands=6,
+                ),
+                fake_cutoffs_family.label,
+                overrides={"wannier90": {"dis_froz_max": 4.0}},
+                nscf_bands=bands,
+            )
+
+        _build(SpinChannel.UP)
+        with pytest.raises(ValueError, match=r"occ_down_1.*freezes 5.*3\.200000"):
+            _build(SpinChannel.DOWN)
+
+    def test_spin_resolved_bands_on_an_unstamped_block_raise(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Neither channel is a defensible guess, so the pairing is refused."""
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        bands = bands_data([[[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]], [[0.1, 1.1, 2.1, 3.1, 8.1, 9.1]]])
+        with pytest.raises(ValueError, match="names no spin channel"):
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                overrides={"wannier90": {"dis_froz_max": 4.0}},
+                nscf_bands=bands,
+            )
+
+    def test_frozen_window_counts_only_the_bands_the_block_reads(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Excluded bands are outside the count, however low they sit.
+
+        This block excludes the two lowest bands and Wannierises two of the
+        four it reads. Counting the excluded pair as frozen would put the
+        window at four bands and reject a value that wannier90 accepts.
+        """
+        block = explicit_block(
+            "block_1",
+            range(3, 5),
+            projections=["Si: sp3"],
+            num_bands=4,
+            exclude_bands=[1, 2],
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"dis_froz_max": 6.5}},
+            nscf_bands=bands_data([[0.0, 1.0, 5.0, 6.0, 7.0, 20.0]]),
+        )
+        assert self._w90_parameters(wg)["dis_froz_max"] == 6.5
+
+    def test_non_disentangling_block_has_its_window_stripped_unchecked(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """num_bands == num_wann cannot disentangle, so no window survives to check.
+
+        The window here would freeze four bands for two Wannier functions.
+        It is dropped rather than rejected: a globally supplied
+        ``dis_froz_max`` is meant for whichever block disentangles, and
+        reaching a block that cannot is not a user error.
+        """
+        block = explicit_block("block_1", range(1, 3), projections=["Si: sp3"])
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"dis_froz_max": 4.0}},
+            nscf_bands=bands_data([[0.0, 1.0, 2.0, 3.0]]),
+        )
+        assert "dis_froz_max" not in self._w90_parameters(wg)
+
+    def test_pool_block_accounts_for_every_nscf_band(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """``len(exclude_bands) + num_bands`` reproduces the pw.x band count.
+
+        wann2kcp.x reads the ``.chk`` against that count and refuses a
+        mismatch, and the same two keys say which bands this block reads —
+        so a block with spare bands must still account for every nscf band,
+        just inside ``num_bands`` rather than inside the exclusions.
+        """
+        nbnd = 6
+        block = explicit_block(
+            "block_1",
+            range(3, 5),
+            projections=["Si: sp3"],
+            num_bands=4,
+            exclude_bands=[1, 2],
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            nscf_bands=bands_data([[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]]),
+        )
+        params = self._w90_parameters(wg)
+        assert params["num_wann"] == 2
+        assert params["num_bands"] == 4
+        assert params["exclude_bands"] == [1, 2]
+        assert len(params["exclude_bands"]) + params["num_bands"] == nbnd
+
+    def test_disentangling_block_without_a_window_still_warns(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Wiring the bands does not itself count as a disentanglement constraint.
+
+        A block with no window at all is a different case from one whose
+        window is too high: there is nothing to reject, but the manifold is
+        still chosen by free spread minimization, so the warning must keep
+        firing.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        with pytest.warns(UnconstrainedDisentanglementWarning, match="block_1"):
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                nscf_bands=bands_data([[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]]),
+            )
 
     def test_gauge_products_are_extracted(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family

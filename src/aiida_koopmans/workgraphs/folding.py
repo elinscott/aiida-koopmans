@@ -20,6 +20,13 @@ the supercell ``dft_init`` kcp.x run:
    emits the ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat`` result as its
    ``merged_file`` output.
 
+A disentangled block needs no extra plumbing here: wann2kcp.x reads the
+disentanglement matrices out of the ``.chk`` it is already handed and
+applies them itself, so a block whose ``num_bands`` exceeds its ``num_wann``
+folds through this path unchanged. There is deliberately no ``u_dis``
+socket to thread — unlike the DFPT route, which merges the matrices in
+python because kcw.x reads them as plain text.
+
 Every wavefunction is an enumerated input/output of some task — the only
 ``RemoteData`` in the pipeline is the nscf scratch (bulk QE outdir, chained
 the standard aiida-quantumespresso way).
