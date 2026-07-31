@@ -279,21 +279,25 @@ def _disentanglement_unconstrained(
     return frozen_type not in _WINDOW_SETTING_FROZEN_TYPES
 
 
-def _frozen_window_clamp_inputs(
+def _frozen_window_inputs(
     block: ProjectionBlock, nscf_bands: orm.BandsData | None
 ) -> dict[str, Any]:
-    """Return the base-workchain inputs that clamp a block's frozen window.
+    """Return the inputs that keep a block's frozen window low enough.
 
-    A frozen window is expressed in eV but has to hold inside *this* block's
-    bands: a ``dis_froz_max`` reaching above the block's own manifold freezes
-    pool bands, and wannier90 aborts with more frozen states than target
-    Wannier functions. ``Wannier90BaseWorkChain`` already lowers
-    ``dis_froz_max`` to just under the first band above the manifold, reading
-    the block's ``exclude_bands`` and ``num_wann`` out of the parameters —
-    but only when handed eigenvalues, which upstream wires up solely for a
-    workchain running its own scf/nscf. These per-block ones skip both, so
-    the bands (and, for a spin-resolved block, the channel that picks the
-    right plane out of them) travel explicitly.
+    wannier90 fails unless at most ``num_wann`` bands are frozen at every
+    k-point. Numbering the bands this block reads 1, 2, 3, ..., that means
+    the frozen window must stop below band ``num_wann + 1`` everywhere::
+
+        dis_froz_max < min_k E(num_wann + 1, k)
+
+    A user writes one ``dis_froz_max`` for the whole calculation, so nothing
+    makes it true for any particular block. ``Wannier90BaseWorkChain``
+    lowers the value for us, reading ``exclude_bands`` and ``num_wann`` back
+    out of the parameters — but only when it is given eigenvalues, which
+    upstream passes only to a workchain that runs its own scf and nscf.
+    These per-block chains run neither, so the bands travel explicitly, and
+    with them the spin channel that says which half of a collinear array to
+    read.
     """
     if nscf_bands is None:
         return {}
@@ -584,8 +588,8 @@ def WannierizeBlock(
       picks them up), and force-retrieves ``aiida.chk``, which upstream
       excludes by default;
     * hands the base workchain ``nscf_bands`` when the block disentangles, so
-      its frozen window is clamped inside the block's own bands
-      (:func:`_frozen_window_clamp_inputs`).
+      it can lower ``dis_froz_max`` until at most ``num_wann`` bands are
+      frozen (:func:`_frozen_window_inputs`).
     """
     validate_projection_type(projection_type)
     validate_external_projector_inputs(
@@ -645,7 +649,7 @@ def WannierizeBlock(
     if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
         if "dis_num_iter" not in (wannier90 or {}):
             w90_params["dis_num_iter"] = 5000
-        data["wannier90"].update(_frozen_window_clamp_inputs(block, nscf_bands))
+        data["wannier90"].update(_frozen_window_inputs(block, nscf_bands))
         # ``w90_params`` at this point holds the full merge (protocol defaults
         # plus the flat ``wannier90`` overrides), so any window the protocol
         # itself set counts as a constraint too. On the production path this
@@ -1034,12 +1038,12 @@ def WannierizeBlocks(
             through here without rerunning the ground state. Incompatible
             with split mode, which needs the internal scf's density for its
             bands step.
-        nscf_bands: the nscf eigenvalues, used to clamp each disentangling
-            block's frozen window inside its own bands. Defaults to the
+        nscf_bands: the nscf eigenvalues. A disentangling block needs them
+            to lower its ``dis_froz_max`` until at most ``num_wann`` bands
+            are frozen; without them it keeps whatever value the user wrote,
+            and wannier90 stops if that freezes too many. Defaults to the
             internal nscf's ``output_band``; a caller supplying
-            ``nscf_remote_folder`` should pass the matching bands; without
-            them a disentangling block Wannierizes with an unclamped
-            window.
+            ``nscf_remote_folder`` should pass the matching bands.
         split_threshold: minimum gap (eV) between consecutive bands for a
             split; setting it is one of the two split-mode triggers.
             ``None`` (with automatic-projections blocks supplying the other
@@ -1130,9 +1134,9 @@ def WannierizeBlocks(
             metadata={"call_link_label": "scf_nscf"},
         )
         nscf_scratch = scf_nscf["nscf_remote_folder"]
-        # The eigenvalues that let each disentangling block clamp its frozen
-        # window; the caller's own copy wins so a shared ground state stays
-        # the single source (the internal pair is skipped in that case).
+        # The eigenvalues each disentangling block needs to lower its
+        # ``dis_froz_max``; the caller's own copy wins so a shared ground
+        # state stays the single source (the internal pair is skipped then).
         block_bands = nscf_bands if nscf_bands is not None else scf_nscf["nscf_output_band"]
 
         # --- split mode: bands step + runtime group detection ---

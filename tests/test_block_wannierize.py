@@ -127,10 +127,10 @@ class TestBlockWannierizeGraphBuild:
     def test_shared_nscf_bands_reach_every_block(self, wannier_codes, silicon_structure, kmesh):
         """The internal nscf's eigenvalues are linked into each per-block graph.
 
-        This default is the only way the frozen-window clamp is ever reached
-        in production: no caller passes ``nscf_bands`` explicitly, so a
-        per-block test that supplies it by hand exercises the leaf and skips
-        the wiring. Assert the link itself rather than a value — at build
+        This default is the only way a block's ``dis_froz_max`` is ever
+        lowered in production: no caller passes ``nscf_bands`` explicitly, so
+        a per-block test that supplies it by hand exercises the leaf and
+        skips the wiring. Assert the link itself rather than a value — at build
         time the socket carries an unresolved output of ``scf_nscf``.
         """
         wg = WannierizeBlocks.build(
@@ -1057,10 +1057,10 @@ class TestWannierizeBlockBuild:
     def test_disentangling_block_hands_the_base_workchain_its_bands(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
-        """A pool-carrying block wires ``bands``, which turns on the frozen-window clamp.
+        """A block that disentangles is given the eigenvalues it needs.
 
-        ``Wannier90BaseWorkChain`` lowers ``dis_froz_max`` to just under the
-        first band above the manifold, but only when it has eigenvalues to
+        ``Wannier90BaseWorkChain`` lowers ``dis_froz_max`` until at most
+        ``num_wann`` bands are frozen, but only when it has eigenvalues to
         read; upstream never supplies them to a workchain whose scf/nscf are
         skipped, as these per-block ones are.
         """
@@ -1080,7 +1080,7 @@ class TestWannierizeBlockBuild:
     def test_non_disentangling_block_leaves_the_bands_socket_empty(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
-        """num_bands == num_wann has its windows stripped, so there is nothing to clamp."""
+        """num_bands == num_wann has its windows stripped, so nothing needs lowering."""
         bands = bands_data([[0.0, 1.0, 2.0, 3.0]])
         block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"])
         wg = self._build_block(
@@ -1100,7 +1100,7 @@ class TestWannierizeBlockBuild:
         """A spin-resolved block also sends ``current_spin``.
 
         The eigenvalues of a collinear nscf arrive as one array per channel;
-        without the channel name the clamp would read the wrong plane.
+        without the channel name the wrong half would be read.
         """
         bands = bands_data([[[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]], [[0.1, 1.1, 2.1, 3.1, 8.1, 9.1]]])
         block = explicit_block(
@@ -1129,10 +1129,9 @@ class TestWannierizeBlockBuild:
         """``len(exclude_bands) + num_bands`` reproduces the pw.x band count.
 
         wann2kcp.x reads the ``.chk`` against that count and refuses a
-        mismatch, and the clamp reads the same two keys to work out which
-        bands sit above the manifold — so a pool block must still account for
-        every nscf band, just with the pool inside ``num_bands`` rather than
-        inside the exclusions.
+        mismatch, and the same two keys say which bands this block reads —
+        so a block with spare bands must still account for every nscf band,
+        just inside ``num_bands`` rather than inside the exclusions.
         """
         nbnd = 6
         block = explicit_block(
@@ -1157,15 +1156,15 @@ class TestWannierizeBlockBuild:
         assert params["exclude_bands"] == [1, 2]
         assert len(params["exclude_bands"]) + params["num_bands"] == nbnd
 
-    def test_clamped_block_without_a_window_still_warns(
+    def test_disentangling_block_without_a_window_still_warns(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """Wiring the bands does not itself count as a disentanglement constraint.
 
-        The clamp only lowers a ``dis_froz_max`` that is already there, so a
+        Only a ``dis_froz_max`` that is already there gets lowered, so a
         block with no window at all is still free-minimizing and the warning
-        must keep firing — the pre-dispatch check and the clamp agree on
-        which blocks are constrained.
+        must keep firing — the pre-dispatch check and the run-time lowering
+        agree on which blocks are constrained.
         """
         block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
         with pytest.warns(UnconstrainedDisentanglementWarning, match="block_1"):
