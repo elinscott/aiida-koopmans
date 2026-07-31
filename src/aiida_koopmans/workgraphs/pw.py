@@ -17,6 +17,7 @@ from aiida_koopmans.workgraphs import (
     inject_pseudo_family,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
+    pin_kpoints,
     validate_parallelization,
 )
 
@@ -94,11 +95,7 @@ def assemble_pw_base_step(
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)
-    if kpoints is not None:
-        # The workchain accepts exactly one of ``kpoints`` / ``kpoints_distance``.
-        data.pop("kpoints_distance", None)
-        data.pop("kpoints_force_parity", None)
-        data["kpoints"] = kpoints
+    pin_kpoints(data, kpoints)
     if parent_folder is not None:
         data["pw"]["parent_folder"] = parent_folder
     if parallelization is not None:
@@ -115,6 +112,7 @@ def RunPwBands(
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     parallelization: ParallelizationDict | None = None,
+    scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
 ) -> ScfBandsOutputs:
     """Run PwBandsWorkChain using the protocol-based builder pattern.
@@ -133,6 +131,10 @@ def RunPwBands(
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry sets the scf/bands pw.x ``metadata.options`` and
             ``-npool``.
+        scf_kpoints: Explicit k-points for the SCF step, replacing the
+            protocol's ``kpoints_distance``. Leave unset only where no mesh
+            is prescribed and the protocol should choose one. The bands step
+            is unaffected: it samples the path, not a mesh.
         bands_kpoints: Explicit KpointsData for the bands path. If provided,
             seekpath is bypassed entirely.
 
@@ -169,6 +171,8 @@ def RunPwBands(
         pw_inputs["parameters"] = orm.Dict(
             enforce_step_calculation(pw_inputs["parameters"].get_dict(), step, expected)
         )
+
+    pin_kpoints(data["scf"], scf_kpoints)
 
     # If nbnd is explicitly set, remove nbands_factor to avoid conflict
     bands_system = overrides.get("bands", {}).get("pw", {}).get("parameters", {}).get("SYSTEM", {})

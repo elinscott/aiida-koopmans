@@ -24,6 +24,7 @@ from aiida_koopmans.workgraphs import (
     Codes,
     enforce_step_calculation,
     merge_parallelization_into_existing_namespaces,
+    pin_kpoints,
     validate_parallelization,
 )
 
@@ -130,6 +131,44 @@ def _finalize_wannier_builder(
     return data
 
 
+def _pin_wannier_kpoints(data: dict[str, Any], kpoints: orm.KpointsData | None) -> None:
+    """Re-cut a built ``Wannier90WorkChain`` input dict onto ``kpoints``, in place.
+
+    The upstream protocol builder derives a single mesh from a k-point
+    distance and spreads it over the whole chain: the scf samples the mesh,
+    the nscf and wannier90 run on its expansion to an explicit list in
+    wannier90's k-point order, and ``mp_grid`` records its dimensions (which
+    wannier90 cannot re-derive from an explicit list). Substituting a
+    caller's mesh therefore means replacing all four together — pinning only
+    the scf would leave the Wannierization on a different grid than the
+    ground state it is built from. A ``None`` mesh leaves the protocol in
+    charge of all four.
+    """
+    if kpoints is None:
+        return
+
+    from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
+
+    try:
+        mesh = kpoints.get_kpoints_mesh()[0]
+    except AttributeError as exc:
+        raise ValueError(
+            "`kpoints` must be a Monkhorst-Pack mesh: the scf reduces it by "
+            "symmetry and wannier90 needs its dimensions as `mp_grid`, neither "
+            "of which an explicit k-point list carries."
+        ) from exc
+    explicit = get_explicit_kpoints(kpoints)
+
+    pin_kpoints(data["scf"], kpoints)
+    pin_kpoints(data["nscf"], explicit)
+
+    wannier90 = data["wannier90"]["wannier90"]
+    wannier90["kpoints"] = explicit
+    parameters = wannier90["parameters"].get_dict()
+    parameters["mp_grid"] = [int(size) for size in mesh]
+    wannier90["parameters"] = orm.Dict(parameters)
+
+
 @task.graph
 def Wannierize(
     codes: Codes,
@@ -152,6 +191,7 @@ def Wannierize(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> WannierWorkflowOutputs:
@@ -190,6 +230,11 @@ def Wannierize(
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
         retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.
         print_summary: If True, print a summary of key input parameters.
+        kpoints: The Monkhorst-Pack mesh the whole chain samples, replacing
+            the protocol's ``kpoints_distance``: the scf runs on the mesh,
+            the nscf and wannier90 on its expansion to an explicit list, and
+            ``mp_grid`` on its dimensions. Leave unset only where no mesh is
+            prescribed and the protocol should choose one.
 
     Returns:
         Dict with outputs from the Wannier90WorkChain.
@@ -235,6 +280,8 @@ def Wannierize(
         projector_rotation=projector_rotation,
         set_bands_kpoints=True,
     )
+
+    _pin_wannier_kpoints(data, kpoints)
 
     # Per-code parallelization into whichever calcjob namespaces this run has.
     merge_parallelization_into_existing_namespaces(
