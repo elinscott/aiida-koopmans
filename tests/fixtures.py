@@ -237,8 +237,9 @@ def explicit_block(
 ):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
 
-    ``filled`` stamps the block's occupancy when given; ``None`` leaves the
-    block unstamped (the partition-emission gate stays off). ``num_bands``
+    ``include`` names the block's band slots, one per Wannier function.
+    ``filled`` stamps the occupancy; ``None`` leaves it unstamped, the
+    state a block is in before anything has classified it. ``num_bands``
     beyond ``len(include)`` gives the block a disentanglement pool, in which
     case ``exclude_bands`` names only the bands below it.
     """
@@ -294,9 +295,9 @@ def automatic_block(label, include, spin=None, projection_type=None, filled=None
     """Build a minimal automatic projection block over ``include`` bands.
 
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
-    projection source automated wannierization always uses. ``filled``
-    stamps the block's occupancy when given; ``None`` leaves the block
-    unstamped (the partition-emission gate stays off).
+    projection source automated wannierization always uses, and the one
+    whose occupancy is unknown until the runtime split, so ``filled``
+    defaults to unstamped.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -344,11 +345,12 @@ def ozone_projection_blocks():
 
     from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 
-    def _block(label, include):
+    def _block(label, include, filled):
         n = len(include)
         return ExplicitProjectionBlock(
             label=label,
             spin=SpinChannel.NONE,
+            filled=filled,
             num_wann=n,
             num_bands=n,
             include_bands=list(include),
@@ -356,7 +358,10 @@ def ozone_projection_blocks():
             projections=[],
         )
 
-    return [_block("block_occ", range(1, 10)), _block("block_emp", range(10, 11))]
+    return [
+        _block("block_occ", range(1, 10), filled=True),
+        _block("block_emp", range(10, 11), filled=False),
+    ]
 
 
 @pytest.fixture

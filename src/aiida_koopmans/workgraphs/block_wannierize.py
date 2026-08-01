@@ -69,7 +69,9 @@ from aiida_koopmans.types import (
     ProjectionBlockId,
     SpinChannel,
     VariationalOrbital,
+    block_occupancy,
     block_w90_kwargs,
+    validate_projection_block,
 )
 from aiida_koopmans.workgraphs import (
     Codes,
@@ -865,9 +867,10 @@ def collect_wannier_functions(
     return CollectedWannierFunctions(centres=centres, spreads=spreads)
 
 
-def _validate_block_projection_types(blocks: list[ProjectionBlock]) -> None:
-    """Reject any block whose projection type is unsupported."""
+def _validate_blocks(blocks: list[ProjectionBlock]) -> None:
+    """Reject any block whose band bookkeeping or projection type is unsupported."""
     for block in blocks:
+        validate_projection_block(block)
         validate_projection_type(block["projection_type"])
 
 
@@ -894,13 +897,14 @@ def _maybe_emit_orbital_partition(
 ) -> None:
     """Wire the initial orbital partition into ``outputs`` when the blocks carry occupancy.
 
-    Emission is gated on the caller stamping ``filled`` on every block:
-    occupancy is structural information the caller owns, so it travels
-    on the blocks and is never derived here. A partial stamping is a
-    caller bug rather than a smaller feature, so it raises. The
-    partition task takes a JSON-pure reduced view of the blocks: a full
-    block carries a non-``str`` enum (``projection_type``) that the
-    PyFunction input serializer cannot store.
+    A block derived from atomic projectors carries no occupancy until the
+    runtime band-group detection settles it, so the partition -- which is
+    a split of the Wannier functions into occupied and empty -- cannot be
+    built for it here. A partial stamping is a caller bug rather than a
+    smaller feature, so it raises. The partition task takes a JSON-pure
+    reduced view of the blocks: a full block carries a non-``str`` enum
+    (``projection_type``) that the PyFunction input serializer cannot
+    store.
     """
     stamped = [("filled" in block) for block in blocks]
     if any(stamped) and not all(stamped):
@@ -918,7 +922,7 @@ def _maybe_emit_orbital_partition(
         ProjectionBlockId(
             label=str(block["label"]),
             spin=SpinChannel(block["spin"]),
-            filled=bool(block["filled"]),
+            filled=block_occupancy(block),
             num_wann=int(block["num_wann"]),
         )
         for block in blocks
@@ -1176,13 +1180,13 @@ def WannierizeBlocks(
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
         block label, the unified ``centres`` / ``spreads`` (plain mode), the
         ``bands`` / ``groups`` detection outputs (split mode), the
-        ``orbitals`` initial partition (only when every block is stamped
-        with ``filled``), and (only when the scf + nscf ran here) the
+        ``orbitals`` initial partition (only when every block carries a
+        ``filled`` stamp), and (only when the scf + nscf ran here) the
         shared ``nscf`` outputs.
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
-    _validate_block_projection_types(blocks)
+    _validate_blocks(blocks)
     validate_external_projector_inputs(
         [block["projection_type"] for block in blocks],
         external_projectors_path,

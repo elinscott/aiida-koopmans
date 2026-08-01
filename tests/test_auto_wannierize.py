@@ -12,14 +12,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.projections import (
     detect_band_blocks,
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 from aiida_koopmans.workgraphs.auto_wannierize import (
     WannierizeAndSplitBlock,
     _plain_options,
@@ -29,7 +27,7 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     merge_split_block_products,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from tests.fixtures import assert_graph_roundtrips, bands_data
+from tests.fixtures import assert_graph_roundtrips, bands_data, explicit_block
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -216,27 +214,14 @@ def nscf_scratch(aiida_localhost, tmp_path):
     return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path))
 
 
-def _explicit_block(label: str, include: range, projections: list[str]) -> ExplicitProjectionBlock:
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=SpinChannel.NONE,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=projections,
-    )
-
-
 class TestTopLevelGraphBuild:
     def test_shared_steps_and_per_block_fanout(
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
         """One scf+nscf, one bands step, one detection, one nested graph per block."""
         blocks = [
-            _explicit_block("block_1", range(1, 5), ["Si: sp3"]),
-            _explicit_block("block_2", range(5, 9), ["Si: sp3"]),
+            explicit_block("block_1", range(1, 5), ["Si: sp3"]),
+            explicit_block("block_2", range(5, 9), ["Si: sp3"]),
         ]
         wg = WannierizeBlocks.build(
             codes=auto_codes,
@@ -278,7 +263,7 @@ class TestTopLevelGraphBuild:
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
         """The pw mapping lands on the bands step and threads into scf+nscf."""
-        blocks = [_explicit_block("block_1", range(1, 5), ["Si: sp3"])]
+        blocks = [explicit_block("block_1", range(1, 5), ["Si: sp3"])]
         wg = WannierizeBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
@@ -324,7 +309,7 @@ class TestPerBlockGraphBuild:
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """A block already isolated by the detection wannierises plainly."""
-        block = _explicit_block("block_2", range(5, 9), ["Si: sp3"])
+        block = explicit_block("block_2", range(5, 9), ["Si: sp3"])
         wg = self._build(
             auto_codes,
             silicon_structure,
@@ -354,7 +339,7 @@ class TestPerBlockGraphBuild:
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """Two groups: whole-block wannierize, wjl split, nested re-wannierisation."""
-        block = _explicit_block("block_1", range(1, 9), ["Si: sp3", "Si: sp3"])
+        block = explicit_block("block_1", range(1, 9), ["Si: sp3", "Si: sp3"])
         wg = self._build(
             auto_codes,
             silicon_structure,
@@ -407,7 +392,7 @@ class TestPerBlockGraphBuild:
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """A block starting at band 5 hands 1-based local indices to the split."""
-        block = _explicit_block("block_2", range(5, 13), ["Si: sp3", "Si: sp3"])
+        block = explicit_block("block_2", range(5, 13), ["Si: sp3", "Si: sp3"])
         wg = self._build(
             auto_codes,
             silicon_structure,
@@ -684,7 +669,7 @@ class TestOverridesForwarding:
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
         """``overrides['scf']`` / ``overrides['nscf']`` forward to RunScfNscf."""
-        blocks = [_explicit_block("block_1", range(1, 5), ["Si: sp3"])]
+        blocks = [explicit_block("block_1", range(1, 5), ["Si: sp3"])]
         overrides = {
             "scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 30.0}}}},
             "nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}},

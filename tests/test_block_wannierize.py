@@ -47,19 +47,19 @@ def zno_structure(aiida_profile):
 def _silicon_blocks() -> list[ExplicitProjectionBlock]:
     """tutorial_2 silicon shape: 1 occupied block + 1 empty block, nspin=1."""
     return [
-        explicit_block("block_1", range(1, 5)),  # 4 occupied
-        explicit_block("block_2", range(5, 9)),  # 4 empty
+        explicit_block("block_1", range(1, 5), filled=True),
+        explicit_block("block_2", range(5, 9), filled=False),
     ]
 
 
 def _zno_blocks() -> list[ExplicitProjectionBlock]:
     """ZnO shape: 4 occupied blocks + 1 empty block, nspin=1."""
     return [
-        explicit_block("block_1", range(1, 6)),  # Zn 3d-ish
-        explicit_block("block_2", range(6, 9)),
-        explicit_block("block_3", range(9, 13)),
-        explicit_block("block_4", range(13, 17)),
-        explicit_block("block_5", range(17, 21)),  # empty
+        explicit_block("block_1", range(1, 6), filled=True),  # Zn 3d-ish
+        explicit_block("block_2", range(6, 9), filled=True),
+        explicit_block("block_3", range(9, 13), filled=True),
+        explicit_block("block_4", range(13, 17), filled=True),
+        explicit_block("block_5", range(17, 21), filled=False),
     ]
 
 
@@ -437,19 +437,11 @@ class TestSplitMode:
 # ----------------------------------------------------------------------
 
 
-def _stamped_blocks() -> list[ExplicitProjectionBlock]:
-    """Build the silicon shape with the occupancy stamps the emission gate needs."""
-    return [
-        explicit_block("block_1", range(1, 5), filled=True),
-        explicit_block("block_2", range(5, 9), filled=False),
-    ]
-
-
 class TestOrbitalPartitionEmission:
     """The ``orbitals`` socket: occupancy-stamp gating and both-mode wiring."""
 
     def test_plain_mode_emits_the_partition(self, wannier_codes, silicon_structure, kmesh):
-        wg = _build(wannier_codes, silicon_structure, _stamped_blocks(), kmesh)
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
         names = [t.name for t in wg.tasks]
         assert names.count("initial_orbital_partition") == 1
         assert wg.outputs["orbitals"]._links
@@ -467,7 +459,7 @@ class TestOrbitalPartitionEmission:
         wg = WannierizeBlocks.build(
             codes=auto_codes,
             structure=silicon_structure,
-            blocks=_stamped_blocks(),
+            blocks=_silicon_blocks(),
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
             pseudo_family=fake_cutoffs_family.label,
@@ -480,18 +472,53 @@ class TestOrbitalPartitionEmission:
         assert wg.outputs["orbitals"]._links
         assert_graph_roundtrips(wg)
 
-    def test_unstamped_blocks_skip_the_emission(self, wannier_codes, silicon_structure, kmesh):
-        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+    def test_unstamped_blocks_skip_the_emission(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """Blocks of unknown occupancy Wannierise; only the partition waits.
+
+        The automatic-projections shape: the pseudopotentials fix how many
+        Wannier functions the block has, but which of them are occupied is
+        settled by the band-group detection this build only schedules.
+        """
+        wg = WannierizeBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            blocks=[automatic_block("block_1", range(1, 9))],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            num_occ_bands=4,
+        )
         assert "initial_orbital_partition" not in [t.name for t in wg.tasks]
         assert not wg.outputs["orbitals"]._links
 
     def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
-        blocks = [
-            explicit_block("block_1", range(1, 5), filled=True),
-            explicit_block("block_2", range(5, 9)),
-        ]
+        blocks = _silicon_blocks()
+        del blocks[1]["filled"]
         with pytest.raises(ValueError, match="block_2"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
+
+    def test_partition_follows_the_stamps_not_the_slots(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """The emitted partition splits where the stamps say, not where the bands do.
+
+        Both blocks sit in the lower half of the band range, so a
+        band-position reading calls them both occupied and the empty
+        manifold vanishes from the screening partition.
+        """
+        blocks = [
+            explicit_block("block_1", range(1, 5), filled=True),
+            explicit_block("block_2", range(3, 5), filled=False, num_bands=6),
+        ]
+        wg = _build(wannier_codes, silicon_structure, blocks, kmesh)
+        specs = wg.tasks["initial_orbital_partition"].inputs["blocks"].value
+        assert [(s["label"], s["filled"]) for s in specs] == [
+            ("block_1", True),
+            ("block_2", False),
+        ]
 
     def test_blocks_out_of_emitted_order_raise(self, wannier_codes, silicon_structure, kmesh):
         """Non-channel-contiguous input would mis-pair `orbitals` against `spreads`.
@@ -738,13 +765,8 @@ class TestWannierizeBlockBuild:
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """wannier90 takes metadata.options only (no flags); pw2wannier90 takes -pd."""
-        block = ExplicitProjectionBlock(
-            label="block_1",
-            spin=SpinChannel.NONE,
-            num_wann=4,
-            num_bands=4,
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=["Si: sp3"],
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
         )
         wg = WannierizeBlock.build(
             codes=wannier_codes,
@@ -775,13 +797,8 @@ class TestWannierizeBlockBuild:
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """`wannier90` / `pw2wannier90` land in `parameters` / `INPUTPP`; `scf` is ignored."""
-        block = ExplicitProjectionBlock(
-            label="block_1",
-            spin=SpinChannel.NONE,
-            num_wann=4,
-            num_bands=6,
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=["Si: sp3"],
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=6
         )
         wg = self._build_block(
             wannier_codes,
@@ -1043,13 +1060,8 @@ class TestWannierizeBlockBuild:
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """num_bands > num_wann without a user dis_num_iter unfreezes the subspace."""
-        block = ExplicitProjectionBlock(
-            label="block_1",
-            spin=SpinChannel.NONE,
-            num_wann=4,
-            num_bands=6,
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=["Si: sp3"],
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=6
         )
         wg = self._build_block(
             wannier_codes,
@@ -1473,14 +1485,9 @@ class TestUnconstrainedDisentanglementWarning:
 
     @staticmethod
     def _pool_block():
-        """Build a block whose 4 Wannier functions sit under 6 included bands."""
-        return ExplicitProjectionBlock(
-            label="block_1",
-            spin=SpinChannel.NONE,
-            num_wann=4,
-            num_bands=6,
-            projection_type=WannierProjectionType.ANALYTIC,
-            projections=["Si: sp3"],
+        """Build a block whose 4 Wannier functions sit under 6 read bands."""
+        return explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=6
         )
 
     def _build(self, codes, structure, blocks, kpoints, **kwargs):

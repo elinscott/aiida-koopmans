@@ -9,36 +9,17 @@ helpers; the parity test loads a profile only to build a real orbital.
 from __future__ import annotations
 
 import pytest
-from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.types import (
-    ExplicitProjectionBlock,
     OrbitalDict,
     SpinChannel,
     block_w90_kwargs,
     group_blocks_to_merge,
     merge_dest_filename,
+    validate_projection_block,
 )
 from tests.fixtures import automatic_block as _automatic
-
-# ----------------------------------------------------------------------
-# Block fixtures
-# ----------------------------------------------------------------------
-
-
-def _explicit(label, include, spin=SpinChannel.NONE):
-    """Build a minimal ExplicitProjectionBlock spanning ``include`` bands."""
-    n = len(include)
-    return ExplicitProjectionBlock(
-        label=label,
-        spin=spin,
-        num_wann=n,
-        num_bands=n,
-        include_bands=list(include),
-        projection_type=WannierProjectionType.ANALYTIC,
-        projections=[],  # contents irrelevant to grouping; parity tested separately
-    )
-
+from tests.fixtures import explicit_block as _explicit
 
 # ----------------------------------------------------------------------
 # group_blocks_to_merge
@@ -49,8 +30,8 @@ class TestGroupBlocksToMerge:
     def test_silicon_one_occ_one_emp(self):
         # tutorial_2 silicon: a single occupied block + a single empty block.
         blocks = [
-            _explicit("block_1", range(1, 5)),  # occupied
-            _explicit("block_2", range(5, 9)),  # empty
+            _explicit("block_1", range(1, 5), filled=True),
+            _explicit("block_2", range(5, 9), filled=False),
         ]
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert len(groups) == 2
@@ -62,11 +43,11 @@ class TestGroupBlocksToMerge:
         # ZnO: four occupied sub-blocks (Zn-s, Zn-p, O-s, Zn-d+O-p) all merge
         # into the occupied manifold; one empty block stands alone.
         blocks = [
-            _explicit("block_1", range(1, 5)),
-            _explicit("block_2", range(5, 11)),
-            _explicit("block_3", range(11, 14)),
-            _explicit("block_4", range(14, 19)),
-            _explicit("block_5", range(19, 29)),  # empty
+            _explicit("block_1", range(1, 5), filled=True),
+            _explicit("block_2", range(5, 11), filled=True),
+            _explicit("block_3", range(11, 14), filled=True),
+            _explicit("block_4", range(14, 19), filled=True),
+            _explicit("block_5", range(19, 29), filled=False),
         ]
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 18})
         assert len(groups) == 2
@@ -76,10 +57,10 @@ class TestGroupBlocksToMerge:
 
     def test_spin_polarized_four_groups(self):
         blocks = [
-            _explicit("block_1_spin_up", range(1, 5), spin=SpinChannel.UP),
-            _explicit("block_2_spin_up", range(5, 9), spin=SpinChannel.UP),
-            _explicit("block_1_spin_down", range(1, 5), spin=SpinChannel.DOWN),
-            _explicit("block_2_spin_down", range(5, 9), spin=SpinChannel.DOWN),
+            _explicit("block_1_spin_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("block_2_spin_up", range(5, 9), spin=SpinChannel.UP, filled=False),
+            _explicit("block_1_spin_down", range(1, 5), spin=SpinChannel.DOWN, filled=True),
+            _explicit("block_2_spin_down", range(5, 9), spin=SpinChannel.DOWN, filled=False),
         ]
         groups = group_blocks_to_merge(blocks, {SpinChannel.UP: 4, SpinChannel.DOWN: 4})
         keys = {(g["filled"], g["spin"]) for g in groups}
@@ -93,14 +74,47 @@ class TestGroupBlocksToMerge:
     def test_automatic_blocks_group_the_same(self):
         # Grouping reads only the common bookkeeping, so automatic (no
         # explicit projections) blocks group identically.
-        blocks = [_automatic("block_1", range(1, 5)), _automatic("block_2", range(5, 9))]
+        blocks = [
+            _automatic("block_1", range(1, 5), filled=True),
+            _automatic("block_2", range(5, 9), filled=False),
+        ]
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert [g["filled"] for g in groups] == [True, False]
 
-    def test_block_straddling_manifolds_raises(self):
-        block = _explicit("block_1", range(3, 7))  # 3..6 straddles n_occ=4
-        with pytest.raises(ValueError, match="spans both"):
+    def test_stamp_decides_against_the_band_slots(self):
+        """An empty block joins the empty manifold however its slots read.
+
+        The slots deliberately contradict the occupancy: they sit inside
+        the occupied range, which is what a disentangling block's slots
+        can do (they say where the block sits, not which bands its
+        Wannier functions came out of). Reading them instead of the stamp
+        puts this block in the occupied manifold, and the empty manifold
+        comes out of ``merge_evc.x`` missing.
+        """
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True),
+            _explicit("emp", [3, 4], filled=False, num_bands=6),
+        ]
+        groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
+        assert [(g["filled"], [b["label"] for b in g["blocks"]]) for g in groups] == [
+            (True, ["occ"]),
+            (False, ["emp"]),
+        ]
+
+    def test_unstamped_block_raises(self):
+        """The merge cannot proceed on a block nobody has classified."""
+        block = _explicit("block_1", range(1, 5))
+        with pytest.raises(ValueError, match="occupied or empty"):
             group_blocks_to_merge([block], {SpinChannel.NONE: 4})
+
+    def test_occupied_blocks_must_span_the_occupied_bands(self):
+        """The stamps are checked against the electron count, not trusted blindly."""
+        blocks = [
+            _explicit("block_1", range(1, 5), filled=True),
+            _explicit("block_2", range(5, 9), filled=False),
+        ]
+        with pytest.raises(ValueError, match="span 4 Wannier functions but the channel has 6"):
+            group_blocks_to_merge(blocks, {SpinChannel.NONE: 6})
 
     def test_missing_spin_count_raises(self):
         block = _explicit("block_1", range(1, 5), spin=SpinChannel.UP)
@@ -109,9 +123,43 @@ class TestGroupBlocksToMerge:
 
     def test_preserves_first_seen_order(self):
         # Empty block encountered first -> empty group comes first.
-        blocks = [_explicit("e", range(5, 9)), _explicit("o", range(1, 5))]
+        blocks = [
+            _explicit("e", range(5, 9), filled=False),
+            _explicit("o", range(1, 5), filled=True),
+        ]
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert [g["filled"] for g in groups] == [False, True]
+
+
+# ----------------------------------------------------------------------
+# validate_projection_block
+# ----------------------------------------------------------------------
+
+
+class TestValidateProjectionBlock:
+    def test_accepts_a_disentangling_block(self):
+        # Four Wannier functions optimised out of six bands: four slots.
+        validate_projection_block(_explicit("block_1", range(1, 5), num_bands=6, filled=True))
+
+    def test_accepts_a_block_of_unknown_occupancy(self):
+        """Occupancy is not part of a block's structural bookkeeping.
+
+        A block built from atomic projectors is well-formed before anything
+        has classified it; only a consumer that needs the occupancy refuses.
+        """
+        validate_projection_block(_automatic("block_1", range(1, 5)))
+
+    def test_rejects_slots_widened_into_the_pool(self):
+        """A pool belongs in ``num_bands``; widening the slots mis-addresses WFs."""
+        block = _explicit("block_1", range(1, 7), num_bands=6, filled=True)
+        block["num_wann"] = 4
+        with pytest.raises(ValueError, match="names 6 band slots"):
+            validate_projection_block(block)
+
+    def test_rejects_fewer_bands_than_wannier_functions(self):
+        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        with pytest.raises(ValueError, match="one band per Wannier function"):
+            validate_projection_block(block)
 
 
 # ----------------------------------------------------------------------
