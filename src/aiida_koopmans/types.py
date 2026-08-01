@@ -279,15 +279,14 @@ class _ProjectionBlockBase(TypedDict):
     read, so ``len(exclude_bands) + num_bands`` is that run's band count --
     the identity wann2kcp.x checks a ``.chk`` against.
 
-    ``filled`` is the block's occupancy: ``True`` for a purely occupied
-    block, ``False`` for a purely empty one. Unset means *not yet known*,
-    which is a legitimate state: a block derived from atomic projectors
-    exists before anything has looked at the band structure, and its
-    occupancy is settled only by the runtime band-group detection. Unset
-    never licenses a guess -- occupancy does not follow from the band
-    slots, which for a disentangling block say nothing about where the
-    Wannier functions came from. A consumer that needs the occupancy and
-    finds it unset raises (:func:`block_occupancy`).
+    ``filled`` is the block's occupancy: ``True`` when its Wannier
+    functions come from the occupied manifold alone, ``False`` when they
+    come from the empty manifold alone. Unset means *not yet known*, which
+    is a legitimate state: a block derived from atomic projectors exists
+    before anything has looked at the band structure, and its occupancy is
+    settled only by the runtime band-group detection. A consumer that
+    needs the occupancy and finds it unset raises
+    (:func:`block_occupancy`).
     """
 
     label: str
@@ -374,8 +373,9 @@ def block_occupancy(block: ProjectionBlock) -> bool:
             f"Block {block['label']!r} does not say whether it is occupied or "
             "empty. Stamp `filled` where the occupancy is known -- from explicit "
             "projections, or from the band groups the runtime detection found. "
-            "It does not follow from the band slots: a block that disentangles "
-            "owns slots it does not Wannierise."
+            "The band slots do not settle it: a block that disentangles across "
+            "the occupied/empty boundary mixes both manifolds into its Wannier "
+            "functions while every slot stays on one side."
         )
     return bool(block["filled"])
 
@@ -503,7 +503,10 @@ def group_blocks_to_merge(
             index[key] = group
             groups.append(group)
         group["blocks"].append(block)
-    for spin in dict.fromkeys(SpinChannel(block["spin"]) for block in blocks):
+    spins_present = {SpinChannel(block["spin"]) for block in blocks}
+    for spin in SpinChannel:
+        if spin not in spins_present:
+            continue
         occupied = [
             block
             for block in blocks
