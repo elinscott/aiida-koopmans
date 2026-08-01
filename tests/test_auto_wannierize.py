@@ -391,7 +391,15 @@ class TestPerBlockGraphBuild:
     def test_groups_are_rebased_for_offset_blocks(
         self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
-        """A block starting at band 5 hands 1-based local indices to the split."""
+        """A block starting at band 5 hands 1-based local indices to the split.
+
+        The groups below the block belong to another block and must be
+        dropped, not rebased. They are sized differently from the block's
+        own groups, so a mapping that lost the block's offset would hand
+        Wannier.jl a different partition of the model rather than the same
+        one shifted -- Wannier.jl would then split the wrong functions
+        into the wrong sub-blocks and nothing downstream would notice.
+        """
         block = explicit_block("block_2", range(5, 13), ["Si: sp3", "Si: sp3"])
         wg = self._build(
             auto_codes,
@@ -399,11 +407,11 @@ class TestPerBlockGraphBuild:
             kmesh,
             nscf_scratch,
             block,
-            [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
+            [[1, 2, 3, 4], [5, 6], [7, 8, 9, 10, 11, 12]],
             fake_cutoffs_family.label,
         )
         split_task = wg.tasks["split_wannierization"]
-        assert split_task.inputs["groups"].value == [[1, 2, 3, 4], [5, 6, 7, 8]]
+        assert split_task.inputs["groups"].value == [[1, 2], [3, 4, 5, 6, 7, 8]]
 
 
 class TestRewannierizeSplitBlocksBuild:
