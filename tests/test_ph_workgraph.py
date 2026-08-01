@@ -14,7 +14,6 @@ from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 from aiida_koopmans.workgraphs.ph import DielectricTask, extract_dielectric_constant
 from tests.fixtures import explicit_block
 
-
 # ----------------------------------------------------------------------
 # extract_dielectric_constant (raw callable, no engine)
 # ----------------------------------------------------------------------
