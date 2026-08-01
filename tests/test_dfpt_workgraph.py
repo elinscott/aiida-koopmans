@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel, block_include_bands
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
     SinglepointDFPTWorkflow,
@@ -677,9 +677,9 @@ class TestDeriveDfptManifolds:
         assert emp_blocks[1]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert emp_blocks[1]["num_bands"] == 4
         # The two pool bands show up in num_bands and in the exclusions that
-        # stop at band 10 -- never in include_bands, which stays the
+        # stop at band 10 -- never in the derived band slots, which stay the
         # band-to-Wannier-function map of the block's own two functions.
-        assert emp_blocks[1]["include_bands"] == [11, 12]
+        assert block_include_bands(emp_blocks[1]) == [11, 12]
         assert [b["filled"] for b in occ_blocks] == [True, True]
         assert [b["filled"] for b in emp_blocks] == [False, False]
         for block in occ_blocks + emp_blocks:

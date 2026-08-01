@@ -13,6 +13,7 @@ import pytest
 from aiida_koopmans.types import (
     OrbitalDict,
     SpinChannel,
+    block_include_bands,
     block_w90_kwargs,
     group_blocks_to_merge,
     merge_dest_filename,
@@ -149,17 +150,44 @@ class TestValidateProjectionBlock:
         """
         validate_projection_block(_automatic("block_1", range(1, 5)))
 
-    def test_rejects_slots_widened_into_the_pool(self):
-        """A pool belongs in ``num_bands``; widening the slots mis-addresses WFs."""
-        block = _explicit("block_1", range(1, 7), num_bands=6, filled=True)
-        block["num_wann"] = 4
-        with pytest.raises(ValueError, match="names 6 band slots"):
-            validate_projection_block(block)
-
     def test_rejects_fewer_bands_than_wannier_functions(self):
         block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
         with pytest.raises(ValueError, match="one band per Wannier function"):
             validate_projection_block(block)
+
+
+# ----------------------------------------------------------------------
+# block_include_bands
+# ----------------------------------------------------------------------
+
+
+class TestBlockIncludeBands:
+    def test_block_at_the_bottom_of_the_manifold(self):
+        assert block_include_bands(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
+
+    def test_exclusions_below_shift_the_slots_up(self):
+        assert block_include_bands(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
+
+    def test_pool_stays_out_of_the_slots(self):
+        """A disentangling block occupies only its own ``num_wann`` slots.
+
+        The pool is what ``num_bands`` counts beyond ``num_wann``, and it
+        sits above the block, so the slots are the lowest bands read. Were
+        the pool inside them the band-to-Wannier-function map would
+        mis-address every function above the block.
+        """
+        block = _explicit("block_2", range(5, 9), num_bands=10)
+        assert block_include_bands(block) == [5, 6, 7, 8]
+
+    def test_exclusions_above_do_not_reach_the_slots(self):
+        """Bands excluded above the block never enter the slot count."""
+        block = _explicit("block_2", range(5, 9), exclude_bands=[1, 2, 3, 4, 9, 10])
+        assert block_include_bands(block) == [5, 6, 7, 8]
+
+    def test_gapped_exclusions_read_past_the_gap(self):
+        """The slots follow the bands actually read, not a contiguous window."""
+        block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
+        assert block_include_bands(block) == [1, 3, 5]
 
 
 # ----------------------------------------------------------------------

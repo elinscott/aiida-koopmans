@@ -232,9 +232,9 @@ class TestSplitMode:
         The per-group re-Wannierisation reads only the parent's gauge
         products, so the parent's disentanglement matrix would be dropped
         silently. Without this guard the chain assembles and runs: the
-        rejection used to fall out of the group restriction refusing an
-        ``include_bands`` list that reached into the pool, and narrowing
-        ``include_bands`` to the Wannier manifold removed that side effect.
+        rejection used to fall out of the group restriction refusing band
+        slots that reached into the pool, and confining the slots to the
+        Wannier manifold removed that side effect.
         """
         blocks = [explicit_block("block_1", range(1, 9), projections=["Si: sp3"], num_bands=12)]
         with pytest.raises(NotImplementedError, match="splitting a disentangled block"):

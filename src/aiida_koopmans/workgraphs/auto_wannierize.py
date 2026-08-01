@@ -49,7 +49,7 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.types import ParallelizationDict, ProjectionBlock
+from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, block_include_bands
 from aiida_koopmans.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
@@ -497,7 +497,8 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "wannierize_whole_block"},
     )
 
-    local_groups = restrict_groups_to_block(list(groups), list(block["include_bands"]))
+    include_bands = block_include_bands(block)
+    local_groups = restrict_groups_to_block(list(groups), include_bands)
     if len(local_groups) <= 1:
         # The whole-block gauge is final here, so its parsed
         # ``output_parameters`` is the entry's final-gauge Dict. The
@@ -514,7 +515,7 @@ def WannierizeAndSplitBlock(
 
     wann_groups = [
         [int(index) for index in group]
-        for group in groups_to_wannier_indices(local_groups, list(block["include_bands"]))
+        for group in groups_to_wannier_indices(local_groups, include_bands)
     ]
 
     win_file = extract_win_file(retrieved=whole["retrieved"]).result
