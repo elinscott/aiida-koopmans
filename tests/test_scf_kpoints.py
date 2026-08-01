@@ -235,7 +235,7 @@ class TestMlwfInitialization:
             structure=periodic_ozone_structure,
             supercell=supercell,
             pseudos=ozone_real_pseudos,
-            blocks=[explicit_block("block_1", range(1, 10))],
+            blocks=[explicit_block("block_1", range(1, 10), filled=True)],
             kpoints=kpoints,
             kgrid=[2, 1, 1],
             nelec=36,
