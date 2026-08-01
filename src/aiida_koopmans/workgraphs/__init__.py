@@ -11,11 +11,28 @@ leaf ``@task`` / calcfunction / workfunction computations.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from enum import Enum
 from typing import Any, TypedDict
 
 from aiida import orm
 
 from aiida_koopmans.types import CODE_NAMES, CodeName, ParallelizationDict
+
+
+def unwrap_enum[EnumT: Enum](value: Any, enum_cls: type[EnumT]) -> EnumT | None:
+    """Return ``value`` as a member of ``enum_cls``, or ``None`` for ``None``.
+
+    Accepts a member, a proxy wrapping one, or the bare value string. A
+    graph input is always a proxy, and a protocol builder that branches on
+    ``argument is SomeEnum.MEMBER`` takes the wrong branch for one:
+    ``==`` forwards through the proxy, ``is`` does not. Call this on an
+    enum whose destination builder branches by identity, whether or not
+    the calling body runs eagerly today — where a graph sits in the call
+    tree is the caller's choice.
+    """
+    if value is None:
+        return None
+    return enum_cls(getattr(value, "value", value))
 
 
 class Codes(TypedDict, total=False):
@@ -82,6 +99,25 @@ def enforce_step_calculation(params: dict[str, Any], step: str, expected: str) -
         )
     control["calculation"] = expected
     return params
+
+
+def pin_kpoints(inputs: dict[str, Any], kpoints: orm.KpointsData | None) -> None:
+    """Replace a ``PwBaseWorkChain`` step's protocol mesh with ``kpoints``, in place.
+
+    The workchain accepts exactly one of ``kpoints`` and
+    ``kpoints_distance``, so the protocol's distance has to go rather than
+    be overruled — as does ``kpoints_force_parity``, which only qualifies
+    the distance. A ``None`` mesh leaves the protocol in charge.
+
+    Args:
+        inputs: One ``PwBaseWorkChain`` step's flattened inputs (mutated in place).
+        kpoints: The mesh (or explicit list) the step samples.
+    """
+    if kpoints is None:
+        return
+    inputs.pop("kpoints_distance", None)
+    inputs.pop("kpoints_force_parity", None)
+    inputs["kpoints"] = kpoints
 
 
 # QE codes that accept ``-npool`` (k-point pools) and ``-pd`` (pencil

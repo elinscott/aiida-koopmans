@@ -21,6 +21,7 @@ import pytest
 
 from tests.fixtures import (  # noqa: F401
     auto_codes,
+    dfpt_codes,
     fake_cutoffs_family,
     fake_upf,
     generate_upf_data,
@@ -34,6 +35,7 @@ from tests.fixtures import (  # noqa: F401
     ozone_real_pseudos,
     ozone_structure,
     periodic_ozone_structure,
+    ph_codes,
     pw_code,
     si_reference,
     silicon_structure,

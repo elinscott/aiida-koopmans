@@ -24,31 +24,6 @@ from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 
 @pytest.fixture
-def dfpt_codes(aiida_localhost):
-    """Stand-in ``Codes`` dict (construction-only; never executed)."""
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("dfpt-pw", "quantumespresso.pw"),
-        "wannier90": _code("dfpt-w90", "wannier90.wannier90"),
-        "pw2wannier90": _code("dfpt-p2w", "quantumespresso.pw2wannier90"),
-        "kcw": _code("dfpt-kcw", "koopmans.kcw_wann2kc"),
-    }
-
-
-@pytest.fixture
 def bands_path(aiida_profile):
     from aiida.orm import KpointsData
 

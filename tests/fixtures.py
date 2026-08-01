@@ -422,6 +422,64 @@ def wannier_codes(aiida_localhost):
 
 
 @pytest.fixture
+def dfpt_codes(aiida_localhost):
+    """Return a ``Codes`` dict of stand-in nodes for the kcw.x graphs.
+
+    Like ``wannier_codes`` but with kcw.x in place of projwfc.x; the codes
+    never execute.
+    """
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    def _code(label: str, entry_point: str):
+        try:
+            return InstalledCode.collection.get(label=label)
+        except NotExistent:
+            return InstalledCode(
+                label=label,
+                computer=aiida_localhost,
+                filepath_executable="/bin/true",
+                default_calc_job_plugin=entry_point,
+            ).store()
+
+    return {
+        "pw": _code("dfpt-pw", "quantumespresso.pw"),
+        "wannier90": _code("dfpt-w90", "wannier90.wannier90"),
+        "pw2wannier90": _code("dfpt-p2w", "quantumespresso.pw2wannier90"),
+        "kcw": _code("dfpt-kcw", "koopmans.kcw_wann2kc"),
+    }
+
+
+@pytest.fixture
+def ph_codes(aiida_localhost):
+    """Return a ``Codes`` dict of stand-in nodes for the dielectric chain.
+
+    Like ``dfpt_codes`` but with ph.x alongside; the codes never execute.
+    """
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    def _code(label: str, entry_point: str):
+        try:
+            return InstalledCode.collection.get(label=label)
+        except NotExistent:
+            return InstalledCode(
+                label=label,
+                computer=aiida_localhost,
+                filepath_executable="/bin/true",
+                default_calc_job_plugin=entry_point,
+            ).store()
+
+    return {
+        "pw": _code("eps-pw", "quantumespresso.pw"),
+        "ph": _code("eps-ph", "quantumespresso.ph"),
+        "wannier90": _code("eps-w90", "wannier90.wannier90"),
+        "pw2wannier90": _code("eps-p2w", "quantumespresso.pw2wannier90"),
+        "kcw": _code("eps-kcw", "koopmans.kcw_wann2kc"),
+    }
+
+
+@pytest.fixture
 def ozone_pseudo_family(ozone_real_pseudos):
     """Register (or fetch) a one-pseudo family covering ozone's O kind."""
     from aiida_pseudo.groups.family import PseudoPotentialFamily
