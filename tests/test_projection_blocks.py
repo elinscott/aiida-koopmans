@@ -13,8 +13,8 @@ import pytest
 from aiida_koopmans.types import (
     OrbitalDict,
     SpinChannel,
-    block_include_bands,
     block_w90_kwargs,
+    get_included_bands,
     group_blocks_to_merge,
     merge_dest_filename,
     validate_projection_block,
@@ -82,12 +82,12 @@ class TestGroupBlocksToMerge:
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert [g["filled"] for g in groups] == [True, False]
 
-    def test_stamp_decides_against_the_band_slots(self):
-        """An empty block joins the empty manifold however its slots read.
+    def test_stamp_decides_against_the_included_bands(self):
+        """An empty block joins the empty manifold whatever bands it occupies.
 
-        The slots deliberately contradict the occupancy: they sit inside
-        the occupied range, which is what a disentangling block's slots
-        can do (they say where the block sits, not which bands its
+        The included bands deliberately contradict the occupancy: they sit
+        inside the occupied range, which is what a disentangling block's
+        bands can do (they say where the block sits, not which bands its
         Wannier functions came out of). Reading them instead of the stamp
         puts this block in the occupied manifold, and the empty manifold
         comes out of ``merge_evc.x`` missing.
@@ -139,7 +139,7 @@ class TestGroupBlocksToMerge:
 
 class TestValidateProjectionBlock:
     def test_accepts_a_disentangling_block(self):
-        # Four Wannier functions optimised out of six bands: four slots.
+        # Four Wannier functions optimised out of six bands.
         validate_projection_block(_explicit("block_1", range(1, 5), num_bands=6, filled=True))
 
     def test_accepts_a_block_of_unknown_occupancy(self):
@@ -157,37 +157,42 @@ class TestValidateProjectionBlock:
 
 
 # ----------------------------------------------------------------------
-# block_include_bands
+# get_included_bands
 # ----------------------------------------------------------------------
 
 
-class TestBlockIncludeBands:
+class TestGetIncludedBands:
     def test_block_at_the_bottom_of_the_manifold(self):
-        assert block_include_bands(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
+        assert get_included_bands(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
 
-    def test_exclusions_below_shift_the_slots_up(self):
-        assert block_include_bands(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
+    def test_exclusions_below_shift_the_bands_up(self):
+        assert get_included_bands(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
 
-    def test_pool_stays_out_of_the_slots(self):
-        """A disentangling block occupies only its own ``num_wann`` slots.
+    def test_pool_stays_out_of_the_included_bands(self):
+        """A disentangling block occupies only ``num_wann`` bands.
 
         The pool is what ``num_bands`` counts beyond ``num_wann``, and it
-        sits above the block, so the slots are the lowest bands read. Were
-        the pool inside them the band-to-Wannier-function map would
-        mis-address every function above the block.
+        sits above the block, so the block's own bands are the lowest it
+        reads. Were the pool among them the band-to-Wannier-function map
+        would mis-address every function above the block.
         """
         block = _explicit("block_2", range(5, 9), num_bands=10)
-        assert block_include_bands(block) == [5, 6, 7, 8]
+        assert get_included_bands(block) == [5, 6, 7, 8]
 
-    def test_exclusions_above_do_not_reach_the_slots(self):
-        """Bands excluded above the block never enter the slot count."""
+    def test_exclusions_above_do_not_extend_the_included_bands(self):
+        """Bands excluded above the block never join the ones it occupies."""
         block = _explicit("block_2", range(5, 9), exclude_bands=[1, 2, 3, 4, 9, 10])
-        assert block_include_bands(block) == [5, 6, 7, 8]
+        assert get_included_bands(block) == [5, 6, 7, 8]
 
     def test_gapped_exclusions_read_past_the_gap(self):
-        """The slots follow the bands actually read, not a contiguous window."""
+        """The included bands follow what is read, not a contiguous window.
+
+        The block reads three bands, and the exclusions at 2 and 4 push the
+        third of them up to 5. No construction path builds such a block:
+        this pins the rule the derivation follows, not a real input.
+        """
         block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
-        assert block_include_bands(block) == [1, 3, 5]
+        assert get_included_bands(block) == [1, 3, 5]
 
 
 # ----------------------------------------------------------------------

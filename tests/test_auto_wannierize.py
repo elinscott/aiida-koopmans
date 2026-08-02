@@ -96,12 +96,13 @@ class TestGroupRestriction:
     def test_pool_carrying_block_restricts_and_rebases(self):
         """A block reading pool bands still restricts to its own manifold.
 
-        The detection only ever runs over the Wannierised manifold, so
-        band slots reaching into the disentanglement pool would report
-        bands no group can cover (asserted below) and take the split down
-        at runtime. Naming only the eight Wannier bands keeps the
-        restriction total and the rebased indices addressed at the block's
-        own Wannier functions — which is what Wannier.jl splits.
+        The detection only ever runs over the Wannierised manifold, so a
+        block whose included bands reached into the disentanglement pool
+        would report bands no group can cover (asserted below) and take
+        the split down at runtime. Naming only the eight Wannier bands
+        keeps the restriction total and the rebased indices addressed at
+        the block's own Wannier functions — which is what Wannier.jl
+        splits.
         """
         groups = [[1, 2, 3, 4], [5, 6, 7, 8]]
         manifold = [1, 2, 3, 4, 5, 6, 7, 8]

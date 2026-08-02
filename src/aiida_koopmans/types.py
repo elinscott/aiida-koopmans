@@ -271,8 +271,9 @@ class _ProjectionBlockBase(TypedDict):
     ``exclude_bands`` names every band of the pw.x run the block does not
     read, so ``len(exclude_bands) + num_bands`` is that run's band count --
     the identity wann2kcp.x checks a ``.chk`` against. Those two fields
-    together fix the band slots the block occupies, so the slots are
-    derived rather than stored (:func:`block_include_bands`).
+    together fix which bands the block's Wannier functions occupy, so
+    those bands are derived rather than stored
+    (:func:`get_included_bands`).
 
     ``filled`` is the block's occupancy: ``True`` when its Wannier
     functions come from the occupied manifold alone, ``False`` when they
@@ -346,17 +347,19 @@ def validate_projection_block(block: ProjectionBlock) -> None:
         )
 
 
-def block_include_bands(block: ProjectionBlock) -> list[int]:
-    """Return the ascending band slots the block's Wannier functions occupy.
+def get_included_bands(block: ProjectionBlock) -> list[int]:
+    """Return the ascending band indices the block's Wannier functions occupy.
 
-    Where the block sits in the global band ordering, one slot per
-    Wannier function. ``exclude_bands`` and ``num_bands`` say which bands
-    wannier90 reads; the block's own slots are the lowest ``num_wann`` of
-    those, because a disentanglement pool sits above them.
+    The block maps ``num_bands`` Bloch states onto ``num_wann`` Wannier
+    functions, and the returned list is the ``num_wann`` band indices
+    those functions occupy in the global band ordering. ``exclude_bands``
+    and ``num_bands`` say which bands wannier90 reads; the block's own are
+    the lowest ``num_wann`` of those, because a disentanglement pool sits
+    above them.
 
-    The slots are the bands the Wannier functions span only when
-    ``num_bands == num_wann``: a disentangling block optimizes its
-    subspace out of every band it reads, so the slots give a position and
+    The returned bands are the ones the Wannier functions come from only
+    when ``num_bands == num_wann``: a disentangling block optimizes its
+    subspace out of every band it reads, so the list gives a position and
     a count, not an origin. That is what the band-to-Wannier-function map
     needs (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
     widening the list to the pool would mis-address the Wannier functions.

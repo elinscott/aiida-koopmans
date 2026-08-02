@@ -232,8 +232,8 @@ class TestSplitMode:
         The per-group re-Wannierisation reads only the parent's gauge
         products, so the parent's disentanglement matrix would be dropped
         silently. Without this guard the chain assembles and runs: the
-        rejection used to fall out of the group restriction refusing band
-        slots that reached into the pool, and confining the slots to the
+        rejection used to fall out of the group restriction refusing bands
+        that reached into the pool, and confining the block's bands to the
         Wannier manifold removed that side effect.
         """
         blocks = [explicit_block("block_1", range(1, 9), projections=["Si: sp3"], num_bands=12)]
@@ -500,7 +500,7 @@ class TestOrbitalPartitionEmission:
         with pytest.raises(ValueError, match="block_2"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
-    def test_partition_follows_the_stamps_not_the_slots(
+    def test_partition_follows_the_stamps_not_the_bands(
         self, wannier_codes, silicon_structure, kmesh
     ):
         """The emitted partition splits where the stamps say, not where the bands do.

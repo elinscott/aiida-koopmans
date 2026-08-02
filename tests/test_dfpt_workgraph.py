@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel, block_include_bands
+from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel, get_included_bands
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
     SinglepointDFPTWorkflow,
@@ -610,9 +610,9 @@ class TestDeriveDfptManifolds:
         assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
-        # The empty block disentangles, so its two slots (bands 9-10 of a
-        # 12-band nscf) are the only thing left that could be read as an
-        # occupancy; the stamp is what says it is empty.
+        # The empty block disentangles, so the two bands it occupies (9-10
+        # of a 12-band nscf) are the only thing left that could be read as
+        # an occupancy; the stamp is what says it is empty.
         assert occ_block["filled"] is True
         assert emp_block["filled"] is False
         assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
@@ -677,9 +677,9 @@ class TestDeriveDfptManifolds:
         assert emp_blocks[1]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert emp_blocks[1]["num_bands"] == 4
         # The two pool bands show up in num_bands and in the exclusions that
-        # stop at band 10 -- never in the derived band slots, which stay the
-        # band-to-Wannier-function map of the block's own two functions.
-        assert block_include_bands(emp_blocks[1]) == [11, 12]
+        # stop at band 10 -- never in the derived included bands, which stay
+        # the band-to-Wannier-function map of the block's own two functions.
+        assert get_included_bands(emp_blocks[1]) == [11, 12]
         assert [b["filled"] for b in occ_blocks] == [True, True]
         assert [b["filled"] for b in emp_blocks] == [False, False]
         for block in occ_blocks + emp_blocks:

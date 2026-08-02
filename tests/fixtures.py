@@ -237,15 +237,15 @@ def explicit_block(
 ):
     """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
 
-    ``include`` names the band slots the block is to occupy, one per
-    Wannier function. The slots are not stored, so they are expressed the
-    way production blocks express them: everything below the first slot is
-    excluded, which puts the block's own bands at the bottom of what it
-    reads. ``filled`` stamps the occupancy; ``None`` leaves it unstamped,
-    the state a block is in before anything has classified it.
-    ``num_bands`` beyond ``len(include)`` gives the block a disentanglement
-    pool, which sits above its slots. Pass ``exclude_bands`` to override
-    the exclusion outright.
+    ``include`` names the bands the block's Wannier functions are to
+    occupy, one per function. Those bands are not stored, so they are
+    expressed the way production blocks express them: everything below the
+    first of them is excluded, which puts the block's own bands at the
+    bottom of what it reads. ``filled`` stamps the occupancy; ``None``
+    leaves it unstamped, the state a block is in before anything has
+    classified it. ``num_bands`` beyond ``len(include)`` gives the block a
+    disentanglement pool, which sits above those bands. Pass
+    ``exclude_bands`` to override the exclusion outright.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
@@ -304,9 +304,9 @@ def automatic_block(label, include, spin=None, projection_type=None, filled=None
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
     projection source automated wannierization always uses, and the one
     whose occupancy is unknown until the runtime split, so ``filled``
-    defaults to unstamped. ``include`` names the band slots the block is
-    to occupy; as in :func:`explicit_block` they are expressed by
-    excluding everything below them.
+    defaults to unstamped. ``include`` names the bands the block's Wannier
+    functions are to occupy; as in :func:`explicit_block` they are
+    expressed by excluding everything below them.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
