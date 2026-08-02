@@ -97,7 +97,7 @@ class TestGroupRestriction:
         """A block reading pool bands still restricts to its own manifold.
 
         The detection only ever runs over the Wannierised manifold, so a
-        block whose included bands reached into the disentanglement pool
+        block naming bands that reached into the disentanglement pool
         would report bands no group can cover (asserted below) and take
         the split down at runtime. Naming only the eight Wannier bands
         keeps the restriction total and the rebased indices addressed at

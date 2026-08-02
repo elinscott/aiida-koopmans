@@ -182,6 +182,24 @@ class TestBlockWannierizeGraphBuild:
         assert names.count("collect_wannier_functions") == 1
         assert sum(1 for name in names if name.startswith("wannierize_block")) == 2
 
+    def test_rejects_a_pool_below_the_uppermost_block(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """Every route Wannierises through here, so the pool rule is checked here.
+
+        A pool on anything but the channel's top block moves the blocks
+        above it up the Wannier ordering while their own bookkeeping keeps
+        saying where they were, so the graph builds and runs and every
+        consumer of the ordering — the u/hr merge, the screening fan-out —
+        addresses the wrong Wannier functions.
+        """
+        blocks = [
+            explicit_block("block_1", range(1, 5), filled=True, num_bands=8),
+            explicit_block("block_2", range(5, 9), filled=False),
+        ]
+        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+            _build(wannier_codes, silicon_structure, blocks, kmesh)
+
     def test_external_scratch_rejects_scf_nscf_overrides(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote
     ):

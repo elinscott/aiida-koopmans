@@ -6,6 +6,7 @@ CalcJob, parser, and tests can all import a single canonical definition.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
 from typing import Literal, NotRequired, TypedDict, cast, get_args
 
@@ -271,9 +272,9 @@ class _ProjectionBlockBase(TypedDict):
     ``exclude_bands`` names every band of the pw.x run the block does not
     read, so ``len(exclude_bands) + num_bands`` is that run's band count --
     the identity wann2kcp.x checks a ``.chk`` against. Those two fields
-    together fix which bands the block's Wannier functions occupy, so
-    those bands are derived rather than stored
-    (:func:`get_included_bands`).
+    together fix where the block's Wannier functions sit in the channel's
+    Wannier ordering, so those positions are derived rather than stored
+    (:func:`get_wannier_indices`).
 
     ``filled`` is the block's occupancy: ``True`` when its Wannier
     functions come from the occupied manifold alone, ``False`` when they
@@ -347,21 +348,51 @@ def validate_projection_block(block: ProjectionBlock) -> None:
         )
 
 
-def get_included_bands(block: ProjectionBlock) -> list[int]:
-    """Return the ascending band indices the block's Wannier functions occupy.
+def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> None:
+    """Reject a set of blocks where one below a channel's uppermost disentangles.
+
+    ``blocks`` is every block a route Wannierises, in ascending order
+    within each spin channel; the rule is checked per channel, since the
+    channels are independent orderings. A block disentangles when
+    ``num_bands > num_wann``, and only a channel's uppermost block may:
+    :func:`get_wannier_indices` counts a block's Wannier positions off the
+    bands the blocks below it read, which a lower pool inflates. Raise
+    ``ValueError`` naming the block.
+    """
+    by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
+    for block in blocks:
+        by_spin.setdefault(SpinChannel(block["spin"]), []).append(block)
+    for channel_blocks in by_spin.values():
+        top = channel_blocks[-1]["label"]
+        for block in channel_blocks[:-1]:
+            if int(block["num_bands"]) > int(block["num_wann"]):
+                raise ValueError(
+                    f"Block {block['label']!r} reads {block['num_bands']} bands for "
+                    f"{block['num_wann']} Wannier functions, so it disentangles, but "
+                    f"block {top!r} sits above it. Only a channel's uppermost block "
+                    f"may disentangle: give the extra bands to {top!r}, or set this "
+                    "block's `num_bands` equal to its `num_wann`."
+                )
+
+
+def get_wannier_indices(block: ProjectionBlock) -> list[int]:
+    """Return the block's ascending positions in the channel's Wannier ordering.
 
     The block maps ``num_bands`` Bloch states onto ``num_wann`` Wannier
-    functions, and the returned list is the ``num_wann`` band indices
-    those functions occupy in the global band ordering. ``exclude_bands``
-    and ``num_bands`` say which bands wannier90 reads; the block's own are
-    the lowest ``num_wann`` of those, because a disentanglement pool sits
-    above them.
+    functions, and the returned list holds the ``num_wann`` positions
+    those functions take among the channel's Wannier functions, counted
+    from 1. ``exclude_bands`` and ``num_bands`` say which bands wannier90
+    reads; the positions are the lowest ``num_wann`` of those, because a
+    disentanglement pool sits above them.
 
-    The returned bands are the ones the Wannier functions come from only
-    when ``num_bands == num_wann``: a disentangling block optimizes its
-    subspace out of every band it reads, so the list gives a position and
-    a count, not an origin. That is what the band-to-Wannier-function map
-    needs (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
+    The positions equal band indices only where no block below this one
+    disentangles, which is why they may not
+    (:func:`validate_projection_block_sequence`). A block that does
+    disentangle optimizes its subspace out of every band it reads, so its
+    own positions say where it sits and how wide it is, never which bands
+    its Wannier functions came from. That is what the
+    band-to-Wannier-function map needs
+    (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
     widening the list to the pool would mis-address the Wannier functions.
     """
     excluded = set(block.get("exclude_bands") or [])

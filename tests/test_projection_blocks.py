@@ -14,10 +14,11 @@ from aiida_koopmans.types import (
     OrbitalDict,
     SpinChannel,
     block_w90_kwargs,
-    get_included_bands,
+    get_wannier_indices,
     group_blocks_to_merge,
     merge_dest_filename,
     validate_projection_block,
+    validate_projection_block_sequence,
 )
 from tests.fixtures import automatic_block as _automatic
 from tests.fixtures import explicit_block as _explicit
@@ -82,13 +83,13 @@ class TestGroupBlocksToMerge:
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert [g["filled"] for g in groups] == [True, False]
 
-    def test_stamp_decides_against_the_included_bands(self):
-        """An empty block joins the empty manifold whatever bands it occupies.
+    def test_stamp_decides_against_the_wannier_positions(self):
+        """An empty block joins the empty manifold whatever positions it takes.
 
-        The included bands deliberately contradict the occupancy: they sit
+        The positions deliberately contradict the occupancy: they sit
         inside the occupied range, which is what a disentangling block's
-        bands can do (they say where the block sits, not which bands its
-        Wannier functions came out of). Reading them instead of the stamp
+        positions can do (they say where the block sits, not which bands
+        its Wannier functions came out of). Reading them instead of the stamp
         puts this block in the occupied manifold, and the empty manifold
         comes out of ``merge_evc.x`` missing.
         """
@@ -157,42 +158,102 @@ class TestValidateProjectionBlock:
 
 
 # ----------------------------------------------------------------------
-# get_included_bands
+# validate_projection_block_sequence
 # ----------------------------------------------------------------------
 
 
-class TestGetIncludedBands:
+class TestValidateProjectionBlockSequence:
+    def test_accepts_a_pool_on_the_uppermost_block(self):
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True),
+            _explicit("emp", range(5, 9), filled=False, num_bands=8),
+        ]
+        validate_projection_block_sequence(blocks)
+
+    def test_rejects_a_pool_below_the_uppermost_block(self):
+        """A lower pool shifts every later block's Wannier positions.
+
+        ``get_wannier_indices`` counts a block's positions off the bands
+        the blocks below it read, so the four bands this pool adds would
+        move ``emp`` four places up the ordering while its own exclusions
+        keep saying 5-8, and nothing downstream would notice.
+        """
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True, num_bands=8),
+            _explicit("emp", range(5, 9), filled=False),
+        ]
+        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+            validate_projection_block_sequence(blocks)
+
+    def test_each_spin_channel_keeps_its_own_uppermost(self):
+        """The up channel's pooled top block is not judged against the down blocks.
+
+        Concatenating the channels puts the up manifold's uppermost block
+        in the middle of the list; a rule read off list position alone
+        would reject the very layout the collinear route builds.
+        """
+        blocks = [
+            _explicit("occ_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("emp_up", range(5, 9), spin=SpinChannel.UP, filled=False, num_bands=8),
+            _explicit("occ_down", range(1, 5), spin=SpinChannel.DOWN, filled=True),
+            _explicit("emp_down", range(5, 9), spin=SpinChannel.DOWN, filled=False, num_bands=8),
+        ]
+        validate_projection_block_sequence(blocks)
+
+    def test_rejects_a_lower_pool_in_the_second_spin_channel(self):
+        blocks = [
+            _explicit("occ_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("emp_up", range(5, 9), spin=SpinChannel.UP, filled=False),
+            _explicit("occ_down", range(1, 5), spin=SpinChannel.DOWN, filled=True, num_bands=8),
+            _explicit("emp_down", range(5, 9), spin=SpinChannel.DOWN, filled=False),
+        ]
+        with pytest.raises(ValueError, match="'occ_down'"):
+            validate_projection_block_sequence(blocks)
+
+    def test_a_lone_block_may_disentangle(self):
+        validate_projection_block_sequence([_explicit("block_1", range(1, 5), num_bands=10)])
+
+    def test_accepts_no_blocks(self):
+        validate_projection_block_sequence([])
+
+
+# ----------------------------------------------------------------------
+# get_wannier_indices
+# ----------------------------------------------------------------------
+
+
+class TestGetWannierIndices:
     def test_block_at_the_bottom_of_the_manifold(self):
-        assert get_included_bands(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
+        assert get_wannier_indices(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
 
-    def test_exclusions_below_shift_the_bands_up(self):
-        assert get_included_bands(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
+    def test_exclusions_below_shift_the_positions_up(self):
+        assert get_wannier_indices(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
 
-    def test_pool_stays_out_of_the_included_bands(self):
-        """A disentangling block occupies only ``num_wann`` bands.
+    def test_pool_stays_out_of_the_positions(self):
+        """A disentangling block takes only ``num_wann`` Wannier positions.
 
         The pool is what ``num_bands`` counts beyond ``num_wann``, and it
-        sits above the block, so the block's own bands are the lowest it
+        sits above the block, so the positions are the lowest bands it
         reads. Were the pool among them the band-to-Wannier-function map
         would mis-address every function above the block.
         """
         block = _explicit("block_2", range(5, 9), num_bands=10)
-        assert get_included_bands(block) == [5, 6, 7, 8]
+        assert get_wannier_indices(block) == [5, 6, 7, 8]
 
-    def test_exclusions_above_do_not_extend_the_included_bands(self):
-        """Bands excluded above the block never join the ones it occupies."""
+    def test_exclusions_above_do_not_add_positions(self):
+        """Bands excluded above the block never join its Wannier positions."""
         block = _explicit("block_2", range(5, 9), exclude_bands=[1, 2, 3, 4, 9, 10])
-        assert get_included_bands(block) == [5, 6, 7, 8]
+        assert get_wannier_indices(block) == [5, 6, 7, 8]
 
     def test_gapped_exclusions_read_past_the_gap(self):
-        """The included bands follow what is read, not a contiguous window.
+        """The positions follow the bands read, not a contiguous window.
 
         The block reads three bands, and the exclusions at 2 and 4 push the
         third of them up to 5. No construction path builds such a block:
         this pins the rule the derivation follows, not a real input.
         """
         block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
-        assert get_included_bands(block) == [1, 3, 5]
+        assert get_wannier_indices(block) == [1, 3, 5]
 
 
 # ----------------------------------------------------------------------

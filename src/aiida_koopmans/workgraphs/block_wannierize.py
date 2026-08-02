@@ -72,6 +72,7 @@ from aiida_koopmans.types import (
     block_occupancy,
     block_w90_kwargs,
     validate_projection_block,
+    validate_projection_block_sequence,
 )
 from aiida_koopmans.workgraphs import (
     Codes,
@@ -868,10 +869,11 @@ def collect_wannier_functions(
 
 
 def _validate_blocks(blocks: list[ProjectionBlock]) -> None:
-    """Reject any block whose band bookkeeping or projection type is unsupported."""
+    """Reject any block whose bookkeeping, projection type or pool is unsupported."""
     for block in blocks:
         validate_projection_block(block)
         validate_projection_type(block["projection_type"])
+    validate_projection_block_sequence(blocks)
 
 
 def _external_kwargs_for(
