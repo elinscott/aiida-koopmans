@@ -164,15 +164,6 @@ def parse_wout_centers_and_spreads(content: str) -> tuple[NDArray[np.float64], l
     return np.array(centers, dtype=float), spreads
 
 
-def parse_phases(content: str) -> list[complex]:
-    """Parse the Wannier-function phases from ``wf_phases.dat`` contents."""
-    return [
-        float(parts[0]) + float(parts[1]) * 1j
-        for line in content.split("\n")
-        if (parts := line.split())
-    ]
-
-
 # ----------------------------------------------------------------------
 # Hamiltonian loaders
 # ----------------------------------------------------------------------
@@ -244,7 +235,6 @@ class MappedWannierFunctions(NamedTuple):
     centers: NDArray[np.float64]
     spreads: list[float]
     hr: NDArray[np.complex128]
-    indices: list[int]
 
 
 def _wfs_in_home_cell(
@@ -311,7 +301,6 @@ def map_wannier(
         centers=np.array(new_centers, dtype=float),
         spreads=new_spreads,
         hr=hr_new.reshape(num_wann_sc, num_wann_sc),
-        indices=index,
     )
 
 
@@ -379,7 +368,6 @@ def calc_bands(
     hr_smooth: NDArray[np.complex128] | None = None,
     rvect_smooth: NDArray[np.int_] | None = None,
     weights_smooth: NDArray[np.int_] | None = None,
-    phases: list[complex] | None = None,
 ) -> NDArray[np.float64]:
     """Interpolate the electronic bands along ``kpts`` by Fourier transforming H(R).
 
@@ -392,10 +380,6 @@ def calc_bands(
     if hr_coarse is not None:
         hr = hr - hr_coarse
     hr = hr.reshape(len(rvec), num_wann, num_wann)
-
-    # Renormalize H(R) on the WF phases
-    if phases:
-        hr = np.conjugate(phases) * (hr.transpose() * phases).transpose()
 
     # phi has shape Nkpath x NR; phi_corr has shape Nkpath x NR x num_wann x num_wann
     phi = np.exp(2j * pi * np.dot(kpts, rvec.transpose()))
@@ -447,7 +431,6 @@ def unfold_and_interpolate(
     use_ws_distance: bool = True,
     dft_ham_content: str | None = None,
     dft_smooth_ham_content: str | None = None,
-    phases: list[complex] | None = None,
 ) -> NDArray[np.float64]:
     """Unfold a supercell Wannier Hamiltonian and interpolate its bands along a k-path.
 
@@ -485,12 +468,9 @@ def unfold_and_interpolate(
         hr_coarse = load_coarse_hr(dft_ham_content, num_wann, num_wann_sc, kgrid)
         hr_smooth, rvect_smooth, weights_smooth = load_smooth_hr(dft_smooth_ham_content, num_wann)
 
-    phases_list = list(phases) if phases else []
     if do_map:
         mapped = map_wannier(centers_all, spreads_all, hr, kgrid, num_wann, num_wann_sc)
         centers_all, hr = mapped.centers, mapped.hr
-        if phases_list:
-            phases_list = [phases_list[i] for i in mapped.indices]
 
     return calc_bands(
         hr,
@@ -506,7 +486,6 @@ def unfold_and_interpolate(
         hr_smooth=hr_smooth,
         rvect_smooth=rvect_smooth,
         weights_smooth=weights_smooth,
-        phases=phases_list,
     )
 
 

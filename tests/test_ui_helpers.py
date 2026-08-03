@@ -94,11 +94,6 @@ class TestParsers:
         with pytest.raises(ValueError, match="Final State"):
             ui_helpers.parse_wout_centers_and_spreads("no final state here\n")
 
-    def test_parse_phases(self):
-        """wf_phases.dat lines parse into complex phases."""
-        phases = ui_helpers.parse_phases("1.0 0.0\n0.0 -1.0\n")
-        assert phases == [1.0 + 0.0j, 0.0 - 1.0j]
-
 
 class TestInferWannierCounts:
     """num_wann / num_wann_sc inference from the centre count."""
@@ -167,14 +162,6 @@ class TestCalcBands:
             "num_wann_sc": 1,
             "use_ws_distance": False,
         }
-
-    def test_unit_phases_leave_a_single_wf_hamiltonian_unchanged(self):
-        """A per-WF phase factor renormalizes H(R); unit phases are a no-op, pinning the branch."""
-        kwargs = self._minimal_kwargs()
-        bands_no_phase = ui_helpers.calc_bands(**kwargs)
-        kwargs["phases"] = [1.0 + 0.0j]
-        bands_with_phase = ui_helpers.calc_bands(**kwargs)
-        np.testing.assert_allclose(bands_no_phase, bands_with_phase)
 
     def test_hr_smooth_without_rvectors_raises(self):
         kwargs = self._minimal_kwargs()

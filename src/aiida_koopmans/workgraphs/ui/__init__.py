@@ -14,10 +14,6 @@ Scope notes:
 * One (occupied or empty) x (spin) block per graph. The per-(filling, spin)
   fan-out and band merging of a full singlepoint band structure belong to
   the DSCF/DFPT band-structure integration, not here.
-* ``wf_phases.dat`` phase renormalisation is not exposed.
-  :func:`aiida_koopmans.workgraphs.ui.helpers.calc_bands` accepts phases, but no
-  working renormalisation expression exists for realistic shapes
-  (``num_wann_sc`` phases against a ``(num_wann, num_wann, nR)`` array).
 * The smooth-interpolation correction consumes a pre-computed denser-grid
   DFT Hamiltonian (``dft_smooth_ham_file``); wannierizing that denser grid
   is the caller's job.
