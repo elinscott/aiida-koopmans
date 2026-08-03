@@ -40,7 +40,7 @@ The `aiida.data` group registers no new node class. It maps the enums the workfl
 
 ## Installation
 
-Neither this plugin nor all of its dependencies are on PyPI. `[tool.uv.sources]` points at forks carrying features still working their way upstream, and each has to be checked out as a sibling of this repository:
+Neither this plugin nor all of its dependencies are on PyPI yet. `[tool.uv.sources]` points at forks carrying features still working their way upstream, and each has to be checked out as a sibling of this repository:
 
 ```shell
 git clone https://github.com/elinscott/aiida-koopmans

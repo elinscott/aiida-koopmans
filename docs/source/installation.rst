@@ -2,7 +2,7 @@
 Installation
 ============
 
-Neither ``aiida-koopmans`` nor all of its dependencies are on PyPI.
+Neither ``aiida-koopmans`` nor all of its dependencies are on PyPI yet.
 ``[tool.uv.sources]`` in ``pyproject.toml`` points at forks carrying features
 that are still working their way upstream, and each has to be checked out as
 a sibling of this repository::

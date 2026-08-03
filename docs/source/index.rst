@@ -17,9 +17,7 @@ not cover.
 
 These pages are for developers of that stack, and for anyone driving the
 plugin from their own AiiDA code. They assume you know what a ``CalcJob``, a
-``WorkChain``, an entry point, and a workgraph are; where a concept belongs
-to AiiDA rather than to Koopmans, they link to the `AiiDA documentation
-<https://aiida.readthedocs.io>`_ rather than restate it.
+``WorkChain``, an entry point, and a workgraph are.
 
 .. toctree::
    :maxdepth: 2
