@@ -34,7 +34,6 @@ def si_ui_inputs(aiida_profile, si_reference):
         "structure": structure,
         "kpath": kpath,
         "kgrid": list(si_reference["kgrid"]),
-        "do_map": True,
         "use_ws_distance": True,
         "dft_ham_file": orm.SinglefileData(DATA_DIR / "dft_ham.dat"),
         "dft_smooth_ham_file": orm.SinglefileData(DATA_DIR / "smooth_dft_ham.dat"),
@@ -70,7 +69,6 @@ class TestBuild:
         si_ui_inputs.pop("dft_ham_file")
         si_ui_inputs.pop("dft_smooth_ham_file")
         si_ui_inputs["kc_ham_file"] = orm.SinglefileData(DATA_DIR / "dft_ham.dat")
-        si_ui_inputs["do_map"] = False
         wg = UnfoldAndInterpolateTask.build(**si_ui_inputs, do_dos=False)
         assert "interpolate_bands" in wg.get_task_names()
 

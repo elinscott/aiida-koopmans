@@ -164,15 +164,6 @@ def parse_wout_centers_and_spreads(content: str) -> tuple[NDArray[np.float64], l
     return np.array(centers, dtype=float), spreads
 
 
-def parse_phases(content: str) -> list[complex]:
-    """Parse the Wannier-function phases from ``wf_phases.dat`` contents."""
-    return [
-        float(parts[0]) + float(parts[1]) * 1j
-        for line in content.split("\n")
-        if (parts := line.split())
-    ]
-
-
 # ----------------------------------------------------------------------
 # Hamiltonian loaders
 # ----------------------------------------------------------------------
@@ -231,88 +222,6 @@ def load_smooth_hr(
     if len(hr) != nrpts * num_wann**2:
         raise ValueError(f"Wrong number of matrix elements for hr_smooth {len(hr)}")
     return hr.reshape(nrpts, num_wann, num_wann), rvect, np.array(weights, dtype=int)
-
-
-# ----------------------------------------------------------------------
-# The map |i> --> |Rn>
-# ----------------------------------------------------------------------
-
-
-class MappedWannierFunctions(NamedTuple):
-    """Result of :func:`map_wannier`: supercell WFs reordered as (R0,1)…(R0,n),(R1,1)…."""
-
-    centers: NDArray[np.float64]
-    spreads: list[float]
-    hr: NDArray[np.complex128]
-    indices: list[int]
-
-
-def _wfs_in_home_cell(
-    centers: NDArray[np.float64], spreads: list[float], num_wann_sc: int
-) -> tuple[list[NDArray[np.float64]], list[float], list[int]]:
-    """Identify the Wannier functions lying within the R=0 primitive cell."""
-    home_centers: list[NDArray[np.float64]] = []
-    home_spreads: list[float] = []
-    index: list[int] = []
-    for n in range(num_wann_sc):
-        if all(x - 1 < 1.0e-3 for x in centers[n]):
-            home_centers.append(centers[n])
-            home_spreads.append(spreads[n])
-            index.append(n)
-    return home_centers, home_spreads, index
-
-
-def map_wannier(
-    centers: NDArray[np.float64],
-    spreads: list[float],
-    hr: NDArray[np.complex128],
-    kgrid: tuple[int, int, int],
-    num_wann: int,
-    num_wann_sc: int,
-) -> MappedWannierFunctions:
-    """Map the supercell WFs ``|i>`` onto their primitive-cell copies ``|Rn>``.
-
-    ``centers`` must be in primitive-cell crystal units; they are folded
-    into the supercell, the R=0 subset is identified, and the remaining WFs
-    are matched to primitive-cell copies by comparing centres and spreads.
-    The Hamiltonian rows/columns are permuted to follow the new WF order,
-    so ``hr`` must be the square Γ-only ``(num_wann_sc, num_wann_sc)``
-    matrix.
-    """
-    grid = np.asarray(kgrid, dtype=float)
-    folded = np.array(centers, dtype=float)
-    folded /= grid
-    folded -= np.floor(folded)
-    folded *= grid
-
-    new_centers, new_spreads, index = _wfs_in_home_cell(folded, spreads, num_wann_sc)
-    if len(new_centers) != num_wann:
-        raise ValueError("Did not find the right number of WFs in the R=0 cell")
-
-    # Identify the WFs in the rest of the supercell with |Rn> by comparing
-    # centres and spreads; the WFs end up ordered as (R0,1),…,(R0,n),(R1,1),…
-    for rvect in latt_vect(*kgrid)[1:]:
-        count = 0
-        for m in range(num_wann):
-            for n in range(num_wann_sc):
-                if (
-                    all(abs(folded[n] - new_centers[m] - rvect) < 1.0e-3)
-                    and abs(spreads[n] - new_spreads[m]) < 1.0e-3
-                ):
-                    new_centers.append(folded[n])
-                    new_spreads.append(spreads[n])
-                    index.append(n)
-                    count += 1
-        if count != num_wann:
-            raise ValueError(f"Found {count} WFs in the {rvect} cell")
-
-    hr_new = np.array([hr[i, j] for i in index for j in index], dtype=complex)
-    return MappedWannierFunctions(
-        centers=np.array(new_centers, dtype=float),
-        spreads=new_spreads,
-        hr=hr_new.reshape(num_wann_sc, num_wann_sc),
-        indices=index,
-    )
 
 
 # ----------------------------------------------------------------------
@@ -379,7 +288,6 @@ def calc_bands(
     hr_smooth: NDArray[np.complex128] | None = None,
     rvect_smooth: NDArray[np.int_] | None = None,
     weights_smooth: NDArray[np.int_] | None = None,
-    phases: list[complex] | None = None,
 ) -> NDArray[np.float64]:
     """Interpolate the electronic bands along ``kpts`` by Fourier transforming H(R).
 
@@ -392,10 +300,6 @@ def calc_bands(
     if hr_coarse is not None:
         hr = hr - hr_coarse
     hr = hr.reshape(len(rvec), num_wann, num_wann)
-
-    # Renormalize H(R) on the WF phases
-    if phases:
-        hr = np.conjugate(phases) * (hr.transpose() * phases).transpose()
 
     # phi has shape Nkpath x NR; phi_corr has shape Nkpath x NR x num_wann x num_wann
     phi = np.exp(2j * pi * np.dot(kpts, rvec.transpose()))
@@ -421,57 +325,46 @@ def calc_bands(
 # ----------------------------------------------------------------------
 
 
-def infer_wannier_counts(
-    n_centers: int, kgrid: tuple[int, int, int], w90_input_sc: bool
-) -> tuple[int, int]:
+def infer_wannier_counts(n_centers: int, kgrid: tuple[int, int, int]) -> tuple[int, int]:
     """Return ``(num_wann, num_wann_sc)`` from the number of parsed centres.
 
-    Supercell Wannier90 inputs list every supercell WF; primitive-cell
-    inputs list one primitive cell's worth.
+    The centres describe one primitive cell's worth of Wannier functions.
     """
-    ncells = int(np.prod(kgrid))
-    if w90_input_sc:
-        return n_centers // ncells, n_centers
-    return n_centers, n_centers * ncells
+    return n_centers, n_centers * int(np.prod(kgrid))
 
 
 def unfold_and_interpolate(
     hr_content: str,
     centers: NDArray[np.float64],
-    spreads: list[float],
     cell: NDArray[np.float64],
     kgrid: tuple[int, int, int],
     kpath_kpts: NDArray[np.float64],
-    w90_input_sc: bool = False,
-    do_map: bool = False,
     use_ws_distance: bool = True,
     dft_ham_content: str | None = None,
     dft_smooth_ham_content: str | None = None,
-    phases: list[complex] | None = None,
 ) -> NDArray[np.float64]:
     """Unfold a supercell Wannier Hamiltonian and interpolate its bands along a k-path.
 
     ``hr_content`` (and the optional coarse/smooth DFT Hamiltonian contents,
     which switch on the smooth-interpolation method when both are given)
     are Wannier90-format ``*_hr.dat`` file contents; ``centers`` are the
-    Wannier centres in Å (cartesian, as printed in the ``.wout``), with
-    ``spreads`` in Å²; ``cell`` is the primitive cell in Å; ``kpath_kpts``
-    are the band-path k-points in primitive-cell crystal units.
+    Wannier centres in Å (cartesian, as printed in the ``.wout``);
+    ``cell`` is the primitive cell in Å; ``kpath_kpts`` are the band-path
+    k-points in primitive-cell crystal units.
 
     Returns the interpolated eigenvalues as a
     ``(len(kpath_kpts), num_wann)`` array (eV, same units as the input
     Hamiltonians).
     """
-    num_wann, num_wann_sc = infer_wannier_counts(len(centers), kgrid, w90_input_sc)
+    num_wann, num_wann_sc = infer_wannier_counts(len(centers), kgrid)
 
-    # Generate centres and spreads for the non-primitive-cell (R≠0) WFs,
-    # in primitive-cell crystal units.
+    # Generate centres for the non-primitive-cell (R≠0) WFs, in
+    # primitive-cell crystal units.
     rvec = latt_vect(*kgrid)
     alat = float(np.linalg.norm(cell[0]))
     acell = np.asarray(cell, dtype=float) / alat
     centers_crys = crys_to_cart(np.asarray(centers, dtype=float) / alat, reciprocal_cell(acell), -1)
     centers_all = np.concatenate([centers_crys + rvect for rvect in rvec])
-    spreads_all = list(spreads) * len(rvec)
 
     hr = load_primary_hr(hr_content, num_wann, num_wann_sc, kgrid)
 
@@ -484,13 +377,6 @@ def unfold_and_interpolate(
             )
         hr_coarse = load_coarse_hr(dft_ham_content, num_wann, num_wann_sc, kgrid)
         hr_smooth, rvect_smooth, weights_smooth = load_smooth_hr(dft_smooth_ham_content, num_wann)
-
-    phases_list = list(phases) if phases else []
-    if do_map:
-        mapped = map_wannier(centers_all, spreads_all, hr, kgrid, num_wann, num_wann_sc)
-        centers_all, hr = mapped.centers, mapped.hr
-        if phases_list:
-            phases_list = [phases_list[i] for i in mapped.indices]
 
     return calc_bands(
         hr,
@@ -506,7 +392,6 @@ def unfold_and_interpolate(
         hr_smooth=hr_smooth,
         rvect_smooth=rvect_smooth,
         weights_smooth=weights_smooth,
-        phases=phases_list,
     )
 
 

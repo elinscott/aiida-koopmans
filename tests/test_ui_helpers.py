@@ -94,22 +94,13 @@ class TestParsers:
         with pytest.raises(ValueError, match="Final State"):
             ui_helpers.parse_wout_centers_and_spreads("no final state here\n")
 
-    def test_parse_phases(self):
-        """wf_phases.dat lines parse into complex phases."""
-        phases = ui_helpers.parse_phases("1.0 0.0\n0.0 -1.0\n")
-        assert phases == [1.0 + 0.0j, 0.0 - 1.0j]
-
 
 class TestInferWannierCounts:
     """num_wann / num_wann_sc inference from the centre count."""
 
     def test_primitive_cell_input(self):
-        """pc-style input: centres describe one primitive cell."""
-        assert ui_helpers.infer_wannier_counts(4, (2, 2, 2), w90_input_sc=False) == (4, 32)
-
-    def test_supercell_input(self):
-        """sc-style input: centres describe the whole supercell."""
-        assert ui_helpers.infer_wannier_counts(32, (2, 2, 2), w90_input_sc=True) == (4, 32)
+        """The centres describe one primitive cell."""
+        assert ui_helpers.infer_wannier_counts(4, (2, 2, 2)) == (4, 32)
 
 
 class TestExtractHr:
@@ -168,14 +159,6 @@ class TestCalcBands:
             "use_ws_distance": False,
         }
 
-    def test_unit_phases_leave_a_single_wf_hamiltonian_unchanged(self):
-        """A per-WF phase factor renormalizes H(R); unit phases are a no-op, pinning the branch."""
-        kwargs = self._minimal_kwargs()
-        bands_no_phase = ui_helpers.calc_bands(**kwargs)
-        kwargs["phases"] = [1.0 + 0.0j]
-        bands_with_phase = ui_helpers.calc_bands(**kwargs)
-        np.testing.assert_allclose(bands_no_phase, bands_with_phase)
-
     def test_hr_smooth_without_rvectors_raises(self):
         kwargs = self._minimal_kwargs()
         kwargs["hr_smooth"] = np.array([[[1.0 + 0.0j]]])
@@ -219,17 +202,15 @@ class TestComputeDos:
 class TestSiliconRegression:
     """Reproduce the reference-implementation numbers exactly."""
 
-    def test_smooth_interpolation_with_map(self, si_reference, si_wout_content):
-        """Full path: Γ-only KI Hamiltonian, |Rn> mapping, smooth interpolation."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+    def test_smooth_interpolation(self, si_reference, si_wout_content):
+        """Full path: Γ-only KI Hamiltonian, smooth interpolation."""
+        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
             centers=centers,
-            spreads=spreads,
             cell=np.array(si_reference["cell"]),
             kgrid=tuple(si_reference["kgrid"]),
             kpath_kpts=np.array(si_reference["kpath_kpts"]),
-            do_map=True,
             use_ws_distance=True,
             dft_ham_content=(DATA_DIR / "dft_ham.dat").read_text(),
             dft_smooth_ham_content=(DATA_DIR / "smooth_dft_ham.dat").read_text(),
@@ -239,15 +220,13 @@ class TestSiliconRegression:
     @pytest.mark.parametrize("use_ws_distance", [True, False], ids=["ws", "nows"])
     def test_plain_interpolation(self, si_reference, si_wout_content, use_ws_distance):
         """Plain path: k-point DFT Hamiltonian, no mapping, no smoothing."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "dft_ham.dat").read_text(),
             centers=centers,
-            spreads=spreads,
             cell=np.array(si_reference["cell"]),
             kgrid=tuple(si_reference["kgrid"]),
             kpath_kpts=np.array(si_reference["kpath_kpts"]),
-            do_map=False,
             use_ws_distance=use_ws_distance,
         )
         key = "plain_ws_energies" if use_ws_distance else "plain_nows_energies"
@@ -255,15 +234,13 @@ class TestSiliconRegression:
 
     def test_dos_matches_reference(self, si_reference, si_wout_content):
         """The DOS of the smooth-interpolated bands matches the reference."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
             centers=centers,
-            spreads=spreads,
             cell=np.array(si_reference["cell"]),
             kgrid=tuple(si_reference["kgrid"]),
             kpath_kpts=np.array(si_reference["kpath_kpts"]),
-            do_map=True,
             use_ws_distance=True,
             dft_ham_content=(DATA_DIR / "dft_ham.dat").read_text(),
             dft_smooth_ham_content=(DATA_DIR / "smooth_dft_ham.dat").read_text(),
@@ -276,68 +253,25 @@ class TestSiliconRegression:
 
     def test_smooth_requires_coarse_hamiltonian(self, si_reference, si_wout_content):
         """Supplying only the smooth Hamiltonian is an error."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         with pytest.raises(ValueError, match="coarse DFT Hamiltonian"):
             ui_helpers.unfold_and_interpolate(
                 hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
                 centers=centers,
-                spreads=spreads,
                 cell=np.array(si_reference["cell"]),
                 kgrid=tuple(si_reference["kgrid"]),
                 kpath_kpts=np.array(si_reference["kpath_kpts"]),
-                do_map=True,
                 dft_smooth_ham_content=(DATA_DIR / "smooth_dft_ham.dat").read_text(),
             )
 
-    def test_map_with_wrong_grid_raises(self, si_reference, si_wout_content):
+    def test_wrong_grid_raises(self, si_reference, si_wout_content):
         """A k-grid inconsistent with the Hamiltonian size fails the element-count check."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
         with pytest.raises(ValueError, match="Wrong number of matrix elements"):
             ui_helpers.unfold_and_interpolate(
                 hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
                 centers=centers,
-                spreads=spreads,
                 cell=np.array(si_reference["cell"]),
                 kgrid=(2, 2, 1),
                 kpath_kpts=np.array(si_reference["kpath_kpts"]),
-                do_map=True,
             )
-
-
-class TestMapWannier:
-    """``map_wannier`` on the real silicon supercell data, called directly."""
-
-    @pytest.fixture
-    def mapping_inputs(self, si_reference, si_wout_content):
-        """Reproduce the (centers_all, spreads_all, hr, kgrid) ``unfold_and_interpolate`` builds."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
-        kgrid = tuple(si_reference["kgrid"])
-        cell = np.array(si_reference["cell"])
-        alat = float(np.linalg.norm(cell[0]))
-        acell = cell / alat
-        centers_crys = ui_helpers.crys_to_cart(
-            np.asarray(centers) / alat, ui_helpers.reciprocal_cell(acell), -1
-        )
-        rvec = ui_helpers.latt_vect(*kgrid)
-        centers_all = np.concatenate([centers_crys + rvect for rvect in rvec])
-        spreads_all = list(spreads) * len(rvec)
-        hr = ui_helpers.load_primary_hr(
-            (DATA_DIR / "kc_ham.dat").read_text(), num_wann=4, num_wann_sc=32, kgrid=kgrid
-        )
-        return centers_all, spreads_all, hr, kgrid
-
-    def test_wrong_r0_wf_count_raises(self, mapping_inputs):
-        centers_all, spreads_all, hr, kgrid = mapping_inputs
-        with pytest.raises(ValueError, match="right number of WFs in the R=0 cell"):
-            ui_helpers.map_wannier(centers_all, spreads_all, hr, kgrid, num_wann=3, num_wann_sc=32)
-
-    def test_missing_wfs_in_a_shell_raises(self, mapping_inputs):
-        centers_all, spreads_all, hr, kgrid = mapping_inputs
-        spreads_all = list(spreads_all)
-        # Detune every spread of the first non-R0 primitive-cell copy (the
-        # block for `latt_vect(*kgrid)[1]`) so no (center, spread) match is
-        # found for that shell, even though its centres still fold correctly.
-        for i in range(4, 8):
-            spreads_all[i] += 10.0
-        with pytest.raises(ValueError, match="Found 0 WFs in"):
-            ui_helpers.map_wannier(centers_all, spreads_all, hr, kgrid, num_wann=4, num_wann_sc=32)
