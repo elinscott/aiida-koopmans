@@ -167,6 +167,17 @@ class TestValidateProjectionBlock:
         with pytest.raises(ValueError, match="holes at \\[2, 4\\]"):
             validate_projection_block(block)
 
+    def test_rejects_a_hole_in_the_pool(self):
+        """A hole above the block's own bands, inside its pool, is refused too.
+
+        The Wannier positions never touch the pool, so a rule read off them
+        alone would pass this block while wannier90 reads a gapped band
+        list; the whole read window must be contiguous.
+        """
+        block = _explicit("block_1", range(1, 5), num_bands=8, exclude_bands=[6])
+        with pytest.raises(ValueError, match="holes at \\[6\\]"):
+            validate_projection_block(block)
+
 
 # ----------------------------------------------------------------------
 # validate_projection_block_sequence

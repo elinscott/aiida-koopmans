@@ -325,15 +325,33 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
 
 
+def _read_bands(block: ProjectionBlock) -> list[int]:
+    """Return the ``num_bands`` bands the block reads, in ascending order.
+
+    ``exclude_bands`` names the bands wannier90 skips; the block reads the
+    lowest ``num_bands`` of the rest.
+    """
+    excluded = set(block.get("exclude_bands") or [])
+    num_bands = int(block["num_bands"])
+    read: list[int] = []
+    band = 1
+    while len(read) < num_bands:
+        if band not in excluded:
+            read.append(band)
+        band += 1
+    return read
+
+
 def validate_projection_block(block: ProjectionBlock) -> None:
     """Reject a block whose band bookkeeping cannot describe a Wannierization.
 
     Lives beside the type because a ``TypedDict`` cannot validate at
     runtime; every entry point that takes blocks calls this first. The
-    rules are ``num_bands >= num_wann >= 1``, and the block's bands must
-    be contiguous: ``exclude_bands`` may not punch a hole inside them.
-    Raise ``ValueError`` naming the block and the rule it breaks.
-    Occupancy is not among the rules -- it is allowed to be unknown here
+    rules are ``num_bands >= num_wann >= 1``, and the bands the block
+    reads — its own and any disentanglement pool — must be contiguous:
+    ``exclude_bands`` may not punch a hole inside them. Raise
+    ``ValueError`` naming the block and the rule it breaks. Occupancy is
+    not among the rules -- it is allowed to be unknown here
     (:func:`block_occupancy`).
     """
     label = block["label"]
@@ -349,12 +367,12 @@ def validate_projection_block(block: ProjectionBlock) -> None:
             f"Block {label!r} reads {num_bands} bands but Wannierises {num_wann} "
             "functions; wannier90 needs at least one band per Wannier function."
         )
-    indices = get_wannier_indices(block)
-    holes = sorted(set(range(indices[0], indices[-1] + 1)) - set(indices))
+    read = _read_bands(block)
+    holes = sorted(set(range(read[0], read[-1] + 1)) - set(read))
     if holes:
         raise ValueError(
-            f"Block {label!r} Wannierises bands {indices}: `exclude_bands` "
-            f"punches holes at {holes} inside them. A block's bands must be "
+            f"Block {label!r} reads bands {read}: `exclude_bands` punches "
+            f"holes at {holes} inside them. The bands a block reads must be "
             "contiguous; exclude only bands below or above the block."
         )
 
@@ -419,15 +437,7 @@ def get_wannier_indices(block: ProjectionBlock) -> list[int]:
     (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
     widening the list to the pool would mis-address the Wannier functions.
     """
-    excluded = set(block.get("exclude_bands") or [])
-    num_bands = int(block["num_bands"])
-    read: list[int] = []
-    band = 1
-    while len(read) < num_bands:
-        if band not in excluded:
-            read.append(band)
-        band += 1
-    return read[: int(block["num_wann"])]
+    return _read_bands(block)[: int(block["num_wann"])]
 
 
 def block_occupancy(block: ProjectionBlock) -> bool:
