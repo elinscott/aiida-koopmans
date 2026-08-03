@@ -13,6 +13,7 @@ import pytest
 from aiida_workgraph import task
 
 from aiida_koopmans.functionals import Correction
+from aiida_koopmans.ml import MLDescriptor
 from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 
 
@@ -395,3 +396,51 @@ class TestSharedOutputSpecCollision:
 
         columns = set(SnapshotDataset.__annotations__)
         assert not columns & set(self.SCREENING_NAMESPACES), columns
+
+
+class TestTrainedModelArtifact:
+    """The fitted model is a stored ``orm.Dict`` — the canonical artifact.
+
+    A prediction run references it by PK/UUID (the koopmans ``ml.model``
+    input), so the payload must live in the profile as one ``Dict`` node,
+    stamps included, not as an exploded namespace or an unstored value.
+    """
+
+    def test_train_task_stores_the_model_as_one_dict_node(self, aiida_profile_clean):
+        from aiida import orm
+        from aiida_workgraph import WorkGraph
+
+        from aiida_koopmans.workgraphs.ml import train_screening_model
+
+        wg = WorkGraph("train_model_artifact")
+        wg.add_task(
+            train_screening_model,
+            name="train",
+            datasets={
+                "snapshot_1": {
+                    "descriptors": [[-1.0], [-2.0]],
+                    "alpha_targets": [0.5, 0.6],
+                    "filled": [True, False],
+                    "labels": ["orb_1", "orb_2"],
+                }
+            },
+            estimator="linear_regression",
+            occ_and_emp_together=True,
+            descriptor=MLDescriptor.SELF_HARTREE,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+        )
+        wg.run()
+
+        children = [link.node for link in wg.process.base.links.get_outgoing().all()]
+        train = next(node for node in children if hasattr(node, "is_finished_ok"))
+        assert train.is_finished_ok, train.exception
+
+        model_node = train.outputs.model
+        assert isinstance(model_node, orm.Dict), type(model_node)
+        assert model_node.is_stored
+        model = model_node.get_dict()
+        assert model["descriptor"] == "self_hartree"
+        assert model["correction"] == "ki"
+        assert model["init_orbitals"] == "kohn-sham"
+        assert set(model["submodels"]) == {"all"}

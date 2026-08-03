@@ -88,7 +88,9 @@ class TrainOutputs(TypedDict):
     """Outputs of :func:`train_screening_model`.
 
     * ``model`` — the fitted, JSON-serialisable screening model (see
-      :func:`aiida_koopmans.workgraphs.ml.helpers.fit_screening_model`).
+      :func:`aiida_koopmans.workgraphs.ml.helpers.fit_screening_model`);
+      stored at runtime as one ``orm.Dict``, the canonical trained-model
+      artifact a later run can reference by PK or UUID.
     * ``metrics`` — training-set error metrics (a sanity indicator, not a
       validation score: the model is evaluated on its own training data).
     """
