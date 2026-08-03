@@ -880,6 +880,53 @@ class TestAssembleAlphaScreening:
 # ----------------------------------------------------------------------
 
 
+def _linear_sh_model(
+    occ_and_emp_together: bool = True,
+    correction: str = "ki",
+    init_orbitals: str = "kohn-sham",
+) -> dict:
+    """Fit an exactly-linear self-Hartree model (``alpha = 0.4 - 0.1 * sh``)."""
+    from aiida_koopmans import ml_helpers
+
+    return ml_helpers.fit_screening_model(
+        {
+            "descriptors": [[-1.0], [-2.0], [-3.0], [-4.0]],
+            "alpha_targets": [0.5, 0.6, 0.7, 0.8],
+            "filled": [True, True, False, False],
+            "labels": ["orb_1", "orb_2", "orb_3", "orb_4"],
+        },
+        "linear_regression",
+        occ_and_emp_together=occ_and_emp_together,
+        correction=correction,
+        init_orbitals=init_orbitals,
+    )
+
+
+def _split_slope_sh_model() -> dict:
+    """Fit occ/emp submodels with DIFFERENT slopes.
+
+    occ: ``alpha = 0.4 - 0.1 * sh`` (0.55 at sh=-1.5); emp:
+    ``alpha = -0.7 - 0.8 * sh`` (0.50 at sh=-1.5). At sh=-1.5 the two
+    submodels disagree, so a filled-to-emp routing swap changes the
+    result — the same-slope halves of ``_linear_sh_model`` cannot see
+    that swap.
+    """
+    from aiida_koopmans import ml_helpers
+
+    return ml_helpers.fit_screening_model(
+        {
+            "descriptors": [[-1.0], [-2.0], [-1.0], [-2.0]],
+            "alpha_targets": [0.5, 0.6, 0.1, 0.9],
+            "filled": [True, True, False, False],
+            "labels": ["orb_1", "orb_2", "orb_3", "orb_4"],
+        },
+        "linear_regression",
+        occ_and_emp_together=False,
+        correction="ki",
+        init_orbitals="kohn-sham",
+    )
+
+
 class TestKoopmansDSCFGraphBuild:
     """Inspect the task graph wired by ``KoopmansDSCFWorkflow.build`` for ozone.
 
@@ -1775,6 +1822,102 @@ class TestKoopmansDSCFGraphBuild:
         ):
             assert not any(forbidden in label for label in labels), (forbidden, labels)
 
+    def test_ml_model_routes_to_prediction(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """An ml_model replaces the refinement sub-graph with the predict one."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_model=_linear_sh_model(),
+        )
+        labels = self._all_link_labels(wg)
+        assert any("PredictScreeningParameters" in label for label in labels), labels
+        assert not any("ComputeScreeningParameters" in label for label in labels), labels
+        # The final KI still applies the (now predicted) screening parameters.
+        assert any("RunFinalKI" in label for label in labels), labels
+
+    def test_predict_subgraph_is_trial_plus_prediction(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The predict sub-graph runs one trial KI and no Delta-SCF fan-out."""
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import PredictScreeningParameters
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = PredictScreeningParameters.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            dft_remote=dummy_remote,
+            ml_model=_linear_sh_model(),
+        )
+        sub_labels = self._all_link_labels(sub_wg)
+
+        def _sub_has(substr: str) -> bool:
+            return any(substr in label for label in sub_labels)
+
+        assert _sub_has("generate_alphas"), sub_labels
+        assert _sub_has("ki_trial"), sub_labels
+        assert _sub_has("assign_orbital_groups"), sub_labels
+        assert _sub_has("predict_alphas"), sub_labels
+        # No Delta-SCF machinery anywhere in the predict route.
+        for forbidden in (
+            "compute_orbital_screening_parameters",
+            "refine_screening_parameters",
+            "ScreeningIteration",
+            "dft_n_minus_1",
+            "pz_print",
+            "dft_n_plus_1",
+        ):
+            assert not _sub_has(forbidden), (forbidden, sub_labels)
+
+    def test_ml_model_requires_calculate_alpha(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(ValueError, match="drop ml_model"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_model=_linear_sh_model(),
+                calculate_alpha=False,
+                initial_alpha=None,
+                initial_alphas={
+                    "filled": {"none": [0.6] * 9},
+                    "empty": {"none": [0.6]},
+                },
+            )
+
+    def test_ml_model_rejects_alpha_numsteps(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        with pytest.raises(ValueError, match="alpha_numsteps cannot take effect"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_model=_linear_sh_model(),
+                alpha_numsteps=2,
+            )
+
 
 # ----------------------------------------------------------------------
 # Skip-mode final KI vs first-iteration trial KI: concrete kcp.x inputs
@@ -2031,3 +2174,258 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
             assert trial["parameters"].get(namelist) == final["parameters"].get(namelist), namelist
         for key in ("overlays", "read_wavefunctions", "parent_folder", "alphas"):
             assert trial[key] == final[key], key
+
+
+# ----------------------------------------------------------------------
+# predict_alpha_screening — plain-python callable
+# ----------------------------------------------------------------------
+
+
+class TestPredictAlphaScreening:
+    @staticmethod
+    def _call(model, descriptors, orbitals, correction="ki", init_orbitals="kohn-sham"):
+        from aiida_koopmans.workgraphs.kcp import predict_alpha_screening
+
+        return predict_alpha_screening._callable(  # type: ignore[attr-defined]
+            model=model,
+            descriptors=descriptors,
+            orbitals=orbitals,
+            correction=correction,
+            init_orbitals=init_orbitals,
+        )
+
+    @staticmethod
+    def _orb(index, *, filled, group_id, representative, spin="none"):
+        return {
+            "spin": spin,
+            "index": index,
+            "filled": filled,
+            "group_id": group_id,
+            "representative": representative,
+        }
+
+    def test_predicts_every_orbital_from_its_descriptor(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=2, representative=True),
+            self._orb(3, filled=False, group_id=3, representative=True),
+        ]
+        metric = [[-1.0, -2.0, -3.0], [-1.0, -2.0, -3.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.5, 0.6])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.7])
+
+    def test_group_members_inherit_the_representative_prediction(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=1, representative=False),
+            self._orb(3, filled=False, group_id=2, representative=True),
+        ]
+        # The non-representative orbital's own descriptor (-2.0) would
+        # predict 0.6; the broadcast hands it the representative's 0.5.
+        metric = [[-1.0, -2.0, -3.0], [-1.0, -2.0, -3.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.5, 0.5])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.7])
+
+    def test_split_model_routes_filled_and_empty_to_their_submodels(self):
+        model = _split_slope_sh_model()
+        assert set(model["submodels"]) == {"occ", "emp"}
+        # Both orbitals sit at sh=-1.5, where the two submodels disagree
+        # (occ: 0.55, emp: 0.50) — a routing swap flips the assertions.
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=False, group_id=2, representative=True),
+        ]
+        metric = [[-1.5, -1.5], [-1.5, -1.5]]
+        result = self._call(model, metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.55])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.50])
+
+    def test_model_stamp_mismatch_raises(self):
+        with pytest.raises(ValueError, match="trained with correction='kipz'"):
+            self._call(
+                _linear_sh_model(correction="kipz"),
+                [[-1.0]],
+                [self._orb(1, filled=True, group_id=1, representative=True)],
+            )
+        with pytest.raises(ValueError, match="trained with init_orbitals='mlwfs'"):
+            self._call(
+                _linear_sh_model(init_orbitals="mlwfs"),
+                [[-1.0]],
+                [self._orb(1, filled=True, group_id=1, representative=True)],
+            )
+
+    def test_unstamped_model_raises(self):
+        """A model predating the stamps (no correction field) is refused."""
+        model = _linear_sh_model()
+        del model["correction"]
+        with pytest.raises(ValueError, match="trained with correction=None"):
+            self._call(
+                model, [[-1.0]], [self._orb(1, filled=True, group_id=1, representative=True)]
+            )
+
+    def test_spin_polarized_channels_read_their_own_metric_row(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True, spin="up"),
+            self._orb(2, filled=False, group_id=2, representative=True, spin="up"),
+            self._orb(1, filled=True, group_id=3, representative=True, spin="down"),
+            self._orb(2, filled=False, group_id=4, representative=True, spin="down"),
+        ]
+        metric = [[-1.0, -2.0], [-3.0, -4.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.UP] == pytest.approx([0.5])
+        assert result["empty"][SpinChannel.UP] == pytest.approx([0.6])
+        assert result["filled"][SpinChannel.DOWN] == pytest.approx([0.7])
+        assert result["empty"][SpinChannel.DOWN] == pytest.approx([0.8])
+
+    def test_model_trained_on_another_descriptor_raises(self):
+        model = _linear_sh_model()
+        model["descriptor"] = "power_spectrum"
+        with pytest.raises(ValueError, match="trained on `power_spectrum`"):
+            self._call(
+                model, [[-1.0]], [self._orb(1, filled=True, group_id=1, representative=True)]
+            )
+
+
+# ----------------------------------------------------------------------
+# Predict trial vs refinement trial: identical kcp.x step inputs
+# ----------------------------------------------------------------------
+
+
+class TestPredictTrialMatchesComputeTrial:
+    """The predict route's trial KI is the refinement route's first trial.
+
+    Build both screening sub-graphs for identical inputs and compare the
+    kwargs ``PredictScreeningParameters`` hands to ``_trial_kcp_inputs``
+    with those ``ComputeScreeningParameters`` hands to
+    ``ScreeningIteration`` (whose forwarding to ``_trial_kcp_inputs`` is
+    a pure pass-through of the same keys). This pins the trial's
+    parenting, first-iteration flag, KS overlay, Wannier-seed staging and
+    overrides to the refinement route's — a predict trial that dropped
+    any of them would predict off different variational orbitals and
+    still pass every shape test.
+    """
+
+    FORWARDED: ClassVar[list[str]] = [
+        "code",
+        "structure",
+        "pseudos",
+        "base",
+        "nbnd",
+        "correction",
+        "current_alphas",
+        "parent_folder",
+        "is_first_iteration",
+        "variational_orbital_overlays",
+        "initial_evc_occupied1",
+        "initial_evc_occupied2",
+        "ki_overrides",
+        "parallelization",
+    ]
+
+    @classmethod
+    def _render(cls, value):
+        """Render a value comparably across two graph builds.
+
+        ``TaggedValue`` wrappers and stored nodes carry per-instance
+        uuids that are wrapper identity, not payload; scrub them.
+        """
+        import re
+
+        from aiida import orm
+
+        if type(value).__name__ in ("TaggedValue", "_TaggedScalar"):
+            return re.sub(r"uuid=[0-9a-f-]+", "uuid=<>", repr(value))
+        if hasattr(value, "__dataclass_fields__"):
+            return {f: cls._render(getattr(value, f)) for f in sorted(value.__dataclass_fields__)}
+        if hasattr(value, "_scoped_name"):
+            return f"<socket {value._scoped_name}>"
+        if isinstance(value, orm.Node):
+            return f"<{type(value).__name__} {value.uuid}>"
+        if isinstance(value, dict):
+            return {k: cls._render(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+        if isinstance(value, list | tuple):
+            return [cls._render(v) for v in value]
+        return re.sub(r"uuid=[0-9a-f-]+", "uuid=<>", repr(value))
+
+    @pytest.mark.parametrize(
+        "init_orbitals", [VariationalOrbitalType.KOHN_SHAM, VariationalOrbitalType.MLWFS]
+    )
+    @pytest.mark.parametrize("correction", [Correction.KI, Correction.KIPZ])
+    def test_trial_inputs_match(
+        self, monkeypatch, ozone_structure, kcp_code, ozone_pseudo_family, correction, init_orbitals
+    ):
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs import kcp as kcp_mod
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        remote = orm.RemoteData(remote_path="/nonexistent/fake")
+        evc1 = orm.SinglefileData.from_string("evc1", filename="evc_occupied1.dat").store()
+        evc2 = orm.SinglefileData.from_string("evc2", filename="evc_occupied2.dat").store()
+
+        common = {
+            "code": kcp_code,
+            "structure": ozone_structure,
+            "pseudos": pseudos,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "nspin": 2,
+            "nelec": 18,
+            "nelup": 9,
+            "neldw": 9,
+            "tot_magnetization": 0,
+            "initial_alpha": 0.6,
+            "correction": correction,
+            "init_orbitals": init_orbitals,
+            "dft_remote": remote,
+            "self_hartree_tol": 1.5e-4,
+            "initial_evc_occupied1": evc1,
+            "initial_evc_occupied2": evc2,
+            "overrides": {"ki": {"CONTROL": {"iprint": 7}}},
+            "parallelization": {"kcp": {"ntasks": 3}},
+        }
+
+        seen_predict: dict = {}
+        real_trial = kcp_mod._trial_kcp_inputs
+
+        def spy_trial(**kwargs):
+            seen_predict.update(kwargs)
+            return real_trial(**kwargs)
+
+        monkeypatch.setattr(kcp_mod, "_trial_kcp_inputs", spy_trial)
+        kcp_mod.PredictScreeningParameters.build(**common, ml_model=_linear_sh_model())
+        monkeypatch.undo()
+
+        seen_compute: dict = {}
+        real_iteration = kcp_mod.ScreeningIteration
+
+        def spy_iteration(**kwargs):
+            seen_compute.update(kwargs)
+            return real_iteration(**kwargs)
+
+        monkeypatch.setattr(kcp_mod, "ScreeningIteration", spy_iteration)
+        kcp_mod.ComputeScreeningParameters.build(**common, alpha_numsteps=1)
+        monkeypatch.undo()
+
+        assert seen_predict, "predict never called _trial_kcp_inputs"
+        assert seen_compute, "compute never called ScreeningIteration"
+
+        diffs = {
+            key: (
+                self._render(seen_predict.get(key, "<ABSENT>")),
+                self._render(seen_compute.get(key, "<ABSENT>")),
+            )
+            for key in self.FORWARDED
+            if self._render(seen_predict.get(key, "<ABSENT>"))
+            != self._render(seen_compute.get(key, "<ABSENT>"))
+        }
+        assert not diffs, diffs

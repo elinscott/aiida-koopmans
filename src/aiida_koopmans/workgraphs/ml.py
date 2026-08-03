@@ -137,13 +137,17 @@ def train_screening_model(
     datasets: Annotated[dict, dynamic(SnapshotDataset)],
     estimator: str,
     occ_and_emp_together: bool,
-    descriptor: str,
+    descriptor: MLDescriptor,
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
 ) -> TrainOutputs:
     """Gather every snapshot's dataset and fit the screening model.
 
     The single gather point of the workflow: consumes the dynamic
     per-snapshot namespace so the fit sees all ``(descriptor, alpha)``
-    pairs at once.
+    pairs at once. ``correction`` and ``init_orbitals`` are stamped into
+    the model so prediction can refuse a model trained under different
+    physics.
     """
     merged = ml_helpers.concatenate_datasets(datasets)
     model = ml_helpers.fit_screening_model(
@@ -151,6 +155,8 @@ def train_screening_model(
         estimator_type=estimator,
         occ_and_emp_together=occ_and_emp_together,
         descriptor=descriptor,
+        correction=correction,
+        init_orbitals=init_orbitals,
     )
     predicted = ml_helpers.predict_screening(model, merged)
     metrics = ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted)
@@ -510,8 +516,42 @@ def require_power_spectrum_route(
         )
 
 
+def require_ml_mode_inputs(
+    *,
+    ml_mode: MLMode,
+    descriptor: MLDescriptor,
+    init_orbitals: Any,
+    pw2wannier90_code: Any,
+    ml_model: dict | None,
+) -> None:
+    """Guard the ``ml_mode`` / ``descriptor`` / ``ml_model`` combinations.
+
+    ``test`` and ``predict`` need a trained ``ml_model``; ``predict``
+    supports only ``self_hartree`` (the decompose pass that builds the
+    power-spectrum descriptors is not wired into the DSCF's screening
+    stage, where the prediction runs); a ``power_spectrum`` run must
+    satisfy :func:`require_power_spectrum_route`.
+    """
+    if ml_mode not in ML_MODES:
+        raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
+    if ml_mode != MLMode.NONE:
+        if descriptor not in ML_DESCRIPTOR_TYPES:
+            raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
+        if ml_mode == MLMode.PREDICT and descriptor != MLDescriptor.SELF_HARTREE:
+            raise NotImplementedError(
+                f"ml_mode='predict' supports only the 'self_hartree' descriptor, not "
+                f"`{descriptor}`: the decompose pass that builds the power-spectrum "
+                "descriptors is not wired into the DSCF's screening stage, where the "
+                "prediction runs. Use descriptor='self_hartree'."
+            )
+        if descriptor == MLDescriptor.POWER_SPECTRUM:
+            require_power_spectrum_route(init_orbitals, pw2wannier90_code)
+    if ml_mode in (MLMode.TEST, MLMode.PREDICT) and ml_model is None:
+        raise ValueError(f"ml_mode='{ml_mode}' requires a trained `ml_model`")
+
+
 def build_snapshot_dataset(
-    descriptor: str,
+    descriptor: MLDescriptor,
     dscf: Any,
     *,
     label: str,
@@ -568,10 +608,10 @@ def TrajectoryWorkflow(
     eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
-    ml_mode: str = "none",
+    ml_mode: MLMode = MLMode.NONE,
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",
-    descriptor: str = "self_hartree",
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     occ_and_emp_together: bool = True,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,
@@ -592,6 +632,11 @@ def TrajectoryWorkflow(
       fitted model is the ``model`` output.
     * ``"test"`` — extract the same pairs and score the supplied
       ``ml_model`` against the computed alphas.
+    * ``"predict"`` — inject ``ml_model`` into every snapshot's DSCF:
+      the per-orbital Delta-SCF refinement is replaced by a model
+      prediction from the trial KI's self-Hartree descriptors (so only
+      ``descriptor='self_hartree'`` is supported), and the final KI
+      applies the predicted alphas.
 
     ``descriptor`` selects what those pairs are built from.
     ``'self_hartree'`` reads the per-orbital self-Hartree energies off the
@@ -607,15 +652,13 @@ def TrajectoryWorkflow(
     """
     validate_parallelization(parallelization)
 
-    if ml_mode not in ML_MODES:
-        raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
-    if ml_mode != MLMode.NONE:
-        if descriptor not in ML_DESCRIPTOR_TYPES:
-            raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
-        if descriptor == MLDescriptor.POWER_SPECTRUM:
-            require_power_spectrum_route(init_orbitals, pw2wannier90_code)
-    if ml_mode == MLMode.TEST and ml_model is None:
-        raise ValueError("ml_mode='test' requires a trained `ml_model`")
+    require_ml_mode_inputs(
+        ml_mode=ml_mode,
+        descriptor=descriptor,
+        init_orbitals=init_orbitals,
+        pw2wannier90_code=pw2wannier90_code,
+        ml_model=ml_model,
+    )
 
     snapshot_outputs: dict[str, KoopmansDSCFOutputs] = {}
     datasets: dict[str, dict] = {}
@@ -636,6 +679,7 @@ def TrajectoryWorkflow(
             alpha_numsteps=alpha_numsteps,
             fix_spin_contamination=fix_spin_contamination,
             initial_alpha=initial_alpha,
+            ml_model=ml_model if ml_mode == MLMode.PREDICT else None,
             spin_polarized=spin_polarized,
             orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
             codes=codes,
@@ -660,9 +704,12 @@ def TrajectoryWorkflow(
             alphas=dscf["alphas"],
         )
 
-        if ml_mode != MLMode.NONE:
+        if ml_mode in (MLMode.TRAIN, MLMode.TEST):
             # The whole SnapshotDataset output namespace becomes the entry
             # (one socket per key), mirroring the channel-keyed DFPT wiring.
+            # Predict mode builds no dataset: the model is *applied* inside
+            # each snapshot's DSCF, and there are no computed alphas to
+            # pair descriptors with.
             datasets[label] = build_snapshot_dataset(
                 descriptor,
                 dscf,
@@ -678,6 +725,8 @@ def TrajectoryWorkflow(
             estimator=estimator,
             occ_and_emp_together=occ_and_emp_together,
             descriptor=descriptor,
+            correction=correction,
+            init_orbitals=init_orbitals,
         )
         model_output: dict = trained["model"]
         evaluation: dict = trained["metrics"]

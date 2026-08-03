@@ -31,6 +31,7 @@ from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
+from aiida_koopmans.ml_helpers import predict_estimator
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
@@ -263,6 +264,69 @@ def echo_alpha_screening(alphas: AlphaScreening) -> AlphaScreening:
     output socket (graphs cannot echo raw inputs as outputs).
     """
     return alphas
+
+
+@task
+def predict_alpha_screening(
+    model: dict,
+    descriptors: list[list[float]],
+    orbitals: list[VariationalOrbital],
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
+) -> AlphaScreening:
+    """Predict every orbital's screening parameter from a trained model.
+
+    ``descriptors`` is the trial KI's per-spin self-Hartree array (the
+    model's descriptor); ``orbitals`` is the :func:`assign_orbital_groups` output.
+    One prediction is made per group representative and broadcast onto the
+    other members — the same rule the Delta-SCF fan-out follows. The model
+    must have been trained on ``self_hartree`` descriptors and carry
+    ``correction`` / ``init_orbitals`` stamps matching this run
+    (:func:`~aiida_koopmans.ml_helpers.fit_screening_model` writes them);
+    a mismatched or unstamped model is rejected.
+    """
+    if model.get("descriptor", "self_hartree") != "self_hartree":
+        raise ValueError(
+            f"The supplied model was trained on `{model['descriptor']}` descriptors, "
+            "but prediction computes `self_hartree` descriptors from the trial KI. "
+            "Train a model with descriptor='self_hartree' to predict here."
+        )
+    for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
+        run_str = getattr(run_value, "value", run_value)
+        model_value = model.get(key)
+        if model_value != run_str:
+            raise ValueError(
+                f"The supplied model was trained with {key}={model_value!r}, but this "
+                f"run uses {key}={run_str!r}. Train a model under the run's settings "
+                f"(a model without the {key} stamp predates it; retrain to predict)."
+            )
+
+    submodels = model["submodels"]
+    rep_alpha_by_group: dict[int, float] = {}
+    for o in orbitals:
+        if not o["representative"]:
+            continue
+        spin = SpinChannel(o["spin"])
+        descriptor_row = [float(descriptors[spin.axis][o["index"] - 1])]
+        if model.get("occ_and_emp_together", True):
+            submodel = submodels["all"]
+        else:
+            submodel = submodels["occ" if o["filled"] else "emp"]
+        rep_alpha_by_group[o["group_id"]] = float(predict_estimator(submodel, [descriptor_row])[0])
+
+    by_spin: dict[bool, dict[SpinChannel, list[tuple[int, float]]]] = {True: {}, False: {}}
+    for o in orbitals:
+        spin = SpinChannel(o["spin"])
+        by_spin[o["filled"]].setdefault(spin, []).append(
+            (o["index"], rep_alpha_by_group[o["group_id"]])
+        )
+
+    def _pack(
+        channels: dict[SpinChannel, list[tuple[int, float]]],
+    ) -> dict[SpinChannel, list[float]]:
+        return {spin: [alpha for _, alpha in sorted(items)] for spin, items in channels.items()}
+
+    return AlphaScreening(filled=_pack(by_spin[True]), empty=_pack(by_spin[False]))
 
 
 class ScreeningParametersOutputs(TypedDict):
@@ -848,6 +912,7 @@ def KoopmansDSCFWorkflow(
     initial_alpha: float | None = None,
     initial_alphas: AlphaScreening | None = None,
     calculate_alpha: bool = True,
+    ml_model: dict | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     codes: Codes | None = None,
@@ -882,6 +947,14 @@ def KoopmansDSCFWorkflow(
     on the DFT init (taking over the trial's variational-orbital
     seeding) and applies ``initial_alphas`` verbatim, which that switch
     therefore requires.
+
+    ``ml_model`` (a trained model dict from an ``ml:train`` trajectory
+    run) replaces the Delta-SCF refinement with
+    :func:`PredictScreeningParameters`: one trial KI at the starting
+    alphas supplies the self-Hartree descriptors, the model predicts
+    every screening parameter, and the final KI applies the predictions.
+    Requires ``calculate_alpha=True`` (the trial supplies the
+    descriptors) and ``alpha_numsteps=1`` (there is nothing to iterate).
 
     Two initialisation routes select on ``init_orbitals``:
 
@@ -926,6 +999,11 @@ def KoopmansDSCFWorkflow(
         initial_alphas=initial_alphas,
         calculate_alpha=calculate_alpha,
         spin_polarized=spin_polarized,
+    )
+    _validate_ml_model_inputs(
+        ml_model=ml_model,
+        calculate_alpha=calculate_alpha,
+        alpha_numsteps=alpha_numsteps,
     )
 
     dft_overrides = overrides.get("dft") if overrides else None
@@ -1129,33 +1207,60 @@ def KoopmansDSCFWorkflow(
         dft_remote = dft["remote_folder"]
 
     if calculate_alpha:
-        screening = ComputeScreeningParameters(
-            code=code,
-            structure=run_structure,
-            pseudos=pseudos,
-            ecutwfc=ecutwfc,
-            ecutrho=ecutrho,
-            nbnd=run_nbnd,
-            nspin=nspin,
-            nelec=nelec,
-            nelup=nelup,
-            neldw=neldw,
-            tot_magnetization=run_tot_magnetization,
-            initial_alpha=0.6 if initial_alpha is None else initial_alpha,
-            initial_alphas=initial_alphas,
-            correction=correction,
-            init_orbitals=init_orbitals,
-            spin_polarized=spin_polarized,
-            alpha_numsteps=alpha_numsteps,
-            self_hartree_tol=orbital_groups_self_hartree_tol,
-            dft_remote=dft_remote,
-            initial_evc_occupied1=initial_evc_occupied1,
-            initial_evc_occupied2=initial_evc_occupied2,
-            mp_correction=mp_correction,
-            eps_inf=eps_inf,
-            overrides=overrides,
-            parallelization=parallelization,
-        )
+        if ml_model is not None:
+            screening = PredictScreeningParameters(
+                code=code,
+                structure=run_structure,
+                pseudos=pseudos,
+                ecutwfc=ecutwfc,
+                ecutrho=ecutrho,
+                nbnd=run_nbnd,
+                nspin=nspin,
+                nelec=nelec,
+                nelup=nelup,
+                neldw=neldw,
+                tot_magnetization=run_tot_magnetization,
+                initial_alpha=0.6 if initial_alpha is None else initial_alpha,
+                initial_alphas=initial_alphas,
+                correction=correction,
+                init_orbitals=init_orbitals,
+                spin_polarized=spin_polarized,
+                self_hartree_tol=orbital_groups_self_hartree_tol,
+                dft_remote=dft_remote,
+                ml_model=ml_model,
+                initial_evc_occupied1=initial_evc_occupied1,
+                initial_evc_occupied2=initial_evc_occupied2,
+                overrides=overrides,
+                parallelization=parallelization,
+            )
+        else:
+            screening = ComputeScreeningParameters(
+                code=code,
+                structure=run_structure,
+                pseudos=pseudos,
+                ecutwfc=ecutwfc,
+                ecutrho=ecutrho,
+                nbnd=run_nbnd,
+                nspin=nspin,
+                nelec=nelec,
+                nelup=nelup,
+                neldw=neldw,
+                tot_magnetization=run_tot_magnetization,
+                initial_alpha=0.6 if initial_alpha is None else initial_alpha,
+                initial_alphas=initial_alphas,
+                correction=correction,
+                init_orbitals=init_orbitals,
+                spin_polarized=spin_polarized,
+                alpha_numsteps=alpha_numsteps,
+                self_hartree_tol=orbital_groups_self_hartree_tol,
+                dft_remote=dft_remote,
+                initial_evc_occupied1=initial_evc_occupied1,
+                initial_evc_occupied2=initial_evc_occupied2,
+                mp_correction=mp_correction,
+                eps_inf=eps_inf,
+                overrides=overrides,
+                parallelization=parallelization,
+            )
         # The final KI restarts from the *last iteration's* trial KI save
         # so it inherits the converged variational orbital basis (not the
         # bare DFT save); no overlay / staging is needed there.
@@ -1771,31 +1876,24 @@ def ScreeningIteration(
     ``base`` is a frozen ``KcpBaseInputs`` dataclass and crosses this
     ``@task.graph`` boundary intact.
     """
-    ki_parameters = _build_orbdep_parameters(
-        base,
-        nbnd=nbnd,
-        correction=correction,
-        is_first_iteration=is_first_iteration,
+    trial = KcpStep(
+        **_trial_kcp_inputs(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            base=base,
+            nbnd=nbnd,
+            correction=correction,
+            current_alphas=current_alphas,
+            parent_folder=parent_folder,
+            is_first_iteration=is_first_iteration,
+            variational_orbital_overlays=variational_orbital_overlays,
+            initial_evc_occupied1=initial_evc_occupied1,
+            initial_evc_occupied2=initial_evc_occupied2,
+            ki_overrides=ki_overrides,
+            parallelization=parallelization,
+        )
     )
-    read_wavefunctions = _stage_wannier_seed(
-        ki_parameters, initial_evc_occupied1, initial_evc_occupied2
-    )
-    if ki_overrides:
-        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
-
-    trial_inputs = _build_kcp_inputs(
-        code,
-        structure,
-        ki_parameters,
-        pseudos,
-        parallelization=parallelization,
-        alphas=current_alphas,
-        parent_folder=parent_folder,
-        variational_orbital_overlays=variational_orbital_overlays,
-        read_wavefunctions=read_wavefunctions,
-        name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
-    )
-    trial = KcpStep(**trial_inputs)
 
     # Cluster variational orbitals by trial-KI self-Hartree so each
     # group only screens one representative; non-representative members
@@ -2166,6 +2264,125 @@ def ComputeScreeningParameters(
     return {
         "alphas": refinement["alphas"],
         "trial_remote": refinement["trial_remote"],
+    }
+
+
+@task.graph
+def PredictScreeningParameters(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: Annotated[dict, dynamic(UpfData)],
+    ecutwfc: float,
+    ecutrho: float,
+    nbnd: int,
+    nspin: int,
+    nelec: int,
+    initial_alpha: float,
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
+    dft_remote: orm.RemoteData,
+    ml_model: dict,
+    nelup: int | None = None,
+    neldw: int | None = None,
+    tot_magnetization: int | None = None,
+    initial_alphas: AlphaScreening | None = None,
+    spin_polarized: bool = False,
+    self_hartree_tol: float | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
+    overrides: KoopmansDSCFOverrides | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> ScreeningParametersOutputs:
+    """Predict the screening parameters from a single trial KI.
+
+    The ``ml_model`` counterpart of :func:`ComputeScreeningParameters`:
+    runs the same first trial KI / KIPZ (identical parenting, KS overlay
+    and Wannier-seed staging, starting from ``initial_alphas`` when given,
+    else uniform ``initial_alpha``), then replaces the per-orbital
+    Delta-SCF fan-out with :func:`predict_alpha_screening` applied to the
+    trial's self-Hartree descriptors. Grouping (``self_hartree_tol``)
+    works as in the refinement loop: one prediction per representative,
+    broadcast onto the group members.
+
+    Returns the same ``{alphas, trial_remote}`` pair, so the final KI
+    parents on the trial save and applies the predicted alphas exactly as
+    it would apply computed ones.
+    """
+    ki_overrides = overrides.get("ki") if overrides else None
+
+    if initial_alphas is None:
+        initial_alphas = generate_alphas(
+            alpha_guess=initial_alpha,
+            nbnd=nbnd,
+            nelup=nelup,
+            neldw=neldw,
+            spin_polarized=spin_polarized,
+        )
+    else:
+        _validate_alpha_screening(
+            initial_alphas,
+            nelup=nelup,
+            neldw=neldw,
+            nbnd=nbnd,
+            spin_polarized=spin_polarized,
+        )
+
+    base = _kcp_base_inputs(
+        structure,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=tot_magnetization,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+    )
+
+    ks_overlay: dict[str, str] | None = None
+    if init_orbitals == VariationalOrbitalType.KOHN_SHAM:
+        ks_overlay = _ks_variational_overlay(nspin)
+
+    trial = KcpStep(
+        **_trial_kcp_inputs(
+            code=code,
+            structure=structure,
+            pseudos=pseudos,
+            base=base,
+            nbnd=nbnd,
+            correction=correction,
+            current_alphas=initial_alphas,
+            parent_folder=dft_remote,
+            is_first_iteration=True,
+            variational_orbital_overlays=ks_overlay,
+            initial_evc_occupied1=initial_evc_occupied1,
+            initial_evc_occupied2=initial_evc_occupied2,
+            ki_overrides=ki_overrides,
+            parallelization=parallelization,
+        )
+    )
+
+    metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
+    orbitals = assign_orbital_groups(
+        metric=metric.result,
+        nelup=base.nelup,
+        neldw=base.neldw,
+        nbnd=nbnd,
+        spin_polarized=spin_polarized,
+        tol=self_hartree_tol,
+    )
+    predicted = predict_alpha_screening(
+        model=ml_model,
+        descriptors=metric.result,
+        orbitals=orbitals.result,
+        correction=correction,
+        init_orbitals=init_orbitals,
+        metadata={"call_link_label": "predict_alphas"},
+    )
+
+    return {
+        "alphas": predicted,
+        "trial_remote": trial["remote_folder"],
     }
 
 
@@ -2999,6 +3216,84 @@ def _autogenerate_nrb(
     rc_safe = 3.0
     for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr, strict=True):
         system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
+
+
+def _validate_ml_model_inputs(
+    *,
+    ml_model: dict | None,
+    calculate_alpha: bool,
+    alpha_numsteps: int,
+) -> None:
+    """Fail fast on ``ml_model`` inputs that cannot take effect.
+
+    Prediction needs the trial KI (its self-Hartrees are the descriptors),
+    so it requires ``calculate_alpha=True``; and it replaces the Delta-SCF
+    refinement with a single pass, so ``alpha_numsteps`` must stay 1.
+    """
+    if ml_model is None:
+        return
+    if not calculate_alpha:
+        raise ValueError(
+            "ml_model predicts the screening parameters from a trial KI, which "
+            "calculate_alpha=False skips. Either drop ml_model (to apply "
+            "initial_alphas verbatim) or keep calculate_alpha=True."
+        )
+    if alpha_numsteps != 1:
+        raise ValueError(
+            "ml_model replaces the Delta-SCF refinement with a single trial-KI "
+            "prediction, so alpha_numsteps cannot take effect; set "
+            "alpha_numsteps=1."
+        )
+
+
+def _trial_kcp_inputs(
+    *,
+    code: orm.AbstractCode,
+    structure: orm.StructureData,
+    pseudos: dict[str, UpfData],
+    base: KcpBaseInputs,
+    nbnd: int,
+    correction: Correction,
+    current_alphas: AlphaScreening,
+    parent_folder: orm.RemoteData,
+    is_first_iteration: bool,
+    variational_orbital_overlays: dict[str, str] | None = None,
+    initial_evc_occupied1: orm.SinglefileData | None = None,
+    initial_evc_occupied2: orm.SinglefileData | None = None,
+    ki_overrides: KcpNamelistOverrides | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> dict[str, Any]:
+    """Assemble the ``KcpStep`` kwargs for a trial KI / KIPZ pass.
+
+    Shared by :func:`ScreeningIteration` (whose trial seeds the per-orbital
+    Delta-SCF fan-out) and :func:`PredictScreeningParameters` (whose trial
+    supplies the self-Hartree descriptors for the model prediction), so both
+    trials carry identical parenting, overlay and Wannier-seed staging.
+    """
+    ki_parameters = _build_orbdep_parameters(
+        base,
+        nbnd=nbnd,
+        correction=correction,
+        is_first_iteration=is_first_iteration,
+    )
+    read_wavefunctions = _stage_wannier_seed(
+        ki_parameters, initial_evc_occupied1, initial_evc_occupied2
+    )
+    if ki_overrides:
+        ki_parameters = recursive_merge(ki_parameters, ki_overrides)
+
+    return _build_kcp_inputs(
+        code,
+        structure,
+        ki_parameters,
+        pseudos,
+        parallelization=parallelization,
+        alphas=current_alphas,
+        parent_folder=parent_folder,
+        variational_orbital_overlays=variational_orbital_overlays,
+        read_wavefunctions=read_wavefunctions,
+        name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
+    )
 
 
 def _build_kcp_inputs(
