@@ -100,16 +100,20 @@ does and what must hold for it to work.
   vocabulary.
 
 **PR bodies, commit messages, issues.** Public text explains; the diff
-shows.
+shows. One goal governs everything here: the body is a digestible
+summary of what the PR does or solves, and how — an outsider gets the
+whole story from it and opens the diff only for mechanics. Every rule
+below serves that goal; where they conflict, clarity wins.
 
-- `### Problem / ### Changes / ### Testing`. Problem is a scenario an
-  outsider can picture, never session codenames, database PKs or scratch
-  paths. Changes are conceptual decisions, not enumerated helpers. Testing
-  says what each check discriminates, never bare pass counts.
-- Rename or add a heading when the change calls for it; three is the
-  default, not a form to fill in.
-- Roughly four bullets a section, none over three lines. Cut test
-  methodology, and anything Problem already said.
+- Open with what the PR achieves, in plain terms; mechanics, private
+  helper names and call-site detail stay in the diff.
+- `### Problem / ### Changes / ### Testing` is the default shape, not a
+  form: rename, add or drop headings as the change calls for.
+- Bullets lend themselves to clarity when each carries one idea,
+  briefly; several sentences in one bullet is a paragraph in disguise.
+- Problem is a scenario an outsider can picture — never session
+  codenames, database PKs or scratch paths. Testing says what each
+  check discriminates, never bare pass counts.
 - Grade claims (reproduced / code-read / theory) and assert only the
   reproduced ones.
 - Worked examples stand alone: write the snippet a stranger could paste.
