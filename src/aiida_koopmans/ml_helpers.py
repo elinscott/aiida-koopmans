@@ -955,11 +955,19 @@ def fit_screening_model(
     estimator_type: str = "ridge_regression",
     occ_and_emp_together: bool = True,
     descriptor: str = "self_hartree",
+    correction: str | None = None,
+    init_orbitals: str | None = None,
 ) -> dict[str, Any]:
     """Fit the screening-parameter model on a (merged) dataset.
 
     With ``occ_and_emp_together`` one estimator covers every orbital,
     otherwise separate ``occ`` / ``emp`` estimators are fitted.
+
+    ``correction`` and ``init_orbitals`` record the physics the training
+    alphas were computed under; prediction refuses a model whose stamps
+    disagree with the run (or are absent), so screening parameters
+    trained for one functional or orbital seeding are never silently
+    applied to another.
     """
     submodels: dict[str, dict[str, Any]] = {}
     if occ_and_emp_together:
@@ -983,6 +991,8 @@ def fit_screening_model(
         "descriptor": descriptor,
         "estimator_type": estimator_type,
         "occ_and_emp_together": occ_and_emp_together,
+        "correction": getattr(correction, "value", correction),
+        "init_orbitals": getattr(init_orbitals, "value", init_orbitals),
         "submodels": submodels,
     }
 

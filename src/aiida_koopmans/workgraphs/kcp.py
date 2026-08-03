@@ -271,6 +271,8 @@ def predict_alpha_screening(
     model: dict,
     metric: list[list[float]],
     orbitals: list[VariationalOrbital],
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
 ) -> AlphaScreening:
     """Predict every orbital's screening parameter from a trained model.
 
@@ -278,8 +280,10 @@ def predict_alpha_screening(
     descriptor); ``orbitals`` is the :func:`assign_orbital_groups` output.
     One prediction is made per group representative and broadcast onto the
     other members — the same rule the Delta-SCF fan-out follows. The model
-    must have been trained on ``self_hartree`` descriptors; a model trained
-    on another descriptor is rejected.
+    must have been trained on ``self_hartree`` descriptors and carry
+    ``correction`` / ``init_orbitals`` stamps matching this run
+    (:func:`~aiida_koopmans.ml_helpers.fit_screening_model` writes them);
+    a mismatched or unstamped model is rejected.
     """
     if model.get("descriptor", "self_hartree") != "self_hartree":
         raise ValueError(
@@ -287,6 +291,15 @@ def predict_alpha_screening(
             "but prediction computes `self_hartree` descriptors from the trial KI. "
             "Train a model with descriptor='self_hartree' to predict here."
         )
+    for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
+        run_str = getattr(run_value, "value", run_value)
+        model_value = model.get(key)
+        if model_value != run_str:
+            raise ValueError(
+                f"The supplied model was trained with {key}={model_value!r}, but this "
+                f"run uses {key}={run_str!r}. Train a model under the run's settings "
+                f"(a model without the {key} stamp predates it; retrain to predict)."
+            )
 
     submodels = model["submodels"]
     rep_alpha_by_group: dict[int, float] = {}
@@ -2362,6 +2375,8 @@ def PredictScreeningParameters(
         model=ml_model,
         metric=metric.result,
         orbitals=orbitals.result,
+        correction=correction,
+        init_orbitals=init_orbitals,
         metadata={"call_link_label": "predict_alphas"},
     )
 

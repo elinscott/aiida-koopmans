@@ -138,12 +138,16 @@ def train_screening_model(
     estimator: str,
     occ_and_emp_together: bool,
     descriptor: str,
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
 ) -> TrainOutputs:
     """Gather every snapshot's dataset and fit the screening model.
 
     The single gather point of the workflow: consumes the dynamic
     per-snapshot namespace so the fit sees all ``(descriptor, alpha)``
-    pairs at once.
+    pairs at once. ``correction`` and ``init_orbitals`` are stamped into
+    the model so prediction can refuse a model trained under different
+    physics.
     """
     merged = ml_helpers.concatenate_datasets(datasets)
     model = ml_helpers.fit_screening_model(
@@ -151,6 +155,8 @@ def train_screening_model(
         estimator_type=estimator,
         occ_and_emp_together=occ_and_emp_together,
         descriptor=descriptor,
+        correction=correction,
+        init_orbitals=init_orbitals,
     )
     predicted = ml_helpers.predict_screening(model, merged)
     metrics = ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted)
@@ -719,6 +725,8 @@ def TrajectoryWorkflow(
             estimator=estimator,
             occ_and_emp_together=occ_and_emp_together,
             descriptor=descriptor,
+            correction=correction,
+            init_orbitals=init_orbitals,
         )
         model_output: dict = trained["model"]
         evaluation: dict = trained["metrics"]
