@@ -513,7 +513,7 @@ def assign_orbital_groups(
     neldw: int,
     nbnd: int,
     spin_polarized: bool,
-    tol: float | None,
+    tol: float | None = None,
 ) -> list[VariationalOrbital]:
     """Cluster variational orbitals by a per-orbital scalar metric.
 

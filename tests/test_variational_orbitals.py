@@ -15,6 +15,7 @@ from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
     ProjectionBlockId,
+    assign_orbital_groups,
     initial_orbital_partition,
     refine_by_key,
     refine_by_labels,
@@ -376,3 +377,23 @@ class TestInitialOrbitalPartition:
     def test_nonpositive_num_wann_raises(self):
         with pytest.raises(ValueError, match="num_wann"):
             initial_orbital_partition._callable(blocks=[spec("occ", 0, filled=True)])
+
+
+class TestAssignOrbitalGroups:
+    def test_omitted_tol_disables_grouping(self):
+        """A call without ``tol`` must behave as ``tol=None``.
+
+        The workgraph engine drops ``None``-valued input sockets before
+        invoking the callable, so ``tol=None`` at the call site arrives
+        as an *omitted* argument here.
+        """
+        orbitals = assign_orbital_groups._callable(
+            metric=[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
+            nelup=2,
+            neldw=2,
+            nbnd=3,
+            spin_polarized=False,
+        )
+        assert len(orbitals) == 3
+        assert len({o["group_id"] for o in orbitals}) == 3
+        assert all(o["representative"] for o in orbitals)
