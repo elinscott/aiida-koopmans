@@ -523,19 +523,24 @@ class TestOrbitalPartitionEmission:
     ):
         """The emitted partition splits where the stamps say, not where the bands do.
 
-        Both blocks sit in the lower half of the band range, so a
-        band-position reading calls them both occupied and the empty
-        manifold vanishes from the screening partition.
+        A magnetized layout: the channels' occupied counts differ (four up,
+        two down), so no single band boundary reproduces the stamps — a
+        band-position reading with the up channel's boundary calls
+        ``emp_dw``'s lowest bands occupied.
         """
         blocks = [
-            explicit_block("block_1", range(1, 5), filled=True),
-            explicit_block("block_2", range(3, 5), filled=False, num_bands=6),
+            explicit_block("occ_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            explicit_block("emp_up", range(5, 7), spin=SpinChannel.UP, filled=False),
+            explicit_block("occ_dw", range(1, 3), spin=SpinChannel.DOWN, filled=True),
+            explicit_block("emp_dw", range(3, 7), spin=SpinChannel.DOWN, filled=False),
         ]
         wg = _build(wannier_codes, silicon_structure, blocks, kmesh)
         specs = wg.tasks["initial_orbital_partition"].inputs["blocks"].value
         assert [(s["label"], s["filled"]) for s in specs] == [
-            ("block_1", True),
-            ("block_2", False),
+            ("occ_up", True),
+            ("emp_up", False),
+            ("occ_dw", True),
+            ("emp_dw", False),
         ]
 
     def test_blocks_out_of_emitted_order_raise(self, wannier_codes, silicon_structure, kmesh):

@@ -185,6 +185,34 @@ class TestValidateProjectionBlockSequence:
         with pytest.raises(ValueError, match="Only a channel's uppermost block"):
             validate_projection_block_sequence(blocks)
 
+    def test_rejects_out_of_order_blocks(self):
+        """A reversed channel is rejected, naming both blocks.
+
+        This layout used to pass silently: the old check only asked
+        whether any block but the last-listed one disentangles, taking the
+        list order on trust.
+        """
+        blocks = [
+            _explicit("emp", range(5, 9), filled=False),
+            _explicit("occ", range(1, 5), filled=True),
+        ]
+        with pytest.raises(ValueError, match=r"'occ' starts at band 1, but block 'emp'"):
+            validate_projection_block_sequence(blocks)
+
+    def test_rejects_a_reversed_lower_pool(self):
+        """Reversing the list no longer hides a lower pool from the check.
+
+        The old rule took the last-listed block as the channel's top, so
+        listing ``occ`` (which pools) after ``emp`` passed silently. The
+        ordering rule rejects the list before the pool is judged.
+        """
+        blocks = [
+            _explicit("emp", range(5, 9), filled=False),
+            _explicit("occ", range(1, 5), filled=True, num_bands=8),
+        ]
+        with pytest.raises(ValueError, match="ascending"):
+            validate_projection_block_sequence(blocks)
+
     def test_each_spin_channel_keeps_its_own_uppermost(self):
         """The up channel's pooled top block is not judged against the down blocks.
 

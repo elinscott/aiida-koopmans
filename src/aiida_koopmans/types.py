@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import Enum
+from itertools import pairwise
 from typing import Literal, NotRequired, TypedDict, cast, get_args
 
 from aiida_wannier90_workflows.common.types import WannierProjectionType
@@ -349,20 +350,35 @@ def validate_projection_block(block: ProjectionBlock) -> None:
 
 
 def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> None:
-    """Reject a set of blocks where one below a channel's uppermost disentangles.
+    """Reject blocks laid out so band indices stop being Wannier positions.
 
-    ``blocks`` is every block a route Wannierises, in ascending order
-    within each spin channel; the rule is checked per channel, since the
-    channels are independent orderings. A block disentangles when
-    ``num_bands > num_wann``, and only a channel's uppermost block may:
-    :func:`get_wannier_indices` counts a block's Wannier positions off the
-    bands the blocks below it read, which a lower pool inflates. Raise
-    ``ValueError`` naming the block.
+    ``blocks`` is every block a route Wannierises. Two rules, each checked
+    per spin channel since the channels are independent orderings:
+
+    * blocks ascend: each block's bands must start above the highest
+      Wannier-function band of the block before it;
+    * only a channel's uppermost block may disentangle
+      (``num_bands > num_wann``): a lower block's pool inflates the bands
+      every block above it reads.
+
+    Under these rules a block's band indices are its positions in the
+    channel's Wannier ordering, which is what :func:`get_wannier_indices`
+    returns. Raise ``ValueError`` naming the offending blocks.
     """
     by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
     for block in blocks:
         by_spin.setdefault(SpinChannel(block["spin"]), []).append(block)
     for channel_blocks in by_spin.values():
+        for prev, block in pairwise(channel_blocks):
+            first = get_wannier_indices(block)[0]
+            prev_top = get_wannier_indices(prev)[-1]
+            if first <= prev_top:
+                raise ValueError(
+                    f"Block {block['label']!r} starts at band {first}, but block "
+                    f"{prev['label']!r} before it already Wannierises band "
+                    f"{prev_top}. List each spin channel's blocks in ascending "
+                    "band order, with no band in two blocks."
+                )
         top = channel_blocks[-1]["label"]
         for block in channel_blocks[:-1]:
             if int(block["num_bands"]) > int(block["num_wann"]):
@@ -376,21 +392,17 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
 
 
 def get_wannier_indices(block: ProjectionBlock) -> list[int]:
-    """Return the block's ascending positions in the channel's Wannier ordering.
+    """Return the block's band indices: the lowest ``num_wann`` bands it reads.
 
-    The block maps ``num_bands`` Bloch states onto ``num_wann`` Wannier
-    functions, and the returned list holds the ``num_wann`` positions
-    those functions take among the channel's Wannier functions, counted
-    from 1. ``exclude_bands`` and ``num_bands`` say which bands wannier90
-    reads; the positions are the lowest ``num_wann`` of those, because a
-    disentanglement pool sits above them.
-
-    The positions equal band indices only where no block below this one
-    disentangles, which is why they may not
-    (:func:`validate_projection_block_sequence`). A block that does
-    disentangle optimizes its subspace out of every band it reads, so its
-    own positions say where it sits and how wide it is, never which bands
-    its Wannier functions came from. That is what the
+    ``exclude_bands`` and ``num_bands`` say which bands wannier90 reads;
+    the returned list holds the lowest ``num_wann`` of those, counted from
+    1. These indices are also the block's positions in the channel's
+    Wannier ordering, because :func:`validate_projection_block_sequence`
+    enforces the layout that makes the two agree: blocks ascend within
+    each channel, and only the uppermost may disentangle. A block that
+    does disentangle optimizes its subspace out of every band it reads, so
+    its indices say where the block sits and how wide it is, never which
+    bands its Wannier functions came from. That is what the
     band-to-Wannier-function map needs
     (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
     widening the list to the pool would mis-address the Wannier functions.
