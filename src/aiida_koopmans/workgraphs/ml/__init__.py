@@ -38,11 +38,9 @@ import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
-from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml import MLDescriptor, MLMode
-from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -60,6 +58,8 @@ from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
 )
+from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+from aiida_koopmans.workgraphs.ml.helpers import SnapshotDataset
 from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
@@ -78,7 +78,7 @@ class TrainOutputs(TypedDict):
     """Outputs of :func:`train_screening_model`.
 
     * ``model`` — the fitted, JSON-serialisable screening model (see
-      :func:`aiida_koopmans.ml_helpers.fit_screening_model`).
+      :func:`aiida_koopmans.workgraphs.ml.helpers.fit_screening_model`).
     * ``metrics`` — training-set error metrics (a sanity indicator, not a
       validation score: the model is evaluated on its own training data).
     """
@@ -93,7 +93,7 @@ class TrajectoryOutputs(TypedDict):
     * ``snapshots`` — dynamic namespace keyed by snapshot label; each entry
       is the full :class:`KoopmansDSCFOutputs` of that snapshot.
     * ``datasets`` — dynamic namespace keyed by snapshot label; each entry
-      is a :class:`~aiida_koopmans.ml_helpers.SnapshotDataset` namespace
+      is a :class:`~aiida_koopmans.workgraphs.ml.helpers.SnapshotDataset` namespace
       pairing per-orbital descriptors with computed alphas (empty when
       ``ml_mode == "none"``).
     * ``model`` — the trained model (``train``), the supplied model

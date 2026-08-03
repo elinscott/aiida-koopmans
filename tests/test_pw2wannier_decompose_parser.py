@@ -16,13 +16,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from aiida_koopmans import ml_helpers
 from aiida_koopmans.parsers.pw2wannier_decompose import (
     _GROUP_COEFF_RE,
     _ORBITAL_COEFF_RE,
     _POWER_RE,
     Pw2wannierDecomposeParser,
 )
+from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
 # Real ``.coeff`` / ``.power`` files from a live Si wan_mode='decompose' run
 # (pw.x -> nscf -> wannier90 -> decompose pw2wannier90.x, n_max=l_max=4).

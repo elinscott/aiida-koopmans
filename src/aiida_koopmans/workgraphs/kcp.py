@@ -33,7 +33,6 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.functionals import Correction
-from aiida_koopmans.ml_helpers import predict_estimator
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
@@ -278,9 +277,13 @@ def predict_alpha_screening(
     other members — the same rule the Delta-SCF fan-out follows. The model
     must have been trained on ``self_hartree`` descriptors and carry
     ``correction`` / ``init_orbitals`` stamps matching this run
-    (:func:`~aiida_koopmans.ml_helpers.fit_screening_model` writes them);
+    (:func:`~aiida_koopmans.workgraphs.ml.helpers.fit_screening_model` writes them);
     a mismatched or unstamped model is rejected.
     """
+    # Function-local: the ml package's __init__ imports this module, so a
+    # module-level import of its helpers would be circular.
+    from aiida_koopmans.workgraphs.ml.helpers import predict_estimator
+
     if model.get("descriptor", "self_hartree") != "self_hartree":
         raise ValueError(
             f"The supplied model was trained on `{model['descriptor']}` descriptors, "

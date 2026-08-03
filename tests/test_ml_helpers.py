@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`aiida_koopmans.ml_helpers`.
+"""Unit tests for :mod:`aiida_koopmans.workgraphs.ml.helpers`.
 
 Pure-python/numpy tests — no AiiDA profile, no QE runs. Where scikit-learn
 is importable, the closed-form estimators are cross-checked against the
@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aiida_koopmans import ml_helpers
+from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
 # ----------------------------------------------------------------------
 # Radial basis precomputation

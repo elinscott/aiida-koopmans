@@ -288,8 +288,8 @@ def test_compute_block_descriptors_returns_cross_power(aiida_profile):
     import numpy as np
     from aiida import orm
 
-    from aiida_koopmans import ml_helpers
     from aiida_koopmans.workgraphs.ml import compute_block_descriptors
+    from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
     n_max, l_max = 2, 1
     n_coeff = n_max * (l_max + 1) ** 2

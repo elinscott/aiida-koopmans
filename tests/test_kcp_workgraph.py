@@ -888,7 +888,7 @@ def _linear_sh_model(
     init_orbitals: str = "kohn-sham",
 ) -> dict:
     """Fit an exactly-linear self-Hartree model (``alpha = 0.4 - 0.1 * sh``)."""
-    from aiida_koopmans import ml_helpers
+    from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
     return ml_helpers.fit_screening_model(
         {
@@ -913,7 +913,7 @@ def _split_slope_sh_model() -> dict:
     result — the same-slope halves of ``_linear_sh_model`` cannot see
     that swap.
     """
-    from aiida_koopmans import ml_helpers
+    from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
     return ml_helpers.fit_screening_model(
         {
