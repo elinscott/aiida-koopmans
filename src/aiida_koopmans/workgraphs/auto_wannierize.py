@@ -24,7 +24,7 @@ or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
 run relies on ``projection_type``, plus the external projector inputs for
 the external source). The ``_u_dis.mat`` merge of a
 disentangled parent block is a follow-up: a block routed through the split
-must carry no disentanglement pool (``num_bands == num_wann``), which
+must not require disentanglement (``num_bands == num_wann``), which
 :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
 enforces at build time. The per-group re-Wannierisation reads only the
 parent's gauge products, so a parent's disentanglement matrix would be
@@ -186,8 +186,8 @@ def detect_band_groups(
     :func:`aiida_koopmans.projections.detect_band_blocks`: reads the
     eigenvalues out of ``bands`` (the ``output_band`` of a pw.x ``bands``
     run along the k-path), restricts them to the first ``num_bands_total``
-    bands (the Wannierised manifold — the disentanglement pool above it must
-    not influence the grouping), and returns the 1-indexed groups. A
+    bands (the Wannierised manifold — the extra disentanglement bands above
+    it must not influence the grouping), and returns the 1-indexed groups. A
     calcfunction (not a plain ``@task``): it takes AiiDA data nodes, which
     the PyFunction deserializer refuses.
     """
@@ -498,8 +498,8 @@ def WannierizeAndSplitBlock(
     )
 
     # Split mode rejects every disentangled block, so no block in this
-    # sequence has a pool and the Wannier positions are band indices —
-    # which is what the detected band groups are counted in.
+    # sequence reads extra bands and the Wannier-function indices are band
+    # indices — which is what the detected band groups are counted in.
     block_bands = get_wannier_indices(block)
     local_groups = restrict_groups_to_block(list(groups), block_bands)
     if len(local_groups) <= 1:

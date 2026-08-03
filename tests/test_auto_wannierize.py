@@ -89,20 +89,19 @@ class TestGroupRestriction:
             restrict_groups_to_block([[1, 2]], [1, 2, 3])
 
     def test_wannier_index_rebasing(self):
-        """Global band groups map to 1-based positions within the block."""
+        """Global band groups map to 1-based indices within the block."""
         assert groups_to_wannier_indices([[5, 6], [7, 8]], [5, 6, 7, 8]) == [[1, 2], [3, 4]]
         assert groups_to_wannier_indices([[1, 2]], [1, 2]) == [[1, 2]]
 
-    def test_pool_carrying_block_restricts_and_rebases(self):
-        """A block reading pool bands still restricts to its own manifold.
+    def test_disentangling_block_restricts_and_rebases(self):
+        """A block that requires disentanglement still restricts to its own manifold.
 
         The detection only ever runs over the Wannierised manifold, so a
-        block naming bands that reached into the disentanglement pool
-        would report bands no group can cover (asserted below) and take
-        the split down at runtime. Naming only the eight Wannier bands
-        keeps the restriction total and the rebased indices addressed at
-        the block's own Wannier functions — which is what Wannier.jl
-        splits.
+        block naming bands among the extra disentanglement bands would
+        report bands no group can cover (asserted below) and take the
+        split down at runtime. Naming only the eight Wannier bands keeps
+        the restriction total and the rebased indices addressed at the
+        block's own Wannier functions — which is what Wannier.jl splits.
         """
         groups = [[1, 2, 3, 4], [5, 6, 7, 8]]
         manifold = [1, 2, 3, 4, 5, 6, 7, 8]
@@ -477,7 +476,7 @@ class TestDetectBandGroupsCalcfunction:
     """The runtime wrapper reshapes the eigenvalues before grouping."""
 
     def test_truncates_to_the_wannierised_manifold(self, aiida_profile):
-        """``num_bands_total`` drops the disentanglement pool above the manifold."""
+        """``num_bands_total`` drops the extra disentanglement bands above the manifold."""
         # Band 5 sits far above the manifold; it must not influence the groups.
         bands = bands_data([[0.0, 0.1, 5.0, 5.1, 20.0]])
         groups = detect_band_groups._callable(

@@ -228,40 +228,41 @@ def auto_codes(aiida_localhost):
 
 def explicit_block(
     label,
-    include,
+    wannier_indices,
     projections=None,
     spin=None,
     filled=None,
     num_bands=None,
     exclude_bands=None,
 ):
-    """Build a minimal explicit (ANALYTIC) projection block over ``include`` bands.
+    """Build a minimal explicit (ANALYTIC) projection block.
 
-    ``include`` names the Wannier positions the block is to take, one per
-    Wannier function. They are not stored, so they are expressed the way
-    production blocks express them: everything below the first is
-    excluded, which puts the block's own bands at the bottom of what it
-    reads. ``filled`` stamps the occupancy; ``None`` leaves it unstamped,
-    the state a block is in before anything has classified it.
-    ``num_bands`` beyond ``len(include)`` gives the block a
-    disentanglement pool, which sits above those bands. Pass
-    ``exclude_bands`` to override the exclusion outright.
+    The block maps ``num_bands`` Bloch states onto the Wannier functions
+    ``wannier_indices`` names, one index per Wannier function. The
+    indices are not stored, so they are expressed the way production
+    blocks express them: everything below the first is excluded, which
+    puts the block's own bands at the bottom of what it reads. ``filled``
+    stamps the occupancy; ``None`` leaves it unstamped, the state a block
+    is in before anything has classified it. ``num_bands`` beyond
+    ``len(wannier_indices)`` makes the block require disentanglement,
+    reading that many extra bands above its own. Pass ``exclude_bands``
+    to override the exclusion outright.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
     from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
 
-    include = list(include)
-    n = len(include)
+    wannier_indices = list(wannier_indices)
+    num_wann = len(wannier_indices)
     block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
-        num_wann=n,
-        num_bands=n if num_bands is None else num_bands,
+        num_wann=num_wann,
+        num_bands=num_wann if num_bands is None else num_bands,
         projection_type=WannierProjectionType.ANALYTIC,
         projections=[] if projections is None else projections,
     )
-    below = list(range(1, include[0]))
+    below = list(range(1, wannier_indices[0]))
     if exclude_bands is not None:
         block["exclude_bands"] = list(exclude_bands)
     elif below:
@@ -298,14 +299,14 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def automatic_block(label, include, spin=None, projection_type=None, filled=None):
-    """Build a minimal automatic projection block over ``include`` bands.
+def automatic_block(label, wannier_indices, spin=None, projection_type=None, filled=None):
+    """Build a minimal automatic projection block.
 
     Defaults to pseudoatomic projectors (``ATOMIC_PROJECTORS_QE``) — the
     projection source automated wannierization always uses, and the one
     whose occupancy is unknown until the runtime split, so ``filled``
-    defaults to unstamped. ``include`` names the Wannier positions the
-    block is to take; as in :func:`explicit_block` they are expressed by
+    defaults to unstamped. ``wannier_indices`` names the block's Wannier
+    functions; as in :func:`explicit_block` the indices are expressed by
     excluding every band below them.
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
@@ -314,17 +315,17 @@ def automatic_block(label, include, spin=None, projection_type=None, filled=None
 
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
-    include = list(include)
-    n = len(include)
+    wannier_indices = list(wannier_indices)
+    num_wann = len(wannier_indices)
     block = AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
-        num_wann=n,
-        num_bands=n,
+        num_wann=num_wann,
+        num_bands=num_wann,
         projection_type=projection_type,
     )
-    if include[0] > 1:
-        block["exclude_bands"] = list(range(1, include[0]))
+    if wannier_indices[0] > 1:
+        block["exclude_bands"] = list(range(1, wannier_indices[0]))
     if filled is not None:
         block["filled"] = filled
     return block

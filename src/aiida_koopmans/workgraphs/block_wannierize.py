@@ -232,7 +232,7 @@ class UnconstrainedDisentanglementWarning(UserWarning):
     With ``num_bands > num_wann`` and none of the
     ``dis_win_* / dis_froz_* / dis_proj_* / dis_spheres_*`` keywords set,
     wannier90 free-minimizes over every included band and may silently swap
-    pool bands into the Wannier manifold.
+    the extra bands into the Wannier manifold.
     """
 
 
@@ -869,7 +869,7 @@ def collect_wannier_functions(
 
 
 def _validate_blocks(blocks: list[ProjectionBlock]) -> None:
-    """Reject any block whose bookkeeping, projection type or pool is unsupported."""
+    """Reject any block whose bookkeeping, projection type or disentanglement is unsupported."""
     for block in blocks:
         validate_projection_block(block)
         validate_projection_type(block["projection_type"])
@@ -1268,7 +1268,7 @@ def WannierizeBlocks(
                 parallelization=parallelization,
             )
             # The detection is restricted to the Wannierised manifold — the
-            # disentanglement pool above it must not influence the grouping.
+            # extra disentanglement bands above it must not influence the grouping.
             detect = detect_band_groups(
                 bands=bands_outputs["output_band"],
                 num_occ_bands=num_occ_bands,

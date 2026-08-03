@@ -577,7 +577,8 @@ class _FakeQuantumNumbers:
         self.m_r = m_r
 
     def __str__(self):
-        return f"l={self.angular.value}"
+        mr = "" if self.m_r is None else ",mr=" + ",".join(str(m) for m in self.m_r)
+        return f"l={self.angular.value}{mr}"
 
 
 class _FakeProjection:
@@ -590,9 +591,11 @@ class TestDeriveDfptManifolds:
     def test_silicon_like_split(self, silicon_structure):
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
-        # Occupied block: 2 Si atoms x (l=1 -> 3 orbitals) + 2 x (m_r-restricted
-        # l=0 -> 1 orbital) = 8 Wannier functions; nelec=16 makes them all filled.
-        occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 0, m_r=[1])]
+        # Occupied block: 2 Si atoms x (l=1 -> 3 orbitals) + 2 x (l=1
+        # restricted to mr=1, i.e. pz -> 1 orbital) = 8 Wannier functions;
+        # nelec=16 makes them all filled. The mr restriction is what pins
+        # the len(m_r) multiplicity: counting 2l+1 regardless would give 12.
+        occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 1, m_r=[1])]
         emp = [_FakeProjection("Si", 0)]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
@@ -605,14 +608,14 @@ class TestDeriveDfptManifolds:
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
         assert occ_block["exclude_bands"] == [9, 10, 11, 12]
-        assert occ_block["projections"] == ["Si:l=1", "Si:l=0"]
+        assert occ_block["projections"] == ["Si:l=1", "Si:l=1,mr=1"]
         (emp_block,) = emp_blocks
         assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
-        # The empty block disentangles, so the two Wannier positions it
-        # takes (9-10 of a 12-band nscf) are the only thing left that could
-        # be read as an occupancy; the stamp is what says it is empty.
+        # The empty block disentangles, so the two Wannier-function
+        # indices it takes (9-10 of a 12-band nscf) are the only thing left
+        # that could be read as an occupancy; the stamp says it is empty.
         assert occ_block["filled"] is True
         assert emp_block["filled"] is False
         assert emp_block["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8]
@@ -655,8 +658,8 @@ class TestDeriveDfptManifolds:
         blocks = [
             [_FakeProjection("Si", 0)],  # 2 wann: bands 1-2 (occ)
             [_FakeProjection("Si", 1)],  # 6 wann: bands 3-8 (occ)
-            [_FakeProjection("Si", 0, m_r=[1])],  # 2 wann: bands 9-10 (emp)
-            [_FakeProjection("Si", 0, m_r=[1])],  # 2 wann: bands 11-14 (emp + 2 extra)
+            [_FakeProjection("Si", 0)],  # 2 wann: bands 9-10 (emp)
+            [_FakeProjection("Si", 0)],  # 2 wann: bands 11-14 (emp + 2 extra)
         ]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
@@ -676,9 +679,10 @@ class TestDeriveDfptManifolds:
         assert emp_blocks[0]["num_bands"] == 2
         assert emp_blocks[1]["exclude_bands"] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         assert emp_blocks[1]["num_bands"] == 4
-        # The two pool bands show up in num_bands and in the exclusions that
-        # stop at band 10 -- never in the derived Wannier positions, which
-        # stay the map onto the block's own two functions.
+        # The two extra disentanglement bands show up in num_bands and in
+        # the exclusions that stop at band 10 -- never in the derived
+        # Wannier-function indices, which stay the map onto the block's own
+        # two functions.
         assert get_wannier_indices(emp_blocks[1]) == [11, 12]
         assert [b["filled"] for b in occ_blocks] == [True, True]
         assert [b["filled"] for b in emp_blocks] == [False, False]

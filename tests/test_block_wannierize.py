@@ -182,13 +182,13 @@ class TestBlockWannierizeGraphBuild:
         assert names.count("collect_wannier_functions") == 1
         assert sum(1 for name in names if name.startswith("wannierize_block")) == 2
 
-    def test_rejects_a_pool_below_the_uppermost_block(
+    def test_rejects_disentanglement_below_the_uppermost_block(
         self, wannier_codes, silicon_structure, kmesh
     ):
-        """Every route Wannierises through here, so the pool rule is checked here.
+        """Every route Wannierises through here, so the top-only rule is checked here.
 
-        A pool on anything but the channel's top block moves the blocks
-        above it up the Wannier ordering while their own bookkeeping keeps
+        Disentanglement on anything but the channel's top block moves the
+        blocks above it up the Wannier ordering while their own bookkeeping keeps
         saying where they were, so the graph builds and runs and every
         consumer of the ordering — the u/hr merge, the screening fan-out —
         addresses the wrong Wannier functions.
@@ -245,14 +245,14 @@ class TestSplitMode:
             self._build_split(auto_codes, silicon_structure, kmesh, bands_kpoints=None)
 
     def test_disentangling_block_cannot_be_split(self, auto_codes, silicon_structure, kmesh, kpath):
-        """A parent block with a pool is rejected before the split chain is built.
+        """A disentangling parent block is rejected before the split chain is built.
 
         The per-group re-Wannierisation reads only the parent's gauge
         products, so the parent's disentanglement matrix would be dropped
         silently. Without this guard the chain assembles and runs: the
         rejection used to fall out of the group restriction refusing bands
-        that reached into the pool, and confining the block's bands to the
-        Wannier manifold removed that side effect.
+        among the extra disentanglement bands, and confining the block's
+        bands to the Wannier manifold removed that side effect.
         """
         blocks = [explicit_block("block_1", range(1, 9), projections=["Si: sp3"], num_bands=12)]
         with pytest.raises(NotImplementedError, match="splitting a disentangled block"):
@@ -725,7 +725,7 @@ class TestExtractWannierProducts:
 #: the fifth band drops from 8.0 to 7.5 across the pair, so a window that
 #: freezes it is over the limit at both k-points and the ceiling comes from
 #: the second.
-_POOL_BANDS = [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0], [0.5, 1.5, 2.5, 3.5, 7.5, 9.5]]
+_DISENTANGLE_BANDS = [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0], [0.5, 1.5, 2.5, 3.5, 7.5, 9.5]]
 
 
 class TestWannierizeBlockBuild:
@@ -1119,7 +1119,7 @@ class TestWannierizeBlockBuild:
                 block,
                 fake_cutoffs_family.label,
                 overrides={"wannier90": {"dis_froz_max": 8.0}},
-                nscf_bands=bands_data(_POOL_BANDS),
+                nscf_bands=bands_data(_DISENTANGLE_BANDS),
             )
         message = str(excinfo.value)
         assert "block_1" in message
@@ -1148,7 +1148,7 @@ class TestWannierizeBlockBuild:
             block,
             fake_cutoffs_family.label,
             overrides={"wannier90": {"dis_froz_max": 4.0}},
-            nscf_bands=bands_data(_POOL_BANDS),
+            nscf_bands=bands_data(_DISENTANGLE_BANDS),
         )
         assert self._w90_parameters(wg)["dis_froz_max"] == 4.0
         w90_inputs = wg.tasks["wannier90"].inputs["wannier90"]
@@ -1263,7 +1263,7 @@ class TestWannierizeBlockBuild:
         )
         assert "dis_froz_max" not in self._w90_parameters(wg)
 
-    def test_pool_block_accounts_for_every_nscf_band(
+    def test_disentangling_block_accounts_for_every_nscf_band(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
         """``len(exclude_bands) + num_bands`` reproduces the pw.x band count.
@@ -1507,7 +1507,7 @@ class TestUnconstrainedDisentanglementWarning:
     """
 
     @staticmethod
-    def _pool_block():
+    def _disentangling_block():
         """Build a block whose 4 Wannier functions sit under 6 read bands."""
         return explicit_block(
             "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=6
@@ -1523,13 +1523,13 @@ class TestUnconstrainedDisentanglementWarning:
             **kwargs,
         )
 
-    def test_pool_carrying_block_warns_at_build(self, wannier_codes, silicon_structure, kmesh):
+    def test_disentangling_block_warns_at_build(self, wannier_codes, silicon_structure, kmesh):
         """num_bands > num_wann without any window/frozen key warns at build time."""
         with pytest.warns(
             UnconstrainedDisentanglementWarning,
             match=r"Block 'block_1' includes num_bands = 6 .* num_wann = 4",
         ):
-            self._build(wannier_codes, silicon_structure, [self._pool_block()], kmesh)
+            self._build(wannier_codes, silicon_structure, [self._disentangling_block()], kmesh)
 
     def test_supplied_window_silences_the_warning(
         self, wannier_codes, silicon_structure, kmesh, recwarn
@@ -1538,7 +1538,7 @@ class TestUnconstrainedDisentanglementWarning:
         self._build(
             wannier_codes,
             silicon_structure,
-            [self._pool_block()],
+            [self._disentangling_block()],
             kmesh,
             overrides={"wannier90": {"dis_froz_max": 10.6}},
         )
@@ -1562,7 +1562,7 @@ class TestUnconstrainedDisentanglementWarning:
         self._build(
             wannier_codes,
             silicon_structure,
-            [self._pool_block()],
+            [self._disentangling_block()],
             kmesh,
             electronic_type=ElectronicType.METAL,
         )
