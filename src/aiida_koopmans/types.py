@@ -9,11 +9,6 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, NotRequired, TypedDict, get_args
 
-from aiida_koopmans.projections import (
-    ProjectionBlock,
-    block_occupancy,
-    validate_projection_block,
-)
 from aiida_koopmans.spin import SpinChannel
 
 
@@ -199,95 +194,3 @@ class CodeParallelization(TypedDict, total=False):
 # ``code`` lookup types cleanly. Which flags each code accepts is enforced by
 # ``POOL_SUPPORTING_CODES`` / ``PD_SUPPORTING_CODES`` in ``aiida_koopmans.workgraphs``.
 ParallelizationDict = dict[CodeName, CodeParallelization]
-
-
-class MergeGroup(TypedDict):
-    """A set of :class:`ProjectionBlock` instances merged into one kcp.x manifold.
-
-    Blocks that share a filling (occupied vs empty) and spin are merged
-    together (their per-block ``evcw`` wavefunctions are concatenated by
-    ``merge_evc.x``) into a single ``evc_occupied`` / ``evc0_empty`` file
-    that seeds the supercell kcp.x run.
-
-    * ``filled``: ``True`` for the occupied manifold, ``False`` for empty.
-    * ``spin``: the shared spin channel (``SpinChannel.NONE`` for nspin=1).
-    * ``blocks``: the member blocks, in band order.
-    """
-
-    filled: bool
-    spin: SpinChannel
-    blocks: list[ProjectionBlock]
-
-
-def group_blocks_to_merge(
-    blocks: list[ProjectionBlock],
-    num_occ_bands: dict[SpinChannel, int],
-) -> list[MergeGroup]:
-    """Group blocks into occupied / empty manifolds per spin.
-
-    Each block's ``filled`` stamp decides which manifold it joins; an
-    unstamped block raises, since the merge cannot place it.
-    ``num_occ_bands`` maps each spin channel to its number of occupied
-    bands (for ``nspin == 1``, the single key ``SpinChannel.NONE``) and is
-    checked, not used to classify: a channel's occupied blocks must span
-    exactly that many Wannier functions, since the merged
-    ``evc_occupied`` file seeds the whole occupied manifold of the kcp.x
-    run.
-
-    Returns one :class:`MergeGroup` per ``(filled, spin)`` that has
-    members, preserving the order in which blocks are first encountered so
-    the downstream ``merge_evc.x`` concatenation is deterministic.
-    """
-    groups: list[MergeGroup] = []
-    index: dict[tuple[bool, SpinChannel], MergeGroup] = {}
-    for block in blocks:
-        validate_projection_block(block)
-        spin = SpinChannel(block["spin"])
-        if spin not in num_occ_bands:
-            raise KeyError(
-                f"`num_occ_bands` has no entry for spin {spin!r}; provide one "
-                f"occupied-band count per spin channel (use SpinChannel.NONE "
-                f"for nspin==1)."
-            )
-        key = (block_occupancy(block), spin)
-        group = index.get(key)
-        if group is None:
-            group = MergeGroup(filled=key[0], spin=spin, blocks=[])
-            index[key] = group
-            groups.append(group)
-        group["blocks"].append(block)
-    spins_present = {SpinChannel(block["spin"]) for block in blocks}
-    for spin in SpinChannel:
-        if spin not in spins_present:
-            continue
-        occupied = [
-            block
-            for block in blocks
-            if SpinChannel(block["spin"]) == spin and block_occupancy(block)
-        ]
-        spanned = sum(int(block["num_wann"]) for block in occupied)
-        n_occ = num_occ_bands[spin]
-        if spanned != n_occ:
-            labels = [block["label"] for block in occupied]
-            raise ValueError(
-                f"The occupied blocks of spin {spin.value!r} ({labels}) span {spanned} "
-                f"Wannier functions but the channel has {n_occ} occupied bands. Every "
-                "occupied band must be covered exactly once; check the `filled` stamps "
-                "and the projections."
-            )
-    return groups
-
-
-def merge_dest_filename(filled: bool, spin_index: int) -> str:
-    """kcp.x-side filename for a merged manifold wavefunction.
-
-    The supercell kcp.x run reads its initial variational orbitals from
-    ``evc_occupied{n}.dat`` (occupied manifold) or ``evc0_empty{n}.dat``
-    (empty manifold), where ``n`` is the 1-based kcp.x spin index
-    (1 = up / unpolarized, 2 = down).
-    """
-    if spin_index not in (1, 2):
-        raise ValueError(f"spin_index must be 1 or 2, got {spin_index!r}")
-    if filled:
-        return f"evc_occupied{spin_index}.dat"
-    return f"evc0_empty{spin_index}.dat"

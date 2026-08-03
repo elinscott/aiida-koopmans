@@ -48,7 +48,8 @@ from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import MergeGroup, ParallelizationDict, merge_dest_filename
+from aiida_koopmans.types import ParallelizationDict
+from aiida_koopmans.wannier_merge import MergeGroup, merge_dest_filename
 from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 
@@ -163,7 +164,7 @@ def FoldToSupercell(
         blocks: the projection blocks, in the same order they were
             Wannierised.
         merge_groups: the per-(manifold, spin) grouping of ``blocks`` from
-            :func:`~aiida_koopmans.types.group_blocks_to_merge`.
+            :func:`~aiida_koopmans.wannier_merge.group_blocks_to_merge`.
         nscf_remote_folder: scratch of the shared nscf every block was
             built on (``wann2kcp.x`` re-reads the Bloch states from it).
         block_wannier: per-block Wannierisation outputs keyed by block
