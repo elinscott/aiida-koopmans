@@ -84,15 +84,14 @@ class TestParsers:
             ui_helpers.parse_hr_file_contents('<?xml version="1.0"?>\n1\n1\n')
 
     def test_parse_wout(self, si_wout_content, si_reference):
-        """Centres and spreads match the reference parse of the same file."""
-        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        """Centres match the reference parse of the same file."""
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         assert np.allclose(centers, si_reference["centers"])
-        assert np.allclose(spreads, si_reference["spreads"])
 
     def test_parse_wout_without_final_state_raises(self):
         """A truncated .wout without a Final State block is an error."""
         with pytest.raises(ValueError, match="Final State"):
-            ui_helpers.parse_wout_centers_and_spreads("no final state here\n")
+            ui_helpers.parse_wout_centers("no final state here\n")
 
 
 class TestInferWannierCounts:
@@ -122,15 +121,11 @@ class TestLoaders:
         with pytest.raises(ValueError, match="Wrong number of matrix elements"):
             ui_helpers.load_primary_hr(content, num_wann=3, num_wann_sc=32, kgrid=(2, 2, 2))
 
-    def test_load_coarse_hr_gamma_only_round_trips(self):
-        content = (DATA_DIR / "kc_ham.dat").read_text()
-        hr = ui_helpers.load_coarse_hr(content, num_wann=4, num_wann_sc=32, kgrid=(2, 2, 2))
-        assert hr.shape == (32, 4)
-
-    def test_load_coarse_hr_gamma_only_wrong_count_raises(self):
+    def test_load_coarse_hr_gamma_only_raises(self):
+        """A Gamma-only coarse Hamiltonian (supercell DFT run) is rejected."""
         content = (DATA_DIR / "kc_ham.dat").read_text()
         with pytest.raises(ValueError, match="Wrong number of matrix elements for hr_coarse"):
-            ui_helpers.load_coarse_hr(content, num_wann=4, num_wann_sc=31, kgrid=(2, 2, 2))
+            ui_helpers.load_coarse_hr(content, num_wann=4, num_wann_sc=32, kgrid=(2, 2, 2))
 
     def test_load_coarse_hr_kpoint_wrong_count_raises(self):
         content = (DATA_DIR / "dft_ham.dat").read_text()
@@ -204,7 +199,7 @@ class TestSiliconRegression:
 
     def test_smooth_interpolation(self, si_reference, si_wout_content):
         """Full path: Γ-only KI Hamiltonian, smooth interpolation."""
-        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
             centers=centers,
@@ -220,7 +215,7 @@ class TestSiliconRegression:
     @pytest.mark.parametrize("use_ws_distance", [True, False], ids=["ws", "nows"])
     def test_plain_interpolation(self, si_reference, si_wout_content, use_ws_distance):
         """Plain path: k-point DFT Hamiltonian, no mapping, no smoothing."""
-        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "dft_ham.dat").read_text(),
             centers=centers,
@@ -234,7 +229,7 @@ class TestSiliconRegression:
 
     def test_dos_matches_reference(self, si_reference, si_wout_content):
         """The DOS of the smooth-interpolated bands matches the reference."""
-        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         energies = ui_helpers.unfold_and_interpolate(
             hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
             centers=centers,
@@ -253,7 +248,7 @@ class TestSiliconRegression:
 
     def test_smooth_requires_coarse_hamiltonian(self, si_reference, si_wout_content):
         """Supplying only the smooth Hamiltonian is an error."""
-        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         with pytest.raises(ValueError, match="coarse DFT Hamiltonian"):
             ui_helpers.unfold_and_interpolate(
                 hr_content=(DATA_DIR / "kc_ham.dat").read_text(),
@@ -266,7 +261,7 @@ class TestSiliconRegression:
 
     def test_wrong_grid_raises(self, si_reference, si_wout_content):
         """A k-grid inconsistent with the Hamiltonian size fails the element-count check."""
-        centers, _ = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        centers = ui_helpers.parse_wout_centers(si_wout_content)
         with pytest.raises(ValueError, match="Wrong number of matrix elements"):
             ui_helpers.unfold_and_interpolate(
                 hr_content=(DATA_DIR / "kc_ham.dat").read_text(),

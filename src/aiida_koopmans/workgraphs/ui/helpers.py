@@ -142,14 +142,10 @@ def parse_hr_file_contents(content: str) -> HrFileContents:
     return HrFileContents(np.array(hr, dtype=complex), rvect_np, weights, nrpts)
 
 
-def parse_wout_centers_and_spreads(content: str) -> tuple[NDArray[np.float64], list[float]]:
-    """Extract the final-state Wannier centres and spreads from a ``.wout`` file.
-
-    Centres are in Å (cartesian), spreads in Å².
-    """
+def parse_wout_centers(content: str) -> NDArray[np.float64]:
+    """Extract the final-state Wannier centres from a ``.wout`` file, in Å (cartesian)."""
     lines = content.split("\n")
     centers: list[list[float]] = []
-    spreads: list[float] = []
     for i, line in enumerate(lines):
         if "Final State" not in line:
             continue
@@ -157,11 +153,10 @@ def parse_wout_centers_and_spreads(content: str) -> tuple[NDArray[np.float64], l
         while i + j < len(lines) and "WF centre and spread" in lines[i + j]:
             parts = re.sub("[(),]", " ", lines[i + j]).split()
             centers.append([float(x) for x in parts[5:8]])
-            spreads.append(float(parts[-1]))
             j += 1
     if not centers:
         raise ValueError("No `Final State` Wannier centres found in the .wout contents")
-    return np.array(centers, dtype=float), spreads
+    return np.array(centers, dtype=float)
 
 
 # ----------------------------------------------------------------------
@@ -199,10 +194,6 @@ def load_coarse_hr(
     Returns a ``(num_wann_sc, num_wann)`` matrix.
     """
     hr, rvect, _, nrpts = parse_hr_file_contents(content)
-    if nrpts == 1:
-        if len(hr) != num_wann_sc**2:
-            raise ValueError(f"Wrong number of matrix elements for hr_coarse {len(hr)}")
-        return hr.reshape(num_wann_sc, num_wann_sc)[:, :num_wann]
     if len(hr) != nrpts * num_wann**2:
         raise ValueError(f"Wrong number of matrix elements for hr_coarse {len(hr)}")
     hr_grid = extract_hr(hr.reshape(nrpts, num_wann, num_wann), rvect, *kgrid)
