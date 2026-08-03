@@ -38,23 +38,18 @@ import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
-from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
-from aiida_koopmans.ml_helpers import SnapshotDataset
-from aiida_koopmans.types import (
-    AlphaScreening,
-    Correction,
-    MLDescriptor,
-    MLMode,
+from aiida_koopmans.functionals import Correction
+from aiida_koopmans.ml import MLDescriptor, MLMode
+from aiida_koopmans.parallelization import (
     ParallelizationDict,
-    SpinChannel,
-    VariationalOrbitalType,
-)
-from aiida_koopmans.workgraphs import (
-    Codes,
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
+from aiida_koopmans.screening import AlphaScreening
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -63,6 +58,18 @@ from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
+)
+from aiida_koopmans.workgraphs.ml.helpers import (
+    SnapshotDataset,
+    assemble_power_spectrum_dataset,
+    build_snapshot_dataset,
+    concatenate_datasets,
+    cross_power_spectra,
+    evaluate_predictions,
+    fit_screening_model,
+    format_group_centres_file,
+    parse_wannier_centres_xyz,
+    predict_screening,
 )
 
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
@@ -81,7 +88,7 @@ class TrainOutputs(TypedDict):
     """Outputs of :func:`train_screening_model`.
 
     * ``model`` — the fitted, JSON-serialisable screening model (see
-      :func:`aiida_koopmans.ml_helpers.fit_screening_model`).
+      :func:`aiida_koopmans.workgraphs.ml.helpers.fit_screening_model`).
     * ``metrics`` — training-set error metrics (a sanity indicator, not a
       validation score: the model is evaluated on its own training data).
     """
@@ -96,7 +103,7 @@ class TrajectoryOutputs(TypedDict):
     * ``snapshots`` — dynamic namespace keyed by snapshot label; each entry
       is the full :class:`KoopmansDSCFOutputs` of that snapshot.
     * ``datasets`` — dynamic namespace keyed by snapshot label; each entry
-      is a :class:`~aiida_koopmans.ml_helpers.SnapshotDataset` namespace
+      is a :class:`~aiida_koopmans.workgraphs.ml.helpers.SnapshotDataset` namespace
       pairing per-orbital descriptors with computed alphas (empty when
       ``ml_mode == "none"``).
     * ``model`` — the trained model (``train``), the supplied model
@@ -129,7 +136,7 @@ def extract_snapshot_dataset(parameters: dict, alphas: AlphaScreening) -> Snapsh
             "No self-Hartree data found in the kcp.x output parameters; the final KI "
             "run did not print per-orbital data"
         )
-    return ml_helpers.build_snapshot_dataset(self_hartrees, alphas)
+    return build_snapshot_dataset(self_hartrees, alphas)
 
 
 @task
@@ -149,8 +156,8 @@ def train_screening_model(
     the model so prediction can refuse a model trained under different
     physics.
     """
-    merged = ml_helpers.concatenate_datasets(datasets)
-    model = ml_helpers.fit_screening_model(
+    merged = concatenate_datasets(datasets)
+    model = fit_screening_model(
         merged,
         estimator_type=estimator,
         occ_and_emp_together=occ_and_emp_together,
@@ -158,8 +165,8 @@ def train_screening_model(
         correction=correction,
         init_orbitals=init_orbitals,
     )
-    predicted = ml_helpers.predict_screening(model, merged)
-    metrics = ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted)
+    predicted = predict_screening(model, merged)
+    metrics = evaluate_predictions(merged["alpha_targets"], predicted)
     return TrainOutputs(model=model, metrics=metrics)
 
 
@@ -183,10 +190,10 @@ def evaluate_screening_model(
     model: dict,
 ) -> EvaluateOutputs:
     """Gather every snapshot's dataset and score a trained model against it."""
-    merged = ml_helpers.concatenate_datasets(datasets)
-    predicted = ml_helpers.predict_screening(model, merged)
+    merged = concatenate_datasets(datasets)
+    predicted = predict_screening(model, merged)
     evaluation = {
-        "metrics": ml_helpers.evaluate_predictions(merged["alpha_targets"], predicted),
+        "metrics": evaluate_predictions(merged["alpha_targets"], predicted),
         "predictions": {
             "labels": merged["labels"],
             "computed": merged["alpha_targets"],
@@ -236,13 +243,13 @@ def extract_decompose_inputs(retrieved: orm.FolderData) -> dict:
         centres_xyz = orm.SinglefileData(handle, filename="aiida_centres.xyz")
 
     xyz_content = retrieved.base.repository.get_object_content("aiida_centres.xyz", mode="r")
-    centres = ml_helpers.parse_wannier_centres_xyz(xyz_content)
+    centres = parse_wannier_centres_xyz(xyz_content)
     if not centres:
         raise ValueError(
             "No Wannier centres (``X`` rows) found in aiida_centres.xyz; cannot build "
             "the group-density centres file."
         )
-    centres_content = ml_helpers.format_group_centres_file(centres)
+    centres_content = format_group_centres_file(centres)
     centres_file = orm.SinglefileData(
         io.BytesIO(centres_content.encode()), filename="gc_centres.dat"
     )
@@ -326,7 +333,7 @@ def compute_block_descriptors(
 ) -> orm.ArrayData:
     """Cross-power descriptor matrix for one block's Wannier functions.
 
-    Wraps :func:`ml_helpers.cross_power_spectra` on the block's decompose
+    Wraps :func:`~aiida_koopmans.workgraphs.ml.helpers.cross_power_spectra` on the block's decompose
     parser arrays; the ``(num_wann, descriptor_dim)`` result is stored under
     the ``descriptors`` array so the gather step can stack blocks by label.
     """
@@ -334,7 +341,7 @@ def compute_block_descriptors(
     l_max = int(output_parameters["l_max"])
     coeff = array_payload(coefficients, "coefficients")
     group = array_payload(group_coefficients, "group_coefficients")
-    power = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
+    power = cross_power_spectra(coeff, group, n_max, l_max)
     out = orm.ArrayData()
     out.set_array("descriptors", power)
     return out
@@ -351,13 +358,13 @@ def align_block_descriptors(
     The single gather point of the orbital-density route: consumes the
     per-block descriptor namespace and returns a :class:`SnapshotDataset`
     whose row order matches the ``AlphaScreening`` convention (see
-    :func:`ml_helpers.assemble_power_spectrum_dataset`).
+    :func:`~aiida_koopmans.workgraphs.ml.helpers.assemble_power_spectrum_dataset`).
     """
     descriptors_by_label = {
         label: array_payload(node, "descriptors").tolist()
         for label, node in block_descriptors.items()
     }
-    return ml_helpers.assemble_power_spectrum_dataset(
+    return assemble_power_spectrum_dataset(
         descriptors_by_label, merge_groups, cast("AlphaScreening", alphas)
     )
 
@@ -550,7 +557,7 @@ def require_ml_mode_inputs(
         raise ValueError(f"ml_mode='{ml_mode}' requires a trained `ml_model`")
 
 
-def build_snapshot_dataset(
+def wire_snapshot_dataset(
     descriptor: MLDescriptor,
     dscf: Any,
     *,
@@ -710,7 +717,7 @@ def TrajectoryWorkflow(
             # Predict mode builds no dataset: the model is *applied* inside
             # each snapshot's DSCF, and there are no computed alphas to
             # pair descriptors with.
-            datasets[label] = build_snapshot_dataset(
+            datasets[label] = wire_snapshot_dataset(
                 descriptor,
                 dscf,
                 label=label,

@@ -16,7 +16,7 @@ import io
 import pytest
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.types import Correction
+from aiida_koopmans.functionals import Correction
 
 # ----------------------------------------------------------------------
 # _normalize_parameters
@@ -256,7 +256,7 @@ def test_kcp_tutorial_1_ozone_ki(
 
     # Matches what KoopmansDSCFWorkflow builds for ``initial_alpha=0.6`` on ozone:
     # 9 filled + 1 empty per spin channel (nbnd=10, nspin=2, nelup=neldw=9).
-    from aiida_koopmans.types import SpinChannel
+    from aiida_koopmans.spin import SpinChannel
 
     # ``alphas`` is an input_namespace with ``filled`` / ``empty`` Dict
     # sub-inputs (each keyed by ``SpinChannel`` value string). See
@@ -373,7 +373,7 @@ def test_read_wavefunctions_staging_and_parent_walk_skip(
     from aiida import orm
     from aiida.common import LinkType
 
-    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_dft_parameters
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, build_dft_parameters
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
 
@@ -412,7 +412,7 @@ def test_read_wavefunctions_staging_and_parent_walk_skip(
     inputs = {
         "code": code,
         "structure": ozone_structure,
-        "parameters": orm.Dict(dict=_build_dft_parameters(base, nbnd=10, restart_mode="restart")),
+        "parameters": orm.Dict(dict=build_dft_parameters(base, nbnd=10, restart_mode="restart")),
         "pseudos": ozone_real_pseudos,
         "parent_folder": parent,
         "read_wavefunctions": {"evc_occupied1": merge_occ, "evc0_empty1": merge_emp},

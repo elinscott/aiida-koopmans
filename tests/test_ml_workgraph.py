@@ -12,7 +12,8 @@ from typing import TypedDict
 import pytest
 from aiida_workgraph import task
 
-from aiida_koopmans.types import Correction, VariationalOrbitalType
+from aiida_koopmans.functionals import Correction
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 
 
 class PreRenameDataset(TypedDict):
@@ -143,7 +144,7 @@ class TestTrajectoryGraphBuild:
             assert not any(forbidden in n for n in names), (forbidden, names)
 
     def test_test_mode_wires_evaluation(self, ozone_structure, kcp_code, ozone_pseudo_family):
-        from aiida_koopmans import ml_helpers
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
         model = ml_helpers.fit_screening_model(
             {
@@ -178,7 +179,7 @@ class TestTrajectoryGraphBuild:
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """Predict applies the model inside each DSCF; no dataset, fit or score tasks."""
-        from aiida_koopmans import ml_helpers
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 
         model = ml_helpers.fit_screening_model(
             {
@@ -390,7 +391,7 @@ class TestSharedOutputSpecCollision:
         assert allowed.is_finished_ok, allowed.exception
 
     def test_dataset_columns_avoid_the_screening_namespace_names(self):
-        from aiida_koopmans.ml_helpers import SnapshotDataset
+        from aiida_koopmans.workgraphs.ml.helpers import SnapshotDataset
 
         columns = set(SnapshotDataset.__annotations__)
         assert not columns & set(self.SCREENING_NAMESPACES), columns

@@ -5,7 +5,7 @@ primitive cell and its eigenvalues are interpolated along a k-path, with an
 optional smooth-interpolation correction from a denser-grid DFT Hamiltonian
 and an optional Gaussian-smearing DOS.
 
-All the maths lives in :mod:`aiida_koopmans.ui_helpers` (pure numpy); the
+All the maths lives in :mod:`aiida_koopmans.workgraphs.ui.helpers` (pure numpy); the
 tasks here only unpack ORM nodes into plain arrays, so the interpolated
 bands carry provenance back to the input Hamiltonian / ``.wout`` files.
 
@@ -15,7 +15,7 @@ Scope notes:
   fan-out and band merging of a full singlepoint band structure belong to
   the DSCF/DFPT band-structure integration, not here.
 * ``wf_phases.dat`` phase renormalisation is not exposed.
-  :func:`aiida_koopmans.ui_helpers.calc_bands` accepts phases, but no
+  :func:`aiida_koopmans.workgraphs.ui.helpers.calc_bands` accepts phases, but no
   working renormalisation expression exists for realistic shapes
   (``num_wann_sc`` phases against a ``(num_wann, num_wann, nR)`` array).
 * The smooth-interpolation correction consumes a pre-computed denser-grid
@@ -31,8 +31,8 @@ import numpy as np
 from aiida import orm
 from aiida_workgraph import task
 
-from aiida_koopmans import ui_helpers
-from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
+from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
+from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
 
 
 class DensityOfStates(TypedDict):

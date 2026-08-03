@@ -11,7 +11,8 @@ import pytest
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+from aiida_koopmans.projections import ExplicitProjectionBlock
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import (
     UnconstrainedDisentanglementWarning,
     WannierizeBlock,

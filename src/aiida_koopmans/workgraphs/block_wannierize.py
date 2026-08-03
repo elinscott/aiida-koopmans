@@ -63,23 +63,22 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import (
+from aiida_koopmans.parallelization import (
     ParallelizationDict,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
+from aiida_koopmans.projections import (
     ProjectionBlock,
     ProjectionBlockId,
-    SpinChannel,
-    VariationalOrbital,
     block_occupancy,
     block_w90_kwargs,
     validate_projection_block,
     validate_projection_block_sequence,
 )
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    unwrap_enum,
-    validate_parallelization,
-)
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital
+from aiida_koopmans.workgraphs import Codes, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
@@ -521,7 +520,8 @@ class WannierizeBlocksOutputs(TypedDict):
     * ``bands`` / ``groups`` -- split mode only: the pw.x ``bands``-run
       eigenvalues the grouping was detected on, and the detected 1-indexed
       band groups (global indices).
-    * ``orbitals`` -- one :class:`~aiida_koopmans.types.VariationalOrbital`
+    * ``orbitals`` -- one
+      :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`
       per Wannier function in per-channel iwann order (occupied ascending
       then empty ascending — the kcw.x / kcp.x orbital order), with
       ``manifold`` = the block label, ``filled`` / ``spin`` from the
@@ -533,7 +533,7 @@ class WannierizeBlocksOutputs(TypedDict):
       orbitals keep the parent block's label as their ``manifold``).
       Engine storage returns the list with each orbital's ``spin``
       degraded to a plain ``str`` — consumers compare with ``==``, never
-      ``is`` (see :class:`~aiida_koopmans.types.VariationalOrbital`).
+      ``is`` (see :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]

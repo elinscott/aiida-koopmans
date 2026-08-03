@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel, get_wannier_indices
+from aiida_koopmans.projections import ExplicitProjectionBlock, get_wannier_indices
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
     SinglepointDFPTWorkflow,
@@ -64,7 +65,7 @@ def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
     import numpy as np
     from aiida.orm import FolderData
 
-    from aiida_koopmans.wannier_merge import (
+    from aiida_koopmans.workgraphs.utils.wannier_merge import (
         generate_wannier_centres_file_contents,
         generate_wannier_hr_file_contents,
         generate_wannier_u_file_contents,
@@ -143,7 +144,7 @@ class TestPrepareKcwWannierFilesMultiBlock:
     """Multi-block manifolds are merged before staging (see test_wannier_merge)."""
 
     def test_occ_blocks_are_merged(self, aiida_profile):
-        from aiida_koopmans.wannier_merge import (
+        from aiida_koopmans.workgraphs.utils.wannier_merge import (
             parse_wannier_centres_file_contents,
             parse_wannier_hr_file_contents,
             parse_wannier_u_file_shape,
@@ -173,7 +174,7 @@ class TestPrepareKcwWannierFilesMultiBlock:
         assert len(atom_lines) == 2
 
     def test_disentangled_emp_blocks_extend_u_dis(self, aiida_profile):
-        from aiida_koopmans.wannier_merge import parse_wannier_u_file_shape
+        from aiida_koopmans.workgraphs.utils.wannier_merge import parse_wannier_u_file_shape
 
         # Empty manifold: 2 + 2 Wannier functions over 6 empty bands; only
         # the last block is disentangled (u_dis 2 x 4).
@@ -589,7 +590,7 @@ class _FakeProjection:
 
 class TestDeriveDfptManifolds:
     def test_silicon_like_split(self, silicon_structure):
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         # Si-like valence: occupied s + p (2 atoms x (1 + 3) = 8 Wannier
         # functions; nelec=16 makes them all filled), empty p restricted to
@@ -625,7 +626,7 @@ class TestDeriveDfptManifolds:
         assert n_orbitals == 10
 
     def test_hybrid_multiplicity_and_no_empty(self, silicon_structure):
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
         occ = [_FakeProjection("Si", -3)]
@@ -643,7 +644,7 @@ class TestDeriveDfptManifolds:
         assert n_orbitals == 8
 
     def test_straddling_block_raises(self, silicon_structure):
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         with pytest.raises(ValueError, match="straddles"):
             derive_dfpt_manifolds(
@@ -653,9 +654,35 @@ class TestDeriveDfptManifolds:
                 nbnd=8,
             )
 
+    def test_no_projection_blocks_raises(self, silicon_structure):
+        """DFPT screening cannot derive manifolds without explicit w90 projections."""
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+
+        with pytest.raises(NotImplementedError, match="explicit Wannier90 projections"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[],
+                nelec=16,
+                nbnd=None,
+            )
+
+    def test_too_few_empty_bands_for_empty_projections_raises(self, silicon_structure):
+        """``nbnd`` must leave at least as many empty bands as the empty blocks need."""
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+
+        occ = [_FakeProjection("Si", 0), _FakeProjection("Si", 1)]  # 8 wann occ (nocc=8)
+        emp = [_FakeProjection("Si", 1)]  # full p triplet: 3 orbitals x 2 atoms = 6 wann
+        with pytest.raises(ValueError, match="leaves only 2 empty bands"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[occ, emp],
+                nelec=16,
+                nbnd=10,  # 10 - 8 = 2 empty bands, short of the 6 the empty block needs
+            )
+
     def test_multi_block_manifolds(self, silicon_structure):
         """Multi-block band layout: consecutive windows, extras on the last block."""
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         blocks = [
             [_FakeProjection("Si", 0)],  # 2 wann: bands 1-2 (occ)
@@ -694,7 +721,7 @@ class TestDeriveDfptManifolds:
         assert n_orbitals == 12
 
     def test_incomplete_occupied_coverage_raises(self, silicon_structure):
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         blocks = [[_FakeProjection("Si", 0)], [_FakeProjection("Si", 0)]]  # 2 + 2 occ
         with pytest.raises(ValueError, match="occupied projection blocks span"):
@@ -703,7 +730,7 @@ class TestDeriveDfptManifolds:
             )
 
     def test_odd_electron_count_raises(self, silicon_structure):
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
 
         with pytest.raises(ValueError, match="Odd electron count"):
             derive_dfpt_manifolds(
@@ -714,8 +741,8 @@ class TestDeriveDfptManifolds:
             )
 
     def test_collinear_channel_requires_explicit_nocc(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+        from aiida_koopmans.spin import SpinChannel
 
         with pytest.raises(ValueError, match="per-channel"):
             derive_dfpt_manifolds(
@@ -727,8 +754,8 @@ class TestDeriveDfptManifolds:
             )
 
     def test_collinear_channels_use_given_nocc(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+        from aiida_koopmans.spin import SpinChannel
 
         # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
         up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
@@ -760,8 +787,8 @@ class TestDeriveDfptManifolds:
         assert emp_up_blocks == [] and emp_dn_blocks == []
 
     def test_spinor_doubles_num_wann_and_uses_nelec_occupations(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
-        from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+        from aiida_koopmans.spin import SpinChannel
 
         # KCW example05.1 nspin4: the same sp3 block that gives num_wann=8
         # in a collinear run spans 16 spinor Wannier functions, and all
@@ -805,7 +832,7 @@ class TestNormalizeAlphaGuess:
         assert normalize_alpha_guess([[0.1, 0.2]], 2) == [0.1, 0.2]
 
     def test_nested_per_spin_list_selects_channel(self):
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
         from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
 
         nested = [[0.1, 0.2], [0.3, 0.4]]

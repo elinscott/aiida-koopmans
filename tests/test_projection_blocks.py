@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import (
+from aiida_koopmans.projections import (
     OrbitalDict,
-    SpinChannel,
     block_w90_kwargs,
     get_wannier_indices,
-    group_blocks_to_merge,
-    merge_dest_filename,
     validate_projection_block,
     validate_projection_block_sequence,
 )
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge, merge_dest_filename
 from tests.fixtures import automatic_block as _automatic
 from tests.fixtures import explicit_block as _explicit
 
@@ -176,6 +175,22 @@ class TestValidateProjectionBlock:
         """
         block = _explicit("block_1", range(1, 5), num_bands=8, exclude_bands=[6])
         with pytest.raises(ValueError, match="names bands \\[6\\] inside"):
+            validate_projection_block(block)
+
+    def test_rejects_zero_wannier_functions(self):
+        """A block with no Wannier functions describes nothing to Wannierise."""
+        from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+        from aiida_koopmans.projections import AutomaticProjectionBlock
+
+        block = AutomaticProjectionBlock(
+            label="block_1",
+            spin=SpinChannel.NONE,
+            num_wann=0,
+            num_bands=0,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+        )
+        with pytest.raises(ValueError, match="at least one Wannier function"):
             validate_projection_block(block)
 
 

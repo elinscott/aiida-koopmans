@@ -24,6 +24,7 @@ from tests.fixtures import (  # noqa: F401
     dfpt_codes,
     fake_cutoffs_family,
     fake_upf,
+    generate_full_upf_data,
     generate_upf_data,
     kcp_code,
     kmesh,

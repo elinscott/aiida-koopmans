@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import CODE_NAMES
-from aiida_koopmans.workgraphs import (
+from aiida_koopmans.parallelization import (
+    CODE_NAMES,
     merge_parallelization_into_existing_namespaces,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,

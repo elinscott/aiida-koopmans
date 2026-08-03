@@ -35,13 +35,11 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 
-from aiida_koopmans.types import (
-    ParallelizationDict,
-    ProjectionBlock,
-    SpinChannel,
-    group_blocks_to_merge,
-)
-from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
+from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
+from aiida_koopmans.parallelization import ParallelizationDict
+from aiida_koopmans.projections import ProjectionBlock
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -52,11 +50,11 @@ from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_ta
 from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
     UpfData,
-    _build_dft_parameters,
-    _build_kcp_inputs,
-    _kcp_base_inputs,
+    build_dft_parameters,
+    kcp_base_inputs,
 )
 from aiida_koopmans.workgraphs.supercell import supercell_size
+from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
 
 # Consistency-check thresholds for the initialisation.
 _GAP_RELATIVE_TOLERANCE = 2.0e-2
@@ -64,7 +62,9 @@ _ENERGY_RELATIVE_TOLERANCE = 1.0e-6
 
 _BANDS_DESERIALIZERS = {
     **KOOPMANS_NODE_DESERIALIZERS,
-    "aiida.orm.nodes.data.array.bands.BandsData": "aiida_koopmans.utils.passthrough_node",
+    "aiida.orm.nodes.data.array.bands.BandsData": (
+        "aiida_koopmans.utils.deserializers.passthrough_node"
+    ),
 }
 
 
@@ -207,7 +207,7 @@ def _build_dft_dummy_parameters(base) -> dict[str, Any]:
     ``nbnd`` (the empty states will come from the folded Wannier files, so
     the dummy needn't allocate them).
     """
-    parameters = _build_dft_parameters(base, nbnd=0, outerloop=False)
+    parameters = build_dft_parameters(base, nbnd=0, outerloop=False)
     parameters["SYSTEM"].pop("nbnd", None)
     return parameters
 
@@ -220,7 +220,7 @@ def _build_dft_init_from_wannier_parameters(base, *, nbnd: int) -> dict[str, Any
     minimised (the blanket solids rule) — the empty variational orbitals
     stay the folded Wannier functions.
     """
-    parameters = _build_dft_parameters(base, nbnd=nbnd, restart_mode="restart", outerloop=True)
+    parameters = build_dft_parameters(base, nbnd=nbnd, restart_mode="restart", outerloop=True)
     parameters["SYSTEM"]["restart_from_wannier_pwscf"] = True
     parameters["ELECTRONS"]["do_outerloop_empty"] = False
     parameters["ELECTRONS"].pop("empty_states_maxstep", None)
@@ -337,7 +337,7 @@ def MlwfInitialization(
     )
 
     # --- B3: dft_dummy — save-skeleton writer on the supercell ---
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         supercell,
         nspin=nspin,
         nelec=nelec,
@@ -347,7 +347,7 @@ def MlwfInitialization(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    dummy_inputs = _build_kcp_inputs(
+    dummy_inputs = build_kcp_inputs(
         codes["kcp"],
         supercell,
         _build_dft_dummy_parameters(base),
@@ -364,7 +364,7 @@ def MlwfInitialization(
         target["stem"]: fold[target["stem"]]
         for target in enumerate_fold_targets(merge_groups, spin_polarized)
     }
-    init_inputs = _build_kcp_inputs(
+    init_inputs = build_kcp_inputs(
         codes["kcp"],
         supercell,
         _build_dft_init_from_wannier_parameters(base, nbnd=nbnd),

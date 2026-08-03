@@ -19,14 +19,12 @@ from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wann
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import (
-    Codes,
-    enforce_step_calculation,
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
     merge_parallelization_into_existing_namespaces,
-    unwrap_enum,
     validate_parallelization,
 )
+from aiida_koopmans.workgraphs import Codes, enforce_step_calculation, unwrap_enum
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so

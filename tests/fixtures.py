@@ -134,6 +134,55 @@ def ozone_real_pseudos(generate_upf_data):
 
 
 @pytest.fixture
+def generate_full_upf_data(aiida_profile):
+    """Return a factory producing a fully-parseable ``UpfData`` (real core-correction flag).
+
+    ``generate_upf_data``'s minimal header omits fields ``upf_to_json``
+    requires (``number_of_proj``, ``mesh_size``, ...), so its
+    ``core_correction`` never actually parses — every caller falls into the
+    "unparseable UPF" fallback. This factory fills in every section
+    ``upf_to_json`` reads for a norm-conserving, non-ultrasoft, no-spin-orbit
+    pseudo, so ``core_correction`` resolves to the value it declares.
+    """
+    import io
+
+    from aiida_pseudo.data.pseudo.upf import UpfData
+
+    def _generate_full_upf_data(
+        element: str, *, z_valence: float = 6.0, core_correction: bool = False
+    ) -> UpfData:
+        nlcc = '<PP_NLCC size="3">0.0 0.0 0.0</PP_NLCC>' if core_correction else ""
+        content = (
+            f'<UPF version="2.0.1">\n'
+            f"<PP_HEADER\n"
+            f'element="{element}"\n'
+            f'z_valence="{z_valence}"\nhas_so="F"\n'
+            f'core_correction="{"T" if core_correction else "F"}"\n'
+            f'pseudo_type="NC"\nmesh_size="3"\n'
+            f'is_ultrasoft="F"\nnumber_of_proj="1"\nnumber_of_wfc="2"\n/>\n'
+            f"<PP_MESH>\n"
+            f'<PP_R size="3">0.0 0.1 0.2</PP_R>\n'
+            f"</PP_MESH>\n"
+            f"{nlcc}\n"
+            f'<PP_LOCAL size="3">0.0 0.0 0.0</PP_LOCAL>\n'
+            f"<PP_NONLOCAL>\n"
+            f'<PP_BETA.1 angular_momentum="0">0.0 0.0 0.0</PP_BETA.1>\n'
+            f"<PP_DIJ>0.0</PP_DIJ>\n"
+            f"</PP_NONLOCAL>\n"
+            f"<PP_PSWFC>\n"
+            f'<PP_CHI.1 l="0" occupation="2.0">0.0 0.0 0.0</PP_CHI.1>\n'
+            f'<PP_CHI.2 l="1" occupation="4.0">0.0 0.0 0.0</PP_CHI.2>\n'
+            f"</PP_PSWFC>\n"
+            f'<PP_RHOATOM size="3">0.0 0.0 0.0</PP_RHOATOM>\n'
+            f"</UPF>\n"
+        )
+        stream = io.BytesIO(content.encode("utf-8"))
+        return UpfData(stream, filename=f"{element}.upf")
+
+    return _generate_full_upf_data
+
+
+@pytest.fixture
 def fake_cutoffs_family(aiida_profile, generate_upf_data):
     """Install a fake ``CutoffsPseudoPotentialFamily`` (Si and O).
 
@@ -250,7 +299,8 @@ def explicit_block(
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-    from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+    from aiida_koopmans.projections import ExplicitProjectionBlock
+    from aiida_koopmans.spin import SpinChannel
 
     wannier_indices = list(wannier_indices)
     num_wann = len(wannier_indices)
@@ -311,7 +361,8 @@ def automatic_block(label, wannier_indices, spin=None, projection_type=None, fil
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-    from aiida_koopmans.types import AutomaticProjectionBlock, SpinChannel
+    from aiida_koopmans.projections import AutomaticProjectionBlock
+    from aiida_koopmans.spin import SpinChannel
 
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
@@ -355,7 +406,8 @@ def ozone_projection_blocks():
     """Return periodic-ozone projections: 9 occupied + 1 empty band, nspin=1."""
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-    from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel
+    from aiida_koopmans.projections import ExplicitProjectionBlock
+    from aiida_koopmans.spin import SpinChannel
 
     def _block(label, include, filled):
         include = list(include)

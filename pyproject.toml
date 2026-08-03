@@ -47,7 +47,7 @@ docs = [
 Source = "https://github.com/elinscott/aiida-koopmans"
 
 [project.entry-points."aiida.data"]
-"koopmans.aiida_koopmans.types.SpinChannel" = "aiida.orm.nodes.data.enum:EnumData"
+"koopmans.aiida_koopmans.spin.SpinChannel" = "aiida.orm.nodes.data.enum:EnumData"
 "koopmans.aiida_quantumespresso.common.types.ElectronicType" = "aiida.orm.nodes.data.enum:EnumData"
 "koopmans.aiida_quantumespresso.common.types.SpinType" = "aiida.orm.nodes.data.enum:EnumData"
 "koopmans.aiida_wannier90_workflows.common.types.WannierProjectionType" = "aiida.orm.nodes.data.enum:EnumData"

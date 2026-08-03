@@ -21,7 +21,7 @@ Two graphs are exposed:
 Multi-block manifolds are supported: each projection block is Wannierised
 independently and the per-block products are merged per manifold
 (block-diagonal u / hr, concatenated centres, identity-extended u_dis --
-see :mod:`aiida_koopmans.wannier_merge`) before kcw.x consumes them.
+see :mod:`aiida_koopmans.workgraphs.utils.wannier_merge`) before kcw.x consumes them.
 
 Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 ``aiida_quantumespresso`` ``SpinType``):
@@ -68,32 +68,17 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
-from aiida_koopmans.occupations import default_channel_nocc
-from aiida_koopmans.projections import (
-    band_range_complement,
-    projection_num_wann,
-    projection_win_string,
-)
-from aiida_koopmans.types import (
-    ExplicitProjectionBlock,
+from aiida_koopmans.parallelization import (
     ParallelizationDict,
-    ProjectionBlock,
-    SpinChannel,
-    VariationalOrbital,
-    map_key_for,
-)
-from aiida_koopmans.wannier_merge import (
-    extend_wannier_u_dis_file_content,
-    merge_wannier_centres_file_contents,
-    merge_wannier_hr_file_contents,
-    merge_wannier_u_file_contents,
-    parse_wannier_u_file_shape,
-)
-from aiida_koopmans.workgraphs import (
-    Codes,
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
+from aiida_koopmans.projections import (
+    ProjectionBlock,
+)
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -101,6 +86,13 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    extend_wannier_u_dis_file_content,
+    merge_wannier_centres_file_contents,
+    merge_wannier_hr_file_contents,
+    merge_wannier_u_file_contents,
+    parse_wannier_u_file_shape,
+)
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -123,172 +115,6 @@ _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 Wann2kcStep = task(Wann2kcCalculation)
 KcwScreenStep = task(KcwScreenCalculation)
 KcwHamStep = task(KcwHamCalculation)
-
-
-def _split_manifolds(
-    blocks_with_counts: list[tuple[Any, int]], nocc: int
-) -> tuple[list[tuple[Any, int]], list[tuple[Any, int]]]:
-    """Split (block, num_wann) pairs at the occupied/empty boundary."""
-    occupied: list[tuple[Any, int]] = []
-    empty: list[tuple[Any, int]] = []
-    cursor = 0
-    for block, num_wann in blocks_with_counts:
-        if cursor + num_wann <= nocc:
-            occupied.append((block, num_wann))
-        elif cursor >= nocc:
-            empty.append((block, num_wann))
-        else:
-            raise ValueError(
-                f"A projection block (bands {cursor + 1}-{cursor + num_wann}) straddles "
-                f"the occupied/empty boundary at band {nocc}."
-            )
-        cursor += num_wann
-    return occupied, empty
-
-
-def _manifold_projection_blocks(
-    manifold: list[tuple[Any, int]],
-    name: str,
-    label_suffix: str,
-    spin_channel: SpinChannel,
-    first_band: int,
-    nbnd: int,
-    extra_bands: int,
-    filled: bool,
-) -> list[ExplicitProjectionBlock]:
-    """Materialise one manifold's per-block :class:`ExplicitProjectionBlock` list.
-
-    Blocks cover consecutive band windows starting at ``first_band`` and
-    carry the manifold's ``filled`` occupancy. Only the *last* block
-    absorbs the manifold's ``extra_bands`` disentanglement bands
-    (``num_bands > num_wann``), the band layout the u_dis merge in
-    :func:`prepare_kcw_wannier_files` relies on. A single-block manifold
-    keeps the bare ``occ`` / ``emp`` label; multi-block manifolds are
-    numbered (``occ_1``, ``occ_up_1``, ...).
-    """
-    from aiida_wannier90_workflows.common.types import WannierProjectionType
-
-    blocks: list[ExplicitProjectionBlock] = []
-    cursor = first_band - 1
-    for i, (projections, num_wann) in enumerate(manifold):
-        is_last = i == len(manifold) - 1
-        num_bands = num_wann + (extra_bands if is_last else 0)
-        start = cursor + 1
-        end = start + num_bands - 1
-        label = f"{name}{label_suffix}" if len(manifold) == 1 else f"{name}{label_suffix}_{i + 1}"
-        blocks.append(
-            ExplicitProjectionBlock(
-                label=label,
-                spin=spin_channel,
-                filled=filled,
-                num_wann=num_wann,
-                num_bands=num_bands,
-                exclude_bands=band_range_complement(start, end, nbnd),
-                projection_type=WannierProjectionType.ANALYTIC,
-                projections=[projection_win_string(p) for p in projections],
-            )
-        )
-        cursor += num_wann
-    return blocks
-
-
-def derive_dfpt_manifolds(
-    structure: orm.StructureData,
-    projection_blocks: list,
-    nelec: int,
-    nbnd: int | None,
-    spin_channel: SpinChannel = SpinChannel.NONE,
-    nocc: int | None = None,
-) -> tuple[list[ExplicitProjectionBlock], list[ExplicitProjectionBlock], bool, int]:
-    """Turn user projection blocks into the occupied/empty DFPT manifolds.
-
-    Handles the manifold bookkeeping (nocc from the electron count, per-block
-    consecutive band windows, disentanglement bands attached to the last
-    block of the empty manifold) for one spin channel. Any number of blocks
-    per manifold is allowed; a manifold Wannierised as several blocks is
-    merged again before kcw.x by :func:`prepare_kcw_wannier_files`.
-
-    Args:
-        structure: the periodic structure (for per-site projection counting).
-        projection_blocks: list of projection blocks *for this channel*, each
-            a list of ``wannier90_input`` ``Projection``-like objects, in
-            band order.
-        nelec: total electron count (from the pseudopotential valences).
-        nbnd: number of bands of the nscf, or None to default to nocc.
-        spin_channel: which channel these blocks describe. ``NONE`` (default)
-            is spin-unpolarized (``nocc = nelec / 2``); ``UP`` / ``DOWN`` are
-            the collinear channels (caller must supply the per-channel
-            ``nocc`` from the magnetization); ``SPINOR`` is the noncollinear
-            case — every band is singly occupied (``nocc = nelec``) and each
-            projection yields two spinor Wannier functions.
-        nocc: per-channel occupied-band count, overriding the electron-count
-            default. Required for ``UP`` / ``DOWN``.
-
-    Returns:
-        ``(occ_blocks, emp_blocks, has_disentangle, n_orbitals)`` where the
-        block lists hold :class:`ExplicitProjectionBlock` entries in band
-        order (``emp_blocks`` may be empty), ``has_disentangle`` says whether
-        the empty manifold has more bands than Wannier functions, and
-        ``n_orbitals = num_wann_occ + num_wann_emp``.
-    """
-    spinor = spin_channel == SpinChannel.SPINOR
-    if nocc is None:
-        nocc = default_channel_nocc(spin_channel, nelec)
-    nbnd = nocc if nbnd is None else int(nbnd)
-
-    if not projection_blocks:
-        raise NotImplementedError(
-            "DFPT screening requires explicit Wannier90 projections in "
-            "``calculator_parameters.w90.projections``."
-        )
-
-    # With spinors (nspin=4) each projection orbital carries two spin
-    # components, so a projection block spans twice as many Wannier
-    # functions as its orbital count (KCW example05.1: sp3 -> num_wann 8).
-    wann_per_orbital = 2 if spinor else 1
-    blocks_with_counts = [
-        (block, wann_per_orbital * sum(projection_num_wann(structure, p) for p in block))
-        for block in projection_blocks
-    ]
-    occupied, empty = _split_manifolds(blocks_with_counts, nocc)
-
-    num_wann_occ = sum(num_wann for _, num_wann in occupied)
-    if num_wann_occ != nocc:
-        raise ValueError(
-            f"The occupied projection blocks span {num_wann_occ} Wannier functions but "
-            f"the system has {nocc} occupied bands."
-        )
-
-    label_suffix = (
-        f"_{spin_channel.value}" if spin_channel in (SpinChannel.UP, SpinChannel.DOWN) else ""
-    )
-    occ_blocks = _manifold_projection_blocks(
-        occupied, "occ", label_suffix, spin_channel, 1, nbnd, 0, filled=True
-    )
-
-    emp_blocks: list[ExplicitProjectionBlock] = []
-    has_disentangle = False
-    num_wann_emp = sum(num_wann for _, num_wann in empty)
-    if empty:
-        num_bands_emp = nbnd - nocc
-        if num_bands_emp < num_wann_emp:
-            raise ValueError(
-                f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
-                f"projection blocks require {num_wann_emp} Wannier functions."
-            )
-        has_disentangle = num_bands_emp != num_wann_emp
-        emp_blocks = _manifold_projection_blocks(
-            empty,
-            "emp",
-            label_suffix,
-            spin_channel,
-            nocc + 1,
-            nbnd,
-            num_bands_emp - num_wann_emp,
-            filled=False,
-        )
-
-    return occ_blocks, emp_blocks, has_disentangle, num_wann_occ + num_wann_emp
 
 
 def normalize_alpha_guess(
@@ -546,11 +372,12 @@ def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: 
     """Attach the merged manifold's ``_u_dis.mat`` to ``blocks[-1]``, in place.
 
     Only the last block of a manifold is disentangled (the band layout
-    :func:`_manifold_projection_blocks` fixes). When the manifold has more
+    :func:`aiida_koopmans.projections._manifold_projection_blocks` fixes).
+    When the manifold has more
     bands than Wannier functions its ``u_dis`` is required: a single-block
     manifold stages the file unchanged, a merged one extends it with an
     identity for the preceding blocks
-    (:func:`~aiida_koopmans.wannier_merge.extend_wannier_u_dis_file_content`).
+    (:func:`~aiida_koopmans.workgraphs.utils.wannier_merge.extend_wannier_u_dis_file_content`).
     """
     if nbnd is None:
         return

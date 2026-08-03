@@ -9,14 +9,13 @@ from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import (
-    Codes,
-    inject_pseudo_family,
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
     merge_parallelization_into_existing_namespaces,
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
+from aiida_koopmans.workgraphs import Codes, inject_pseudo_family
 
 
 class PdosOutputs(TypedDict):

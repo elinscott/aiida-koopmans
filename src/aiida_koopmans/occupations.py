@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from aiida_koopmans.types import SpinChannel
+from aiida_koopmans.spin import SpinChannel
 
 
 def default_channel_nocc(spin_channel: SpinChannel, nelec: int) -> int:

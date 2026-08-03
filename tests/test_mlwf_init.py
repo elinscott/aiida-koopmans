@@ -15,10 +15,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aiida_koopmans.types import (
-    Correction,
-    VariationalOrbitalType,
-)
+from aiida_koopmans.functionals import Correction
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs
 from aiida_koopmans.workgraphs.mlwf_init import (
     MlwfInitialization,

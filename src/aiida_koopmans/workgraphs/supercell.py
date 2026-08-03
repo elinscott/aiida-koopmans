@@ -9,7 +9,7 @@ kcp.x parameters.
 Of the extensive parameters (``nelec``, ``nelup``, ``neldw``, ``nbnd``, ``conv_thr``,
 ``esic_conv_thr``, ``tot_charge``, ``tot_magnetization``) only ``nbnd`` and
 ``tot_magnetization`` need explicit scaling here: the electron counts come
-out of :func:`~aiida_koopmans.utils.count_electrons_task` evaluated on the
+out of :func:`~aiida_koopmans.utils.electrons.count_electrons_task` evaluated on the
 supercell structure (so they scale with the atom count automatically), and
 the convergence thresholds are derived as ``1e-9 * nelec`` inside the kcp.x
 parameter builders (so they follow ``nelec``).

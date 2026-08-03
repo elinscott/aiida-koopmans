@@ -31,25 +31,22 @@ from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.ml_helpers import predict_estimator
-from aiida_koopmans.types import (
-    AlphaScreening,
-    Correction,
+from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
+from aiida_koopmans.functionals import Correction
+from aiida_koopmans.parallelization import (
     ParallelizationDict,
-    SpinChannel,
+    validate_parallelization,
+)
+from aiida_koopmans.screening import AlphaScreening
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.utils.electrons import count_electrons_task
+from aiida_koopmans.utils.pseudos import resolve_pseudo_family_task
+from aiida_koopmans.variational_orbitals import (
     VariationalOrbital,
     VariationalOrbitalType,
     map_key_for,
 )
-from aiida_koopmans.utils import (
-    count_electrons_task,
-    resolve_pseudo_family_task,
-)
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    validate_parallelization,
-)
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -97,7 +94,7 @@ class KoopmansDSCFOutputs(TypedDict):
 
     The always-present sockets are :class:`KIFinalOutputs` plus ``alphas`` —
     the per-orbital screening parameters the final KI consumed (in the
-    :class:`~aiida_koopmans.types.AlphaScreening` shape): the converged
+    :class:`~aiida_koopmans.screening.AlphaScreening` shape): the converged
     Delta-SCF results, or the caller-injected values when
     ``calculate_alpha=False`` skipped the refinement loop. Exposed at the
     workflow level so consumers (e.g. the ML trajectory workflow's training
@@ -282,9 +279,13 @@ def predict_alpha_screening(
     other members — the same rule the Delta-SCF fan-out follows. The model
     must have been trained on ``self_hartree`` descriptors and carry
     ``correction`` / ``init_orbitals`` stamps matching this run
-    (:func:`~aiida_koopmans.ml_helpers.fit_screening_model` writes them);
+    (:func:`~aiida_koopmans.workgraphs.ml.helpers.fit_screening_model` writes them);
     a mismatched or unstamped model is rejected.
     """
+    # Function-local: the ml package's __init__ imports this module, so a
+    # module-level import of its helpers would be circular.
+    from aiida_koopmans.workgraphs.ml.helpers import predict_estimator
+
     if model.get("descriptor", "self_hartree") != "self_hartree":
         raise ValueError(
             f"The supplied model was trained on `{model['descriptor']}` descriptors, "
@@ -861,7 +862,7 @@ def InitializeOrbitals(
     QueryBuilder / structure-walking work inside dedicated process
     nodes (avoids the ``TaggedValue`` proxy hitting SQLAlchemy).
     """
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -871,13 +872,13 @@ def InitializeOrbitals(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    parameters = _build_dft_parameters(
+    parameters = build_dft_parameters(
         base, nbnd=nbnd, restart_mode=restart_mode, outerloop=outerloop
     )
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
-    inputs = _build_kcp_inputs(
+    inputs = build_kcp_inputs(
         code,
         structure,
         parameters,
@@ -939,7 +940,7 @@ def KoopmansDSCFWorkflow(
     The starting screening parameters come from exactly one of two
     mutually exclusive inputs: the uniform scalar ``initial_alpha``
     (0.6 when neither is given) or the per-orbital ``initial_alphas``
-    (an :class:`~aiida_koopmans.types.AlphaScreening` payload, per spin
+    (an :class:`~aiida_koopmans.screening.AlphaScreening` payload, per spin
     channel with the filled and empty manifolds separate — the same
     layout the workflow's own ``alphas`` output uses). With
     ``calculate_alpha=False`` the refinement loop is skipped entirely:
@@ -1403,7 +1404,7 @@ def RunFinalKI(
     # a named mismatch instead of a corrupt ``file_alpharef``.
     if nelup is not None and neldw is not None:
         _validate_alpha_screening(alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -1421,7 +1422,7 @@ def RunFinalKI(
     )
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
-    final_inputs = _build_kcp_inputs(
+    final_inputs = build_kcp_inputs(
         code,
         structure,
         ki_parameters,
@@ -1492,7 +1493,7 @@ def ComputeFilledOrbitalScreeningParameter(
             outputs of the same trial KI; passed in here rather than
             re-loaded so the orbital task is provenance-pure.
     """
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -1506,7 +1507,7 @@ def ComputeFilledOrbitalScreeningParameter(
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
-    inputs = _build_kcp_inputs(
+    inputs = build_kcp_inputs(
         code,
         structure,
         parameters,
@@ -1602,7 +1603,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 
     if dummy_overrides:
         dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
-    dummy_inputs = _build_kcp_inputs(
+    dummy_inputs = build_kcp_inputs(
         code,
         structure,
         dummy_parameters,
@@ -1619,9 +1620,9 @@ def ComputeEmptyOrbitalScreeningParameter(
     # the next step. ``pz_alphas`` is the uniform-``alpha_guess`` payload
     # already built by ``generate_alphas`` upstream. ``overlay`` is the
     # spin-swap save-file map (``{}`` when no swap is needed);
-    # ``_build_kcp_inputs`` skips the overlay socket when the dict is
+    # ``build_kcp_inputs`` skips the overlay socket when the dict is
     # empty.
-    pz_inputs = _build_kcp_inputs(
+    pz_inputs = build_kcp_inputs(
         code,
         structure,
         pz_parameters,
@@ -1636,7 +1637,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
-    n_plus_1_inputs = _build_kcp_inputs(
+    n_plus_1_inputs = build_kcp_inputs(
         code,
         structure,
         n_plus_1_parameters,
@@ -2158,7 +2159,7 @@ def ComputeScreeningParameters(
             spin_polarized=spin_polarized,
         )
 
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -2328,7 +2329,7 @@ def PredictScreeningParameters(
             spin_polarized=spin_polarized,
         )
 
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -2704,7 +2705,7 @@ def _stage_wannier_seed(
 
     When both files are given, switch ``SYSTEM.restart_from_wannier_pwscf``
     on (mutating ``parameters`` in place) and return the
-    ``read_wavefunctions`` staging map for :func:`_build_kcp_inputs`;
+    ``read_wavefunctions`` staging map for :func:`build_kcp_inputs`;
     otherwise leave the parameters untouched and return ``None``. Used by
     whichever orbital-dependent run directly follows the Wannier-seeded
     DFT init — the first trial KI, or the final KI when the screening
@@ -2719,7 +2720,7 @@ def _stage_wannier_seed(
     }
 
 
-def _kcp_base_inputs(
+def kcp_base_inputs(
     structure: orm.StructureData,
     *,
     nspin: int,
@@ -2750,7 +2751,7 @@ def _kcp_base_inputs(
     )
 
 
-def _build_dft_parameters(
+def build_dft_parameters(
     base: KcpBaseInputs,
     *,
     nbnd: int,
@@ -2866,9 +2867,9 @@ def _build_orbdep_parameters(
     iterations restart from the previous trial's already-converged
     variational basis, so the inner loop is unnecessary.
     """
-    params = _build_dft_parameters(base, nbnd=nbnd)
+    params = build_dft_parameters(base, nbnd=nbnd)
     # ``restart_mode`` is the only ``&CONTROL`` key the builder owns; ndr/ndw
-    # are forced by the CalcJob (see ``_build_dft_parameters`` for context).
+    # are forced by the CalcJob (see ``build_dft_parameters`` for context).
     params["CONTROL"]["restart_mode"] = "restart"
 
     # Orbital-dependent screening.
@@ -2928,7 +2929,7 @@ def _build_orbdep_parameters(
 #   filled orbital → ``dft_n-1``
 #   empty  orbital → ``dft_n+1_dummy`` (iter 1 only) → ``pz_print`` → ``dft_n+1``
 #
-# Common deltas vs ``_build_dft_parameters``:
+# Common deltas vs ``build_dft_parameters``:
 # - ``nbnd`` removed.
 # - ``conv_thr`` and ``esic_conv_thr`` 100x looser.
 # - ``empty_states_maxstep`` / ``do_outerloop_empty`` removed (no empty
@@ -2966,10 +2967,10 @@ def _alpha_step_lite_nksic(
 def _alpha_step_dft_base(base: KcpBaseInputs) -> dict[str, Any]:
     """``&CONTROL/SYSTEM/ELECTRONS`` skeleton shared by every DFT-like alpha step.
 
-    Built from ``_build_dft_parameters`` then trimmed: ``nbnd`` dropped,
+    Built from ``build_dft_parameters`` then trimmed: ``nbnd`` dropped,
     ``conv_thr`` loosened, empty-manifold knobs removed.
     """
-    params = _build_dft_parameters(base, nbnd=0)  # nbnd stripped below
+    params = build_dft_parameters(base, nbnd=0)  # nbnd stripped below
     params["SYSTEM"].pop("nbnd", None)
     params["ELECTRONS"].pop("empty_states_maxstep", None)
     params["ELECTRONS"].pop("do_outerloop_empty", None)
@@ -3142,82 +3143,6 @@ def _build_print_parameters(
 # ----------------------------------------------------------------------
 
 
-def _fft_dimension_allowed(nr: int) -> bool:
-    """QE's FFT-dimension rule: factors of 2/3/5 only (no 7s or 11s)."""
-    if nr < 1:
-        return False
-    remainder = nr
-    powers = {2: 0, 3: 0, 5: 0, 7: 0, 11: 0}
-    for factor in powers:
-        while remainder > 1 and remainder % factor == 0:
-            remainder //= factor
-            powers[factor] += 1
-    return remainder == 1 and powers[7] == 0 and powers[11] == 0
-
-
-def _good_fft(nr: int) -> int:
-    """Bump ``nr`` up to the next FFT-friendly dimension."""
-    while not _fft_dimension_allowed(nr) and nr <= 2049:
-        nr += 1
-    return nr
-
-
-def _autogenerate_nrb(
-    structure: orm.StructureData,
-    pseudos: dict[str, UpfData],
-    parameters: dict[str, Any],
-) -> None:
-    """Fill ``SYSTEM.nr{1,2,3}b`` when any pseudo carries core corrections.
-
-    kcp.x aborts with
-    "nr1b, nr2b, nr3b must be given for ultrasoft and core corrected pp"
-    when a pseudo has non-linear core corrections and the small-box grid is
-    unset (bites e.g. PseudoDojo; SG15 has no NLCC). The conservative
-    guess is the full density-grid dimensions scaled by
-    ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
-    cutoff radius is <= 2.6 Bohr). User-supplied values always win.
-    """
-    from qe_tools import CONSTANTS
-    from upf_to_json import upf_to_json
-
-    system = parameters.setdefault("SYSTEM", {})
-    if all(system.get(key) is not None for key in ("nr1b", "nr2b", "nr3b")):
-        return
-
-    def _core_corrected(pseudo: UpfData) -> bool:
-        try:
-            header = upf_to_json(pseudo.get_content(), pseudo.filename)["pseudo_potential"][
-                "header"
-            ]
-        except Exception:
-            # Unparseable UPF (e.g. minimal test fixtures): treat as no-NLCC.
-            # Not a silent-corruption risk — a real core-corrected pseudo that
-            # slips through makes kcp.x abort loudly with its own
-            # "nr1b, nr2b, nr3b must be given" error.
-            return False
-        return bool(header["core_correction"])
-
-    if not any(_core_corrected(pseudo) for pseudo in pseudos.values()):
-        return
-
-    angstrom_to_bohr = 1.0 / CONSTANTS.bohr_to_ang
-    cell = np.array(structure.cell, dtype=float)
-    alat_bohr = float(np.linalg.norm(cell[0])) * angstrom_to_bohr
-    # Reduced lattice vectors ("at" in QE), dimensionless in units of alat.
-    at = cell * angstrom_to_bohr / alat_bohr
-
-    ecutrho = float(system.get("ecutrho") or 4.0 * system["ecutwfc"])
-    # Density-grid dimensions, as QE derives them:
-    # nr_i = 2 * int( sqrt(ecutrho) / (2 pi / alat) * |at_i| ) + 1
-    nr = [
-        _good_fft(2 * int(np.sqrt(ecutrho) / (2.0 * np.pi / alat_bohr) * np.linalg.norm(vec)) + 1)
-        for vec in at
-    ]
-    rc_safe = 3.0
-    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr, strict=True):
-        system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
-
-
 def _validate_ml_model_inputs(
     *,
     ml_model: dict | None,
@@ -3282,7 +3207,7 @@ def _trial_kcp_inputs(
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
-    return _build_kcp_inputs(
+    return build_kcp_inputs(
         code,
         structure,
         ki_parameters,
@@ -3294,71 +3219,3 @@ def _trial_kcp_inputs(
         read_wavefunctions=read_wavefunctions,
         name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
     )
-
-
-def _build_kcp_inputs(
-    code: orm.AbstractCode,
-    structure: orm.StructureData,
-    parameters: dict[str, Any],
-    pseudos: dict[str, UpfData],
-    *,
-    parallelization: ParallelizationDict | None = None,
-    alphas: AlphaScreening | None = None,
-    parent_folder: orm.RemoteData | None = None,
-    parent_folder_evcfixed: orm.RemoteData | None = None,
-    variational_orbital_overlays: dict[str, str] | None = None,
-    read_wavefunctions: dict[str, Any] | None = None,
-    name: str | None = None,
-) -> dict[str, Any]:
-    """Assemble a kwargs dict for ``KcpStep(**inputs)``.
-
-    Plain Python data (the ``parameters`` dict, the ``alphas``
-    TypedDict) is handed straight through; aiida-workgraph's
-    serialization adapter wraps each value into the matching AiiDA
-    Node when the underlying CalcJob socket is set.
-
-    ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
-    that's what shows up in ``verdi process list`` and the koopmans progress
-    table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
-
-    Inside the per-orbital screening sub-graphs, ``name`` is set statically
-    (e.g. ``"dft_n_minus_1"``, ``"pz_print"``, ``"dft_n_plus_1_dummy"``,
-    ``"dft_n_plus_1"``); the band/spin identity lives on the *wrapping*
-    sub-graph's ``call_link_label`` instead (``compute_alpha_<map_key>``, set by
-    the ``ComputeOrbitalScreeningParameters`` fan-out loop), so provenance reads as e.g.
-    ``compute_alpha_up_orb_2 -> dft_n_minus_1``.
-
-    ``parent_folder_evcfixed`` is the ``RemoteData`` of a ``pz_print``
-    run; only the ``dft_n+1`` step of the empty-orbital Delta-SCF branch
-    needs this. The CalcJob symlinks the file
-    ``out/<prefix>_<NDW>.save/K00001/evcfixed_empty.dat`` from that
-    folder onto its read save (see
-    ``KcpCalculation._build_remote_symlink_list``).
-
-    ``read_wavefunctions`` maps destination stems to the
-    ``SinglefileData`` (or socket) holding the wavefunction; the CalcJob
-    copies each into its read ``K00001`` as ``<stem>.dat`` (the MLWF-init
-    staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
-    merge outputs).
-    """
-    _autogenerate_nrb(structure, pseudos, parameters)
-    inputs: dict[str, Any] = {
-        "code": code,
-        "structure": structure,
-        "parameters": parameters,
-        "pseudos": pseudos,
-    }
-    if alphas is not None:
-        inputs["alphas"] = alphas
-    if parent_folder is not None:
-        inputs["parent_folder"] = parent_folder
-    if parent_folder_evcfixed is not None:
-        inputs["parent_folder_evcfixed"] = parent_folder_evcfixed
-    if variational_orbital_overlays:
-        inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
-    if read_wavefunctions:
-        inputs["read_wavefunctions"] = read_wavefunctions
-    if name:
-        inputs["metadata"] = {"call_link_label": name}
-    merge_parallelization_into_inputs(inputs, parallelization, "kcp")
-    return inputs

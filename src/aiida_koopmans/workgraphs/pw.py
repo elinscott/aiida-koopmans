@@ -11,15 +11,17 @@ from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
+    merge_parallelization_into_inputs,
+    merge_parallelization_into_overrides,
+    validate_parallelization,
+)
 from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
     inject_pseudo_family,
-    merge_parallelization_into_inputs,
-    merge_parallelization_into_overrides,
     pin_kpoints,
     unwrap_enum,
-    validate_parallelization,
 )
 
 

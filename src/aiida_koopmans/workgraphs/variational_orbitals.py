@@ -35,7 +35,7 @@ has no operator equivalent — reconciling the two paths is deferred to
 when the operators are wired in.
 
 Identity-of-orbital flows through this module as
-:class:`aiida_koopmans.types.VariationalOrbital` — a ``TypedDict``
+:class:`VariationalOrbital` — a ``TypedDict``
 that is a plain ``dict`` at runtime so ``list[VariationalOrbital]``
 survives ``aiida-workgraph``'s storage path. The string form
 (``f"up_orb_5"`` etc.) is only ever produced via :func:`map_key_for`
@@ -49,13 +49,9 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from aiida_workgraph import dynamic, task
 
-from aiida_koopmans.types import (
-    ProjectionBlockId,
-    SpinChannel,
-    VariationalOrbital,
-    map_key_for,
-    validate_projection_block_id,
-)
+from aiida_koopmans.projections import ProjectionBlockId, validate_projection_block_id
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
@@ -293,7 +289,7 @@ def refine_by_key(
 ) -> list[VariationalOrbital]:
     """Split every existing group by equality of one orbital field.
 
-    ``key`` names a :class:`~aiida_koopmans.types.VariationalOrbital`
+    ``key`` names a :class:`VariationalOrbital`
     field (``"filled"``, ``"spin"``, ``"manifold"``, ...); orbitals in
     the same group whose values for that field differ are separated.
     For categorical labels that live outside the orbital records use
@@ -421,7 +417,7 @@ def ordered_block_specs(blocks: list[ProjectionBlockId]) -> list[ProjectionBlock
 def initial_orbital_partition(blocks: list[ProjectionBlockId]) -> list[VariationalOrbital]:
     """Build the coarsest orbital partition consistent with the blocks' exact splits.
 
-    Emit one :class:`~aiida_koopmans.types.VariationalOrbital` per
+    Emit one :class:`VariationalOrbital` per
     Wannier function, in per-channel iwann order — the kcw.x / kcp.x
     orbital order: within each spin channel every occupied block's
     functions (blocks in input order) precede every empty block's, and

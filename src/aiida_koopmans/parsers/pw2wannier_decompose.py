@@ -16,7 +16,7 @@ Every file carries a ``#``-commented header giving ``n_max`` / ``l_max`` /
 ``r_min`` / ``r_max``. The parser stacks the per-WF vectors into
 ``ArrayData`` outputs (``coefficients`` / ``power`` / ``group_coefficients``)
 so the power-spectrum descriptor can be assembled downstream by
-:mod:`aiida_koopmans.ml_helpers`.
+:mod:`aiida_koopmans.workgraphs.ml.helpers`.
 """
 
 from __future__ import annotations

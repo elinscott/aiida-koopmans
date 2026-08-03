@@ -44,16 +44,13 @@ from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
+    ProjectionBlock,
     detect_band_blocks,
+    get_wannier_indices,
     groups_to_wannier_indices,
     restrict_groups_to_block,
-)
-from aiida_koopmans.types import ParallelizationDict, ProjectionBlock, get_wannier_indices
-from aiida_koopmans.wannier_merge import (
-    merge_wannier_centres_file_contents,
-    merge_wannier_hr_file_contents,
-    merge_wannier_u_file_contents,
 )
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
@@ -62,6 +59,11 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.pw import assemble_pw_base_step
+from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    merge_wannier_centres_file_contents,
+    merge_wannier_hr_file_contents,
+    merge_wannier_u_file_contents,
+)
 
 Wannier90CalcStep = task(Wannier90Calculation)
 
@@ -231,7 +233,7 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
     so lexicographic order matches the band order of the groups (``b00``,
     ``b01``, ...). The ``_u.mat`` / ``_hr.dat`` merges are block-diagonal and
     the ``_centres.xyz`` centres are concatenated — see
-    :mod:`aiida_koopmans.wannier_merge` for the invariants.
+    :mod:`aiida_koopmans.workgraphs.utils.wannier_merge` for the invariants.
     """
     folders = [retrieved[key] for key in sorted(retrieved)]
 
