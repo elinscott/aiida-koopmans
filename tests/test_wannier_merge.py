@@ -100,6 +100,13 @@ class TestRoundTrips:
 # ----------------------------------------------------------------------
 
 
+class TestGenerateHr:
+    def test_rejects_a_ham_shape_inconsistent_with_rvect_and_weights(self):
+        ham = _random_complex((3, 2, 2), seed=12)  # nrpts=3 in ham, but only 2 weights given
+        with pytest.raises(ValueError, match="expected"):
+            generate_wannier_hr_file_contents(ham, RVECT[:2], WEIGHTS[:2])
+
+
 class TestMergeHr:
     def test_block_diagonal(self):
         ham_a = _random_complex((3, 2, 2), seed=5)
@@ -174,6 +181,10 @@ class TestMergeU:
         with pytest.raises(ValueError, match="k-points"):
             merge_wannier_u_file_contents(contents)
 
+    def test_empty_input_raises(self):
+        with pytest.raises(ValueError, match="No U matrix file contents"):
+            merge_wannier_u_file_contents([])
+
 
 class TestMergeCentres:
     def test_concatenation_keeps_atoms_once(self):
@@ -188,6 +199,10 @@ class TestMergeCentres:
         centres, atom_lines = parse_wannier_centres_file_contents(merged)
         np.testing.assert_allclose(centres, centres_a + centres_b)
         assert atom_lines == ATOM_LINES
+
+    def test_empty_input_raises(self):
+        with pytest.raises(ValueError, match="No centres file contents"):
+            merge_wannier_centres_file_contents([])
 
     def test_differing_atoms_raise(self):
         contents = [

@@ -177,6 +177,22 @@ class TestValidateProjectionBlock:
         with pytest.raises(ValueError, match="names bands \\[6\\] inside"):
             validate_projection_block(block)
 
+    def test_rejects_zero_wannier_functions(self):
+        """A block with no Wannier functions describes nothing to Wannierise."""
+        from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+        from aiida_koopmans.projections import AutomaticProjectionBlock
+
+        block = AutomaticProjectionBlock(
+            label="block_1",
+            spin=SpinChannel.NONE,
+            num_wann=0,
+            num_bands=0,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
+        )
+        with pytest.raises(ValueError, match="at least one Wannier function"):
+            validate_projection_block(block)
+
 
 # ----------------------------------------------------------------------
 # validate_projection_block_sequence

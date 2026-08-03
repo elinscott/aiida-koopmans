@@ -11,6 +11,8 @@ exact sklearn stack they reproduce (``StandardScaler`` +
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+
 import numpy as np
 import pytest
 
@@ -45,6 +47,11 @@ class TestRadialBasis:
         alphas, betas = ml_helpers.precompute_parameters_of_radial_basis(4, 4, 0.5, 4.0)
         assert alphas.shape == (4, 5)
         assert betas.shape == (4, 4, 5)
+
+    def test_degenerate_decay_radii_raise(self):
+        """Coincident r_min/r_max collapse the decay radii, making the overlap singular."""
+        with pytest.raises(ValueError, match="Failed to precompute the radial basis"):
+            ml_helpers.precompute_parameters_of_radial_basis(3, 1, 1.0, 1.0)
 
 
 # ----------------------------------------------------------------------
@@ -143,6 +150,37 @@ class TestReadDensityXml:
         with pytest.raises(ValueError, match="EFFECTIVE-POTENTIAL"):
             ml_helpers.read_density_xml(xml, "EFFECTIVE-POTENTIAL", norm_const=1.0)
 
+    def test_missing_info_element_raises(self):
+        xml = "<ROOT><CHARGE-DENSITY><z.1>1.0</z.1></CHARGE-DENSITY></ROOT>"
+        with pytest.raises(ValueError, match="no <INFO> element"):
+            ml_helpers.read_density_xml(xml, "CHARGE-DENSITY", norm_const=1.0)
+
+    def test_incomplete_info_attributes_raises(self):
+        xml = '<ROOT><CHARGE-DENSITY><INFO nr1="2" nr2="2"/><z.1>1.0</z.1></CHARGE-DENSITY></ROOT>'
+        with pytest.raises(ValueError, match="lacks nr1/nr2/nr3"):
+            ml_helpers.read_density_xml(xml, "CHARGE-DENSITY", norm_const=1.0)
+
+
+class TestParseXmlArray:
+    def test_missing_z_element_raises(self):
+        xml = _make_density_xml("CHARGE-DENSITY", np.ones((2, 2, 2)))
+        root = ET.fromstring(xml).find("CHARGE-DENSITY")  # noqa: S314
+        root.remove(root.find("z.1"))
+        with pytest.raises(ValueError, match="Malformed density xml"):
+            ml_helpers.parse_xml_array(root, (3, 3, 3), norm_const=1.0)
+
+    def test_retain_final_element_keeps_the_periodic_point(self):
+        raw = np.arange(2 * 2 * 2, dtype=float).reshape(2, 2, 2)
+        xml = _make_density_xml("CHARGE-DENSITY", raw)
+        root = ET.fromstring(xml).find("CHARGE-DENSITY")  # noqa: S314
+        stripped = ml_helpers.parse_xml_array(root, (3, 3, 3), norm_const=1.0)
+        retained = ml_helpers.parse_xml_array(
+            root, (3, 3, 3), norm_const=1.0, retain_final_element=True
+        )
+        assert stripped.shape == (2, 2, 2)
+        assert retained.shape == (3, 3, 3)
+        np.testing.assert_allclose(retained[:-1, :-1, :-1], stripped)
+
 
 # ----------------------------------------------------------------------
 # Decomposition (integration-level sanity on a tiny analytic density)
@@ -180,6 +218,27 @@ class TestComputeDecomposition:
         assert s_weight > 10 * p_weight
         # Same input density twice -> identical orbital and total coefficients.
         np.testing.assert_allclose(orb_coeffs[0], tot_coeffs[0])
+
+    def test_mismatched_orbital_density_and_center_counts_raises(self):
+        n_grid = 8
+        length = 8.0
+        rho = np.ones((n_grid, n_grid, n_grid))
+        alphas, betas = ml_helpers.precompute_parameters_of_radial_basis(1, 0, 1.0, 4.0)
+        with pytest.raises(ValueError, match="Expected one wannier center per orbital density"):
+            ml_helpers.compute_decomposition(
+                n_max=1,
+                l_max=0,
+                r_cut=length / 2,
+                total_density_xml=_make_density_xml("CHARGE-DENSITY", rho),
+                orbital_densities_xml=[
+                    _make_density_xml("EFFECTIVE-POTENTIAL", rho),
+                    _make_density_xml("EFFECTIVE-POTENTIAL", rho),
+                ],
+                wannier_centers=[[4.0, 4.0, 4.0]],
+                cell_lengths=[length, length, length],
+                alphas=alphas,
+                betas=betas,
+            )
 
 
 # ----------------------------------------------------------------------
@@ -226,6 +285,10 @@ class TestEstimators:
     def test_unknown_estimator_raises(self):
         with pytest.raises(ValueError, match="not implemented"):
             ml_helpers.fit_estimator([[1.0]], [1.0], "gaussian_process")
+
+    def test_mismatched_row_counts_raises(self):
+        with pytest.raises(ValueError, match="Inconsistent training data"):
+            ml_helpers.fit_estimator([[1.0], [2.0], [3.0]], [1.0, 2.0], "ridge_regression")
 
     def test_constant_feature_does_not_blow_up(self):
         X = np.array([[1.0, 5.0], [2.0, 5.0], [3.0, 5.0]])
@@ -305,6 +368,12 @@ class TestBuildSnapshotDataset:
     def test_no_channels_raises(self):
         with pytest.raises(ValueError, match="no spin channels"):
             ml_helpers.build_snapshot_dataset([[-1.0]], {"filled": {}, "empty": {}})
+
+    def test_unrecognised_spin_channel_raises(self):
+        sh = [[-1.0]]
+        alphas = {"filled": {"spinor": [0.6]}, "empty": {}}
+        with pytest.raises(ValueError, match="Unrecognised spin channel"):
+            ml_helpers.build_snapshot_dataset(sh, alphas)
 
 
 class TestConcatenateDatasets:

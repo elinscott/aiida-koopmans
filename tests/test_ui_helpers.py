@@ -78,6 +78,11 @@ class TestParsers:
         with pytest.raises(ValueError, match="not recognized"):
             ui_helpers.parse_hr_file_contents("garbage\n1\n1\n")
 
+    def test_parse_hr_rejects_legacy_xml_format(self):
+        """The old xml-based Hamiltonian file format is explicitly unsupported."""
+        with pytest.raises(ValueError, match="no longer supported"):
+            ui_helpers.parse_hr_file_contents('<?xml version="1.0"?>\n1\n1\n')
+
     def test_parse_wout(self, si_wout_content, si_reference):
         """Centres and spreads match the reference parse of the same file."""
         centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
@@ -107,6 +112,77 @@ class TestInferWannierCounts:
         assert ui_helpers.infer_wannier_counts(32, (2, 2, 2), w90_input_sc=True) == (4, 32)
 
 
+class TestExtractHr:
+    """Restriction of a Wannier90 Hamiltonian onto the primitive-cell R-vectors."""
+
+    def test_rejects_a_supercell_missing_a_required_r_vector(self):
+        """A grid whose R-vectors don't cover every primitive-cell translation is refused."""
+        hr = np.zeros((1, 1, 1), dtype=complex)
+        rvect = np.array([[1, 0, 0]])  # never satisfies the R=0-cell fold test
+        with pytest.raises(ValueError, match="Wrong number"):
+            ui_helpers.extract_hr(hr, rvect, 1, 1, 1)
+
+
+class TestLoaders:
+    """Element-count guards in the Hamiltonian loaders."""
+
+    def test_load_primary_hr_kpoint_wrong_wann_count_raises(self):
+        content = (DATA_DIR / "dft_ham.dat").read_text()
+        with pytest.raises(ValueError, match="Wrong number of matrix elements"):
+            ui_helpers.load_primary_hr(content, num_wann=3, num_wann_sc=32, kgrid=(2, 2, 2))
+
+    def test_load_coarse_hr_gamma_only_round_trips(self):
+        content = (DATA_DIR / "kc_ham.dat").read_text()
+        hr = ui_helpers.load_coarse_hr(content, num_wann=4, num_wann_sc=32, kgrid=(2, 2, 2))
+        assert hr.shape == (32, 4)
+
+    def test_load_coarse_hr_gamma_only_wrong_count_raises(self):
+        content = (DATA_DIR / "kc_ham.dat").read_text()
+        with pytest.raises(ValueError, match="Wrong number of matrix elements for hr_coarse"):
+            ui_helpers.load_coarse_hr(content, num_wann=4, num_wann_sc=31, kgrid=(2, 2, 2))
+
+    def test_load_coarse_hr_kpoint_wrong_count_raises(self):
+        content = (DATA_DIR / "dft_ham.dat").read_text()
+        with pytest.raises(ValueError, match="Wrong number of matrix elements for hr_coarse"):
+            ui_helpers.load_coarse_hr(content, num_wann=3, num_wann_sc=32, kgrid=(2, 2, 2))
+
+    def test_load_smooth_hr_wrong_count_raises(self):
+        content = (DATA_DIR / "smooth_dft_ham.dat").read_text()
+        with pytest.raises(ValueError, match="Wrong number of matrix elements for hr_smooth"):
+            ui_helpers.load_smooth_hr(content, num_wann=3)
+
+
+class TestCalcBands:
+    """The Fourier-transform core, exercised directly with a trivial 1-WF cell."""
+
+    def _minimal_kwargs(self):
+        return {
+            "hr": np.array([[1.0 + 0.0j]]),
+            "centers": np.zeros((1, 3)),
+            "kpts": np.zeros((1, 3)),
+            "rvec": np.array([[0, 0, 0]]),
+            "kgrid": (1, 1, 1),
+            "acell": np.eye(3),
+            "num_wann": 1,
+            "num_wann_sc": 1,
+            "use_ws_distance": False,
+        }
+
+    def test_unit_phases_leave_a_single_wf_hamiltonian_unchanged(self):
+        """A per-WF phase factor renormalizes H(R); unit phases are a no-op, pinning the branch."""
+        kwargs = self._minimal_kwargs()
+        bands_no_phase = ui_helpers.calc_bands(**kwargs)
+        kwargs["phases"] = [1.0 + 0.0j]
+        bands_with_phase = ui_helpers.calc_bands(**kwargs)
+        np.testing.assert_allclose(bands_no_phase, bands_with_phase)
+
+    def test_hr_smooth_without_rvectors_raises(self):
+        kwargs = self._minimal_kwargs()
+        kwargs["hr_smooth"] = np.array([[[1.0 + 0.0j]]])
+        with pytest.raises(ValueError, match="hr_smooth requires"):
+            ui_helpers.calc_bands(**kwargs)
+
+
 class TestComputeDos:
     """Gaussian-smearing DOS."""
 
@@ -127,6 +203,12 @@ class TestComputeDos:
         """A (k, n)-shaped array without the spin axis is rejected."""
         with pytest.raises(ValueError, match="spin"):
             ui_helpers.compute_dos(np.zeros((3, 4)))
+
+    def test_energy_window_defaults_to_the_data_range(self):
+        """Without explicit emin/emax the window is derived from the eigenvalues."""
+        grid, _dos = ui_helpers.compute_dos(np.array([[[0.0, 1.0]]]), width=0.1, npts=101)
+        assert grid[0] == pytest.approx(-0.5)
+        assert grid[-1] == pytest.approx(1.5)
 
 
 # ----------------------------------------------------------------------
@@ -220,3 +302,42 @@ class TestSiliconRegression:
                 kpath_kpts=np.array(si_reference["kpath_kpts"]),
                 do_map=True,
             )
+
+
+class TestMapWannier:
+    """``map_wannier`` on the real silicon supercell data, called directly."""
+
+    @pytest.fixture
+    def mapping_inputs(self, si_reference, si_wout_content):
+        """Reproduce the (centers_all, spreads_all, hr, kgrid) ``unfold_and_interpolate`` builds."""
+        centers, spreads = ui_helpers.parse_wout_centers_and_spreads(si_wout_content)
+        kgrid = tuple(si_reference["kgrid"])
+        cell = np.array(si_reference["cell"])
+        alat = float(np.linalg.norm(cell[0]))
+        acell = cell / alat
+        centers_crys = ui_helpers.crys_to_cart(
+            np.asarray(centers) / alat, ui_helpers.reciprocal_cell(acell), -1
+        )
+        rvec = ui_helpers.latt_vect(*kgrid)
+        centers_all = np.concatenate([centers_crys + rvect for rvect in rvec])
+        spreads_all = list(spreads) * len(rvec)
+        hr = ui_helpers.load_primary_hr(
+            (DATA_DIR / "kc_ham.dat").read_text(), num_wann=4, num_wann_sc=32, kgrid=kgrid
+        )
+        return centers_all, spreads_all, hr, kgrid
+
+    def test_wrong_r0_wf_count_raises(self, mapping_inputs):
+        centers_all, spreads_all, hr, kgrid = mapping_inputs
+        with pytest.raises(ValueError, match="right number of WFs in the R=0 cell"):
+            ui_helpers.map_wannier(centers_all, spreads_all, hr, kgrid, num_wann=3, num_wann_sc=32)
+
+    def test_missing_wfs_in_a_shell_raises(self, mapping_inputs):
+        centers_all, spreads_all, hr, kgrid = mapping_inputs
+        spreads_all = list(spreads_all)
+        # Detune every spread of the first non-R0 primitive-cell copy (the
+        # block for `latt_vect(*kgrid)[1]`) so no (center, spread) match is
+        # found for that shell, even though its centres still fold correctly.
+        for i in range(4, 8):
+            spreads_all[i] += 10.0
+        with pytest.raises(ValueError, match="Found 0 WFs in"):
+            ui_helpers.map_wannier(centers_all, spreads_all, hr, kgrid, num_wann=4, num_wann_sc=32)

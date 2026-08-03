@@ -654,6 +654,32 @@ class TestDeriveDfptManifolds:
                 nbnd=8,
             )
 
+    def test_no_projection_blocks_raises(self, silicon_structure):
+        """DFPT screening cannot derive manifolds without explicit w90 projections."""
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+
+        with pytest.raises(NotImplementedError, match="explicit Wannier90 projections"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[],
+                nelec=16,
+                nbnd=None,
+            )
+
+    def test_too_few_empty_bands_for_empty_projections_raises(self, silicon_structure):
+        """``nbnd`` must leave at least as many empty bands as the empty blocks need."""
+        from aiida_koopmans.projections import derive_dfpt_manifolds
+
+        occ = [_FakeProjection("Si", 0), _FakeProjection("Si", 1)]  # 8 wann occ (nocc=8)
+        emp = [_FakeProjection("Si", 1)]  # full p triplet: 3 orbitals x 2 atoms = 6 wann
+        with pytest.raises(ValueError, match="leaves only 2 empty bands"):
+            derive_dfpt_manifolds(
+                structure=silicon_structure,
+                projection_blocks=[occ, emp],
+                nelec=16,
+                nbnd=10,  # 10 - 8 = 2 empty bands, short of the 6 the empty block needs
+            )
+
     def test_multi_block_manifolds(self, silicon_structure):
         """Multi-block band layout: consecutive windows, extras on the last block."""
         from aiida_koopmans.projections import derive_dfpt_manifolds
