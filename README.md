@@ -5,119 +5,77 @@
 
 # aiida-koopmans
 
-AiiDA plugin for running Koopmans functional calculations
+AiiDA plugin for Koopmans spectral functional calculations with Quantum ESPRESSO.
 
-This plugin is the default output of the
-[AiiDA plugin cutter](https://github.com/aiidateam/aiida-plugin-cutter),
-intended to help developers get started with their AiiDA plugins.
+**To run a Koopmans calculation, install [`koopmans`](https://github.com/elinscott/koopmans) instead.** That package owns the input file, the command line, and the profile, code, and pseudopotential setup, and it builds the workgraphs defined here. This repository is the plugin layer underneath, for people who extend it or who drive AiiDA themselves. Its documentation assumes you know what a `CalcJob`, a `WorkChain`, and an entry point are.
 
-## Repository contents
+## What the plugin provides
 
-* [`.github/`](.github/): [Github Actions](https://github.com/features/actions) configuration
-  * [`ci.yml`](.github/workflows/ci.yml): runs tests, checks test coverage and builds documentation at every new commit
-  * [`publish-on-pypi.yml`](.github/workflows/publish-on-pypi.yml): automatically deploy git tags to PyPI - just generate a [PyPI API token](https://pypi.org/help/#apitoken) for your PyPI account and add it to the `pypi_token` secret of your github repository
-* [`aiida_koopmans/`](aiida_koopmans/): The main source code of the plugin package
-  * [`data/`](aiida_koopmans/data/): A new `DiffParameters` data class, used as input to the `DiffCalculation` `CalcJob` class
-  * [`calculations.py`](aiida_koopmans/calculations.py): A new `DiffCalculation` `CalcJob` class
-  * [`cli.py`](aiida_koopmans/cli.py): Extensions of the `verdi data` command line interface for the `DiffParameters` class
-  * [`helpers.py`](aiida_koopmans/helpers.py): Helpers for setting up an AiiDA code for `diff` automatically
-  * [`parsers.py`](aiida_koopmans/parsers.py): A new `Parser` for the `DiffCalculation`
-* [`docs/`](docs/): A documentation template ready for publication on [Read the Docs](http://aiida-diff.readthedocs.io/en/latest/)
-* [`examples/`](examples/): An example of how to submit a calculation using this plugin
-* [`tests/`](tests/): Basic regression tests using the [pytest](https://docs.pytest.org/en/latest/) framework (submitting a calculation, ...). Install `pip install -e .[testing]` and run `pytest`.
-* [`.gitignore`](.gitignore): Telling git which files to ignore
-* [`.pre-commit-config.yaml`](.pre-commit-config.yaml): Configuration of [pre-commit hooks](https://pre-commit.com/) that sanitize coding style and check for syntax errors. Enable via `pip install -e .[pre-commit] && pre-commit install`
-* [`.readthedocs.yml`](.readthedocs.yml): Configuration of documentation build for [Read the Docs](https://readthedocs.org/)
-* [`LICENSE`](LICENSE): License for your plugin
-* [`README.md`](README.md): This file
-* [`conftest.py`](conftest.py): Configuration of fixtures for [pytest](https://docs.pytest.org/en/latest/)
-* [`pyproject.toml`](setup.json): Python package metadata for registration on [PyPI](https://pypi.org/) and the [AiiDA plugin registry](https://aiidateam.github.io/aiida-registry/) (including entry points)
+**Workflow builders.** `@task.graph` functions that compose a Koopmans calculation out of upstream `aiida-quantumespresso` and `aiida-wannier90-workflows` workchains together with the steps only this plugin has:
 
-See also the following video sequences from the 2019-05 AiiDA tutorial:
+- **Ground state and spectra** — `RunScfNscf`, `RunPwBands`, `RunPdos`, and `DielectricTask`, which exposes the ph.x macroscopic dielectric constant that the screening step consumes.
+- **Wannierization** — `Wannierize` and `OptimizeWannierization` for a whole system; `WannierizeBlocks` to Wannierize each projection block off one shared nscf; `WannierizeAndSplitBlock` to split a block into energy-isolated groups at runtime, re-Wannierize each group, and merge the products back block-diagonally.
+- **Screening parameters** — `SinglepointDFPTWorkflow` drives kcw.x through wann2kcw, screen, and ham; `KoopmansDSCFWorkflow` drives kcp.x through a DFT initialization, a trial KI, a per-orbital Delta-SCF refinement, and a final KI. The periodic Delta-SCF route reaches kcp.x through `MlwfInitialization` and `FoldToSupercell`.
+- **Postprocessing and surrogates** — `UnfoldAndInterpolateTask` interpolates Wannier bands onto a k-path; `TrajectoryWorkflow` trains or tests a machine-learned model of the screening parameters over a trajectory.
 
- * [run aiida-diff example calculation](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=403s)
- * [aiida-diff CalcJob plugin](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=685s)
- * [aiida-diff Parser plugin](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=936s)
- * [aiida-diff computer/code helpers](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=1238s)
- * [aiida-diff input data (with validation)](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=1353s)
- * [aiida-diff cli](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=1621s)
- * [aiida-diff tests](https://www.youtube.com/watch?v=2CxiuiA1uVs&t=1931s)
- * [Adding your plugin to the registry](https://www.youtube.com/watch?v=760O2lDB-TM&t=112s)
- * [pre-commit hooks](https://www.youtube.com/watch?v=760O2lDB-TM&t=333s)
+**CalcJobs and parsers** for the Quantum ESPRESSO tools upstream does not cover: the Koopmans fork's `kcp.x`, `wann2kcp.x`, and `merge_evc.x`, the three calculation modes of `kcw.x`, and the `wan_mode='decompose'` pass of `pw2wannier90.x`, whose staged Wannier read-back files upstream's `Pw2wannier90Calculation` cannot supply.
 
-For more information, see the [developer guide](https://aiida-diff.readthedocs.io/en/latest/developer_guide) of your plugin.
+**Shared computation** as plain Python and numpy: Wannier product-file merging, unfolding and interpolation, machine-learning descriptors and estimators, projection and occupation accounting. The `@task` wrappers around these stay thin, so the maths is testable without a profile.
 
+## Entry points
 
-## Features
+Seven `aiida.calculations` entry points, each paired with the `aiida.parsers` entry point of the same name:
 
- * Add input files using `SinglefileData`:
-   ```python
-   SinglefileData = DataFactory('core.singlefile')
-   inputs['file1'] = SinglefileData(file='/path/to/file1')
-   inputs['file2'] = SinglefileData(file='/path/to/file2')
-   ```
+| Entry point | CalcJob | Parser | Runs |
+| --- | --- | --- | --- |
+| `koopmans.kcp` | `KcpCalculation` | `KcpParser` | `kcp.x` |
+| `koopmans.kcw_wann2kc` | `Wann2kcCalculation` | `Wann2kcParser` | `kcw.x`, `calculation='wann2kcw'` |
+| `koopmans.kcw_screen` | `KcwScreenCalculation` | `KcwScreenParser` | `kcw.x`, `calculation='screen'` |
+| `koopmans.kcw_ham` | `KcwHamCalculation` | `KcwHamParser` | `kcw.x`, `calculation='ham'` |
+| `koopmans.wann2kcp` | `Wann2kcpCalculation` | `Wann2kcpParser` | `wann2kcp.x` |
+| `koopmans.merge_evc` | `MergeEvcCalculation` | `MergeEvcParser` | `merge_evc.x` |
+| `koopmans.pw2wannier_decompose` | `Pw2wannierDecomposeCalculation` | `Pw2wannierDecomposeParser` | `pw2wannier90.x`, `wan_mode='decompose'` |
 
- * Specify command line options via a python dictionary and `DiffParameters`:
-   ```python
-   d = { 'ignore-case': True }
-   DiffParameters = DataFactory('koopmans')
-   inputs['parameters'] = DiffParameters(dict=d)
-   ```
-
- * `DiffParameters` dictionaries are validated using [voluptuous](https://github.com/alecthomas/voluptuous).
-   Find out about supported options:
-   ```python
-   DiffParameters = DataFactory('koopmans')
-   print(DiffParameters.schema.schema)
-   ```
+The `aiida.data` group registers no new node class. It maps the enums the workflow builders take as inputs — this plugin's spin channel, `ElectronicType` and `SpinType` from `aiida-quantumespresso`, and the projection, disentanglement, and optimization enums from `aiida-wannier90-workflows` — onto `aiida.orm.nodes.data.enum:EnumData`, so a member can be stored as a node and appear in the provenance graph. `[project.entry-points]` in `pyproject.toml` is the exact list.
 
 ## Installation
 
+Neither this plugin nor all of its dependencies are on PyPI yet. `[tool.uv.sources]` points at forks carrying features still working their way upstream, and each has to be checked out as a sibling of this repository:
+
 ```shell
-pip install aiida-koopmans
-verdi quicksetup  # better to set up a new profile
-verdi plugin list aiida.calculations  # should now show your calclulation plugins
+git clone https://github.com/elinscott/aiida-koopmans
+git clone --branch patched https://github.com/elinscott/aiida-workgraph
+git clone --branch patched https://github.com/elinscott/node-graph
+git clone --branch patched https://github.com/elinscott/aiida-wannier90-workflows
+git clone https://github.com/elinscott/aiida-wannierjl
+cd aiida-koopmans
+uv sync
+verdi presto                          # if you have no AiiDA profile yet
+verdi plugin list aiida.calculations  # the koopmans.* plugins should be listed
 ```
 
+Keep that list in step with `[tool.uv.sources]`, and drop an entry as its fork merges upstream.
 
-## Usage
-
-Here goes a complete example of how to submit a test calculation using this plugin.
-
-A quick demo of how to submit a calculation:
-```shell
-verdi daemon start     # make sure the daemon is running
-cd examples
-./example_01.py        # run test calculation
-verdi process list -a  # check record of calculation
-```
-
-The plugin also includes verdi commands to inspect its data types:
-```shell
-verdi data koopmans list
-verdi data koopmans export <PK>
-```
+Running a calculation also needs the Quantum ESPRESSO binaries, set up as AiiDA codes. `kcp.x` comes from [koopmans-kcp](https://github.com/epfl-theos/koopmans-kcp), `wann2kcp.x` and `merge_evc.x` from [koopmans-qe-utils](https://github.com/epfl-theos/koopmans-qe-utils), `kcw.x` from [Quantum ESPRESSO](https://gitlab.com/QEF/q-e) itself, and `pw2wannier90.x` with `wan_mode='decompose'` from its `wann-decompose` branch.
 
 ## Development
 
 ```shell
-git clone https://github.com/elinscott/aiida-koopmans .
-cd aiida-koopmans
-pip install --upgrade pip
-pip install -e .[pre-commit,testing]  # install extra dependencies
-pre-commit install  # install pre-commit hooks
-pytest -v  # discover and run all tests
+hatch test              # run the test suite
+hatch fmt --check       # ruff format and lint
+hatch run mypy:check    # static type checking
+hatch run docs:build    # build the documentation into docs/build/html
 ```
 
-See the [developer guide](http://aiida-koopmans.readthedocs.io/en/latest/developer_guide/index.html) for more information.
+`CONTRIBUTING.md` covers the variants of each command and the pre-commit hooks. The [documentation](http://aiida-koopmans.readthedocs.io/) covers the workgraph conventions this repository follows, and holds the API reference.
 
 ## License
 
 MIT
+
 ## Contact
 
 edwardlinscott@gmail.com
-
 
 [ci-badge]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml/badge.svg?branch=main
 [ci-link]: https://github.com/elinscott/aiida-koopmans/actions/workflows/ci.yml

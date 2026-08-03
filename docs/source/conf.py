@@ -59,9 +59,16 @@ pygments_style = "sphinx"
 # -- Options for HTML output ----------------------------------------------
 
 html_theme = "furo"
-html_logo = "images/AiiDA_transparent_logo.png"
 html_title = f"aiida-koopmans v{release}"
-html_theme_options = {}
+html_static_path = ["_static"]
+# furo swaps these with the color scheme. Setting html_logo as well would
+# render both it and the pair, one above the other.
+html_theme_options = {
+    "light_logo": "aiida-logo-light.svg",
+    "dark_logo": "aiida-logo-dark.svg",
+    # furo renders this on every page, above the header.
+    "announcement": "🚧 These pages are under construction — come back soon! 🚧",
+}
 html_show_sourcelink = False
 html_use_opensearch = "https://aiida-koopmans.readthedocs.io"
 html_search_language = "en"
@@ -91,15 +98,12 @@ def run_apidoc(_):
         "-o",
         apidoc_dir,
         package_dir,
-        "--private",
         "--force",
         "--no-toc",
     ]
 
     env = os.environ.copy()
-    env["SPHINX_APIDOC_OPTIONS"] = (
-        "members,special-members,private-members,undoc-members,show-inheritance"
-    )
+    env["SPHINX_APIDOC_OPTIONS"] = "members,undoc-members,show-inheritance"
     subprocess.check_call([cmd_path, *options], env=env)  # noqa: S603
 
 
