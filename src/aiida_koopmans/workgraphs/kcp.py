@@ -33,8 +33,9 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml_helpers import predict_estimator
+from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import AlphaScreening, ParallelizationDict
+from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
@@ -94,7 +95,7 @@ class KoopmansDSCFOutputs(TypedDict):
 
     The always-present sockets are :class:`KIFinalOutputs` plus ``alphas`` —
     the per-orbital screening parameters the final KI consumed (in the
-    :class:`~aiida_koopmans.types.AlphaScreening` shape): the converged
+    :class:`~aiida_koopmans.screening.AlphaScreening` shape): the converged
     Delta-SCF results, or the caller-injected values when
     ``calculate_alpha=False`` skipped the refinement loop. Exposed at the
     workflow level so consumers (e.g. the ML trajectory workflow's training
@@ -936,7 +937,7 @@ def KoopmansDSCFWorkflow(
     The starting screening parameters come from exactly one of two
     mutually exclusive inputs: the uniform scalar ``initial_alpha``
     (0.6 when neither is given) or the per-orbital ``initial_alphas``
-    (an :class:`~aiida_koopmans.types.AlphaScreening` payload, per spin
+    (an :class:`~aiida_koopmans.screening.AlphaScreening` payload, per spin
     channel with the filled and empty manifolds separate — the same
     layout the workflow's own ``alphas`` output uses). With
     ``calculate_alpha=False`` the refinement loop is skipped entirely:

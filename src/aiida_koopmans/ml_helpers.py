@@ -33,7 +33,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 
 if TYPE_CHECKING:
-    from aiida_koopmans.types import AlphaScreening
+    from aiida_koopmans.screening import AlphaScreening
 
 # Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
 # written against this value.
@@ -695,7 +695,7 @@ def assemble_power_spectrum_dataset(
 
     The decompose route produces descriptors per *projection block* (each
     block's Wannier functions), whereas the screening parameters live in the
-    per-spin :class:`~aiida_koopmans.types.AlphaScreening` shape. This joins
+    per-spin :class:`~aiida_koopmans.screening.AlphaScreening` shape. This joins
     them into a :class:`SnapshotDataset` whose row order is IDENTICAL to
     :func:`build_snapshot_dataset` (the ``self_hartree`` route), so a model is
     agnostic to which descriptor produced the training rows:

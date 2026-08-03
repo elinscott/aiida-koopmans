@@ -42,8 +42,9 @@ from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml_helpers import SnapshotDataset
+from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import AlphaScreening, MLDescriptor, MLMode, ParallelizationDict
+from aiida_koopmans.types import MLDescriptor, MLMode, ParallelizationDict
 from aiida_koopmans.workgraphs import (
     Codes,
     merge_parallelization_into_inputs,
