@@ -69,7 +69,7 @@ def interpolate_bands(
     smooth-interpolation method. Returns the ``(n_kpoints, n_bands)``
     eigenvalue table in eV.
     """
-    centers, _ = ui_helpers.parse_wout_centers_and_spreads(wannier90_wout.get_content("r"))
+    centers = ui_helpers.parse_wout_centers(wannier90_wout.get_content("r"))
     k1, k2, k3 = (int(n) for n in kgrid)
 
     energies = ui_helpers.unfold_and_interpolate(
