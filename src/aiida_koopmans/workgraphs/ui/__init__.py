@@ -58,31 +58,26 @@ def interpolate_bands(
     structure: orm.StructureData,
     kpath: orm.KpointsData,
     kgrid: list[int],
-    do_map: bool = False,
     use_ws_distance: bool = True,
-    w90_input_sc: bool = False,
     dft_ham_file: orm.SinglefileData | None = None,
     dft_smooth_ham_file: orm.SinglefileData | None = None,
 ) -> list[list[float]]:
     """Unfold the Wannier Hamiltonian and interpolate its bands along ``kpath``.
 
-    ``wannier90_wout`` supplies the Wannier centres and spreads (its
-    ``Final State`` block). Passing both DFT Hamiltonians switches on the
+    ``wannier90_wout`` supplies the Wannier centres (its ``Final State``
+    block). Passing both DFT Hamiltonians switches on the
     smooth-interpolation method. Returns the ``(n_kpoints, n_bands)``
     eigenvalue table in eV.
     """
-    centers, spreads = ui_helpers.parse_wout_centers_and_spreads(wannier90_wout.get_content("r"))
+    centers, _ = ui_helpers.parse_wout_centers_and_spreads(wannier90_wout.get_content("r"))
     k1, k2, k3 = (int(n) for n in kgrid)
 
     energies = ui_helpers.unfold_and_interpolate(
         hr_content=kc_ham_file.get_content("r"),
         centers=centers,
-        spreads=spreads,
         cell=np.array(structure.cell),
         kgrid=(k1, k2, k3),
         kpath_kpts=kpath.get_kpoints(),
-        w90_input_sc=bool(w90_input_sc),
-        do_map=bool(do_map),
         use_ws_distance=bool(use_ws_distance),
         dft_ham_content=dft_ham_file.get_content("r") if dft_ham_file is not None else None,
         dft_smooth_ham_content=(
@@ -124,9 +119,7 @@ def UnfoldAndInterpolateTask(
     structure: orm.StructureData,
     kpath: orm.KpointsData,
     kgrid: list[int],
-    do_map: bool = False,
     use_ws_distance: bool = True,
-    w90_input_sc: bool = False,
     do_dos: bool = True,
     dft_ham_file: orm.SinglefileData | None = None,
     dft_smooth_ham_file: orm.SinglefileData | None = None,
@@ -135,7 +128,7 @@ def UnfoldAndInterpolateTask(
     """Interpolate a band structure from a Wannier Hamiltonian, optionally with a DOS.
 
     ``kc_ham_file`` is the Hamiltonian to interpolate, ``wannier90_wout``
-    the Wannier90 output providing centres and spreads, ``kgrid`` the
+    the Wannier90 output providing the centres, ``kgrid`` the
     Monkhorst-Pack grid the supercell corresponds to, and ``kpath`` the
     primitive-cell band path (crystal coordinates). Supplying both
     ``dft_ham_file`` and ``dft_smooth_ham_file`` activates the
@@ -154,9 +147,7 @@ def UnfoldAndInterpolateTask(
         structure=structure,
         kpath=kpath,
         kgrid=[int(n) for n in kgrid],
-        do_map=bool(do_map),
         use_ws_distance=bool(use_ws_distance),
-        w90_input_sc=bool(w90_input_sc),
         **interpolation_kwargs,
     ).result
 
