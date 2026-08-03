@@ -91,15 +91,12 @@ def run_apidoc(_):
         "-o",
         apidoc_dir,
         package_dir,
-        "--private",
         "--force",
         "--no-toc",
     ]
 
     env = os.environ.copy()
-    env["SPHINX_APIDOC_OPTIONS"] = (
-        "members,special-members,private-members,undoc-members,show-inheritance"
-    )
+    env["SPHINX_APIDOC_OPTIONS"] = "members,undoc-members,show-inheritance"
     subprocess.check_call([cmd_path, *options], env=env)  # noqa: S603
 
 
