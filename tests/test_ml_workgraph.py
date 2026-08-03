@@ -174,6 +174,62 @@ class TestTrajectoryGraphBuild:
                 ml_mode="test",
             )
 
+    def test_predict_mode_skips_the_dataset_layer(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Predict applies the model inside each DSCF; no dataset, fit or score tasks."""
+        from aiida_koopmans import ml_helpers
+
+        model = ml_helpers.fit_screening_model(
+            {
+                "descriptors": [[-1.0], [-2.0]],
+                "alpha_targets": [0.6, 0.7],
+                "filled": [True, False],
+                "labels": ["orb_1", "orb_2"],
+            },
+            "linear_regression",
+        )
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="predict",
+            ml_model=model,
+        )
+        names = _all_task_names(wg)
+        assert any("dscf_snapshot_1" in n for n in names), names
+        assert any("dscf_snapshot_2" in n for n in names), names
+        for forbidden in (
+            "extract_snapshot_dataset",
+            "train_screening_model",
+            "evaluate_screening_model",
+        ):
+            assert not any(forbidden in n for n in names), (forbidden, names)
+
+    def test_predict_mode_without_model_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(ValueError, match="requires a trained"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="predict",
+            )
+
+    def test_predict_mode_rejects_power_spectrum(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(NotImplementedError, match="self_hartree"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="predict",
+                ml_model={"descriptor": "power_spectrum", "submodels": {}},
+                descriptor="power_spectrum",
+            )
+
     def test_power_spectrum_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):

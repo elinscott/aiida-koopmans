@@ -880,6 +880,22 @@ class TestAssembleAlphaScreening:
 # ----------------------------------------------------------------------
 
 
+def _linear_sh_model(occ_and_emp_together: bool = True) -> dict:
+    """Fit an exactly-linear self-Hartree model (``alpha = 0.4 - 0.1 * sh``)."""
+    from aiida_koopmans import ml_helpers
+
+    return ml_helpers.fit_screening_model(
+        {
+            "descriptors": [[-1.0], [-2.0], [-3.0], [-4.0]],
+            "alpha_targets": [0.5, 0.6, 0.7, 0.8],
+            "filled": [True, True, False, False],
+            "labels": ["orb_1", "orb_2", "orb_3", "orb_4"],
+        },
+        "linear_regression",
+        occ_and_emp_together=occ_and_emp_together,
+    )
+
+
 class TestKoopmansDSCFGraphBuild:
     """Inspect the task graph wired by ``KoopmansDSCFWorkflow.build`` for ozone.
 
@@ -1775,6 +1791,102 @@ class TestKoopmansDSCFGraphBuild:
         ):
             assert not any(forbidden in label for label in labels), (forbidden, labels)
 
+    def test_ml_model_routes_to_prediction(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """An ml_model replaces the refinement sub-graph with the predict one."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_model=_linear_sh_model(),
+        )
+        labels = self._all_link_labels(wg)
+        assert any("PredictScreeningParameters" in label for label in labels), labels
+        assert not any("ComputeScreeningParameters" in label for label in labels), labels
+        # The final KI still applies the (now predicted) screening parameters.
+        assert any("RunFinalKI" in label for label in labels), labels
+
+    def test_predict_subgraph_is_trial_plus_prediction(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The predict sub-graph runs one trial KI and no Delta-SCF fan-out."""
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import PredictScreeningParameters
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+
+        sub_wg = PredictScreeningParameters.build(
+            code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            dft_remote=dummy_remote,
+            ml_model=_linear_sh_model(),
+        )
+        sub_labels = self._all_link_labels(sub_wg)
+
+        def _sub_has(substr: str) -> bool:
+            return any(substr in label for label in sub_labels)
+
+        assert _sub_has("generate_alphas"), sub_labels
+        assert _sub_has("ki_trial"), sub_labels
+        assert _sub_has("assign_orbital_groups"), sub_labels
+        assert _sub_has("predict_alphas"), sub_labels
+        # No Delta-SCF machinery anywhere in the predict route.
+        for forbidden in (
+            "compute_orbital_screening_parameters",
+            "refine_screening_parameters",
+            "ScreeningIteration",
+            "dft_n_minus_1",
+            "pz_print",
+            "dft_n_plus_1",
+        ):
+            assert not _sub_has(forbidden), (forbidden, sub_labels)
+
+    def test_ml_model_requires_calculate_alpha(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        with pytest.raises(ValueError, match="drop ml_model"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_model=_linear_sh_model(),
+                calculate_alpha=False,
+                initial_alpha=None,
+                initial_alphas={
+                    "filled": {"none": [0.6] * 9},
+                    "empty": {"none": [0.6]},
+                },
+            )
+
+    def test_ml_model_rejects_alpha_numsteps(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        with pytest.raises(ValueError, match="alpha_numsteps cannot take effect"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_model=_linear_sh_model(),
+                alpha_numsteps=2,
+            )
+
 
 # ----------------------------------------------------------------------
 # Skip-mode final KI vs first-iteration trial KI: concrete kcp.x inputs
@@ -2031,3 +2143,89 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
             assert trial["parameters"].get(namelist) == final["parameters"].get(namelist), namelist
         for key in ("overlays", "read_wavefunctions", "parent_folder", "alphas"):
             assert trial[key] == final[key], key
+
+
+# ----------------------------------------------------------------------
+# predict_alpha_screening — plain-python callable
+# ----------------------------------------------------------------------
+
+
+class TestPredictAlphaScreening:
+    @staticmethod
+    def _call(model, metric, orbitals):
+        from aiida_koopmans.workgraphs.kcp import predict_alpha_screening
+
+        return predict_alpha_screening._callable(  # type: ignore[attr-defined]
+            model=model, metric=metric, orbitals=orbitals
+        )
+
+    @staticmethod
+    def _orb(index, *, filled, group_id, representative, spin="none"):
+        return {
+            "spin": spin,
+            "index": index,
+            "filled": filled,
+            "group_id": group_id,
+            "representative": representative,
+        }
+
+    def test_predicts_every_orbital_from_its_descriptor(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=2, representative=True),
+            self._orb(3, filled=False, group_id=3, representative=True),
+        ]
+        metric = [[-1.0, -2.0, -3.0], [-1.0, -2.0, -3.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.5, 0.6])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.7])
+
+    def test_group_members_inherit_the_representative_prediction(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=1, representative=False),
+            self._orb(3, filled=False, group_id=2, representative=True),
+        ]
+        # The non-representative orbital's own descriptor (-2.0) would
+        # predict 0.6; the broadcast hands it the representative's 0.5.
+        metric = [[-1.0, -2.0, -3.0], [-1.0, -2.0, -3.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.5, 0.5])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.7])
+
+    def test_split_model_routes_filled_and_empty_to_their_submodels(self):
+        model = _linear_sh_model(occ_and_emp_together=False)
+        # Same line for both submodels (they are fitted on disjoint halves
+        # of the same alpha = 0.4 - 0.1*sh data), but the routing is what
+        # this exercises: a missing occ/emp submodel would KeyError.
+        assert set(model["submodels"]) == {"occ", "emp"}
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=False, group_id=2, representative=True),
+        ]
+        metric = [[-1.5, -3.5], [-1.5, -3.5]]
+        result = self._call(model, metric, orbitals)
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.55])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.75])
+
+    def test_spin_polarized_channels_read_their_own_metric_row(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True, spin="up"),
+            self._orb(2, filled=False, group_id=2, representative=True, spin="up"),
+            self._orb(1, filled=True, group_id=3, representative=True, spin="down"),
+            self._orb(2, filled=False, group_id=4, representative=True, spin="down"),
+        ]
+        metric = [[-1.0, -2.0], [-3.0, -4.0]]
+        result = self._call(_linear_sh_model(), metric, orbitals)
+        assert result["filled"][SpinChannel.UP] == pytest.approx([0.5])
+        assert result["empty"][SpinChannel.UP] == pytest.approx([0.6])
+        assert result["filled"][SpinChannel.DOWN] == pytest.approx([0.7])
+        assert result["empty"][SpinChannel.DOWN] == pytest.approx([0.8])
+
+    def test_model_trained_on_another_descriptor_raises(self):
+        model = _linear_sh_model()
+        model["descriptor"] = "power_spectrum"
+        with pytest.raises(ValueError, match="trained on `power_spectrum`"):
+            self._call(
+                model, [[-1.0]], [self._orb(1, filled=True, group_id=1, representative=True)]
+            )

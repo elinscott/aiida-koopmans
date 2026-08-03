@@ -98,12 +98,14 @@ class MLMode(str, Enum):
 
     ``NONE`` just runs the snapshots; ``TRAIN`` fits a screening model on
     the computed alphas; ``TEST`` scores a previously trained model
-    against them. Prediction is not implemented.
+    against them; ``PREDICT`` applies a previously trained model in place
+    of the per-orbital Delta-SCF refinement.
     """
 
     NONE = "none"
     TRAIN = "train"
     TEST = "test"
+    PREDICT = "predict"
 
 
 class MLDescriptor(str, Enum):
