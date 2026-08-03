@@ -19,7 +19,6 @@ from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
 from aiida_koopmans.workgraphs.kcp import (
     KcpBaseInputs,
-    _build_dft_parameters,
     _build_n_minus_1_parameters,
     _build_n_plus_1_parameters,
     _build_orbdep_parameters,
@@ -29,6 +28,7 @@ from aiida_koopmans.workgraphs.kcp import (
     _validate_alpha_inputs,
     _validate_alpha_screening,
     _validate_scope,
+    build_dft_parameters,
 )
 from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 
@@ -310,7 +310,7 @@ _OZONE_BASE = KcpBaseInputs(
 
 class TestBuildDftParameters:
     def test_has_expected_namelists(self):
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert set(params.keys()) == {"CONTROL", "SYSTEM", "ELECTRONS", "IONS", "EE"}
         assert "NKSIC" not in params
         # EE machinery always on; periodic systems compensate with 'none'.
@@ -319,14 +319,14 @@ class TestBuildDftParameters:
     def test_dft_control_is_from_scratch(self):
         # ndr/ndw are owned by ``KcpCalculation._inject_owned_keys`` (universal
         # 50/60 across all kcp.x runs). The builder shouldn't set them.
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["CONTROL"]["restart_mode"] == "from_scratch"
         assert params["CONTROL"]["calculation"] == "cp"
         assert "ndr" not in params["CONTROL"]
         assert "ndw" not in params["CONTROL"]
 
     def test_dft_system_no_orbdep(self):
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["SYSTEM"]["do_orbdep"] is False
         assert params["SYSTEM"]["nelec"] == 18
         assert params["SYSTEM"]["nelup"] == 9
@@ -336,17 +336,17 @@ class TestBuildDftParameters:
         assert params["SYSTEM"]["ecutrho"] == 260.0
 
     def test_dft_outerloop_enabled(self):
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["ELECTRONS"]["do_outerloop"] is True
         assert params["ELECTRONS"]["do_outerloop_empty"] is True
 
     def test_conv_thr_scales_with_nelec(self):
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["ELECTRONS"]["conv_thr"] == pytest.approx(1.8e-8)
 
     def test_nspin_one_skips_spin_keys(self):
         base = replace(_OZONE_BASE, nspin=1, nelup=None, neldw=None)
-        params = _build_dft_parameters(base, nbnd=10)
+        params = build_dft_parameters(base, nbnd=10)
         assert params["SYSTEM"]["nspin"] == 1
         assert "nelup" not in params["SYSTEM"]
         assert "neldw" not in params["SYSTEM"]
@@ -354,11 +354,11 @@ class TestBuildDftParameters:
     def test_ion_radius_scales_with_ntyp(self):
         # ``ion_radius(i)`` must be emitted once per species — ozone has
         # ``ntyp=1`` so we get a single entry, not a hardcoded 1..4.
-        params = _build_dft_parameters(_OZONE_BASE, nbnd=10)
+        params = build_dft_parameters(_OZONE_BASE, nbnd=10)
         assert params["IONS"]["ion_radius(1)"] == 1.0
         assert "ion_radius(2)" not in params["IONS"]
         # Three-species cell should emit three entries.
-        params3 = _build_dft_parameters(replace(_OZONE_BASE, ntyp=3), nbnd=10)
+        params3 = build_dft_parameters(replace(_OZONE_BASE, ntyp=3), nbnd=10)
         assert params3["IONS"]["ion_radius(1)"] == 1.0
         assert params3["IONS"]["ion_radius(2)"] == 1.0
         assert params3["IONS"]["ion_radius(3)"] == 1.0
@@ -1079,13 +1079,13 @@ class TestKoopmansDSCFGraphBuild:
         # ``@task.graph`` sub-tasks are opaque from the parent graph at
         # build time, so the walker can't reach the fan-out sub-graph
         # through ``ComputeScreeningParameters`` alone.
-        from aiida_koopmans.workgraphs.kcp import _kcp_base_inputs
+        from aiida_koopmans.workgraphs.kcp import kcp_base_inputs
 
         iter_wg = ScreeningIteration.build(
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
-            base=_kcp_base_inputs(
+            base=kcp_base_inputs(
                 ozone_structure,
                 nspin=2,
                 nelec=18,
@@ -1149,7 +1149,7 @@ class TestKoopmansDSCFGraphBuild:
 
         from aiida_koopmans.workgraphs.kcp import (
             ComputeOrbitalScreeningParameters,
-            _kcp_base_inputs,
+            kcp_base_inputs,
         )
         from aiida_koopmans.workgraphs.variational_orbitals import (
             enumerate_variational_orbitals,
@@ -1181,7 +1181,7 @@ class TestKoopmansDSCFGraphBuild:
             code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
-            base=_kcp_base_inputs(
+            base=kcp_base_inputs(
                 ozone_structure,
                 nspin=2,
                 nelec=18,

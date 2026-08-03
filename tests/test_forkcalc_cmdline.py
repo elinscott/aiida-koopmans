@@ -25,7 +25,7 @@ def _wann2kcp_inputs(code, resources):
 def _kcp_inputs(code, resources, structure, pseudos):
     from aiida import orm
 
-    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_dft_parameters
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, build_dft_parameters
 
     base = KcpBaseInputs(
         ecutwfc=20.0,
@@ -41,7 +41,7 @@ def _kcp_inputs(code, resources, structure, pseudos):
     return {
         "code": code,
         "structure": structure,
-        "parameters": orm.Dict(dict=_build_dft_parameters(base, nbnd=10)),
+        "parameters": orm.Dict(dict=build_dft_parameters(base, nbnd=10)),
         "pseudos": pseudos,
         "metadata": {"options": {"resources": resources}},
     }

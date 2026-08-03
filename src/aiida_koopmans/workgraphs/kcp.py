@@ -31,7 +31,7 @@ from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.calculations.kcp_inputs import _build_kcp_inputs
+from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml_helpers import predict_estimator
 from aiida_koopmans.parallelization import (
@@ -859,7 +859,7 @@ def InitializeOrbitals(
     QueryBuilder / structure-walking work inside dedicated process
     nodes (avoids the ``TaggedValue`` proxy hitting SQLAlchemy).
     """
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -869,13 +869,13 @@ def InitializeOrbitals(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
     )
-    parameters = _build_dft_parameters(
+    parameters = build_dft_parameters(
         base, nbnd=nbnd, restart_mode=restart_mode, outerloop=outerloop
     )
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
-    inputs = _build_kcp_inputs(
+    inputs = build_kcp_inputs(
         code,
         structure,
         parameters,
@@ -1401,7 +1401,7 @@ def RunFinalKI(
     # a named mismatch instead of a corrupt ``file_alpharef``.
     if nelup is not None and neldw is not None:
         _validate_alpha_screening(alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -1419,7 +1419,7 @@ def RunFinalKI(
     )
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
-    final_inputs = _build_kcp_inputs(
+    final_inputs = build_kcp_inputs(
         code,
         structure,
         ki_parameters,
@@ -1490,7 +1490,7 @@ def ComputeFilledOrbitalScreeningParameter(
             outputs of the same trial KI; passed in here rather than
             re-loaded so the orbital task is provenance-pure.
     """
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -1504,7 +1504,7 @@ def ComputeFilledOrbitalScreeningParameter(
     if overrides:
         parameters = recursive_merge(parameters, overrides)
 
-    inputs = _build_kcp_inputs(
+    inputs = build_kcp_inputs(
         code,
         structure,
         parameters,
@@ -1600,7 +1600,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 
     if dummy_overrides:
         dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
-    dummy_inputs = _build_kcp_inputs(
+    dummy_inputs = build_kcp_inputs(
         code,
         structure,
         dummy_parameters,
@@ -1617,9 +1617,9 @@ def ComputeEmptyOrbitalScreeningParameter(
     # the next step. ``pz_alphas`` is the uniform-``alpha_guess`` payload
     # already built by ``generate_alphas`` upstream. ``overlay`` is the
     # spin-swap save-file map (``{}`` when no swap is needed);
-    # ``_build_kcp_inputs`` skips the overlay socket when the dict is
+    # ``build_kcp_inputs`` skips the overlay socket when the dict is
     # empty.
-    pz_inputs = _build_kcp_inputs(
+    pz_inputs = build_kcp_inputs(
         code,
         structure,
         pz_parameters,
@@ -1634,7 +1634,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
-    n_plus_1_inputs = _build_kcp_inputs(
+    n_plus_1_inputs = build_kcp_inputs(
         code,
         structure,
         n_plus_1_parameters,
@@ -2156,7 +2156,7 @@ def ComputeScreeningParameters(
             spin_polarized=spin_polarized,
         )
 
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -2326,7 +2326,7 @@ def PredictScreeningParameters(
             spin_polarized=spin_polarized,
         )
 
-    base = _kcp_base_inputs(
+    base = kcp_base_inputs(
         structure,
         nspin=nspin,
         nelec=nelec,
@@ -2702,7 +2702,7 @@ def _stage_wannier_seed(
 
     When both files are given, switch ``SYSTEM.restart_from_wannier_pwscf``
     on (mutating ``parameters`` in place) and return the
-    ``read_wavefunctions`` staging map for :func:`_build_kcp_inputs`;
+    ``read_wavefunctions`` staging map for :func:`build_kcp_inputs`;
     otherwise leave the parameters untouched and return ``None``. Used by
     whichever orbital-dependent run directly follows the Wannier-seeded
     DFT init — the first trial KI, or the final KI when the screening
@@ -2717,7 +2717,7 @@ def _stage_wannier_seed(
     }
 
 
-def _kcp_base_inputs(
+def kcp_base_inputs(
     structure: orm.StructureData,
     *,
     nspin: int,
@@ -2748,7 +2748,7 @@ def _kcp_base_inputs(
     )
 
 
-def _build_dft_parameters(
+def build_dft_parameters(
     base: KcpBaseInputs,
     *,
     nbnd: int,
@@ -2864,9 +2864,9 @@ def _build_orbdep_parameters(
     iterations restart from the previous trial's already-converged
     variational basis, so the inner loop is unnecessary.
     """
-    params = _build_dft_parameters(base, nbnd=nbnd)
+    params = build_dft_parameters(base, nbnd=nbnd)
     # ``restart_mode`` is the only ``&CONTROL`` key the builder owns; ndr/ndw
-    # are forced by the CalcJob (see ``_build_dft_parameters`` for context).
+    # are forced by the CalcJob (see ``build_dft_parameters`` for context).
     params["CONTROL"]["restart_mode"] = "restart"
 
     # Orbital-dependent screening.
@@ -2926,7 +2926,7 @@ def _build_orbdep_parameters(
 #   filled orbital → ``dft_n-1``
 #   empty  orbital → ``dft_n+1_dummy`` (iter 1 only) → ``pz_print`` → ``dft_n+1``
 #
-# Common deltas vs ``_build_dft_parameters``:
+# Common deltas vs ``build_dft_parameters``:
 # - ``nbnd`` removed.
 # - ``conv_thr`` and ``esic_conv_thr`` 100x looser.
 # - ``empty_states_maxstep`` / ``do_outerloop_empty`` removed (no empty
@@ -2964,10 +2964,10 @@ def _alpha_step_lite_nksic(
 def _alpha_step_dft_base(base: KcpBaseInputs) -> dict[str, Any]:
     """``&CONTROL/SYSTEM/ELECTRONS`` skeleton shared by every DFT-like alpha step.
 
-    Built from ``_build_dft_parameters`` then trimmed: ``nbnd`` dropped,
+    Built from ``build_dft_parameters`` then trimmed: ``nbnd`` dropped,
     ``conv_thr`` loosened, empty-manifold knobs removed.
     """
-    params = _build_dft_parameters(base, nbnd=0)  # nbnd stripped below
+    params = build_dft_parameters(base, nbnd=0)  # nbnd stripped below
     params["SYSTEM"].pop("nbnd", None)
     params["ELECTRONS"].pop("empty_states_maxstep", None)
     params["ELECTRONS"].pop("do_outerloop_empty", None)
@@ -3204,7 +3204,7 @@ def _trial_kcp_inputs(
     if ki_overrides:
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
-    return _build_kcp_inputs(
+    return build_kcp_inputs(
         code,
         structure,
         ki_parameters,

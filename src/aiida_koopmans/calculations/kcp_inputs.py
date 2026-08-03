@@ -96,7 +96,7 @@ def _autogenerate_nrb(
         system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
 
 
-def _build_kcp_inputs(
+def build_kcp_inputs(
     code: orm.AbstractCode,
     structure: orm.StructureData,
     parameters: dict[str, Any],

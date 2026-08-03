@@ -373,7 +373,7 @@ def test_read_wavefunctions_staging_and_parent_walk_skip(
     from aiida import orm
     from aiida.common import LinkType
 
-    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_dft_parameters
+    from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, build_dft_parameters
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
 
@@ -412,7 +412,7 @@ def test_read_wavefunctions_staging_and_parent_walk_skip(
     inputs = {
         "code": code,
         "structure": ozone_structure,
-        "parameters": orm.Dict(dict=_build_dft_parameters(base, nbnd=10, restart_mode="restart")),
+        "parameters": orm.Dict(dict=build_dft_parameters(base, nbnd=10, restart_mode="restart")),
         "pseudos": ozone_real_pseudos,
         "parent_folder": parent,
         "read_wavefunctions": {"evc_occupied1": merge_occ, "evc0_empty1": merge_emp},
