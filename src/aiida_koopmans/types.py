@@ -418,9 +418,9 @@ def block_occupancy(block: ProjectionBlock) -> bool:
             f"Block {block['label']!r} does not say whether it is occupied or "
             "empty. Stamp `filled` where the occupancy is known -- from explicit "
             "projections, or from the band groups the runtime detection found. "
-            "The band slots do not settle it: a block that disentangles across "
-            "the occupied/empty boundary mixes both manifolds into its Wannier "
-            "functions while every slot stays on one side."
+            "Its Wannier positions cannot settle it: a block that disentangles "
+            "across the occupied/empty boundary draws its Wannier functions from "
+            "both manifolds, and its positions still sit on one side."
         )
     return bool(block["filled"])
 
