@@ -156,6 +156,17 @@ class TestValidateProjectionBlock:
         with pytest.raises(ValueError, match="one band per Wannier function"):
             validate_projection_block(block)
 
+    def test_rejects_gapped_bands(self):
+        """An exclusion punching a hole inside the block's window is refused.
+
+        The derivation would read past the holes and yield ``[1, 3, 5]``;
+        no construction path builds such a block, so it is refused rather
+        than tolerated.
+        """
+        block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
+        with pytest.raises(ValueError, match="holes at \\[2, 4\\]"):
+            validate_projection_block(block)
+
 
 # ----------------------------------------------------------------------
 # validate_projection_block_sequence
@@ -272,16 +283,6 @@ class TestGetWannierIndices:
         """Bands excluded above the block never join its Wannier positions."""
         block = _explicit("block_2", range(5, 9), exclude_bands=[1, 2, 3, 4, 9, 10])
         assert get_wannier_indices(block) == [5, 6, 7, 8]
-
-    def test_gapped_exclusions_read_past_the_gap(self):
-        """The positions follow the bands read, not a contiguous window.
-
-        The block reads three bands, and the exclusions at 2 and 4 push the
-        third of them up to 5. No construction path builds such a block:
-        this pins the rule the derivation follows, not a real input.
-        """
-        block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
-        assert get_wannier_indices(block) == [1, 3, 5]
 
 
 # ----------------------------------------------------------------------

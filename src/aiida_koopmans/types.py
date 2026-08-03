@@ -330,9 +330,11 @@ def validate_projection_block(block: ProjectionBlock) -> None:
 
     Lives beside the type because a ``TypedDict`` cannot validate at
     runtime; every entry point that takes blocks calls this first. The
-    rule is ``num_bands >= num_wann >= 1``. Raise ``ValueError`` naming
-    the block and the rule it breaks. Occupancy is not among the rules --
-    it is allowed to be unknown here (:func:`block_occupancy`).
+    rules are ``num_bands >= num_wann >= 1``, and the block's bands must
+    be contiguous: ``exclude_bands`` may not punch a hole inside them.
+    Raise ``ValueError`` naming the block and the rule it breaks.
+    Occupancy is not among the rules -- it is allowed to be unknown here
+    (:func:`block_occupancy`).
     """
     label = block["label"]
     num_wann = int(block["num_wann"])
@@ -346,6 +348,14 @@ def validate_projection_block(block: ProjectionBlock) -> None:
         raise ValueError(
             f"Block {label!r} reads {num_bands} bands but Wannierises {num_wann} "
             "functions; wannier90 needs at least one band per Wannier function."
+        )
+    indices = get_wannier_indices(block)
+    holes = sorted(set(range(indices[0], indices[-1] + 1)) - set(indices))
+    if holes:
+        raise ValueError(
+            f"Block {label!r} Wannierises bands {indices}: `exclude_bands` "
+            f"punches holes at {holes} inside them. A block's bands must be "
+            "contiguous; exclude only bands below or above the block."
         )
 
 
@@ -361,9 +371,9 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
       (``num_bands > num_wann``): a lower block's pool inflates the bands
       every block above it reads.
 
-    Under these rules a block's band indices are its positions in the
-    channel's Wannier ordering, which is what :func:`get_wannier_indices`
-    returns. Raise ``ValueError`` naming the offending blocks.
+    Under these rules the positions :func:`get_wannier_indices` returns
+    are exactly the block's own band indices. Raise ``ValueError`` naming
+    the offending blocks.
     """
     by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
     for block in blocks:
@@ -392,17 +402,19 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
 
 
 def get_wannier_indices(block: ProjectionBlock) -> list[int]:
-    """Return the block's band indices: the lowest ``num_wann`` bands it reads.
+    """Return the block's ascending positions in the channel's Wannier ordering.
 
-    ``exclude_bands`` and ``num_bands`` say which bands wannier90 reads;
-    the returned list holds the lowest ``num_wann`` of those, counted from
-    1. These indices are also the block's positions in the channel's
-    Wannier ordering, because :func:`validate_projection_block_sequence`
-    enforces the layout that makes the two agree: blocks ascend within
-    each channel, and only the uppermost may disentangle. A block that
-    does disentangle optimizes its subspace out of every band it reads, so
-    its indices say where the block sits and how wide it is, never which
-    bands its Wannier functions came from. That is what the
+    The returned list holds the ``num_wann`` positions the block's Wannier
+    functions take among the channel's, counted from 1. They are derived
+    from the bands the block reads — ``exclude_bands`` and ``num_bands``
+    say which — as the lowest ``num_wann`` of those, because a
+    disentanglement pool sits above them. That the positions are those
+    band indices is guaranteed by
+    :func:`validate_projection_block_sequence`: blocks ascend within each
+    channel, and only the uppermost may disentangle. A block that does
+    disentangle optimizes its subspace out of every band it reads, so its
+    positions say where it sits and how wide it is, never which bands its
+    Wannier functions came from. That is what the
     band-to-Wannier-function map needs
     (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
     widening the list to the pool would mis-address the Wannier functions.
