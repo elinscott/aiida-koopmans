@@ -33,14 +33,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.ml_helpers import predict_estimator
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import (
-    AlphaScreening,
-    Correction,
-    ParallelizationDict,
-    VariationalOrbital,
-    VariationalOrbitalType,
-    map_key_for,
-)
+from aiida_koopmans.types import AlphaScreening, Correction, ParallelizationDict
 from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
@@ -56,9 +49,12 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
+    VariationalOrbital,
+    VariationalOrbitalType,
     assign_orbital_groups,
     expand_alphas_by_group,
     extract_self_hartree_from_kcp,
+    map_key_for,
 )
 
 # ----------------------------------------------------------------------

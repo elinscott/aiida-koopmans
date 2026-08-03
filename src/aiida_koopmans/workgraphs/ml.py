@@ -48,7 +48,6 @@ from aiida_koopmans.types import (
     MLDescriptor,
     MLMode,
     ParallelizationDict,
-    VariationalOrbitalType,
 )
 from aiida_koopmans.workgraphs import (
     Codes,
@@ -64,6 +63,7 @@ from aiida_koopmans.workgraphs.kcp import (
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
 )
+from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
 DecomposeTask = task(Pw2wannierDecomposeCalculation)

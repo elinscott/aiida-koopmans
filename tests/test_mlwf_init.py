@@ -15,10 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aiida_koopmans.types import (
-    Correction,
-    VariationalOrbitalType,
-)
+from aiida_koopmans.types import Correction
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs
 from aiida_koopmans.workgraphs.mlwf_init import (
     MlwfInitialization,
@@ -26,6 +23,7 @@ from aiida_koopmans.workgraphs.mlwf_init import (
     _build_dft_init_from_wannier_parameters,
     check_wannier_initialization,
 )
+from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 from tests.fixtures import ozone_projection_blocks as _ozone_blocks
 
 # ----------------------------------------------------------------------

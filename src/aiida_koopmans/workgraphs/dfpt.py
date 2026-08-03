@@ -77,7 +77,7 @@ from aiida_koopmans.projections import (
     projection_win_string,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ParallelizationDict, VariationalOrbital, map_key_for
+from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -98,8 +98,10 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
+    VariationalOrbital,
     assign_orbital_groups,
     expand_alphas_by_group,
+    map_key_for,
     spreads_metric_row,
 )
 
