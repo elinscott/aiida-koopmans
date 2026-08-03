@@ -1,4 +1,4 @@
-"""Tests for the pure-python unfold-and-interpolate helpers in ``ui_helpers.py``.
+"""Tests for the pure-python unfold-and-interpolate helpers in ``workgraphs/ui/helpers.py``.
 
 The silicon data in ``tests/data/ui/`` comes from the reference (ASE-based)
 ``koopmans`` package's test suite; ``si_ui_reference.json`` holds the band
@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from aiida_koopmans import ui_helpers
+from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
 
 DATA_DIR = Path(__file__).parent / "data" / "ui"
 
