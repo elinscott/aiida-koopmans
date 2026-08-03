@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import (
+from aiida_koopmans.projections import (
     OrbitalDict,
     block_w90_kwargs,
     get_wannier_indices,
-    group_blocks_to_merge,
-    merge_dest_filename,
     validate_projection_block,
     validate_projection_block_sequence,
 )
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.types import group_blocks_to_merge, merge_dest_filename
 from tests.fixtures import automatic_block as _automatic
 from tests.fixtures import explicit_block as _explicit
 

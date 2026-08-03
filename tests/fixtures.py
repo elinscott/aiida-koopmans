@@ -250,8 +250,8 @@ def explicit_block(
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
+    from aiida_koopmans.projections import ExplicitProjectionBlock
     from aiida_koopmans.spin import SpinChannel
-    from aiida_koopmans.types import ExplicitProjectionBlock
 
     wannier_indices = list(wannier_indices)
     num_wann = len(wannier_indices)
@@ -312,8 +312,8 @@ def automatic_block(label, wannier_indices, spin=None, projection_type=None, fil
     """
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
+    from aiida_koopmans.projections import AutomaticProjectionBlock
     from aiida_koopmans.spin import SpinChannel
-    from aiida_koopmans.types import AutomaticProjectionBlock
 
     if projection_type is None:
         projection_type = WannierProjectionType.ATOMIC_PROJECTORS_QE
@@ -357,8 +357,8 @@ def ozone_projection_blocks():
     """Return periodic-ozone projections: 9 occupied + 1 empty band, nspin=1."""
     from aiida_wannier90_workflows.common.types import WannierProjectionType
 
+    from aiida_koopmans.projections import ExplicitProjectionBlock
     from aiida_koopmans.spin import SpinChannel
-    from aiida_koopmans.types import ExplicitProjectionBlock
 
     def _block(label, include, filled):
         include = list(include)

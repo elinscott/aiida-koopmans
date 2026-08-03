@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import ExplicitProjectionBlock
+from aiida_koopmans.projections import ExplicitProjectionBlock
 from tests.fixtures import explicit_block
 
 

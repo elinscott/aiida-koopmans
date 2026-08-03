@@ -63,17 +63,16 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import (
-    ParallelizationDict,
+from aiida_koopmans.projections import (
     ProjectionBlock,
     ProjectionBlockId,
-    VariationalOrbital,
     block_occupancy,
     block_w90_kwargs,
     validate_projection_block,
     validate_projection_block_sequence,
 )
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.types import ParallelizationDict, VariationalOrbital
 from aiida_koopmans.workgraphs import (
     Codes,
     merge_parallelization_into_inputs,

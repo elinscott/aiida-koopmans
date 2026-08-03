@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from aiida_koopmans.projections import ExplicitProjectionBlock, get_wannier_indices
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ExplicitProjectionBlock, get_wannier_indices
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
     SinglepointDFPTWorkflow,

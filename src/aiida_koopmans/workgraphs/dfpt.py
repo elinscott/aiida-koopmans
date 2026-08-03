@@ -70,18 +70,14 @@ from aiida_koopmans.calculations.kcw import (
 )
 from aiida_koopmans.occupations import default_channel_nocc
 from aiida_koopmans.projections import (
+    ExplicitProjectionBlock,
+    ProjectionBlock,
     band_range_complement,
     projection_num_wann,
     projection_win_string,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import (
-    ExplicitProjectionBlock,
-    ParallelizationDict,
-    ProjectionBlock,
-    VariationalOrbital,
-    map_key_for,
-)
+from aiida_koopmans.types import ParallelizationDict, VariationalOrbital, map_key_for
 from aiida_koopmans.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,

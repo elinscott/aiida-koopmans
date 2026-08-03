@@ -49,13 +49,9 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.projections import ProjectionBlockId, validate_projection_block_id
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import (
-    ProjectionBlockId,
-    VariationalOrbital,
-    map_key_for,
-    validate_projection_block_id,
-)
+from aiida_koopmans.types import VariationalOrbital, map_key_for
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Sequence
