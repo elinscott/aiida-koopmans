@@ -20,12 +20,12 @@ from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import (
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
     merge_parallelization_into_overrides,
-    pin_kpoints,
     validate_parallelization,
 )
+from aiida_koopmans.workgraphs import pin_kpoints
 from aiida_koopmans.workgraphs.pw import PwBaseStep
 
 

@@ -63,6 +63,11 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.projections import (
     ProjectionBlock,
     ProjectionBlockId,
@@ -72,13 +77,7 @@ from aiida_koopmans.projections import (
     validate_projection_block_sequence,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ParallelizationDict
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    unwrap_enum,
-    validate_parallelization,
-)
+from aiida_koopmans.workgraphs import Codes, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     VariationalOrbital,

@@ -33,18 +33,18 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml_helpers import predict_estimator
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,
 )
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    validate_parallelization,
-)
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,

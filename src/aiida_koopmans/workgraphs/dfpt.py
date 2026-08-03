@@ -69,6 +69,11 @@ from aiida_koopmans.calculations.kcw import (
     Wann2kcCalculation,
 )
 from aiida_koopmans.occupations import default_channel_nocc
+from aiida_koopmans.parallelization import (
+    ParallelizationDict,
+    merge_parallelization_into_inputs,
+    validate_parallelization,
+)
 from aiida_koopmans.projections import (
     ExplicitProjectionBlock,
     ProjectionBlock,
@@ -77,7 +82,6 @@ from aiida_koopmans.projections import (
     projection_win_string,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -85,11 +89,7 @@ from aiida_koopmans.wannier_merge import (
     merge_wannier_u_file_contents,
     parse_wannier_u_file_shape,
 )
-from aiida_koopmans.workgraphs import (
-    Codes,
-    merge_parallelization_into_inputs,
-    validate_parallelization,
-)
+from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,

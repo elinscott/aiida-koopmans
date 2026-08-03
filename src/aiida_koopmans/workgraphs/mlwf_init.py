@@ -35,9 +35,9 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.wannier_merge import group_blocks_to_merge
 from aiida_koopmans.workgraphs import Codes

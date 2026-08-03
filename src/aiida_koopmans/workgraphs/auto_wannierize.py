@@ -44,6 +44,7 @@ from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
     ProjectionBlock,
     detect_band_blocks,
@@ -51,7 +52,6 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.types import ParallelizationDict
 from aiida_koopmans.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
