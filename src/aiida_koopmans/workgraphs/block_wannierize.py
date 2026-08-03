@@ -309,6 +309,21 @@ def _block_eigenvalues(label: str, spin: Any, nscf_bands: orm.BandsData) -> np.n
     return eigenvalues[index]
 
 
+class FrozenWindowError(ValueError):
+    """A block's frozen window freezes more bands than it Wannierises.
+
+    One piece of user advice, one class: this one exists so the koopmans
+    package can advise adjusting the ``dis_froz_*`` thresholds.
+    Subclassing ``ValueError`` keeps every existing handler catching;
+    ``label`` names the offending block.
+    """
+
+    def __init__(self, message: str, *, label: str | None = None) -> None:
+        """Store ``message`` and, when known, the offending block's ``label``."""
+        super().__init__(message)
+        self.label = label
+
+
 def validate_frozen_window(
     label: str,
     parameters: dict[str, Any],
@@ -374,12 +389,13 @@ def validate_frozen_window(
     window = f"dis_froz_max = {froz_max}"
     if froz_min is not None:
         window = f"dis_froz_min = {froz_min}, {window}"
-    raise ValueError(
+    raise FrozenWindowError(
         f"Block '{label}' Wannierises num_wann = {num_wann} bands, but its frozen "
         f"window ({window}) freezes {int(frozen[worst])} of the bands it reads at "
         f"k-point {worst + 1} of {eigenvalues.shape[0]}. wannier90 accepts at most "
         f"num_wann frozen bands at every k-point: lower dis_froz_max below "
-        f"{min(limits):.6f} eV, or give the block more Wannier functions."
+        f"{min(limits):.6f} eV, or give the block more Wannier functions.",
+        label=label,
     )
 
 

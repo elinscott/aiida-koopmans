@@ -2267,6 +2267,18 @@ class TestPredictAlphaScreening:
                 model, [[-1.0]], [self._orb(1, filled=True, group_id=1, representative=True)]
             )
 
+    def test_mismatch_raises_the_typed_class_through_except_valueerror(self):
+        """A rejection arrives as ``ModelMismatchError`` through ``except ValueError``."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        try:
+            self._call({"descriptor": "power_spectrum"}, [], [])
+        except ValueError as exc:
+            assert type(exc) is ModelMismatchError
+            assert exc.field == "descriptor"
+        else:
+            pytest.fail("ModelMismatchError was not raised")
+
     def test_spin_polarized_channels_read_their_own_metric_row(self):
         orbitals = [
             self._orb(1, filled=True, group_id=1, representative=True, spin="up"),

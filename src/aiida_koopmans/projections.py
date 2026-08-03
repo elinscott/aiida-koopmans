@@ -20,6 +20,21 @@ from aiida_koopmans.occupations import default_channel_nocc
 from aiida_koopmans.spin import SpinChannel
 
 
+class ProjectionBlockError(ValueError):
+    """The projection blocks cannot describe a Wannierization.
+
+    One piece of user advice, one class: this one exists so the koopmans
+    package can advise adjusting the input file's projections or ``nbnd``.
+    Subclassing ``ValueError`` keeps every existing handler catching;
+    ``label`` names the offending block when the raise site knows it.
+    """
+
+    def __init__(self, message: str, *, label: str | None = None) -> None:
+        """Store ``message`` and, when known, the offending block's ``label``."""
+        super().__init__(message)
+        self.label = label
+
+
 def projection_win_string(projection: Any) -> str:
     """Format one projection as a Wannier90 ``.win`` projections line.
 
@@ -50,7 +65,7 @@ def projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
     if projection.site is not None:
         n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
         if n_sites == 0:
-            raise ValueError(
+            raise ProjectionBlockError(
                 f"Projection site '{projection.site}' does not match any atom in the structure."
             )
     elif (
@@ -268,7 +283,7 @@ def validate_projection_block(block: ProjectionBlock) -> None:
     rules are ``num_bands >= num_wann >= 1``, and the bands the block
     reads — its own and any extra disentanglement bands — must be contiguous:
     ``exclude_bands`` may name only bands below or above them. Raise
-    ``ValueError`` naming the block and the rule it breaks. Occupancy is
+    ``ProjectionBlockError`` naming the block and the rule it breaks. Occupancy is
     not among the rules -- it is allowed to be unknown here
     (:func:`block_occupancy`).
     """
@@ -276,22 +291,25 @@ def validate_projection_block(block: ProjectionBlock) -> None:
     num_wann = int(block["num_wann"])
     num_bands = int(block["num_bands"])
     if num_wann < 1:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"Block {label!r} declares num_wann = {num_wann}; every block must "
-            "carry at least one Wannier function."
+            "carry at least one Wannier function.",
+            label=label,
         )
     if num_bands < num_wann:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"Block {label!r} reads {num_bands} bands but Wannierises {num_wann} "
-            "functions; wannier90 needs at least one band per Wannier function."
+            "functions; wannier90 needs at least one band per Wannier function.",
+            label=label,
         )
     read = _read_bands(block)
     gaps = sorted(set(range(read[0], read[-1] + 1)) - set(read))
     if gaps:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"Block {label!r} reads bands {read}, but `exclude_bands` names "
             f"bands {gaps} inside that window. The bands a block reads must "
-            "be contiguous; exclude only bands below or above the block."
+            "be contiguous; exclude only bands below or above the block.",
+            label=label,
         )
 
 
@@ -308,8 +326,8 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
       the bands every block above it reads.
 
     Under these rules the indices :func:`get_wannier_indices` returns
-    are exactly the block's own band indices. Raise ``ValueError`` naming
-    the offending blocks.
+    are exactly the block's own band indices. Raise ``ProjectionBlockError``
+    naming the offending blocks.
     """
     by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
     for block in blocks:
@@ -319,21 +337,23 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
             first = get_wannier_indices(block)[0]
             prev_top = get_wannier_indices(prev)[-1]
             if first <= prev_top:
-                raise ValueError(
+                raise ProjectionBlockError(
                     f"Block {block['label']!r} starts at band {first}, but block "
                     f"{prev['label']!r} before it already Wannierises band "
                     f"{prev_top}. List each spin channel's blocks in ascending "
-                    "band order, with no band in two blocks."
+                    "band order, with no band in two blocks.",
+                    label=block["label"],
                 )
         top = channel_blocks[-1]["label"]
         for block in channel_blocks[:-1]:
             if int(block["num_bands"]) > int(block["num_wann"]):
-                raise ValueError(
+                raise ProjectionBlockError(
                     f"Block {block['label']!r} reads {block['num_bands']} bands for "
                     f"{block['num_wann']} Wannier functions, so it disentangles, but "
                     f"block {top!r} sits above it. Only a channel's uppermost block "
                     f"may disentangle: give the extra bands to {top!r}, or set this "
-                    "block's `num_bands` equal to its `num_wann`."
+                    "block's `num_bands` equal to its `num_wann`.",
+                    label=block["label"],
                 )
 
 
@@ -362,18 +382,19 @@ def get_wannier_indices(block: ProjectionBlock) -> list[int]:
 def block_occupancy(block: ProjectionBlock) -> bool:
     """Return whether the block is occupied, raising if it does not say.
 
-    Raise ``ValueError`` naming the block when ``filled`` is unset: the
+    Raise ``ProjectionBlockError`` naming the block when ``filled`` is unset: the
     occupancy of a block derived from atomic projectors is settled by the
     runtime band-group detection, and until then no caller may act on it.
     """
     if "filled" not in block:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"Block {block['label']!r} does not say whether it is occupied or "
             "empty. Stamp `filled` where the occupancy is known -- from explicit "
             "projections, or from the band groups the runtime detection found. "
             "Its Wannier-function indices cannot settle it: a block that "
             "disentangles across the occupied/empty boundary draws its Wannier "
-            "functions from both manifolds, and its indices still sit on one side."
+            "functions from both manifolds, and its indices still sit on one side.",
+            label=block["label"],
         )
     return bool(block["filled"])
 
@@ -412,12 +433,13 @@ def validate_projection_block_id(spec: ProjectionBlockId) -> None:
 
     Lives beside the type because a ``TypedDict`` cannot validate at
     runtime; every consumer that trusts the shape calls this first.
-    Raise ``ValueError`` for a non-positive ``num_wann``.
+    Raise ``ProjectionBlockError`` for a non-positive ``num_wann``.
     """
     if int(spec["num_wann"]) < 1:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"Block {spec['label']!r} declares num_wann = {spec['num_wann']}; "
-            "every block must carry at least one Wannier function."
+            "every block must carry at least one Wannier function.",
+            label=spec["label"],
         )
 
 
@@ -459,7 +481,7 @@ def _split_manifolds(
         elif cursor >= nocc:
             empty.append((block, num_wann))
         else:
-            raise ValueError(
+            raise ProjectionBlockError(
                 f"A projection block (bands {cursor + 1}-{cursor + num_wann}) straddles "
                 f"the occupied/empty boundary at band {nocc}."
             )
@@ -576,7 +598,7 @@ def derive_dfpt_manifolds(
 
     num_wann_occ = sum(num_wann for _, num_wann in occupied)
     if num_wann_occ != nocc:
-        raise ValueError(
+        raise ProjectionBlockError(
             f"The occupied projection blocks span {num_wann_occ} Wannier functions but "
             f"the system has {nocc} occupied bands."
         )
@@ -594,7 +616,7 @@ def derive_dfpt_manifolds(
     if empty:
         num_bands_emp = nbnd - nocc
         if num_bands_emp < num_wann_emp:
-            raise ValueError(
+            raise ProjectionBlockError(
                 f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
                 f"projection blocks require {num_wann_emp} Wannier functions."
             )

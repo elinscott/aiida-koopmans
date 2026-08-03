@@ -14,9 +14,11 @@ from aiida_wannier90_workflows.common.types import WannierProjectionType
 from aiida_koopmans.projections import ExplicitProjectionBlock
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import (
+    FrozenWindowError,
     UnconstrainedDisentanglementWarning,
     WannierizeBlock,
     WannierizeBlocks,
+    validate_frozen_window,
 )
 from tests.fixtures import (
     assert_graph_roundtrips,
@@ -1498,6 +1500,19 @@ def test_bands_seed_does_not_mutate_the_nscf_override(
     captured = wg.tasks.scf_nscf.inputs.overrides.value
     control = captured["nscf"]["pw"]["parameters"]["CONTROL"]
     assert control.get("calculation") != "bands"
+
+
+class TestFrozenWindowError:
+    def test_raises_the_typed_class_through_except_valueerror(self, aiida_profile):
+        """A rejection arrives as ``FrozenWindowError`` through ``except ValueError``."""
+        parameters = {"num_wann": 1, "dis_froz_max": 5.0}
+        try:
+            validate_frozen_window("block_1", parameters, "none", bands_data([[0.0, 1.0, 2.0]]))
+        except ValueError as exc:
+            assert type(exc) is FrozenWindowError
+            assert exc.label == "block_1"
+        else:
+            pytest.fail("FrozenWindowError was not raised")
 
 
 class TestUnconstrainedDisentanglementWarning:

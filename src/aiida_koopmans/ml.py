@@ -31,3 +31,19 @@ class MLDescriptor(str, Enum):
 
     SELF_HARTREE = "self_hartree"
     POWER_SPECTRUM = "power_spectrum"
+
+
+class ModelMismatchError(ValueError):
+    """The trained ML model does not fit the run asking for predictions.
+
+    One piece of user advice, one class: this one exists so the koopmans
+    package can advise retraining under the run's settings or changing
+    ``model_file``. Subclassing ``ValueError`` keeps every existing
+    handler catching; ``field`` names the mismatched model stamp when
+    the raise site knows it.
+    """
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        """Store ``message`` and, when known, the mismatched stamp ``field``."""
+        super().__init__(message)
+        self.field = field

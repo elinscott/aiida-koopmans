@@ -11,6 +11,23 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, Literal, TypedDict, get_args
 
+
+class ParallelizationError(ValueError):
+    """The parallelization block requests something a code cannot honor.
+
+    One piece of user advice, one class: this one exists so the koopmans
+    package can advise adjusting the input file's ``parallelization``
+    block. Subclassing ``ValueError`` keeps every existing handler
+    catching; ``code`` names the offending code when the raise site
+    knows it.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        """Store ``message`` and, when known, the offending ``code`` name."""
+        super().__init__(message)
+        self.code = code
+
+
 # The QE code vocabulary, defined once. ``CODE_NAMES`` is the runtime tuple
 # (the koopmans2 parallelization schema imports it for its ``ALL_CODES``); the
 # ``CodeName`` ``Literal`` types dict keys / helper args so a typo is a static
@@ -79,13 +96,13 @@ def validate_parallelization(parallelization: ParallelizationDict | None) -> Non
     graph's merge entry.
 
     Raises:
-        ValueError: If any key is not one of :data:`CODE_NAMES`.
+        ParallelizationError: If any key is not one of :data:`CODE_NAMES`.
     """
     if not parallelization:
         return
     unknown = sorted(name for name in dict(parallelization) if name not in CODE_NAMES)
     if unknown:
-        raise ValueError(
+        raise ParallelizationError(
             f"unknown parallelization code name(s): {unknown}; "
             f"valid codes are {sorted(CODE_NAMES)}."
         )
@@ -132,16 +149,18 @@ def resolve_parallelization(
     cmdline: list[str] = []
     if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:
-            raise ValueError(
+            raise ParallelizationError(
                 f"'npool' was requested for {code!r}, which does not parallelize over "
-                f"k-point pools; pools are only valid for {sorted(POOL_SUPPORTING_CODES)}."
+                f"k-point pools; pools are only valid for {sorted(POOL_SUPPORTING_CODES)}.",
+                code=code,
             )
         cmdline += ["-npool", str(int(npool))]
     if pd:
         if code not in PD_SUPPORTING_CODES:
-            raise ValueError(
+            raise ParallelizationError(
                 f"'pd' (pencil decomposition) was requested for {code!r}, which does not "
-                f"support it; pd is only valid for {sorted(PD_SUPPORTING_CODES)}."
+                f"support it; pd is only valid for {sorted(PD_SUPPORTING_CODES)}.",
+                code=code,
             )
         cmdline += ["-pd", "true"]
     settings: dict[str, Any] = {"cmdline": cmdline} if cmdline else {}
