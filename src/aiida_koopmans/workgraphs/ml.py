@@ -41,7 +41,8 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.functionals import Correction
-from aiida_koopmans.ml_helpers import MLDescriptor, MLMode, SnapshotDataset
+from aiida_koopmans.ml import MLDescriptor, MLMode
+from aiida_koopmans.ml_helpers import SnapshotDataset
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,

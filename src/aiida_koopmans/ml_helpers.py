@@ -27,7 +27,6 @@ orbital-density descriptor path.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from enum import Enum
 from typing import TYPE_CHECKING, Any, TypedDict
 from xml.etree import ElementTree as ET
 
@@ -39,34 +38,6 @@ if TYPE_CHECKING:
 # Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
 # written against this value.
 BOHR_RADIUS_ANG = 0.5291772105638411
-
-
-class MLMode(str, Enum):
-    """What the trajectory workflow does with the machine-learning dataset.
-
-    ``NONE`` just runs the snapshots; ``TRAIN`` fits a screening model on
-    the computed alphas; ``TEST`` scores a previously trained model
-    against them; ``PREDICT`` applies a previously trained model in place
-    of the per-orbital Delta-SCF refinement.
-    """
-
-    NONE = "none"
-    TRAIN = "train"
-    TEST = "test"
-    PREDICT = "predict"
-
-
-class MLDescriptor(str, Enum):
-    """Descriptor feeding the machine-learned screening model.
-
-    Both descriptors are derived from the variational orbitals' densities:
-    ``SELF_HARTREE`` is the scalar self-Hartree energy kcp.x reports, and
-    ``POWER_SPECTRUM`` is the rotationally-invariant power spectrum of a
-    pw2wannier90.x ``wan_mode='decompose'`` expansion of each density.
-    """
-
-    SELF_HARTREE = "self_hartree"
-    POWER_SPECTRUM = "power_spectrum"
 
 
 ESTIMATOR_TYPES = ("ridge_regression", "linear_regression", "mean")
