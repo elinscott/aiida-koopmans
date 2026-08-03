@@ -74,11 +74,11 @@ from aiida_koopmans.projections import (
     projection_num_wann,
     projection_win_string,
 )
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.types import (
     ExplicitProjectionBlock,
     ParallelizationDict,
     ProjectionBlock,
-    SpinChannel,
     VariationalOrbital,
     map_key_for,
 )

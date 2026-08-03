@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import ExplicitProjectionBlock, SpinChannel, get_wannier_indices
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.types import ExplicitProjectionBlock, get_wannier_indices
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
     SinglepointDFPTWorkflow,
@@ -714,7 +715,7 @@ class TestDeriveDfptManifolds:
             )
 
     def test_collinear_channel_requires_explicit_nocc(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
         with pytest.raises(ValueError, match="per-channel"):
@@ -727,7 +728,7 @@ class TestDeriveDfptManifolds:
             )
 
     def test_collinear_channels_use_given_nocc(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
         # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
@@ -760,7 +761,7 @@ class TestDeriveDfptManifolds:
         assert emp_up_blocks == [] and emp_dn_blocks == []
 
     def test_spinor_doubles_num_wann_and_uses_nelec_occupations(self, silicon_structure):
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
         # KCW example05.1 nspin4: the same sp3 block that gives num_wann=8
@@ -805,7 +806,7 @@ class TestNormalizeAlphaGuess:
         assert normalize_alpha_guess([[0.1, 0.2]], 2) == [0.1, 0.2]
 
     def test_nested_per_spin_list_selects_channel(self):
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
         from aiida_koopmans.workgraphs.dfpt import normalize_alpha_guess
 
         nested = [[0.1, 0.2], [0.3, 0.4]]

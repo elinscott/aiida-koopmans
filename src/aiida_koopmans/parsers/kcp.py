@@ -265,7 +265,7 @@ class KcpParser(KoopmansStdoutParser):
         from pathlib import Path
 
         from aiida_koopmans.calculations.kcp import KcpCalculation
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
 
         cls = self.node.process_class
         if not issubclass(cls, KcpCalculation):

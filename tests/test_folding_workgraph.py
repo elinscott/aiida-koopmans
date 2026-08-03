@@ -13,7 +13,8 @@ import io
 
 import pytest
 
-from aiida_koopmans.types import SpinChannel, group_blocks_to_merge
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.types import group_blocks_to_merge
 from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
 from tests.fixtures import explicit_block
 

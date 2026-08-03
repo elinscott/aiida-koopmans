@@ -42,7 +42,7 @@ BOHR_RADIUS_ANG = 0.5291772105638411
 ESTIMATOR_TYPES = ("ridge_regression", "linear_regression", "mean")
 
 # Spin-channel key → index into stacked-by-spin arrays (axis 0). Mirrors
-# ``aiida_koopmans.types.SpinChannel.axis`` without importing AiiDA here:
+# ``aiida_koopmans.spin.SpinChannel.axis`` without importing AiiDA here:
 # ``none`` (closed shell) and ``up`` share kcp.x's leading spin slot.
 _SPIN_KEY_TO_INDEX = {"none": 0, "up": 0, "down": 1}
 

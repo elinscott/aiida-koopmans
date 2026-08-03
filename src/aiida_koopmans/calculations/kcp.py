@@ -323,7 +323,7 @@ class KcpCalculation(KoopmansStdoutCalculation):
 
     def _write_alpha_files(self, folder, *, do_orbdep: bool, odd_nkscalfact: bool) -> None:
         """Emit ``file_alpharef[_empty].txt`` when orbital-dependent screening is requested."""
-        from aiida_koopmans.types import SpinChannel
+        from aiida_koopmans.spin import SpinChannel
 
         alphas_requested = do_orbdep and odd_nkscalfact
         # ``alphas`` is an input namespace, so ``"alphas" in self.inputs`` is

@@ -53,7 +53,7 @@ def test_kcp_parser_tutorial_1_ozone_ki(
     ki_params = _build_orbdep_parameters(base, nbnd=10, correction=Correction.KI)
     parameters = orm.Dict(dict=ki_params)
 
-    from aiida_koopmans.types import SpinChannel
+    from aiida_koopmans.spin import SpinChannel
 
     alphas = orm.Dict(
         dict={

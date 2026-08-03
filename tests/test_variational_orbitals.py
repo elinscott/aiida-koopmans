@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.types import SpinChannel, VariationalOrbital
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.types import VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
     ProjectionBlockId,
     initial_orbital_partition,

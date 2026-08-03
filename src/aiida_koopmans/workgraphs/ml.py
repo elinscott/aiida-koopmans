@@ -41,13 +41,13 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans import ml_helpers
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.ml_helpers import SnapshotDataset
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.types import (
     AlphaScreening,
     Correction,
     MLDescriptor,
     MLMode,
     ParallelizationDict,
-    SpinChannel,
     VariationalOrbitalType,
 )
 from aiida_koopmans.workgraphs import (

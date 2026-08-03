@@ -256,7 +256,7 @@ def test_kcp_tutorial_1_ozone_ki(
 
     # Matches what KoopmansDSCFWorkflow builds for ``initial_alpha=0.6`` on ozone:
     # 9 filled + 1 empty per spin channel (nbnd=10, nspin=2, nelup=neldw=9).
-    from aiida_koopmans.types import SpinChannel
+    from aiida_koopmans.spin import SpinChannel
 
     # ``alphas`` is an input_namespace with ``filled`` / ``empty`` Dict
     # sub-inputs (each keyed by ``SpinChannel`` value string). See

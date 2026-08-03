@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.types import (
     OrbitalDict,
-    SpinChannel,
     block_w90_kwargs,
     get_wannier_indices,
     group_blocks_to_merge,

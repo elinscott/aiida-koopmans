@@ -46,11 +46,11 @@ from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.types import (
     MergeGroup,
     ParallelizationDict,
     ProjectionBlock,
-    SpinChannel,
     merge_dest_filename,
 )
 from aiida_koopmans.workgraphs import Codes, merge_parallelization_into_inputs

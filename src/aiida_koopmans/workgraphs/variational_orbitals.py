@@ -49,9 +49,9 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.types import (
     ProjectionBlockId,
-    SpinChannel,
     VariationalOrbital,
     map_key_for,
     validate_projection_block_id,
