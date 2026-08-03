@@ -591,12 +591,13 @@ class TestDeriveDfptManifolds:
     def test_silicon_like_split(self, silicon_structure):
         from aiida_koopmans.workgraphs.dfpt import derive_dfpt_manifolds
 
-        # Occupied block: 2 Si atoms x (l=1 -> 3 orbitals) + 2 x (l=1
-        # restricted to mr=1, i.e. pz -> 1 orbital) = 8 Wannier functions;
-        # nelec=16 makes them all filled. The mr restriction is what pins
-        # the len(m_r) multiplicity: counting 2l+1 regardless would give 12.
-        occ = [_FakeProjection("Si", 1), _FakeProjection("Si", 1, m_r=[1])]
-        emp = [_FakeProjection("Si", 0)]
+        # Si-like valence: occupied s + p (2 atoms x (1 + 3) = 8 Wannier
+        # functions; nelec=16 makes them all filled), empty p restricted to
+        # mr=1 (pz -> 2 atoms x 1 = 2). The mr restriction is what pins the
+        # len(m_r) multiplicity: counting 2l+1 regardless would give the
+        # empty block 6 Wannier functions and overrun nbnd.
+        occ = [_FakeProjection("Si", 0), _FakeProjection("Si", 1)]
+        emp = [_FakeProjection("Si", 1, m_r=[1])]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
@@ -608,11 +609,12 @@ class TestDeriveDfptManifolds:
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
         assert occ_block["exclude_bands"] == [9, 10, 11, 12]
-        assert occ_block["projections"] == ["Si:l=1", "Si:l=1,mr=1"]
+        assert occ_block["projections"] == ["Si:l=0", "Si:l=1"]
         (emp_block,) = emp_blocks
         assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
+        assert emp_block["projections"] == ["Si:l=1,mr=1"]
         # The empty block disentangles, so the two Wannier-function
         # indices it takes (9-10 of a 12-band nscf) are the only thing left
         # that could be read as an occupancy; the stamp says it is empty.
