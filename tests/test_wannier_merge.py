@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aiida_koopmans.wannier_merge import (
+from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     generate_wannier_centres_file_contents,
     generate_wannier_hr_file_contents,

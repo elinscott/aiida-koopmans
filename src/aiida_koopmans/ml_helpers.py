@@ -734,14 +734,15 @@ def assemble_power_spectrum_dataset(
       ``down``; ``none`` for closed shell);
     * within a channel, the filled orbitals first, then the empty ones;
     * within a (channel, filling) slot, the member blocks in
-      :class:`~aiida_koopmans.wannier_merge.MergeGroup` order, each block's Wannier
+      :class:`~aiida_koopmans.workgraphs.utils.wannier_merge.MergeGroup` order, each block's Wannier
       functions in their own row order.
 
     :param block_descriptors: ``{block_label: rows}`` where ``rows`` is the
         block's ``(num_wann, descriptor_dim)`` descriptor matrix (e.g. the
         output of :func:`cross_power_spectra`).
     :param merge_groups: the ``(filled, spin, blocks)`` groups (see
-        :class:`~aiida_koopmans.wannier_merge.MergeGroup`); ``blocks`` entries need a
+        :class:`~aiida_koopmans.workgraphs.utils.wannier_merge.MergeGroup`);
+        ``blocks`` entries need a
         ``label`` (and their row count must match the descriptor matrix).
     :param alphas: the screening parameters, in ``AlphaScreening`` shape.
 

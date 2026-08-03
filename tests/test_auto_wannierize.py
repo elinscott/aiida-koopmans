@@ -604,7 +604,7 @@ class TestMergeSplitBlockProducts:
         """Two 2-WF sub-blocks merge into one 4-WF block-diagonal product set."""
         from aiida.orm import FolderData
 
-        from aiida_koopmans.wannier_merge import (
+        from aiida_koopmans.workgraphs.utils.wannier_merge import (
             generate_wannier_centres_file_contents,
             generate_wannier_hr_file_contents,
             generate_wannier_u_file_contents,

@@ -40,7 +40,6 @@ from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
-from aiida_koopmans.wannier_merge import group_blocks_to_merge
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -55,6 +54,7 @@ from aiida_koopmans.workgraphs.kcp import (
     kcp_base_inputs,
 )
 from aiida_koopmans.workgraphs.supercell import supercell_size
+from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
 
 # Consistency-check thresholds for the initialisation.
 _GAP_RELATIVE_TOLERANCE = 2.0e-2

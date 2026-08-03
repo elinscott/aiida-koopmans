@@ -65,7 +65,7 @@ def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
     import numpy as np
     from aiida.orm import FolderData
 
-    from aiida_koopmans.wannier_merge import (
+    from aiida_koopmans.workgraphs.utils.wannier_merge import (
         generate_wannier_centres_file_contents,
         generate_wannier_hr_file_contents,
         generate_wannier_u_file_contents,
@@ -144,7 +144,7 @@ class TestPrepareKcwWannierFilesMultiBlock:
     """Multi-block manifolds are merged before staging (see test_wannier_merge)."""
 
     def test_occ_blocks_are_merged(self, aiida_profile):
-        from aiida_koopmans.wannier_merge import (
+        from aiida_koopmans.workgraphs.utils.wannier_merge import (
             parse_wannier_centres_file_contents,
             parse_wannier_hr_file_contents,
             parse_wannier_u_file_shape,
@@ -174,7 +174,7 @@ class TestPrepareKcwWannierFilesMultiBlock:
         assert len(atom_lines) == 2
 
     def test_disentangled_emp_blocks_extend_u_dis(self, aiida_profile):
-        from aiida_koopmans.wannier_merge import parse_wannier_u_file_shape
+        from aiida_koopmans.workgraphs.utils.wannier_merge import parse_wannier_u_file_shape
 
         # Empty manifold: 2 + 2 Wannier functions over 6 empty bands; only
         # the last block is disentangled (u_dis 2 x 4).

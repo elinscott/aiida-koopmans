@@ -18,7 +18,7 @@ from aiida_koopmans.projections import (
     validate_projection_block_sequence,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.wannier_merge import group_blocks_to_merge, merge_dest_filename
+from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge, merge_dest_filename
 from tests.fixtures import automatic_block as _automatic
 from tests.fixtures import explicit_block as _explicit
 

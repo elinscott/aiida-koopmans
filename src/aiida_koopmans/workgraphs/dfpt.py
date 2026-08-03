@@ -21,7 +21,7 @@ Two graphs are exposed:
 Multi-block manifolds are supported: each projection block is Wannierised
 independently and the per-block products are merged per manifold
 (block-diagonal u / hr, concatenated centres, identity-extended u_dis --
-see :mod:`aiida_koopmans.wannier_merge`) before kcw.x consumes them.
+see :mod:`aiida_koopmans.workgraphs.utils.wannier_merge`) before kcw.x consumes them.
 
 Spin handling (``SinglepointDFPTWorkflow``'s ``spin`` input, an
 ``aiida_quantumespresso`` ``SpinType``):
@@ -77,13 +77,6 @@ from aiida_koopmans.projections import (
     ProjectionBlock,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.wannier_merge import (
-    extend_wannier_u_dis_file_content,
-    merge_wannier_centres_file_contents,
-    merge_wannier_hr_file_contents,
-    merge_wannier_u_file_contents,
-    parse_wannier_u_file_shape,
-)
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -92,6 +85,13 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    extend_wannier_u_dis_file_content,
+    merge_wannier_centres_file_contents,
+    merge_wannier_hr_file_contents,
+    merge_wannier_u_file_contents,
+    parse_wannier_u_file_shape,
+)
 from aiida_koopmans.workgraphs.variational_orbitals import (
     VariationalOrbital,
     assign_orbital_groups,
@@ -378,7 +378,7 @@ def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: 
     bands than Wannier functions its ``u_dis`` is required: a single-block
     manifold stages the file unchanged, a merged one extends it with an
     identity for the preceding blocks
-    (:func:`~aiida_koopmans.wannier_merge.extend_wannier_u_dis_file_content`).
+    (:func:`~aiida_koopmans.workgraphs.utils.wannier_merge.extend_wannier_u_dis_file_content`).
     """
     if nbnd is None:
         return
