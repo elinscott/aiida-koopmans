@@ -521,11 +521,10 @@ def require_ml_mode_inputs(
     """Guard the ``ml_mode`` / ``descriptor`` / ``ml_model`` combinations.
 
     ``test`` and ``predict`` need a trained ``ml_model``; ``predict``
-    supports only ``self_hartree`` (the power-spectrum dataset is built
-    from the finished DSCF's Wannier outputs, while prediction must happen
-    inside the DSCF, between the trial and the final KI); a
-    ``power_spectrum`` run must satisfy
-    :func:`require_power_spectrum_route`.
+    supports only ``self_hartree`` (the decompose pass that builds the
+    power-spectrum descriptors is not wired into the DSCF's screening
+    stage, where the prediction runs); a ``power_spectrum`` run must
+    satisfy :func:`require_power_spectrum_route`.
     """
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
@@ -535,9 +534,9 @@ def require_ml_mode_inputs(
         if ml_mode == MLMode.PREDICT and descriptor != MLDescriptor.SELF_HARTREE:
             raise NotImplementedError(
                 f"ml_mode='predict' supports only the 'self_hartree' descriptor, not "
-                f"`{descriptor}`: the power-spectrum dataset is built from the finished "
-                "DSCF's Wannier outputs, while prediction must happen inside the DSCF, "
-                "between the trial and the final KI."
+                f"`{descriptor}`: the decompose pass that builds the power-spectrum "
+                "descriptors is not wired into the DSCF's screening stage, where the "
+                "prediction runs. Use descriptor='self_hartree'."
             )
         if descriptor == MLDescriptor.POWER_SPECTRUM:
             require_power_spectrum_route(init_orbitals, pw2wannier90_code)
