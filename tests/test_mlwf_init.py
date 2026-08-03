@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from aiida_koopmans.types import Correction
+from aiida_koopmans.functionals import Correction
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs
 from aiida_koopmans.workgraphs.mlwf_init import (
     MlwfInitialization,

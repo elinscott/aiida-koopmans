@@ -14,8 +14,8 @@ from typing import ClassVar
 
 import pytest
 
+from aiida_koopmans.functionals import Correction
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import Correction
 from aiida_koopmans.utils import count_electrons, filled_and_empty_counts
 from aiida_koopmans.workgraphs.kcp import (
     KcpBaseInputs,

@@ -31,9 +31,10 @@ from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
+from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml_helpers import predict_estimator
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.types import AlphaScreening, Correction, ParallelizationDict
+from aiida_koopmans.types import AlphaScreening, ParallelizationDict
 from aiida_koopmans.utils import (
     count_electrons_task,
     resolve_pseudo_family_task,

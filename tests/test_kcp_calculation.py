@@ -16,7 +16,7 @@ import io
 import pytest
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.types import Correction
+from aiida_koopmans.functionals import Correction
 
 # ----------------------------------------------------------------------
 # _normalize_parameters

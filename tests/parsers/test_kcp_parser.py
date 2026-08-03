@@ -18,7 +18,7 @@ from __future__ import annotations
 import numpy as np
 from aiida import orm
 
-from aiida_koopmans.types import Correction
+from aiida_koopmans.functionals import Correction
 from aiida_koopmans.workgraphs.kcp import KcpBaseInputs, _build_orbdep_parameters
 from tests.fixtures import sanitize
 
