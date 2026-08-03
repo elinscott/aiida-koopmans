@@ -988,7 +988,7 @@ def fit_screening_model(
                 estimator_type,
             )
     return {
-        "descriptor": descriptor,
+        "descriptor": getattr(descriptor, "value", descriptor),
         "estimator_type": estimator_type,
         "occ_and_emp_together": occ_and_emp_together,
         "correction": getattr(correction, "value", correction),

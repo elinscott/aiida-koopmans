@@ -137,7 +137,7 @@ def train_screening_model(
     datasets: Annotated[dict, dynamic(SnapshotDataset)],
     estimator: str,
     occ_and_emp_together: bool,
-    descriptor: str,
+    descriptor: MLDescriptor,
     correction: Correction,
     init_orbitals: VariationalOrbitalType,
 ) -> TrainOutputs:
@@ -518,8 +518,8 @@ def require_power_spectrum_route(
 
 def require_ml_mode_inputs(
     *,
-    ml_mode: str,
-    descriptor: str,
+    ml_mode: MLMode,
+    descriptor: MLDescriptor,
     init_orbitals: Any,
     pw2wannier90_code: Any,
     ml_model: dict | None,
@@ -551,7 +551,7 @@ def require_ml_mode_inputs(
 
 
 def build_snapshot_dataset(
-    descriptor: str,
+    descriptor: MLDescriptor,
     dscf: Any,
     *,
     label: str,
@@ -608,10 +608,10 @@ def TrajectoryWorkflow(
     eps_inf: float | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
-    ml_mode: str = "none",
+    ml_mode: MLMode = MLMode.NONE,
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",
-    descriptor: str = "self_hartree",
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     occ_and_emp_together: bool = True,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,

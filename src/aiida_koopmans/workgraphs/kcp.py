@@ -269,15 +269,15 @@ def echo_alpha_screening(alphas: AlphaScreening) -> AlphaScreening:
 @task
 def predict_alpha_screening(
     model: dict,
-    metric: list[list[float]],
+    descriptors: list[list[float]],
     orbitals: list[VariationalOrbital],
     correction: Correction,
     init_orbitals: VariationalOrbitalType,
 ) -> AlphaScreening:
     """Predict every orbital's screening parameter from a trained model.
 
-    ``metric`` is the trial KI's per-spin self-Hartree array (the model's
-    descriptor); ``orbitals`` is the :func:`assign_orbital_groups` output.
+    ``descriptors`` is the trial KI's per-spin self-Hartree array (the
+    model's descriptor); ``orbitals`` is the :func:`assign_orbital_groups` output.
     One prediction is made per group representative and broadcast onto the
     other members — the same rule the Delta-SCF fan-out follows. The model
     must have been trained on ``self_hartree`` descriptors and carry
@@ -307,7 +307,7 @@ def predict_alpha_screening(
         if not o["representative"]:
             continue
         spin = SpinChannel(o["spin"])
-        descriptor_row = [float(metric[spin.axis][o["index"] - 1])]
+        descriptor_row = [float(descriptors[spin.axis][o["index"] - 1])]
         if model.get("occ_and_emp_together", True):
             submodel = submodels["all"]
         else:
@@ -326,7 +326,7 @@ def predict_alpha_screening(
     ) -> dict[SpinChannel, list[float]]:
         return {spin: [alpha for _, alpha in sorted(items)] for spin, items in channels.items()}
 
-    return {"filled": _pack(by_spin[True]), "empty": _pack(by_spin[False])}
+    return AlphaScreening(filled=_pack(by_spin[True]), empty=_pack(by_spin[False]))
 
 
 class ScreeningParametersOutputs(TypedDict):
@@ -2373,7 +2373,7 @@ def PredictScreeningParameters(
     )
     predicted = predict_alpha_screening(
         model=ml_model,
-        metric=metric.result,
+        descriptors=metric.result,
         orbitals=orbitals.result,
         correction=correction,
         init_orbitals=init_orbitals,

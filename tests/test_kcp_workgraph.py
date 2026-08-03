@@ -2183,12 +2183,12 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
 
 class TestPredictAlphaScreening:
     @staticmethod
-    def _call(model, metric, orbitals, correction="ki", init_orbitals="kohn-sham"):
+    def _call(model, descriptors, orbitals, correction="ki", init_orbitals="kohn-sham"):
         from aiida_koopmans.workgraphs.kcp import predict_alpha_screening
 
         return predict_alpha_screening._callable(  # type: ignore[attr-defined]
             model=model,
-            metric=metric,
+            descriptors=descriptors,
             orbitals=orbitals,
             correction=correction,
             init_orbitals=init_orbitals,
