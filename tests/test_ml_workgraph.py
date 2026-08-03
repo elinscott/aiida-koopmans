@@ -13,7 +13,7 @@ import pytest
 from aiida_workgraph import task
 
 from aiida_koopmans.functionals import Correction
-from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 
 
 class PreRenameDataset(TypedDict):

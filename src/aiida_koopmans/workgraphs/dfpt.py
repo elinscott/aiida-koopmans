@@ -77,6 +77,7 @@ from aiida_koopmans.projections import (
     ProjectionBlock,
 )
 from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -93,10 +94,8 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
     parse_wannier_u_file_shape,
 )
 from aiida_koopmans.workgraphs.variational_orbitals import (
-    VariationalOrbital,
     assign_orbital_groups,
     expand_alphas_by_group,
-    map_key_for,
     spreads_metric_row,
 )
 

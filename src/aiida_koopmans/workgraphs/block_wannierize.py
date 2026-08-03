@@ -77,10 +77,10 @@ from aiida_koopmans.projections import (
     validate_projection_block_sequence,
 )
 from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import Codes, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
-    VariationalOrbital,
     initial_orbital_partition,
     ordered_block_specs,
 )
@@ -521,7 +521,7 @@ class WannierizeBlocksOutputs(TypedDict):
       eigenvalues the grouping was detected on, and the detected 1-indexed
       band groups (global indices).
     * ``orbitals`` -- one
-      :class:`~aiida_koopmans.workgraphs.variational_orbitals.VariationalOrbital`
+      :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`
       per Wannier function in per-channel iwann order (occupied ascending
       then empty ascending — the kcw.x / kcp.x orbital order), with
       ``manifold`` = the block label, ``filled`` / ``spin`` from the
@@ -533,7 +533,7 @@ class WannierizeBlocksOutputs(TypedDict):
       orbitals keep the parent block's label as their ``manifold``).
       Engine storage returns the list with each orbital's ``spin``
       degraded to a plain ``str`` — consumers compare with ``==``, never
-      ``is`` (see :class:`~aiida_koopmans.workgraphs.variational_orbitals.VariationalOrbital`).
+      ``is`` (see :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`).
     """
 
     blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]

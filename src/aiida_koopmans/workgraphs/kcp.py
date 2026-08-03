@@ -41,6 +41,11 @@ from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons_task
 from aiida_koopmans.utils.pseudos import resolve_pseudo_family_task
+from aiida_koopmans.variational_orbitals import (
+    VariationalOrbital,
+    VariationalOrbitalType,
+    map_key_for,
+)
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -48,12 +53,9 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.variational_orbitals import (
-    VariationalOrbital,
-    VariationalOrbitalType,
     assign_orbital_groups,
     expand_alphas_by_group,
     extract_self_hartree_from_kcp,
-    map_key_for,
 )
 
 # ----------------------------------------------------------------------

@@ -12,9 +12,9 @@ from __future__ import annotations
 import pytest
 
 from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs.variational_orbitals import (
     ProjectionBlockId,
-    VariationalOrbital,
     initial_orbital_partition,
     refine_by_key,
     refine_by_labels,

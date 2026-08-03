@@ -48,6 +48,7 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -60,7 +61,6 @@ from aiida_koopmans.workgraphs.kcp import (
 )
 from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
 from aiida_koopmans.workgraphs.ml.helpers import SnapshotDataset
-from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 
 # pw2wannier90.x ``wan_mode='decompose'`` wrapped as a workgraph task.
 DecomposeTask = task(Pw2wannierDecomposeCalculation)

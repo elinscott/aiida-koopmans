@@ -17,6 +17,7 @@ import pytest
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons, filled_and_empty_counts
+from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import (
     KcpBaseInputs,
     _build_n_minus_1_parameters,
@@ -30,7 +31,6 @@ from aiida_koopmans.workgraphs.kcp import (
     _validate_scope,
     build_dft_parameters,
 )
-from aiida_koopmans.workgraphs.variational_orbitals import VariationalOrbitalType
 
 # ----------------------------------------------------------------------
 # _validate_scope — every NotImplementedError path
