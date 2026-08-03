@@ -59,9 +59,14 @@ pygments_style = "sphinx"
 # -- Options for HTML output ----------------------------------------------
 
 html_theme = "furo"
-html_logo = "images/AiiDA_transparent_logo.png"
 html_title = f"aiida-koopmans v{release}"
-html_theme_options = {}
+html_static_path = ["_static"]
+# furo swaps these with the color scheme. Setting html_logo as well would
+# render both it and the pair, one above the other.
+html_theme_options = {
+    "light_logo": "aiida-logo-light.svg",
+    "dark_logo": "aiida-logo-dark.svg",
+}
 html_show_sourcelink = False
 html_use_opensearch = "https://aiida-koopmans.readthedocs.io"
 html_search_language = "en"
