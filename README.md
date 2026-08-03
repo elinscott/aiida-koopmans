@@ -71,7 +71,7 @@ hatch run docs:build    # build the documentation into docs/build/html
 
 ## License
 
-GNU General Public License v2, matching the koopmans package.
+GNU General Public License v2
 
 ## Contact
 
