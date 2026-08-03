@@ -66,6 +66,8 @@ html_static_path = ["_static"]
 html_theme_options = {
     "light_logo": "aiida-logo-light.svg",
     "dark_logo": "aiida-logo-dark.svg",
+    # furo renders this on every page, above the header.
+    "announcement": "🚧 These pages are under construction — come back soon! 🚧",
 }
 html_show_sourcelink = False
 html_use_opensearch = "https://aiida-koopmans.readthedocs.io"
