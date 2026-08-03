@@ -6,7 +6,9 @@ CalcJob, parser, and tests can all import a single canonical definition.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import Enum
+from itertools import pairwise
 from typing import Literal, NotRequired, TypedDict, cast, get_args
 
 from aiida_wannier90_workflows.common.types import WannierProjectionType
@@ -120,7 +122,7 @@ class MLDescriptor(str, Enum):
 class VariationalOrbital(TypedDict):
     """Structured record for a single variational orbital.
 
-    Carries spin / per-spin 1-indexed position / filled-vs-empty plus
+    Carries spin / per-spin 1-based band index / filled-vs-empty plus
     its place in any grouping (``group_id``, ``representative``). The
     key names *are* the structural information — stable and never
     parsed back into parts, unlike a flat string label like
@@ -141,7 +143,7 @@ class VariationalOrbital(TypedDict):
     """
 
     spin: SpinChannel
-    index: int  # 1-indexed per-spin band position
+    index: int  # 1-based per-spin band index
     filled: bool
     group_id: int
     representative: bool
@@ -261,23 +263,19 @@ class _ProjectionBlockBase(TypedDict):
     discriminator (a real :class:`WannierProjectionType`, registered for
     AiiDA serialization via the ``aiida.data`` entry points).
 
-    Three counts, three meanings:
+    Two counts, two meanings:
 
     * ``num_wann`` -- the Wannier functions the block produces.
     * ``num_bands`` -- the bands wannier90 reads. Exceeding ``num_wann``
-      is what makes the block disentangle; the excess is its pool.
-    * ``include_bands`` -- the ``num_wann`` band slots the block occupies,
-      ascending: where it sits in the global band ordering. They are the
-      bands its Wannier functions span only when ``num_bands ==
-      num_wann``; a disentangling block optimises its subspace out of all
-      ``num_bands`` bands, so its slots give a position and a count, not
-      an origin. Widening the list to the pool mis-addresses Wannier
-      functions wherever it is read as the band-to-Wannier-function map
-      (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`).
+      is what makes the block require disentanglement; the extra bands
+      always sit above the block's own.
 
     ``exclude_bands`` names every band of the pw.x run the block does not
     read, so ``len(exclude_bands) + num_bands`` is that run's band count --
-    the identity wann2kcp.x checks a ``.chk`` against.
+    the identity wann2kcp.x checks a ``.chk`` against. Those two fields
+    together fix where the block's Wannier functions sit in the channel's
+    Wannier ordering, so those indices are derived rather than stored
+    (:func:`get_wannier_indices`).
 
     ``filled`` is the block's occupancy: ``True`` when its Wannier
     functions come from the occupied manifold alone, ``False`` when they
@@ -294,7 +292,6 @@ class _ProjectionBlockBase(TypedDict):
     filled: NotRequired[bool]
     num_wann: int
     num_bands: int
-    include_bands: list[int]
     exclude_bands: NotRequired[list[int] | None]
     projection_type: WannierProjectionType
 
@@ -328,15 +325,34 @@ class AutomaticProjectionBlock(_ProjectionBlockBase):
 ProjectionBlock = ExplicitProjectionBlock | AutomaticProjectionBlock
 
 
+def _read_bands(block: ProjectionBlock) -> list[int]:
+    """Return the ``num_bands`` bands the block reads, in ascending order.
+
+    ``exclude_bands`` names the bands wannier90 skips; the block reads the
+    lowest ``num_bands`` of the rest.
+    """
+    excluded = set(block.get("exclude_bands") or [])
+    num_bands = int(block["num_bands"])
+    read: list[int] = []
+    band = 1
+    while len(read) < num_bands:
+        if band not in excluded:
+            read.append(band)
+        band += 1
+    return read
+
+
 def validate_projection_block(block: ProjectionBlock) -> None:
     """Reject a block whose band bookkeeping cannot describe a Wannierization.
 
     Lives beside the type because a ``TypedDict`` cannot validate at
     runtime; every entry point that takes blocks calls this first. The
-    rules: ``num_bands >= num_wann >= 1`` and ``include_bands`` holds
-    exactly ``num_wann`` slots. Raise ``ValueError`` naming the block and
-    the rule it breaks. Occupancy is not among the rules -- it is allowed
-    to be unknown here (:func:`block_occupancy`).
+    rules are ``num_bands >= num_wann >= 1``, and the bands the block
+    reads — its own and any extra disentanglement bands — must be contiguous:
+    ``exclude_bands`` may name only bands below or above them. Raise
+    ``ValueError`` naming the block and the rule it breaks. Occupancy is
+    not among the rules -- it is allowed to be unknown here
+    (:func:`block_occupancy`).
     """
     label = block["label"]
     num_wann = int(block["num_wann"])
@@ -351,14 +367,78 @@ def validate_projection_block(block: ProjectionBlock) -> None:
             f"Block {label!r} reads {num_bands} bands but Wannierises {num_wann} "
             "functions; wannier90 needs at least one band per Wannier function."
         )
-    include = list(block["include_bands"])
-    if len(include) != num_wann:
+    read = _read_bands(block)
+    gaps = sorted(set(range(read[0], read[-1] + 1)) - set(read))
+    if gaps:
         raise ValueError(
-            f"Block {label!r} names {len(include)} band slots ({include}) for "
-            f"{num_wann} Wannier functions; `include_bands` holds one slot per "
-            "Wannier function. A disentanglement pool belongs in `num_bands`, "
-            "not here."
+            f"Block {label!r} reads bands {read}, but `exclude_bands` names "
+            f"bands {gaps} inside that window. The bands a block reads must "
+            "be contiguous; exclude only bands below or above the block."
         )
+
+
+def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> None:
+    """Reject a block layout that breaks the band-to-Wannier-function match.
+
+    ``blocks`` is every block a route Wannierises. Two rules, each checked
+    per spin channel since the channels are independent orderings:
+
+    * blocks ascend: each block's bands must start above the highest
+      Wannier-function band of the block before it;
+    * only a channel's uppermost block may require disentanglement
+      (``num_bands > num_wann``): the extra bands of a lower block inflate
+      the bands every block above it reads.
+
+    Under these rules the indices :func:`get_wannier_indices` returns
+    are exactly the block's own band indices. Raise ``ValueError`` naming
+    the offending blocks.
+    """
+    by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
+    for block in blocks:
+        by_spin.setdefault(SpinChannel(block["spin"]), []).append(block)
+    for channel_blocks in by_spin.values():
+        for prev, block in pairwise(channel_blocks):
+            first = get_wannier_indices(block)[0]
+            prev_top = get_wannier_indices(prev)[-1]
+            if first <= prev_top:
+                raise ValueError(
+                    f"Block {block['label']!r} starts at band {first}, but block "
+                    f"{prev['label']!r} before it already Wannierises band "
+                    f"{prev_top}. List each spin channel's blocks in ascending "
+                    "band order, with no band in two blocks."
+                )
+        top = channel_blocks[-1]["label"]
+        for block in channel_blocks[:-1]:
+            if int(block["num_bands"]) > int(block["num_wann"]):
+                raise ValueError(
+                    f"Block {block['label']!r} reads {block['num_bands']} bands for "
+                    f"{block['num_wann']} Wannier functions, so it disentangles, but "
+                    f"block {top!r} sits above it. Only a channel's uppermost block "
+                    f"may disentangle: give the extra bands to {top!r}, or set this "
+                    "block's `num_bands` equal to its `num_wann`."
+                )
+
+
+def get_wannier_indices(block: ProjectionBlock) -> list[int]:
+    """Return the block's ascending Wannier-function indices within its spin channel.
+
+    The returned list holds the ``num_wann`` indices the block's Wannier
+    functions take among the channel's, counted from 1. They are derived
+    from the bands the block reads — ``exclude_bands`` and ``num_bands``
+    say which — as the lowest ``num_wann`` of those, because any extra
+    disentanglement bands sit above the block's own. That these are also
+    the block's band indices is guaranteed by
+    :func:`validate_projection_block_sequence`: blocks ascend within each
+    channel, and only the uppermost may require disentanglement. A block
+    that does optimizes its subspace out of every band it reads, so its
+    indices say where it sits and how wide it is, never which bands its
+    Wannier functions came from. That is what the
+    band-to-Wannier-function map needs
+    (:func:`~aiida_koopmans.projections.groups_to_wannier_indices`);
+    widening the list to the extra bands would mis-address the Wannier
+    functions.
+    """
+    return _read_bands(block)[: int(block["num_wann"])]
 
 
 def block_occupancy(block: ProjectionBlock) -> bool:
@@ -373,9 +453,9 @@ def block_occupancy(block: ProjectionBlock) -> bool:
             f"Block {block['label']!r} does not say whether it is occupied or "
             "empty. Stamp `filled` where the occupancy is known -- from explicit "
             "projections, or from the band groups the runtime detection found. "
-            "The band slots do not settle it: a block that disentangles across "
-            "the occupied/empty boundary mixes both manifolds into its Wannier "
-            "functions while every slot stays on one side."
+            "Its Wannier-function indices cannot settle it: a block that "
+            "disentangles across the occupied/empty boundary draws its Wannier "
+            "functions from both manifolds, and its indices still sit on one side."
         )
     return bool(block["filled"])
 
@@ -389,7 +469,7 @@ class ProjectionBlockId(TypedDict):
     passing full blocks:
 
     * provenance stays slim: the enumeration consumers never read
-      ``projections`` / ``include_bands`` / ``num_bands``, so storing
+      ``projections`` / ``num_bands`` / ``exclude_bands``, so storing
       them on every partition task input would be noise;
     * a list of full blocks cannot ride a PyFunction input regardless:
       ``aiida-pythonjob`` dispatches its serializer registry on the

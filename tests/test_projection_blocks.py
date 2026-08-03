@@ -14,9 +14,11 @@ from aiida_koopmans.types import (
     OrbitalDict,
     SpinChannel,
     block_w90_kwargs,
+    get_wannier_indices,
     group_blocks_to_merge,
     merge_dest_filename,
     validate_projection_block,
+    validate_projection_block_sequence,
 )
 from tests.fixtures import automatic_block as _automatic
 from tests.fixtures import explicit_block as _explicit
@@ -81,13 +83,13 @@ class TestGroupBlocksToMerge:
         groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
         assert [g["filled"] for g in groups] == [True, False]
 
-    def test_stamp_decides_against_the_band_slots(self):
-        """An empty block joins the empty manifold however its slots read.
+    def test_stamp_decides_against_the_wannier_indices(self):
+        """An empty block joins the empty manifold whatever indices it takes.
 
-        The slots deliberately contradict the occupancy: they sit inside
-        the occupied range, which is what a disentangling block's slots
-        can do (they say where the block sits, not which bands its
-        Wannier functions came out of). Reading them instead of the stamp
+        The Wannier-function indices deliberately contradict the occupancy:
+        they sit inside the occupied range, which is what a disentangling
+        block's indices can do (they say where the block sits, not which bands
+        its Wannier functions came out of). Reading them instead of the stamp
         puts this block in the occupied manifold, and the empty manifold
         comes out of ``merge_evc.x`` missing.
         """
@@ -138,7 +140,7 @@ class TestGroupBlocksToMerge:
 
 class TestValidateProjectionBlock:
     def test_accepts_a_disentangling_block(self):
-        # Four Wannier functions optimised out of six bands: four slots.
+        # Four Wannier functions optimised out of six bands.
         validate_projection_block(_explicit("block_1", range(1, 5), num_bands=6, filled=True))
 
     def test_accepts_a_block_of_unknown_occupancy(self):
@@ -149,17 +151,150 @@ class TestValidateProjectionBlock:
         """
         validate_projection_block(_automatic("block_1", range(1, 5)))
 
-    def test_rejects_slots_widened_into_the_pool(self):
-        """A pool belongs in ``num_bands``; widening the slots mis-addresses WFs."""
-        block = _explicit("block_1", range(1, 7), num_bands=6, filled=True)
-        block["num_wann"] = 4
-        with pytest.raises(ValueError, match="names 6 band slots"):
-            validate_projection_block(block)
-
     def test_rejects_fewer_bands_than_wannier_functions(self):
         block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
         with pytest.raises(ValueError, match="one band per Wannier function"):
             validate_projection_block(block)
+
+    def test_rejects_gapped_bands(self):
+        """An exclusion inside the window the block reads is refused.
+
+        The derivation would read past the excluded bands and yield
+        ``[1, 3, 5]``; no construction path builds such a block, so it is
+        refused rather than tolerated.
+        """
+        block = _explicit("block_1", range(1, 4), exclude_bands=[2, 4])
+        with pytest.raises(ValueError, match="names bands \\[2, 4\\] inside"):
+            validate_projection_block(block)
+
+    def test_rejects_a_gap_among_the_extra_bands(self):
+        """An exclusion above the block's own bands, among the extra ones, is refused too.
+
+        The Wannier-function indices never reach the extra bands, so a rule
+        read off them alone would pass this block while wannier90 reads a
+        gapped band list; the whole read window must be contiguous.
+        """
+        block = _explicit("block_1", range(1, 5), num_bands=8, exclude_bands=[6])
+        with pytest.raises(ValueError, match="names bands \\[6\\] inside"):
+            validate_projection_block(block)
+
+
+# ----------------------------------------------------------------------
+# validate_projection_block_sequence
+# ----------------------------------------------------------------------
+
+
+class TestValidateProjectionBlockSequence:
+    def test_accepts_disentanglement_on_the_uppermost_block(self):
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True),
+            _explicit("emp", range(5, 9), filled=False, num_bands=8),
+        ]
+        validate_projection_block_sequence(blocks)
+
+    def test_rejects_disentanglement_below_the_uppermost_block(self):
+        """A lower disentangling block shifts every later block's Wannier indices.
+
+        ``get_wannier_indices`` counts a block's indices off the bands
+        the blocks below it read, so the four extra bands this block reads
+        would move ``emp`` four places up the ordering while its own
+        exclusions keep saying 5-8, and nothing downstream would notice.
+        """
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True, num_bands=8),
+            _explicit("emp", range(5, 9), filled=False),
+        ]
+        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+            validate_projection_block_sequence(blocks)
+
+    def test_rejects_out_of_order_blocks(self):
+        """A reversed channel is rejected, naming both blocks.
+
+        This layout used to pass silently: the old check only asked
+        whether any block but the last-listed one disentangles, taking the
+        list order on trust.
+        """
+        blocks = [
+            _explicit("emp", range(5, 9), filled=False),
+            _explicit("occ", range(1, 5), filled=True),
+        ]
+        with pytest.raises(ValueError, match=r"'occ' starts at band 1, but block 'emp'"):
+            validate_projection_block_sequence(blocks)
+
+    def test_rejects_a_reversed_lower_disentangling_block(self):
+        """Reversing the list no longer hides lower disentanglement from the check.
+
+        The old rule took the last-listed block as the channel's top, so
+        listing ``occ`` (which disentangles) after ``emp`` passed silently.
+        The ordering rule rejects the list before disentanglement is judged.
+        """
+        blocks = [
+            _explicit("emp", range(5, 9), filled=False),
+            _explicit("occ", range(1, 5), filled=True, num_bands=8),
+        ]
+        with pytest.raises(ValueError, match="ascending"):
+            validate_projection_block_sequence(blocks)
+
+    def test_each_spin_channel_keeps_its_own_uppermost(self):
+        """The up channel's disentangling top block is not judged against the down blocks.
+
+        Concatenating the channels puts the up manifold's uppermost block
+        in the middle of the list; a rule read off list position alone
+        would reject the very layout the collinear route builds.
+        """
+        blocks = [
+            _explicit("occ_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("emp_up", range(5, 9), spin=SpinChannel.UP, filled=False, num_bands=8),
+            _explicit("occ_down", range(1, 5), spin=SpinChannel.DOWN, filled=True),
+            _explicit("emp_down", range(5, 9), spin=SpinChannel.DOWN, filled=False, num_bands=8),
+        ]
+        validate_projection_block_sequence(blocks)
+
+    def test_rejects_lower_disentanglement_in_the_second_spin_channel(self):
+        blocks = [
+            _explicit("occ_up", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("emp_up", range(5, 9), spin=SpinChannel.UP, filled=False),
+            _explicit("occ_down", range(1, 5), spin=SpinChannel.DOWN, filled=True, num_bands=8),
+            _explicit("emp_down", range(5, 9), spin=SpinChannel.DOWN, filled=False),
+        ]
+        with pytest.raises(ValueError, match="'occ_down'"):
+            validate_projection_block_sequence(blocks)
+
+    def test_a_lone_block_may_disentangle(self):
+        validate_projection_block_sequence([_explicit("block_1", range(1, 5), num_bands=10)])
+
+    def test_accepts_no_blocks(self):
+        validate_projection_block_sequence([])
+
+
+# ----------------------------------------------------------------------
+# get_wannier_indices
+# ----------------------------------------------------------------------
+
+
+class TestGetWannierIndices:
+    def test_block_at_the_bottom_of_the_manifold(self):
+        assert get_wannier_indices(_explicit("block_1", range(1, 5))) == [1, 2, 3, 4]
+
+    def test_exclusions_below_shift_the_indices_up(self):
+        assert get_wannier_indices(_explicit("block_2", range(5, 9))) == [5, 6, 7, 8]
+
+    def test_extra_bands_stay_out_of_the_indices(self):
+        """A disentangling block takes only ``num_wann`` Wannier-function indices.
+
+        The extra bands are what ``num_bands`` counts beyond ``num_wann``,
+        and they sit above the block, so the indices are the lowest bands
+        it reads. Were the extra bands among them the
+        band-to-Wannier-function map would mis-address every function
+        above the block.
+        """
+        block = _explicit("block_2", range(5, 9), num_bands=10)
+        assert get_wannier_indices(block) == [5, 6, 7, 8]
+
+    def test_exclusions_above_do_not_add_indices(self):
+        """Bands excluded above the block never join its Wannier-function indices."""
+        block = _explicit("block_2", range(5, 9), exclude_bands=[1, 2, 3, 4, 9, 10])
+        assert get_wannier_indices(block) == [5, 6, 7, 8]
 
 
 # ----------------------------------------------------------------------
