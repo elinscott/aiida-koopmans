@@ -110,7 +110,8 @@ below serves that goal; where they conflict, clarity wins.
 - `### Problem / ### Changes / ### Testing` is the default shape, not a
   form: rename, add or drop headings as the change calls for.
 - Bullets lend themselves to clarity when each carries one idea,
-  briefly; several sentences in one bullet is a paragraph in disguise.
+  briefly: several sentences in one bullet is a paragraph in disguise,
+  and two changes joined by a semicolon are two bullets.
 - Problem is a scenario an outsider can picture — never session
   codenames, database PKs or scratch paths. Testing says what each
   check discriminates, never bare pass counts.
