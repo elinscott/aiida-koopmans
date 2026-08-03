@@ -35,6 +35,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.calculations.kcp_inputs import _build_kcp_inputs
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
@@ -51,7 +52,6 @@ from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
     UpfData,
     _build_dft_parameters,
-    _build_kcp_inputs,
     _kcp_base_inputs,
 )
 from aiida_koopmans.workgraphs.supercell import supercell_size
