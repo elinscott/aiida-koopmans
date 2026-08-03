@@ -33,6 +33,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.functionals import Correction
+from aiida_koopmans.ml import ModelMismatchError
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
@@ -287,19 +288,21 @@ def predict_alpha_screening(
     from aiida_koopmans.workgraphs.ml.helpers import predict_estimator
 
     if model.get("descriptor", "self_hartree") != "self_hartree":
-        raise ValueError(
+        raise ModelMismatchError(
             f"The supplied model was trained on `{model['descriptor']}` descriptors, "
             "but prediction computes `self_hartree` descriptors from the trial KI. "
-            "Train a model with descriptor='self_hartree' to predict here."
+            "Train a model with descriptor='self_hartree' to predict here.",
+            field="descriptor",
         )
     for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
         run_str = getattr(run_value, "value", run_value)
         model_value = model.get(key)
         if model_value != run_str:
-            raise ValueError(
+            raise ModelMismatchError(
                 f"The supplied model was trained with {key}={model_value!r}, but this "
                 f"run uses {key}={run_str!r}. Train a model under the run's settings "
-                f"(a model without the {key} stamp predates it; retrain to predict)."
+                f"(a model without the {key} stamp predates it; retrain to predict).",
+                field=key,
             )
 
     submodels = model["submodels"]

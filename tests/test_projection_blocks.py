@@ -12,6 +12,7 @@ import pytest
 
 from aiida_koopmans.projections import (
     OrbitalDict,
+    ProjectionBlockError,
     block_w90_kwargs,
     get_wannier_indices,
     validate_projection_block,
@@ -192,6 +193,17 @@ class TestValidateProjectionBlock:
         )
         with pytest.raises(ValueError, match="at least one Wannier function"):
             validate_projection_block(block)
+
+    def test_raises_the_typed_class_through_except_valueerror(self):
+        """A rejection arrives as ``ProjectionBlockError`` through ``except ValueError``."""
+        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        try:
+            validate_projection_block(block)
+        except ValueError as exc:
+            assert type(exc) is ProjectionBlockError
+            assert exc.label == "block_1"
+        else:
+            pytest.fail("ProjectionBlockError was not raised")
 
 
 # ----------------------------------------------------------------------

@@ -9,6 +9,7 @@ import pytest
 
 from aiida_koopmans.parallelization import (
     CODE_NAMES,
+    ParallelizationError,
     merge_parallelization_into_existing_namespaces,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
@@ -77,6 +78,16 @@ class TestResolve:
     def test_pd_for_non_pd_code_raises(self, code):
         with pytest.raises(ValueError, match="pencil decomposition"):
             resolve_parallelization({code: {"pd": True}}, code)
+
+    def test_raises_the_typed_class_through_except_valueerror(self):
+        """A rejection arrives as ``ParallelizationError`` through ``except ValueError``."""
+        try:
+            resolve_parallelization({"wann2kcp": {"npool": 2}}, "wann2kcp")
+        except ValueError as exc:
+            assert type(exc) is ParallelizationError
+            assert exc.code == "wann2kcp"
+        else:
+            pytest.fail("ParallelizationError was not raised")
 
     def test_pools_false_suppresses_npool_but_keeps_pd(self):
         """The kcw.x ham step drops -npool but still takes -pd."""
