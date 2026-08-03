@@ -58,7 +58,7 @@ from pydantic_espresso.models.kcw.develop import (
 )
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
-from aiida_koopmans.utils import walk_remote_files
+from aiida_koopmans.utils.remote import walk_remote_files
 
 
 class KcwCalculation(KoopmansStdoutCalculation):

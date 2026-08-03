@@ -17,7 +17,7 @@ from aiida.orm import ArrayData, Dict, RemoteData, SinglefileData, StructureData
 from aiida.plugins import DataFactory
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
-from aiida_koopmans.utils import walk_remote_files
+from aiida_koopmans.utils.remote import walk_remote_files
 
 UpfData = DataFactory("pseudo.upf")
 

@@ -39,7 +39,7 @@ from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
+from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.wannier_merge import group_blocks_to_merge
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
@@ -62,7 +62,9 @@ _ENERGY_RELATIVE_TOLERANCE = 1.0e-6
 
 _BANDS_DESERIALIZERS = {
     **KOOPMANS_NODE_DESERIALIZERS,
-    "aiida.orm.nodes.data.array.bands.BandsData": "aiida_koopmans.utils.passthrough_node",
+    "aiida.orm.nodes.data.array.bands.BandsData": (
+        "aiida_koopmans.utils.deserializers.passthrough_node"
+    ),
 }
 
 

@@ -32,7 +32,7 @@ from aiida import orm
 from aiida_workgraph import task
 
 from aiida_koopmans import ui_helpers
-from aiida_koopmans.utils import KOOPMANS_NODE_DESERIALIZERS
+from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
 
 
 class DensityOfStates(TypedDict):

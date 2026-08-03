@@ -40,10 +40,8 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.utils import (
-    count_electrons_task,
-    resolve_pseudo_family_task,
-)
+from aiida_koopmans.utils.electrons import count_electrons_task
+from aiida_koopmans.utils.pseudos import resolve_pseudo_family_task
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
