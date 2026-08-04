@@ -195,15 +195,31 @@ class TestValidateProjectionBlock:
             validate_projection_block(block)
 
     def test_raises_the_typed_class_through_except_valueerror(self):
-        """A rejection arrives as ``ProjectionBlockError`` through ``except ValueError``."""
-        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        """A user fault arrives as its typed class through ``except ValueError``."""
+        from aiida_koopmans.projections import BlockBoundaryError, block_occupancy
+
+        block = _explicit("block_1", range(1, 5))
         try:
-            validate_projection_block(block)
+            block_occupancy(block)
         except ValueError as exc:
-            assert type(exc) is ProjectionBlockError
+            assert type(exc) is BlockBoundaryError
+            assert isinstance(exc, ProjectionBlockError)
             assert exc.label == "block_1"
         else:
-            pytest.fail("ProjectionBlockError was not raised")
+            pytest.fail("BlockBoundaryError was not raised")
+
+    def test_derivation_invariants_are_untyped(self):
+        """A fault only the block derivation can produce carries no advice class.
+
+        The discriminating half of the fault split: the same validator
+        family raises the typed classes for user faults, so a plain
+        ``ValueError`` here is what keeps the koopmans package from
+        attaching projection advice to an internal bug.
+        """
+        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        with pytest.raises(ValueError, match="report it") as excinfo:
+            validate_projection_block(block)
+        assert not isinstance(excinfo.value, ProjectionBlockError)
 
 
 # ----------------------------------------------------------------------
