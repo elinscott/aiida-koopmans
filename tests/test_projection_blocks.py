@@ -409,3 +409,24 @@ def test_orbital_dict_mirrors_realhydrogen_schema(aiida_profile):
     )
     real_keys = set(orbital_data.get_orbitals()[0].get_orbital_dict().keys())
     assert set(OrbitalDict.__annotations__.keys()) == real_keys
+
+
+def test_unknown_projection_site_raises_the_typed_class(aiida_profile):
+    """A ``site`` label matching no atom raises ``ProjectionSiteError``.
+
+    The one projection fault raised before any block exists; the class
+    carries the offending label for the koopmans package's advice.
+    """
+    from types import SimpleNamespace
+
+    from aiida.orm import StructureData
+    from ase.build import bulk
+
+    from aiida_koopmans.projections import ProjectionSiteError, projection_num_wann
+
+    structure = StructureData(ase=bulk("Si", "diamond", 5.43))
+    projection = SimpleNamespace(site="Ge", ang_mtm=SimpleNamespace(m_r=None, l=0))
+    with pytest.raises(ProjectionSiteError, match="does not match any atom") as excinfo:
+        projection_num_wann(structure, projection)
+    assert excinfo.value.site == "Ge"
+    assert isinstance(excinfo.value, ProjectionBlockError)
