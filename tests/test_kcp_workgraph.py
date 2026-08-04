@@ -2443,3 +2443,91 @@ class TestPredictTrialMatchesComputeTrial:
             != self._render(seen_compute.get(key, "<ABSENT>"))
         }
         assert not diffs, diffs
+
+
+class TestMlCompareGraphBuild:
+    """``ml_model`` + ``ml_compare`` builds the side-by-side final KIs."""
+
+    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, **overrides):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        inputs = {
+            "code": kcp_code,
+            "structure": ozone_structure,
+            "pseudo_family": ozone_pseudo_family,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "nspin": 2,
+            "tot_magnetization": None,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+            "alpha_numsteps": 1,
+            "fix_spin_contamination": False,
+            "initial_alpha": 0.6,
+            "spin_polarized": False,
+        }
+        inputs.update(overrides)
+        return KoopmansDSCFWorkflow.build(**inputs)
+
+    @staticmethod
+    def _labels(wg) -> list[str]:
+        labels: list[str] = []
+
+        def _walk(tasks):
+            for t in tasks:
+                labels.append(t.name)
+                children = getattr(t, "children", None)
+                if children:
+                    _walk(children)
+
+        _walk(wg.tasks)
+        return labels
+
+    def test_compare_keeps_refinement_and_adds_the_predicted_arm(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The refinement still runs, plus prediction and a second final KI."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_model=_linear_sh_model(),
+            ml_compare=True,
+        )
+        labels = self._labels(wg)
+
+        def _has(substr: str) -> bool:
+            return any(substr in label for label in labels)
+
+        # Comparison baseline: the full refinement, not the predict-only route.
+        assert _has("ComputeScreeningParameters"), labels
+        assert not _has("PredictScreeningParameters"), labels
+        # The predicted arm: model prediction + second final KI off the trial.
+        assert _has("predict_alphas"), labels
+        assert _has("run_final_ki_ml"), labels
+        assert _has("RunFinalKI"), labels
+
+    def test_compare_allows_multiple_refinement_steps(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """``alpha_numsteps > 1`` is the comparison baseline, not an error."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_model=_linear_sh_model(),
+            ml_compare=True,
+            alpha_numsteps=2,
+        )
+        assert any("ComputeScreeningParameters" in label for label in self._labels(wg))
+
+    def test_compare_without_model_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """``ml_compare`` without a model has nothing to predict with."""
+        with pytest.raises(ValueError, match="supply ml_model"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_compare=True,
+            )

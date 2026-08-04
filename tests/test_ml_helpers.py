@@ -695,3 +695,56 @@ class TestCentresHelpers:
         xyz = "n\ncomment\n" + "".join(f"X {ln}\n" for ln in formatted.splitlines()[1:])
         recovered = ml_helpers.parse_wannier_centres_xyz(xyz)
         assert np.allclose(recovered, centres)
+
+
+class TestFinalKiDeltas:
+    """Observable-level deltas between the twin final KIs."""
+
+    @staticmethod
+    def _call(computed_alphas, predicted_alphas, computed_eigs, predicted_eigs):
+        from aiida_koopmans.workgraphs.ml.helpers import final_ki_deltas
+
+        return final_ki_deltas(computed_alphas, predicted_alphas, computed_eigs, predicted_eigs)
+
+    def test_deltas_are_exact(self):
+        """Max and RMS reproduce a hand-computed two-orbital case."""
+        computed = {"filled": {"none": [0.60]}, "empty": {"none": [0.70]}}
+        predicted = {"filled": {"none": [0.62]}, "empty": {"none": [0.66]}}
+        result = self._call(computed, predicted, [[-10.0, -5.0]], [[-10.1, -4.7]])
+        assert result["alphas"]["max_abs_delta"] == pytest.approx(0.04)
+        assert result["alphas"]["rms_delta"] == pytest.approx((0.5 * (0.02**2 + 0.04**2)) ** 0.5)
+        assert result["eigenvalues"]["max_abs_delta"] == pytest.approx(0.3)
+        assert result["eigenvalues"]["rms_delta"] == pytest.approx((0.5 * (0.1**2 + 0.3**2)) ** 0.5)
+        # Raw rows ride along for reporting.
+        assert result["alphas"]["computed"] == [0.60, 0.70]
+        assert result["alphas"]["predicted"] == [0.62, 0.66]
+
+    def test_spin_channels_flatten_in_spin_order(self):
+        """Up rows precede down rows within each filling, matching dataset order."""
+        computed = {
+            "filled": {"up": [0.6], "down": [0.7]},
+            "empty": {"up": [0.5], "down": [0.4]},
+        }
+        result = self._call(computed, computed, [[0.0]], [[0.0]])
+        assert result["alphas"]["computed"] == [0.6, 0.7, 0.5, 0.4]
+        assert result["alphas"]["max_abs_delta"] == 0.0
+
+    def test_layout_mismatch_raises(self):
+        """Twin arms that cover different orbital counts are rejected."""
+        with pytest.raises(ValueError, match="did not share a layout"):
+            self._call(
+                {"filled": {"none": [0.6, 0.6]}, "empty": {}},
+                {"filled": {"none": [0.6]}, "empty": {}},
+                [[0.0]],
+                [[0.0]],
+            )
+
+    def test_eigenvalue_shape_mismatch_raises(self):
+        """Twin arms whose eigenvalue arrays disagree in shape are rejected."""
+        with pytest.raises(ValueError, match="shapes"):
+            self._call(
+                {"filled": {"none": [0.6]}, "empty": {}},
+                {"filled": {"none": [0.6]}, "empty": {}},
+                [[0.0, 1.0]],
+                [[0.0]],
+            )

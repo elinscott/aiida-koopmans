@@ -130,6 +130,10 @@ class KoopmansDSCFOutputs(TypedDict):
     ``PowerSpectrumDatasetWorkflow`` does this via
     :func:`~aiida_koopmans.workgraphs.ml.require_wannier_route_inputs`, which
     raises a descriptive ``ValueError`` when the route requirement is unmet.
+
+    With ``ml_model`` and ``ml_compare=True`` a second final KI applies
+    the model-predicted alphas; its outputs land in ``predicted_alphas`` /
+    ``predicted_eigenvalues``, present only on that route.
     """
 
     parameters: dict
@@ -138,6 +142,8 @@ class KoopmansDSCFOutputs(TypedDict):
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
     alphas: AlphaScreening
+    predicted_alphas: NotRequired[AlphaScreening]
+    predicted_eigenvalues: NotRequired[np.ndarray]
     nscf_remote_folder: NotRequired[orm.RemoteData]
     block_wannierizations: NotRequired[Annotated[dict, dynamic(WannierizeBlockOutputs)]]
     merge_groups: NotRequired[list]
@@ -246,12 +252,15 @@ class ScreeningIterationOutputs(TypedDict):
       KI's parent).
     * ``max_error`` — convergence indicator; the loop terminates when
       this falls below the ``1e-3 eV`` threshold.
+    * ``trial_parameters`` — the trial KI's parsed ``output_parameters``;
+      carries the per-orbital self-Hartrees a model prediction reads.
     """
 
     alphas: AlphaScreening
     errors: AlphaScreening
     trial_remote: orm.RemoteData
     max_error: float
+    trial_parameters: dict
 
 
 @task
@@ -262,6 +271,17 @@ def echo_alpha_screening(alphas: AlphaScreening) -> AlphaScreening:
     output socket (graphs cannot echo raw inputs as outputs).
     """
     return alphas
+
+
+@task
+def echo_trial_parameters(parameters: dict) -> dict:
+    """Return the trial KI's parsed parameters unchanged.
+
+    The recursion's terminal branch needs the previous iteration's
+    ``trial_parameters`` as an output socket; a graph cannot echo a raw
+    input as an output.
+    """
+    return parameters
 
 
 @task
@@ -346,10 +366,13 @@ class ScreeningParametersOutputs(TypedDict):
     * ``trial_remote`` — the last iteration's trial-KI ``remote_folder``;
       becomes the final KI's ``parent_folder``, so the final KI inherits
       the converged variational orbital basis.
+    * ``trial_parameters`` — that trial's parsed ``output_parameters``,
+      whose per-orbital self-Hartrees a model prediction reads.
     """
 
     alphas: AlphaScreening
     trial_remote: orm.RemoteData
+    trial_parameters: dict
 
 
 # ----------------------------------------------------------------------
@@ -917,6 +940,7 @@ def KoopmansDSCFWorkflow(
     initial_alphas: AlphaScreening | None = None,
     calculate_alpha: bool = True,
     ml_model: dict | None = None,
+    ml_compare: bool = False,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     codes: Codes | None = None,
@@ -959,6 +983,13 @@ def KoopmansDSCFWorkflow(
     every screening parameter, and the final KI applies the predictions.
     Requires ``calculate_alpha=True`` (the trial supplies the
     descriptors) and ``alpha_numsteps=1`` (there is nothing to iterate).
+
+    ``ml_compare=True`` (with ``ml_model``) keeps the full Delta-SCF
+    refinement and *additionally* runs a second final KI at the alphas
+    the model predicts from the last trial's self-Hartrees — both final
+    KIs restart from the same trial save, so their outputs differ only
+    through the screening parameters. The predicted arm lands in the
+    ``predicted_alphas`` / ``predicted_eigenvalues`` outputs.
 
     Two initialisation routes select on ``init_orbitals``:
 
@@ -1004,8 +1035,9 @@ def KoopmansDSCFWorkflow(
         calculate_alpha=calculate_alpha,
         spin_polarized=spin_polarized,
     )
-    _validate_ml_model_inputs(
+    predict_only = _validate_ml_model_inputs(
         ml_model=ml_model,
+        ml_compare=ml_compare,
         calculate_alpha=calculate_alpha,
         alpha_numsteps=alpha_numsteps,
     )
@@ -1210,8 +1242,11 @@ def KoopmansDSCFWorkflow(
         )
         dft_remote = dft["remote_folder"]
 
+    # Unbound in skip mode; the predicted-arm helper never dereferences it
+    # there (ml_compare with calculate_alpha=False is rejected upfront).
+    screening: Any = None
     if calculate_alpha:
-        if ml_model is not None:
+        if predict_only:
             screening = PredictScreeningParameters(
                 code=code,
                 structure=run_structure,
@@ -1345,6 +1380,29 @@ def KoopmansDSCFWorkflow(
         remote_folder=ki_final["remote_folder"],
         alphas=out_alphas,
     )
+    _attach_predicted_final_ki(
+        outputs,
+        ml_compare=ml_compare,
+        code=code,
+        run_structure=run_structure,
+        pseudos=pseudos,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        run_nbnd=run_nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        run_tot_magnetization=run_tot_magnetization,
+        correction=correction,
+        init_orbitals=init_orbitals,
+        spin_polarized=spin_polarized,
+        orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
+        ml_model=ml_model,
+        screening=screening,
+        overrides=overrides,
+        parallelization=parallelization,
+    )
     # The Wannier-route-only sockets: present only when the descriptor route
     # can be fed (the molecular Kohn-Sham route runs no wannierization).
     if wannier_init:
@@ -1352,6 +1410,87 @@ def KoopmansDSCFWorkflow(
         outputs["block_wannierizations"] = cast("dict", block_wannierizations)
         outputs["merge_groups"] = cast("list", merge_groups)
     return outputs
+
+
+def _attach_predicted_final_ki(
+    outputs: KoopmansDSCFOutputs,
+    *,
+    ml_compare: bool,
+    code: orm.AbstractCode,
+    run_structure: Any,
+    pseudos: Any,
+    ecutwfc: float,
+    ecutrho: float,
+    run_nbnd: Any,
+    nspin: int,
+    nelec: Any,
+    nelup: Any,
+    neldw: Any,
+    run_tot_magnetization: Any,
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
+    spin_polarized: bool,
+    orbital_groups_self_hartree_tol: float | None,
+    ml_model: dict | None,
+    screening: Any,
+    overrides: KoopmansDSCFOverrides | None,
+    parallelization: ParallelizationDict | None,
+) -> None:
+    """Wire the model-predicted final KI beside the computed one.
+
+    Predicts alphas from the last trial's self-Hartrees (same grouping
+    rule as the refinement) and runs a second final KI off the same trial
+    save, so the two spectra differ only through the screening
+    parameters. Fills ``predicted_alphas`` / ``predicted_eigenvalues`` on
+    ``outputs``. Runs inside the ``KoopmansDSCFWorkflow`` body, so the
+    tasks attach to the active graph. A no-op without ``ml_compare``;
+    with it, ``ml_model`` is non-None (``_validate_ml_model_inputs``
+    rejects ``ml_compare`` without a model).
+    """
+    if not ml_compare:
+        return
+    twin_metric = extract_self_hartree_from_kcp(output_parameters=screening["trial_parameters"])
+    twin_orbitals = assign_orbital_groups(
+        metric=twin_metric.result,
+        nelup=nelup,
+        neldw=neldw,
+        nbnd=run_nbnd,
+        spin_polarized=spin_polarized,
+        tol=orbital_groups_self_hartree_tol,
+    )
+    predicted_alphas = predict_alpha_screening(
+        model=ml_model,
+        descriptors=twin_metric.result,
+        orbitals=twin_orbitals.result,
+        correction=correction,
+        init_orbitals=init_orbitals,
+        metadata={"call_link_label": "predict_alphas"},
+    )
+    ki_final_ml = RunFinalKI(
+        code=code,
+        structure=run_structure,
+        pseudos=pseudos,
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
+        nbnd=run_nbnd,
+        nspin=nspin,
+        nelec=nelec,
+        nelup=nelup,
+        neldw=neldw,
+        tot_magnetization=run_tot_magnetization,
+        correction=correction,
+        alphas=predicted_alphas,
+        parent_folder=screening["trial_remote"],
+        variational_orbital_overlays=None,
+        initial_evc_occupied1=None,
+        initial_evc_occupied2=None,
+        is_first_iteration=False,
+        overrides=overrides.get("ki") if overrides else None,
+        parallelization=parallelization,
+        metadata={"call_link_label": "run_final_ki_ml"},
+    )
+    outputs["predicted_alphas"] = cast("AlphaScreening", predicted_alphas)
+    outputs["predicted_eigenvalues"] = cast("np.ndarray", ki_final_ml["eigenvalues"])
 
 
 @task.graph
@@ -1951,6 +2090,7 @@ def ScreeningIteration(
         "errors": per_orbital["errors"],
         "trial_remote": trial["remote_folder"],
         "max_error": max_err.result,
+        "trial_parameters": trial["output_parameters"],
     }
 
 
@@ -1975,6 +2115,7 @@ def RefineScreeningParameters(
     spin_polarized: bool,
     prev_alphas: AlphaScreening,
     prev_trial_remote: orm.RemoteData,
+    prev_trial_parameters: dict,
     prev_max_error: float,
     remaining_steps: int,
     alpha_conv_thr: float,
@@ -2003,10 +2144,12 @@ def RefineScreeningParameters(
     """
     if remaining_steps <= 0 or prev_max_error < alpha_conv_thr:
         # A graph cannot echo a raw input as an output; route the converged
-        # alphas through a task so the output is a socket.
+        # alphas (and the trial's parsed parameters) through tasks so the
+        # outputs are sockets.
         return ScreeningParametersOutputs(
             alphas=echo_alpha_screening(alphas=prev_alphas),
             trial_remote=prev_trial_remote,
+            trial_parameters=echo_trial_parameters(parameters=prev_trial_parameters).result,
         )
 
     iteration = ScreeningIteration(
@@ -2041,6 +2184,7 @@ def RefineScreeningParameters(
         spin_polarized=spin_polarized,
         prev_alphas=iteration["alphas"],
         prev_trial_remote=iteration["trial_remote"],
+        prev_trial_parameters=iteration["trial_parameters"],
         prev_max_error=iteration["max_error"],
         remaining_steps=remaining_steps - 1,
         alpha_conv_thr=alpha_conv_thr,
@@ -2056,6 +2200,7 @@ def RefineScreeningParameters(
     return ScreeningParametersOutputs(
         alphas=remainder["alphas"],
         trial_remote=remainder["trial_remote"],
+        trial_parameters=remainder["trial_parameters"],
     )
 
 
@@ -2236,6 +2381,7 @@ def ComputeScreeningParameters(
         return {
             "alphas": iter_1["alphas"],
             "trial_remote": iter_1["trial_remote"],
+            "trial_parameters": iter_1["trial_parameters"],
         }
 
     refinement = RefineScreeningParameters(
@@ -2248,6 +2394,7 @@ def ComputeScreeningParameters(
         spin_polarized=spin_polarized,
         prev_alphas=iter_1["alphas"],
         prev_trial_remote=iter_1["trial_remote"],
+        prev_trial_parameters=iter_1["trial_parameters"],
         prev_max_error=iter_1["max_error"],
         # iter_1 already ran, so the recursion budget is one less.
         remaining_steps=alpha_numsteps - 1,
@@ -2268,6 +2415,7 @@ def ComputeScreeningParameters(
     return {
         "alphas": refinement["alphas"],
         "trial_remote": refinement["trial_remote"],
+        "trial_parameters": refinement["trial_parameters"],
     }
 
 
@@ -2387,6 +2535,7 @@ def PredictScreeningParameters(
     return {
         "alphas": predicted,
         "trial_remote": trial["remote_folder"],
+        "trial_parameters": trial["output_parameters"],
     }
 
 
@@ -3149,29 +3298,41 @@ def _build_print_parameters(
 def _validate_ml_model_inputs(
     *,
     ml_model: dict | None,
+    ml_compare: bool,
     calculate_alpha: bool,
     alpha_numsteps: int,
-) -> None:
-    """Fail fast on ``ml_model`` inputs that cannot take effect.
+) -> bool:
+    """Fail fast on ``ml_model`` / ``ml_compare`` inputs that cannot take effect.
 
-    Prediction needs the trial KI (its self-Hartrees are the descriptors),
-    so it requires ``calculate_alpha=True``; and it replaces the Delta-SCF
-    refinement with a single pass, so ``alpha_numsteps`` must stay 1.
+    Prediction needs a trial KI (its self-Hartrees are the descriptors),
+    so both routes require ``calculate_alpha=True``. Without ``ml_compare``
+    the model replaces the Delta-SCF refinement with a single pass, so
+    ``alpha_numsteps`` must stay 1; with ``ml_compare`` the refinement runs
+    in full (it is the comparison baseline) and ``alpha_numsteps`` is free.
+
+    Returns whether the model *replaces* the refinement (the predict-only
+    route): a model without ``ml_compare``.
     """
+    if ml_compare and ml_model is None:
+        raise ValueError(
+            "ml_compare runs a second final KI at model-predicted alphas, which "
+            "needs the model: supply ml_model."
+        )
     if ml_model is None:
-        return
+        return False
     if not calculate_alpha:
         raise ValueError(
             "ml_model predicts the screening parameters from a trial KI, which "
             "calculate_alpha=False skips. Either drop ml_model (to apply "
             "initial_alphas verbatim) or keep calculate_alpha=True."
         )
-    if alpha_numsteps != 1:
+    if not ml_compare and alpha_numsteps != 1:
         raise ValueError(
             "ml_model replaces the Delta-SCF refinement with a single trial-KI "
             "prediction, so alpha_numsteps cannot take effect; set "
             "alpha_numsteps=1."
         )
+    return not ml_compare
 
 
 def _trial_kcp_inputs(

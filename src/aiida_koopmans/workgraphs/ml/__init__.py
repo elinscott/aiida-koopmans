@@ -66,6 +66,7 @@ from aiida_koopmans.workgraphs.ml.helpers import (
     concatenate_datasets,
     cross_power_spectra,
     evaluate_predictions,
+    final_ki_deltas,
     fit_screening_model,
     format_group_centres_file,
     parse_wannier_centres_xyz,
@@ -110,8 +111,9 @@ class TrajectoryOutputs(TypedDict):
       ``ml_mode == "none"``).
     * ``model`` — the trained model (``train``), the supplied model
       (``test``), or ``{}``.
-    * ``evaluation`` — training-set metrics (``train``), test metrics plus
-      per-orbital predictions (``test``), or ``{}``.
+    * ``evaluation`` — training-set metrics (``train``); test metrics,
+      per-orbital predictions and the per-snapshot twin final-KI deltas
+      under ``final_ki`` (``test``); or ``{}``.
     """
 
     snapshots: Annotated[dict, dynamic(KoopmansDSCFOutputs)]
@@ -190,8 +192,14 @@ class EvaluateOutputs(TypedDict):
 def evaluate_screening_model(
     datasets: Annotated[dict, dynamic(SnapshotDataset)],
     model: dict,
+    final_ki: Annotated[dict | None, dynamic(dict)] = None,
 ) -> EvaluateOutputs:
-    """Gather every snapshot's dataset and score a trained model against it."""
+    """Gather every snapshot's dataset and score a trained model against it.
+
+    ``final_ki`` carries the per-snapshot observable-level deltas of the
+    twin final KIs (:func:`compare_final_ki`); when given, it lands in the
+    evaluation under ``final_ki`` alongside the descriptor-level metrics.
+    """
     merged = concatenate_datasets(datasets)
     predicted = predict_screening(model, merged)
     evaluation = {
@@ -202,7 +210,28 @@ def evaluate_screening_model(
             "predicted": predicted,
         },
     }
+    if final_ki:
+        evaluation["final_ki"] = dict(final_ki)
     return EvaluateOutputs(evaluation=evaluation, model=model)
+
+
+@task
+def compare_final_ki(
+    computed_alphas: AlphaScreening,
+    predicted_alphas: AlphaScreening,
+    computed_eigenvalues: np.ndarray,
+    predicted_eigenvalues: np.ndarray,
+) -> dict:
+    """Compute one snapshot's observable-level twin deltas.
+
+    Thin wrapper over
+    :func:`~aiida_koopmans.workgraphs.ml.helpers.final_ki_deltas`: the two
+    final KIs share a trial save, so the per-orbital alpha deltas and the
+    eigenvalue max/RMS deltas measure the model's effect alone.
+    """
+    return final_ki_deltas(
+        computed_alphas, predicted_alphas, computed_eigenvalues, predicted_eigenvalues
+    )
 
 
 # ----------------------------------------------------------------------
@@ -640,7 +669,11 @@ def TrajectoryWorkflow(
       alpha)`` pairs from every snapshot and fit a screening model; the
       fitted model is the ``model`` output.
     * ``"test"`` — extract the same pairs and score the supplied
-      ``ml_model`` against the computed alphas.
+      ``ml_model`` against the computed alphas; additionally every
+      snapshot's DSCF runs a second final KI at the model-predicted
+      alphas (``ml_compare``) and the per-snapshot observable-level
+      deltas (per-orbital alphas; final-KI eigenvalue max/RMS) land in
+      the evaluation under ``final_ki``.
     * ``"predict"`` — inject ``ml_model`` into every snapshot's DSCF:
       the per-orbital Delta-SCF refinement is replaced by a model
       prediction from the trial KI's self-Hartree descriptors (so only
@@ -671,6 +704,7 @@ def TrajectoryWorkflow(
 
     snapshot_outputs: dict[str, KoopmansDSCFOutputs] = {}
     datasets: dict[str, dict] = {}
+    twin_deltas: dict[str, Any] = {}
     # Snapshot labels become socket/link-label components; node-graph
     # validates them upstream (letters, digits and underscores only).
     for label, structure in snapshots.items():
@@ -688,7 +722,8 @@ def TrajectoryWorkflow(
             alpha_numsteps=alpha_numsteps,
             fix_spin_contamination=fix_spin_contamination,
             initial_alpha=initial_alpha,
-            ml_model=ml_model if ml_mode == MLMode.PREDICT else None,
+            ml_model=ml_model if ml_mode in (MLMode.PREDICT, MLMode.TEST) else None,
+            ml_compare=ml_mode == MLMode.TEST,
             spin_polarized=spin_polarized,
             orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
             codes=codes,
@@ -712,6 +747,17 @@ def TrajectoryWorkflow(
             remote_folder=dscf["remote_folder"],
             alphas=dscf["alphas"],
         )
+
+        if ml_mode == MLMode.TEST:
+            # Twin deltas: the DSCF ran both final KIs (ml_compare); the
+            # comparison is per snapshot, gathered into the evaluation.
+            twin_deltas[label] = compare_final_ki(
+                computed_alphas=dscf["alphas"],
+                predicted_alphas=dscf["predicted_alphas"],
+                computed_eigenvalues=dscf["eigenvalues"],
+                predicted_eigenvalues=dscf["predicted_eigenvalues"],
+                metadata={"call_link_label": f"final_ki_deltas_{label}"},
+            ).result
 
         if ml_mode in (MLMode.TRAIN, MLMode.TEST):
             # The whole SnapshotDataset output namespace becomes the entry
@@ -740,7 +786,9 @@ def TrajectoryWorkflow(
         model_output: dict = trained["model"]
         evaluation: dict = trained["metrics"]
     elif ml_mode == MLMode.TEST:
-        evaluated = evaluate_screening_model(datasets=datasets, model=ml_model)
+        evaluated = evaluate_screening_model(
+            datasets=datasets, model=ml_model, final_ki=twin_deltas
+        )
         model_output = evaluated["model"]
         evaluation = evaluated["evaluation"]
     else:

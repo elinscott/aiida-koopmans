@@ -1014,6 +1014,66 @@ def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[f
     return predictions.tolist()
 
 
+def flatten_alpha_screening(alphas: AlphaScreening) -> list[float]:
+    """Flatten an :class:`AlphaScreening` into one row-ordered list.
+
+    Filled orbitals first, then empty; within each, spin channels in
+    spin-index order — the same traversal :func:`build_snapshot_dataset`
+    walks per channel, so two payloads with the same channel layout
+    flatten into comparable rows.
+    """
+    rows: list[float] = []
+    for channels in (alphas.get("filled", {}), alphas.get("empty", {})):
+        for channel in sorted(channels, key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), ch)):
+            rows.extend(float(a) for a in channels[channel])
+    return rows
+
+
+def final_ki_deltas(
+    computed_alphas: AlphaScreening,
+    predicted_alphas: AlphaScreening,
+    computed_eigenvalues: Any,
+    predicted_eigenvalues: Any,
+) -> dict[str, Any]:
+    """Observable-level deltas between the computed- and predicted-alpha final KIs.
+
+    Both final KIs restart from the same trial save, so every delta here
+    is attributable to the screening parameters alone. Alphas are compared
+    per orbital (see :func:`flatten_alpha_screening` for the row order);
+    eigenvalues elementwise over the ``(nspin, nbnd)`` arrays.
+    """
+    alpha_computed = np.asarray(flatten_alpha_screening(computed_alphas), dtype=float)
+    alpha_predicted = np.asarray(flatten_alpha_screening(predicted_alphas), dtype=float)
+    if alpha_computed.shape != alpha_predicted.shape:
+        raise ValueError(
+            f"Computed and predicted alphas cover {alpha_computed.size} vs "
+            f"{alpha_predicted.size} orbitals; the two final KIs did not share a layout."
+        )
+    eig_computed = np.asarray(computed_eigenvalues, dtype=float)
+    eig_predicted = np.asarray(predicted_eigenvalues, dtype=float)
+    if eig_computed.shape != eig_predicted.shape:
+        raise ValueError(
+            f"Computed and predicted eigenvalue arrays have shapes "
+            f"{eig_computed.shape} vs {eig_predicted.shape}."
+        )
+    alpha_delta = alpha_predicted - alpha_computed
+    eig_delta = (eig_predicted - eig_computed).ravel()
+    return {
+        "alphas": {
+            "computed": alpha_computed.tolist(),
+            "predicted": alpha_predicted.tolist(),
+            "max_abs_delta": float(np.max(np.abs(alpha_delta))),
+            "rms_delta": float(np.sqrt(np.mean(alpha_delta**2))),
+        },
+        "eigenvalues": {
+            "computed": eig_computed.tolist(),
+            "predicted": eig_predicted.tolist(),
+            "max_abs_delta": float(np.max(np.abs(eig_delta))),
+            "rms_delta": float(np.sqrt(np.mean(eig_delta**2))),
+        },
+    }
+
+
 def evaluate_predictions(y_true: Sequence[float], y_pred: Sequence[float]) -> dict[str, float]:
     """Compute error metrics between computed and predicted screening parameters."""
     errors = np.asarray(y_pred, dtype=float) - np.asarray(y_true, dtype=float)
