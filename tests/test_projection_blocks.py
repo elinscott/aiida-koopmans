@@ -247,7 +247,7 @@ class TestValidateProjectionBlockSequence:
             _explicit("occ", range(1, 5), filled=True, num_bands=8),
             _explicit("emp", range(5, 9), filled=False),
         ]
-        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+        with pytest.raises(ValueError, match="uppermost block of its spin channel"):
             validate_projection_block_sequence(blocks)
 
     def test_rejects_out_of_order_blocks(self):

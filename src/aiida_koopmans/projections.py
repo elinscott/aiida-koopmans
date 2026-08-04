@@ -78,7 +78,9 @@ def projection_win_string(projection: Projection) -> str:
     Element-labelled sites render as ``<element>:<ang_mtm>``; single-point
     sites use Wannier90's ``f=x,y,z`` (crystal) / ``c=x,y,z`` (Cartesian)
     forms. The ``ang_mtm`` quantum numbers stringify to Wannier90's own
-    syntax (``l=-3`` for sp3, ...).
+    syntax (``l=-3`` for sp3, ...). Not ``str(projection)``: the model's
+    ``__str__`` appends the default z-axis, x-axis, radial and zona fields,
+    and the ``.win`` lines here stay minimal.
     """
     if projection.site is not None:
         return f"{projection.site}:{projection.ang_mtm}"
@@ -93,11 +95,9 @@ def projection_win_string(projection: Projection) -> str:
 def projection_num_wann(structure: orm.StructureData, projection: Projection) -> int:
     """Count the Wannier functions of one ``wannier90_input`` ``Projection``.
 
-    Site multiplicity x orbital multiplicity: an element-labelled ``site``
-    counts its atoms in ``structure``, a ``fractional_site`` /
-    ``cartesian_site`` point hosts one set, and the ``ang_mtm`` quantum
-    numbers fix the orbitals per site (``m_r`` restriction, else 2l+1, else
-    the hybrid count).
+    Site multiplicity x ``projection.number_of_orbitals()``: an
+    element-labelled ``site`` counts its atoms in ``structure``, and a
+    ``fractional_site`` / ``cartesian_site`` point hosts one set.
     """
     if projection.site is not None:
         n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
@@ -112,15 +112,7 @@ def projection_num_wann(structure: orm.StructureData, projection: Projection) ->
     else:
         # The model validates one site variant set; this guards non-validated input.
         raise ValueError(f"Projection {projection!r} defines no site.")
-    quantum_numbers = projection.ang_mtm
-    if quantum_numbers.m_r is not None:
-        multiplicity = len(quantum_numbers.m_r)
-    else:
-        l_value = quantum_numbers.angular.value
-        # Hybrids are encoded with negative l: sp=-1 (2 orbitals), sp2=-2 (3),
-        # sp3=-3 (4), sp3d=-4 (5), sp3d2=-5 (6).
-        multiplicity = 2 * l_value + 1 if l_value >= 0 else 1 - l_value
-    return n_sites * multiplicity
+    return n_sites * projection.number_of_orbitals()
 
 
 def band_range_complement(start: int, end: int, nbnd: int) -> list[int] | None:
@@ -386,10 +378,10 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
         for block in channel_blocks[:-1]:
             if int(block["num_bands"]) > int(block["num_wann"]):
                 raise BlockDisentanglementError(
-                    f"Block {block['label']!r} reads {block['num_bands']} bands for "
-                    f"{block['num_wann']} Wannier functions, so it disentangles, but "
-                    f"block {top!r} sits above it. Only a channel's uppermost block "
-                    f"may disentangle: give the extra bands to {top!r}, or set this "
+                    f"Disentanglement requested for block {block['label']!r} "
+                    f"({block['num_bands']} bands for {block['num_wann']} Wannier "
+                    f"functions), but {top!r} is the uppermost block of its spin "
+                    f"channel: give the extra bands to {top!r}, or set this "
                     "block's `num_bands` equal to its `num_wann`.",
                     label=block["label"],
                 )
