@@ -429,3 +429,30 @@ def test_unknown_projection_site_raises_the_typed_class(aiida_profile):
         projection_num_wann(structure, projection)
     assert excinfo.value.site == "Ge"
     assert isinstance(excinfo.value, ProjectionBlockError)
+
+
+def test_win_string_renders_each_site_form():
+    """Element, crystal-point and Cartesian-point sites render their .win forms."""
+    from wannier90_input.models.parameters import Projection
+
+    from aiida_koopmans.projections import projection_win_string
+
+    element = Projection.model_validate({"site": "Si", "ang_mtm": "sp3"})
+    assert projection_win_string(element) == "Si:l=-3"
+    fractional = Projection.model_validate({"fractional_site": [0.25, 0.5, 0.75], "ang_mtm": "s"})
+    assert projection_win_string(fractional) == "f=0.25,0.5,0.75:l=0"
+    cartesian = Projection.model_validate({"cartesian_site": [1.0, 2.0, 3.0], "ang_mtm": "s"})
+    assert projection_win_string(cartesian) == "c=1.0,2.0,3.0:l=0"
+
+
+def test_point_site_hosts_one_orbital_set(aiida_profile):
+    """A fractional-site projection counts one set of orbitals, not per-atom."""
+    from aiida.orm import StructureData
+    from ase.build import bulk
+    from wannier90_input.models.parameters import Projection
+
+    from aiida_koopmans.projections import projection_num_wann
+
+    structure = StructureData(ase=bulk("Si", "diamond", 5.43))
+    point = Projection.model_validate({"fractional_site": [0.25, 0.25, 0.25], "ang_mtm": "p"})
+    assert projection_num_wann(structure, point) == 3
