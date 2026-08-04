@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from itertools import pairwise
-from typing import Any, NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
 from aiida_wannier90_workflows.common.types import WannierProjectionType
+from wannier90_input.models.parameters import Projection
 
 from aiida_koopmans.occupations import default_channel_nocc
 from aiida_koopmans.spin import SpinChannel
@@ -71,32 +72,32 @@ class BlockDisentanglementError(ProjectionBlockError):
     """Disentanglement requested for a block other than the uppermost block of a spin channel."""
 
 
-def projection_win_string(projection: Any) -> str:
-    """Format one projection as a Wannier90 ``.win`` projections line.
+def projection_win_string(projection: Projection) -> str:
+    """Format one ``wannier90_input`` ``Projection`` as a ``.win`` projections line.
 
-    ``projection`` is duck-typed on the ``wannier90_input`` ``Projection``
-    model. Element-labelled sites render as ``<element>:<ang_mtm>``;
-    single-point sites use Wannier90's ``f=x,y,z`` (crystal) / ``c=x,y,z``
-    (Cartesian) forms. The ``ang_mtm`` quantum numbers stringify to
-    Wannier90's own syntax (``l=-3`` for sp3, ...).
+    Element-labelled sites render as ``<element>:<ang_mtm>``; single-point
+    sites use Wannier90's ``f=x,y,z`` (crystal) / ``c=x,y,z`` (Cartesian)
+    forms. The ``ang_mtm`` quantum numbers stringify to Wannier90's own
+    syntax (``l=-3`` for sp3, ...).
     """
     if projection.site is not None:
         return f"{projection.site}:{projection.ang_mtm}"
-    fractional = getattr(projection, "fractional_site", None)
-    if fractional is not None:
-        return f"f={','.join(str(c) for c in fractional)}:{projection.ang_mtm}"
-    cartesian = getattr(projection, "cartesian_site", None)
-    if cartesian is not None:
-        return f"c={','.join(str(c) for c in cartesian)}:{projection.ang_mtm}"
+    if projection.fractional_site is not None:
+        return f"f={','.join(str(c) for c in projection.fractional_site)}:{projection.ang_mtm}"
+    if projection.cartesian_site is not None:
+        return f"c={','.join(str(c) for c in projection.cartesian_site)}:{projection.ang_mtm}"
+    # The model validates one site variant set; this guards non-validated input.
     raise ValueError(f"Projection {projection!r} defines no site.")
 
 
-def projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
-    """Count the Wannier functions of one projection: site multiplicity x (2l+1).
+def projection_num_wann(structure: orm.StructureData, projection: Projection) -> int:
+    """Count the Wannier functions of one ``wannier90_input`` ``Projection``.
 
-    ``projection`` is duck-typed on the ``wannier90_input`` ``Projection``
-    model (``.site`` element label or a ``fractional_site`` /
-    ``cartesian_site`` single point, ``.ang_mtm`` quantum numbers).
+    Site multiplicity x orbital multiplicity: an element-labelled ``site``
+    counts its atoms in ``structure``, a ``fractional_site`` /
+    ``cartesian_site`` point hosts one set, and the ``ang_mtm`` quantum
+    numbers fix the orbitals per site (``m_r`` restriction, else 2l+1, else
+    the hybrid count).
     """
     if projection.site is not None:
         n_sites = sum(1 for site in structure.sites if site.kind_name == projection.site)
@@ -105,13 +106,11 @@ def projection_num_wann(structure: orm.StructureData, projection: Any) -> int:
                 f"Projection site '{projection.site}' does not match any atom in the structure.",
                 site=projection.site,
             )
-    elif (
-        getattr(projection, "fractional_site", None) is not None
-        or getattr(projection, "cartesian_site", None) is not None
-    ):
+    elif projection.fractional_site is not None or projection.cartesian_site is not None:
         # An explicit point hosts exactly one set of orbitals.
         n_sites = 1
     else:
+        # The model validates one site variant set; this guards non-validated input.
         raise ValueError(f"Projection {projection!r} defines no site.")
     quantum_numbers = projection.ang_mtm
     if quantum_numbers.m_r is not None:
@@ -509,11 +508,11 @@ def block_w90_kwargs(block: ProjectionBlock) -> dict:
 
 
 def _split_manifolds(
-    blocks_with_counts: list[tuple[Any, int]], nocc: int
-) -> tuple[list[tuple[Any, int]], list[tuple[Any, int]]]:
+    blocks_with_counts: list[tuple[list[Projection], int]], nocc: int
+) -> tuple[list[tuple[list[Projection], int]], list[tuple[list[Projection], int]]]:
     """Split (block, num_wann) pairs at the occupied/empty boundary."""
-    occupied: list[tuple[Any, int]] = []
-    empty: list[tuple[Any, int]] = []
+    occupied: list[tuple[list[Projection], int]] = []
+    empty: list[tuple[list[Projection], int]] = []
     cursor = 0
     for block, num_wann in blocks_with_counts:
         if cursor + num_wann <= nocc:
@@ -530,7 +529,7 @@ def _split_manifolds(
 
 
 def _manifold_projection_blocks(
-    manifold: list[tuple[Any, int]],
+    manifold: list[tuple[list[Projection], int]],
     name: str,
     label_suffix: str,
     spin_channel: SpinChannel,
@@ -578,7 +577,7 @@ def _manifold_projection_blocks(
 
 def derive_dfpt_manifolds(
     structure: orm.StructureData,
-    projection_blocks: list,
+    projection_blocks: list[list[Projection]],
     nelec: int,
     nbnd: int | None,
     spin_channel: SpinChannel = SpinChannel.NONE,

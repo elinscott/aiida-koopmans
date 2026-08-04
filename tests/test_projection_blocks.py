@@ -417,18 +417,14 @@ def test_unknown_projection_site_raises_the_typed_class(aiida_profile):
     The one projection fault raised before any block exists; the class
     carries the offending label for the koopmans package's advice.
     """
-    from types import SimpleNamespace
-
     from aiida.orm import StructureData
     from ase.build import bulk
+    from wannier90_input.models.parameters import Projection
 
     from aiida_koopmans.projections import ProjectionSiteError, projection_num_wann
 
     structure = StructureData(ase=bulk("Si", "diamond", 5.43))
-    # Stands in for the wannier90_input Projection model, which the helpers
-    # read by attribute and this package does not depend on; only ``site``
-    # is reached before the raise.
-    projection = SimpleNamespace(site="Ge")
+    projection = Projection.model_validate({"site": "Ge", "ang_mtm": "s"})
     with pytest.raises(ProjectionSiteError, match="does not match any atom") as excinfo:
         projection_num_wann(structure, projection)
     assert excinfo.value.site == "Ge"
