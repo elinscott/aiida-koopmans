@@ -2531,3 +2531,54 @@ class TestMlCompareGraphBuild:
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_compare=True,
             )
+
+    def test_twin_shares_the_trial_and_applies_the_prediction(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Both final KIs hang off one trial socket; only the alphas differ.
+
+        Socket identity is what backs the parity claim at build level: a
+        twin parented elsewhere, fed the refined alphas (every delta
+        identically zero), restarted as a first iteration, or built
+        without the shared overrides/nbnd passes every shape test.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_model=_linear_sh_model(),
+            ml_compare=True,
+            overrides={"ki": {"CONTROL": {"iprint": 7}}},
+        )
+        by_name = {t.name: t for t in wg.tasks}
+        base, twin = by_name["RunFinalKI"], by_name["run_final_ki_ml"]
+
+        def source(task, port):
+            links = task.inputs[port]._links
+            assert len(links) == 1, (port, links)
+            return links[0].from_socket
+
+        assert source(base, "parent_folder") is source(twin, "parent_folder")
+        assert source(base, "nbnd") is source(twin, "nbnd")
+        base_alphas = source(base, "alphas")
+        twin_alphas = source(twin, "alphas")
+        assert base_alphas is not twin_alphas
+        assert twin_alphas._task.name == "predict_alphas", twin_alphas._task.name
+        assert twin.inputs["is_first_iteration"].value is False
+        twin_control = dict(twin.inputs["overrides"]["CONTROL"].value)
+        assert twin_control == dict(base.inputs["overrides"]["CONTROL"].value)
+        assert twin_control["iprint"] == 7
+
+    def test_compare_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """The compare-route graph survives the to_dict/from_dict round trip."""
+        from tests.fixtures import assert_graph_roundtrips
+
+        assert_graph_roundtrips(
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_model=_linear_sh_model(),
+                ml_compare=True,
+            )
+        )

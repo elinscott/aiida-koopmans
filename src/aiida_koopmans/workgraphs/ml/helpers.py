@@ -1015,17 +1015,20 @@ def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[f
 
 
 def flatten_alpha_screening(alphas: AlphaScreening) -> list[float]:
-    """Flatten an :class:`AlphaScreening` into one row-ordered list.
+    """Flatten an :class:`AlphaScreening` into dataset row order.
 
-    Filled orbitals first, then empty; within each, spin channels in
-    spin-index order — the same traversal :func:`build_snapshot_dataset`
-    walks per channel, so two payloads with the same channel layout
-    flatten into comparable rows.
+    Spin channels in spin-index order; within a channel the filled
+    orbitals first, then the empty — the traversal
+    :func:`build_snapshot_dataset` walks, so the flattened rows align
+    with the dataset's ``alpha_targets`` and ``labels``.
     """
+    filled = alphas.get("filled", {})
+    empty = alphas.get("empty", {})
+    channels = sorted(set(filled) | set(empty), key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), ch))
     rows: list[float] = []
-    for channels in (alphas.get("filled", {}), alphas.get("empty", {})):
-        for channel in sorted(channels, key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), ch)):
-            rows.extend(float(a) for a in channels[channel])
+    for channel in channels:
+        rows.extend(float(a) for a in filled.get(channel, []))
+        rows.extend(float(a) for a in empty.get(channel, []))
     return rows
 
 
@@ -1039,11 +1042,13 @@ def final_ki_deltas(
 
     Both final KIs restart from the same trial save, so every delta here
     is attributable to the screening parameters alone. Alphas are compared
-    per orbital (see :func:`flatten_alpha_screening` for the row order);
+    per orbital in dataset row order (see :func:`flatten_alpha_screening`);
     eigenvalues elementwise over the ``(nspin, nbnd)`` arrays.
     """
     alpha_computed = np.asarray(flatten_alpha_screening(computed_alphas), dtype=float)
     alpha_predicted = np.asarray(flatten_alpha_screening(predicted_alphas), dtype=float)
+    if alpha_computed.size == 0 and alpha_predicted.size == 0:
+        raise ValueError("The screening payloads contain no orbitals; nothing to compare.")
     if alpha_computed.shape != alpha_predicted.shape:
         raise ValueError(
             f"Computed and predicted alphas cover {alpha_computed.size} vs "

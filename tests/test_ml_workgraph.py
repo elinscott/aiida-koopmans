@@ -498,6 +498,19 @@ class TestTestModeTwin:
         assert any("final_ki_deltas_snapshot_2" in n for n in names), names
         assert sum(1 for n in names if "evaluate_screening_model" in n) == 1, names
 
+    def test_test_mode_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """The test-mode twin graph survives the to_dict/from_dict round trip."""
+        from tests.fixtures import assert_graph_roundtrips
+
+        assert_graph_roundtrips(
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="test",
+            )
+        )
+
     def test_predict_mode_builds_no_delta_layer(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
