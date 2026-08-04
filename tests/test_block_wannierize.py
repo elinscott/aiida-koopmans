@@ -200,7 +200,7 @@ class TestBlockWannierizeGraphBuild:
             explicit_block("block_1", range(1, 5), filled=True, num_bands=8),
             explicit_block("block_2", range(5, 9), filled=False),
         ]
-        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+        with pytest.raises(ValueError, match="uppermost block of its spin channel"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
     def test_external_scratch_rejects_scf_nscf_overrides(

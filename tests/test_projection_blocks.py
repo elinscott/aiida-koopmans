@@ -195,15 +195,31 @@ class TestValidateProjectionBlock:
             validate_projection_block(block)
 
     def test_raises_the_typed_class_through_except_valueerror(self):
-        """A rejection arrives as ``ProjectionBlockError`` through ``except ValueError``."""
-        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        """A user fault arrives as its typed class through ``except ValueError``."""
+        from aiida_koopmans.projections import BlockBoundaryError, block_occupancy
+
+        block = _explicit("block_1", range(1, 5))
         try:
-            validate_projection_block(block)
+            block_occupancy(block)
         except ValueError as exc:
-            assert type(exc) is ProjectionBlockError
+            assert type(exc) is BlockBoundaryError
+            assert isinstance(exc, ProjectionBlockError)
             assert exc.label == "block_1"
         else:
-            pytest.fail("ProjectionBlockError was not raised")
+            pytest.fail("BlockBoundaryError was not raised")
+
+    def test_derivation_invariants_are_untyped(self):
+        """A fault only the block derivation can produce carries no advice class.
+
+        The discriminating half of the fault split: the same validator
+        family raises the typed classes for user faults, so a plain
+        ``ValueError`` here is what keeps the koopmans package from
+        attaching projection advice to an internal bug.
+        """
+        block = _explicit("block_1", range(1, 5), num_bands=3, filled=True)
+        with pytest.raises(ValueError, match="report it") as excinfo:
+            validate_projection_block(block)
+        assert not isinstance(excinfo.value, ProjectionBlockError)
 
 
 # ----------------------------------------------------------------------
@@ -231,7 +247,7 @@ class TestValidateProjectionBlockSequence:
             _explicit("occ", range(1, 5), filled=True, num_bands=8),
             _explicit("emp", range(5, 9), filled=False),
         ]
-        with pytest.raises(ValueError, match="Only a channel's uppermost block"):
+        with pytest.raises(ValueError, match="uppermost block of its spin channel"):
             validate_projection_block_sequence(blocks)
 
     def test_rejects_out_of_order_blocks(self):
@@ -393,3 +409,36 @@ def test_orbital_dict_mirrors_realhydrogen_schema(aiida_profile):
     )
     real_keys = set(orbital_data.get_orbitals()[0].get_orbital_dict().keys())
     assert set(OrbitalDict.__annotations__.keys()) == real_keys
+
+
+def test_unknown_projection_site_raises_the_typed_class(aiida_profile):
+    """A ``site`` label matching no atom raises ``ProjectionSiteError``.
+
+    The one projection fault raised before any block exists; the class
+    carries the offending label for the koopmans package's advice.
+    """
+    from aiida.orm import StructureData
+    from ase.build import bulk
+    from wannier90_input.models.parameters import Projection
+
+    from aiida_koopmans.projections import ProjectionSiteError, projection_num_wann
+
+    structure = StructureData(ase=bulk("Si", "diamond", 5.43))
+    projection = Projection(site="Ge", ang_mtm="s")
+    with pytest.raises(ProjectionSiteError, match="does not match any atom") as excinfo:
+        projection_num_wann(structure, projection)
+    assert excinfo.value.site == "Ge"
+    assert isinstance(excinfo.value, ProjectionBlockError)
+
+
+def test_point_site_hosts_one_orbital_set(aiida_profile):
+    """A fractional-site projection counts one set of orbitals, not per-atom."""
+    from aiida.orm import StructureData
+    from ase.build import bulk
+    from wannier90_input.models.parameters import Projection
+
+    from aiida_koopmans.projections import projection_num_wann
+
+    structure = StructureData(ase=bulk("Si", "diamond", 5.43))
+    point = Projection(fractional_site=[0.25, 0.25, 0.25], ang_mtm="p")
+    assert projection_num_wann(structure, point) == 3
