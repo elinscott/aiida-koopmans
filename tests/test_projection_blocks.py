@@ -425,7 +425,10 @@ def test_unknown_projection_site_raises_the_typed_class(aiida_profile):
     from aiida_koopmans.projections import ProjectionSiteError, projection_num_wann
 
     structure = StructureData(ase=bulk("Si", "diamond", 5.43))
-    projection = SimpleNamespace(site="Ge", ang_mtm=SimpleNamespace(m_r=None, l=0))
+    # Stands in for the wannier90_input Projection model, which the helpers
+    # read by attribute and this package does not depend on; only ``site``
+    # is reached before the raise.
+    projection = SimpleNamespace(site="Ge")
     with pytest.raises(ProjectionSiteError, match="does not match any atom") as excinfo:
         projection_num_wann(structure, projection)
     assert excinfo.value.site == "Ge"
