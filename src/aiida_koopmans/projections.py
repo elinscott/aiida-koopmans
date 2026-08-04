@@ -72,26 +72,6 @@ class BlockDisentanglementError(ProjectionBlockError):
     """Disentanglement requested for a block other than the uppermost block of a spin channel."""
 
 
-def projection_win_string(projection: Projection) -> str:
-    """Format one ``wannier90_input`` ``Projection`` as a ``.win`` projections line.
-
-    Element-labelled sites render as ``<element>:<ang_mtm>``; single-point
-    sites use Wannier90's ``f=x,y,z`` (crystal) / ``c=x,y,z`` (Cartesian)
-    forms. The ``ang_mtm`` quantum numbers stringify to Wannier90's own
-    syntax (``l=-3`` for sp3, ...). Not ``str(projection)``: the model's
-    ``__str__`` appends the default z-axis, x-axis, radial and zona fields,
-    and the ``.win`` lines here stay minimal.
-    """
-    if projection.site is not None:
-        return f"{projection.site}:{projection.ang_mtm}"
-    if projection.fractional_site is not None:
-        return f"f={','.join(str(c) for c in projection.fractional_site)}:{projection.ang_mtm}"
-    if projection.cartesian_site is not None:
-        return f"c={','.join(str(c) for c in projection.cartesian_site)}:{projection.ang_mtm}"
-    # The model validates one site variant set; this guards non-validated input.
-    raise ValueError(f"Projection {projection!r} defines no site.")
-
-
 def projection_num_wann(structure: orm.StructureData, projection: Projection) -> int:
     """Count the Wannier functions of one ``wannier90_input`` ``Projection``.
 
@@ -560,7 +540,7 @@ def _manifold_projection_blocks(
                 num_bands=num_bands,
                 exclude_bands=band_range_complement(start, end, nbnd),
                 projection_type=WannierProjectionType.ANALYTIC,
-                projections=[projection_win_string(p) for p in projections],
+                projections=[str(p) for p in projections],
             )
         )
         cursor += num_wann
