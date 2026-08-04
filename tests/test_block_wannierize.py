@@ -127,6 +127,28 @@ class TestBlockWannierizeGraphBuild:
         assert pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 20
         assert "wannier90" not in pw_overrides
 
+    def test_wannier90_overrides_reach_every_block(self, wannier_codes, silicon_structure, kmesh):
+        """The flat wannier90 keywords (windows included) feed every block.
+
+        Regression for koopmans#94: a window lost between the caller and a
+        block's builder disentangles unfrozen and shifts that block's
+        manifold silently.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            overrides={"wannier90": {"dis_froz_max": 1.0, "dis_froz_min": -3.0}},
+        )
+        block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for task_ in block_tasks:
+            wannier90 = task_.inputs["overrides"]["wannier90"].value
+            assert wannier90["dis_froz_max"] == 1.0
+            assert wannier90["dis_froz_min"] == -3.0
+
     def test_shared_nscf_bands_reach_every_block(self, wannier_codes, silicon_structure, kmesh):
         """The internal nscf's eigenvalues are linked into each per-block graph.
 
