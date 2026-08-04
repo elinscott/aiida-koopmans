@@ -63,12 +63,12 @@ class OccupiedCoverageError(ProjectionBlockError):
     """The occupied projection blocks do not cover the occupied manifold."""
 
 
-class EmptyBandsError(ProjectionBlockError):
+class EmptyCoverageError(ProjectionBlockError):
     """``nbnd`` leaves fewer empty bands than the empty blocks require."""
 
 
 class BlockDisentanglementError(ProjectionBlockError):
-    """A block below a channel's uppermost one requires disentanglement."""
+    """Disentanglement requested for a block other than the uppermost block of a spin channel."""
 
 
 def projection_win_string(projection: Any) -> str:
@@ -656,7 +656,7 @@ def derive_dfpt_manifolds(
     if empty:
         num_bands_emp = nbnd - nocc
         if num_bands_emp < num_wann_emp:
-            raise EmptyBandsError(
+            raise EmptyCoverageError(
                 f"nbnd = {nbnd} leaves only {num_bands_emp} empty bands but the empty "
                 f"projection blocks require {num_wann_emp} Wannier functions."
             )
