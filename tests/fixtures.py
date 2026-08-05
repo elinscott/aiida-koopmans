@@ -7,6 +7,7 @@ pytest's collection machinery picks them up for every test module.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -337,16 +338,55 @@ def bands_data(array):
 
 
 def assert_graph_roundtrips(wg):
-    """Assert a built WorkGraph survives ``to_dict`` -> ``from_dict``.
+    """Assert a built WorkGraph survives both rebuilds that precede execution.
 
-    ``wg.run()`` and the daemon reconstruct the graph through exactly this
-    round-trip before executing anything, so wiring that fails it dies at
-    run start even though construction succeeded (e.g. per-key links into
-    the entries of a typed dynamic output namespace).
+    ``wg.run()`` rebuilds the graph from ``to_dict``; a daemon worker rebuilds
+    it from the submitted engine inputs, where every task's inputs have been
+    split off into their own port namespace and are stitched back on
+    (``restore_workgraph_data_from_raw_inputs``). Wiring that fails either
+    rebuild dies at run start even though construction succeeded (e.g. per-key
+    links into the entries of a typed dynamic output namespace).
     """
     from aiida_workgraph import WorkGraph
+    from aiida_workgraph.utils import restore_workgraph_data_from_raw_inputs
 
     WorkGraph.from_dict(wg.to_dict())
+    WorkGraph.from_dict(restore_workgraph_data_from_raw_inputs(wg.to_engine_inputs()))
+
+
+@contextmanager
+def replayed_namespace_outputs(*paths, handles=()):
+    """Rebuild ``@task`` handles against a ``PyFunction`` spec carrying ``paths``.
+
+    AiiDA replays a cached process's outputs through ``Process.out``, which
+    plants those output paths on the process-wide ``PyFunction`` port
+    specification (aiidateam/aiida-core#7504), and aiida-workgraph merges that
+    specification into the outputs of every python task built afterwards. A
+    worker that has replayed such a cache hit therefore builds task handles
+    carrying output sockets the function never declared, which a fresh
+    interpreter — a test run — never sees.
+
+    ``paths`` are dotted output paths (``"alphas.filled"``); ``handles`` are
+    ``(module, attribute)`` pairs rebuilt inside the context, so the graph
+    under test is wired from handles shaped the way the worker's are. Ports
+    and handles are restored on exit.
+    """
+    from aiida_pythonjob.calculations.pyfunction import PyFunction
+    from aiida_workgraph import task
+
+    spec_outputs = PyFunction.spec().outputs
+    originals = [(module, name, getattr(module, name)) for module, name in handles]
+    for path in paths:
+        spec_outputs.get_port(path, create_dynamically=True)
+    try:
+        for module, name, handle in originals:
+            setattr(module, name, task(handle._callable))
+        yield
+    finally:
+        for module, name, handle in originals:
+            setattr(module, name, handle)
+        for path in paths:
+            spec_outputs.pop(path.split(".")[0], None)
 
 
 def automatic_block(label, wannier_indices, spin=None, projection_type=None, filled=None):

@@ -764,12 +764,17 @@ def TrajectoryWorkflow(
             ).result
 
         if ml_mode in (MLMode.TRAIN, MLMode.TEST):
-            # The whole SnapshotDataset output namespace becomes the entry
-            # (one socket per key), mirroring the channel-keyed DFPT wiring.
+            # Each entry is filled one column at a time. Linking the producing
+            # task's whole output namespace instead requires that namespace to
+            # match the entry's declared structure, and in an interpreter that
+            # has replayed a cached python task's namespaced outputs it no
+            # longer does: those outputs are planted on the process-wide
+            # ``PyFunction`` port specification (aiidateam/aiida-core#7504),
+            # which aiida-workgraph merges into every python task's outputs.
             # Predict mode builds no dataset: the model is *applied* inside
             # each snapshot's DSCF, and there are no computed alphas to
             # pair descriptors with.
-            datasets[label] = wire_snapshot_dataset(
+            dataset = wire_snapshot_dataset(
                 descriptor,
                 dscf,
                 label=label,
@@ -777,6 +782,7 @@ def TrajectoryWorkflow(
                 decompose_parameters=decompose_parameters,
                 parallelization=parallelization,
             )
+            datasets[label] = {key: dataset[key] for key in SnapshotDataset.__annotations__}
 
     if ml_mode == MLMode.TRAIN:
         trained = train_screening_model(

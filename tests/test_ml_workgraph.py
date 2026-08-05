@@ -127,6 +127,34 @@ class TestTrajectoryGraphBuild:
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
 
+    def test_train_mode_survives_a_replayed_worker(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """A dataset entry is wired socket by socket, so it tolerates phantom sockets.
+
+        A worker that has replayed a cached python task's namespaced outputs
+        builds every later python task with those outputs attached. Linking a
+        whole output namespace into a ``SnapshotDataset`` entry would then be
+        rejected — the namespaces no longer have the same children.
+        """
+        from aiida_koopmans.workgraphs import ml
+        from tests.fixtures import assert_graph_roundtrips, replayed_namespace_outputs
+
+        with replayed_namespace_outputs(
+            "alphas.filled",
+            "errors.filled",
+            handles=[(ml, "extract_snapshot_dataset")],
+        ):
+            wg = self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="train",
+            )
+            extract = next(t for t in wg.tasks if "extract_snapshot_dataset" in t.name)
+            assert {"alphas", "errors"} <= {socket._name for socket in extract.outputs}
+            assert_graph_roundtrips(wg)
+
     def test_none_mode_skips_ml_layer(self, ozone_structure, kcp_code, ozone_pseudo_family):
         wg = self._build_wg(
             ozone_structure=ozone_structure,
@@ -328,12 +356,6 @@ class TestSharedOutputSpecCollision:
     SCREENING_NAMESPACES = ("alphas", "errors")
 
     @staticmethod
-    def _shared_output_ports():
-        from aiida_pythonjob.calculations.pyfunction import PyFunction
-
-        return PyFunction.spec().outputs
-
-    @staticmethod
     def _run_pre_rename(name):
         """Run the pre-rename dataset shape and return its process node."""
         from aiida_workgraph import WorkGraph
@@ -348,11 +370,9 @@ class TestSharedOutputSpecCollision:
         from aiida_workgraph import WorkGraph
 
         from aiida_koopmans.workgraphs.ml import extract_snapshot_dataset
+        from tests.fixtures import replayed_namespace_outputs
 
-        shared = self._shared_output_ports()
-        for name in self.SCREENING_NAMESPACES:
-            shared.get_port(name, create_dynamically=True)
-        try:
+        with replayed_namespace_outputs(*self.SCREENING_NAMESPACES):
             wg = WorkGraph("dataset_after_screening_namespaces")
             wg.add_task(
                 extract_snapshot_dataset,
@@ -364,9 +384,6 @@ class TestSharedOutputSpecCollision:
             children = [link.node for link in wg.process.base.links.get_outgoing().all()]
             extract = next(node for node in children if hasattr(node, "is_finished_ok"))
             assert extract.is_finished_ok, extract.exception
-        finally:
-            for name in self.SCREENING_NAMESPACES:
-                shared.ports.pop(name, None)
 
     def test_the_old_column_name_is_rejected_in_that_state(self, aiida_profile_clean):
         """Positive control: the state injected above really is hostile.
@@ -374,19 +391,15 @@ class TestSharedOutputSpecCollision:
         Without this, a passing sibling test could mean the injected ports
         are inert rather than that the column rename dodges them.
         """
-        shared = self._shared_output_ports()
-        for name in self.SCREENING_NAMESPACES:
-            shared.get_port(name, create_dynamically=True)
+        from tests.fixtures import replayed_namespace_outputs
+
         # Run the rejected case first and the accepted case second: a
         # successful run is a valid cache source, so the opposite order
         # would serve the second run from the cache and prove nothing.
-        try:
+        with replayed_namespace_outputs(*self.SCREENING_NAMESPACES):
             blocked = self._run_pre_rename("pre_rename_with_screening_namespaces")
             assert blocked.exception is not None, "pre-rename shape unexpectedly succeeded"
             assert "not sub class of `Mapping`" in blocked.exception, blocked.exception
-        finally:
-            for name in self.SCREENING_NAMESPACES:
-                shared.ports.pop(name, None)
 
         allowed = self._run_pre_rename("pre_rename_without_screening_namespaces")
         assert allowed.is_finished_ok, allowed.exception
@@ -510,6 +523,27 @@ class TestTestModeTwin:
                 ml_mode="test",
             )
         )
+
+    def test_test_mode_survives_a_replayed_worker(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The evaluation gather takes the same socket-by-socket dataset entries."""
+        from aiida_koopmans.workgraphs import ml
+        from tests.fixtures import assert_graph_roundtrips, replayed_namespace_outputs
+
+        with replayed_namespace_outputs(
+            "alphas.filled",
+            "errors.filled",
+            handles=[(ml, "extract_snapshot_dataset")],
+        ):
+            assert_graph_roundtrips(
+                self._build_wg(
+                    ozone_structure=ozone_structure,
+                    kcp_code=kcp_code,
+                    ozone_pseudo_family=ozone_pseudo_family,
+                    ml_mode="test",
+                )
+            )
 
     def test_predict_mode_builds_no_delta_layer(
         self, ozone_structure, kcp_code, ozone_pseudo_family
