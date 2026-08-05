@@ -447,7 +447,7 @@ class TestTrainedModelArtifact:
 
 
 class TestTestModeTwin:
-    """TEST mode runs the twin final KIs and gathers observable deltas."""
+    """TEST mode runs both final KIs and gathers their deltas."""
 
     def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, ml_mode, n=2):
         from aiida_koopmans.workgraphs.ml import TrajectoryWorkflow, helpers
@@ -494,12 +494,12 @@ class TestTestModeTwin:
             ml_mode="test",
         )
         names = _all_task_names(wg)
-        assert any("final_ki_deltas_snapshot_1" in n for n in names), names
-        assert any("final_ki_deltas_snapshot_2" in n for n in names), names
+        assert any("alpha_and_eigenvalue_deltas_snapshot_1" in n for n in names), names
+        assert any("alpha_and_eigenvalue_deltas_snapshot_2" in n for n in names), names
         assert sum(1 for n in names if "evaluate_screening_model" in n) == 1, names
 
     def test_test_mode_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
-        """The test-mode twin graph survives the to_dict/from_dict round trip."""
+        """The test-mode comparison graph survives the to_dict/from_dict round trip."""
         from tests.fixtures import assert_graph_roundtrips
 
         assert_graph_roundtrips(
@@ -514,7 +514,7 @@ class TestTestModeTwin:
     def test_predict_mode_builds_no_delta_layer(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
-        """Predict applies the model; there is no computed arm to compare against."""
+        """Predict applies the model; there are no computed alphas to compare against."""
         wg = self._build_wg(
             ozone_structure=ozone_structure,
             kcp_code=kcp_code,
@@ -522,4 +522,4 @@ class TestTestModeTwin:
             ml_mode="predict",
         )
         names = _all_task_names(wg)
-        assert not any("final_ki_deltas" in n for n in names), names
+        assert not any("compute_alpha_and_eigenvalue_deltas" in n for n in names), names

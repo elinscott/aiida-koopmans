@@ -63,10 +63,10 @@ from aiida_koopmans.workgraphs.ml.helpers import (
     SnapshotDataset,
     assemble_power_spectrum_dataset,
     build_snapshot_dataset,
+    compute_alpha_and_eigenvalue_deltas,
     concatenate_datasets,
     cross_power_spectra,
     evaluate_predictions,
-    final_ki_deltas,
     fit_screening_model,
     format_group_centres_file,
     parse_wannier_centres_xyz,
@@ -112,8 +112,10 @@ class TrajectoryOutputs(TypedDict):
     * ``model`` — the trained model (``train``), the supplied model
       (``test``), or ``{}``.
     * ``evaluation`` — training-set metrics (``train``); test metrics,
-      per-orbital predictions and the per-snapshot twin final-KI deltas
-      under ``final_ki`` (``test``); or ``{}``.
+      per-orbital predictions and, under
+      ``alpha_and_eigenvalue_deltas``, each snapshot's computed-versus-
+      predicted alpha and final-KI eigenvalue deltas (``test``); or
+      ``{}``.
     """
 
     snapshots: Annotated[dict, dynamic(KoopmansDSCFOutputs)]
@@ -192,13 +194,14 @@ class EvaluateOutputs(TypedDict):
 def evaluate_screening_model(
     datasets: Annotated[dict, dynamic(SnapshotDataset)],
     model: dict,
-    final_ki: Annotated[dict | None, dynamic(dict)] = None,
+    alpha_and_eigenvalue_deltas: Annotated[dict | None, dynamic(dict)] = None,
 ) -> EvaluateOutputs:
     """Gather every snapshot's dataset and score a trained model against it.
 
-    ``final_ki`` carries the per-snapshot observable-level deltas of the
-    twin final KIs (:func:`compare_final_ki`); when given, it lands in the
-    evaluation under ``final_ki`` alongside the descriptor-level metrics.
+    ``alpha_and_eigenvalue_deltas`` carries each snapshot's computed-versus-
+    predicted deltas (:func:`compare_final_kis`); when given, it lands in
+    the evaluation under the same key, alongside the descriptor-level
+    metrics.
     """
     merged = concatenate_datasets(datasets)
     predicted = predict_screening(model, merged)
@@ -210,26 +213,27 @@ def evaluate_screening_model(
             "predicted": predicted,
         },
     }
-    if final_ki:
-        evaluation["final_ki"] = dict(final_ki)
+    if alpha_and_eigenvalue_deltas:
+        evaluation["alpha_and_eigenvalue_deltas"] = dict(alpha_and_eigenvalue_deltas)
     return EvaluateOutputs(evaluation=evaluation, model=model)
 
 
 @task
-def compare_final_ki(
+def compare_final_kis(
     computed_alphas: AlphaScreening,
     predicted_alphas: AlphaScreening,
     computed_eigenvalues: np.ndarray,
     predicted_eigenvalues: np.ndarray,
 ) -> dict:
-    """Compute one snapshot's observable-level twin deltas.
+    """Compare one snapshot's computed- and predicted-alpha final KIs.
 
     Thin wrapper over
-    :func:`~aiida_koopmans.workgraphs.ml.helpers.final_ki_deltas`: the two
-    final KIs share a trial save, so the per-orbital alpha deltas and the
-    eigenvalue max/RMS deltas measure the model's effect alone.
+    :func:`~aiida_koopmans.workgraphs.ml.helpers.compute_alpha_and_eigenvalue_deltas`.
+    Both final KIs restart from the same trial save, so the per-orbital
+    alpha deltas and the eigenvalue max/RMS deltas measure the model's
+    effect alone.
     """
-    return final_ki_deltas(
+    return compute_alpha_and_eigenvalue_deltas(
         computed_alphas, predicted_alphas, computed_eigenvalues, predicted_eigenvalues
     )
 
@@ -671,9 +675,9 @@ def TrajectoryWorkflow(
     * ``"test"`` — extract the same pairs and score the supplied
       ``ml_model`` against the computed alphas; additionally every
       snapshot's DSCF runs a second final KI at the model-predicted
-      alphas (``ml_compare``) and the per-snapshot observable-level
-      deltas (per-orbital alphas; final-KI eigenvalue max/RMS) land in
-      the evaluation under ``final_ki``.
+      alphas (``ml_test``), and each snapshot's per-orbital alpha
+      deltas and final-KI eigenvalue max/RMS deltas land in the
+      evaluation under ``alpha_and_eigenvalue_deltas``.
     * ``"predict"`` — inject ``ml_model`` into every snapshot's DSCF:
       the per-orbital Delta-SCF refinement is replaced by a model
       prediction from the trial KI's self-Hartree descriptors (so only
@@ -704,7 +708,7 @@ def TrajectoryWorkflow(
 
     snapshot_outputs: dict[str, KoopmansDSCFOutputs] = {}
     datasets: dict[str, dict] = {}
-    twin_deltas: dict[str, Any] = {}
+    alpha_and_eigenvalue_deltas: dict[str, Any] = {}
     # Snapshot labels become socket/link-label components; node-graph
     # validates them upstream (letters, digits and underscores only).
     for label, structure in snapshots.items():
@@ -723,7 +727,7 @@ def TrajectoryWorkflow(
             fix_spin_contamination=fix_spin_contamination,
             initial_alpha=initial_alpha,
             ml_model=ml_model if ml_mode in (MLMode.PREDICT, MLMode.TEST) else None,
-            ml_compare=ml_mode == MLMode.TEST,
+            ml_test=ml_mode == MLMode.TEST,
             spin_polarized=spin_polarized,
             orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
             codes=codes,
@@ -749,14 +753,14 @@ def TrajectoryWorkflow(
         )
 
         if ml_mode == MLMode.TEST:
-            # Twin deltas: the DSCF ran both final KIs (ml_compare); the
-            # comparison is per snapshot, gathered into the evaluation.
-            twin_deltas[label] = compare_final_ki(
+            # The DSCF ran both final KIs (ml_test); the comparison is per
+            # snapshot, gathered into the evaluation.
+            alpha_and_eigenvalue_deltas[label] = compare_final_kis(
                 computed_alphas=dscf["alphas"],
                 predicted_alphas=dscf["predicted_alphas"],
                 computed_eigenvalues=dscf["eigenvalues"],
                 predicted_eigenvalues=dscf["predicted_eigenvalues"],
-                metadata={"call_link_label": f"final_ki_deltas_{label}"},
+                metadata={"call_link_label": f"alpha_and_eigenvalue_deltas_{label}"},
             ).result
 
         if ml_mode in (MLMode.TRAIN, MLMode.TEST):
@@ -787,7 +791,9 @@ def TrajectoryWorkflow(
         evaluation: dict = trained["metrics"]
     elif ml_mode == MLMode.TEST:
         evaluated = evaluate_screening_model(
-            datasets=datasets, model=ml_model, final_ki=twin_deltas
+            datasets=datasets,
+            model=ml_model,
+            alpha_and_eigenvalue_deltas=alpha_and_eigenvalue_deltas,
         )
         model_output = evaluated["model"]
         evaluation = evaluated["evaluation"]

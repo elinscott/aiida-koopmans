@@ -1032,13 +1032,13 @@ def flatten_alpha_screening(alphas: AlphaScreening) -> list[float]:
     return rows
 
 
-def final_ki_deltas(
+def compute_alpha_and_eigenvalue_deltas(
     computed_alphas: AlphaScreening,
     predicted_alphas: AlphaScreening,
     computed_eigenvalues: Any,
     predicted_eigenvalues: Any,
 ) -> dict[str, Any]:
-    """Observable-level deltas between the computed- and predicted-alpha final KIs.
+    """Compute the deltas between the computed- and predicted-alpha final KIs.
 
     Both final KIs restart from the same trial save, so every delta here
     is attributable to the screening parameters alone. Alphas are compared

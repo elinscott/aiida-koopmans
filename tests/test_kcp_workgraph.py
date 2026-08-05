@@ -1921,6 +1921,25 @@ class TestKoopmansDSCFGraphBuild:
             )
 
 
+@pytest.mark.parametrize(
+    ("ml_model", "ml_test", "expected"),
+    [
+        (None, False, False),
+        ({"kind": "linear"}, False, True),
+        ({"kind": "linear"}, True, False),
+    ],
+)
+def test_model_replaces_refinement(ml_model, ml_test, expected):
+    """Only a model supplied without ``ml_test`` stands in for the refinement.
+
+    Distinguishes the two routes a model can take: replacing the Delta-SCF
+    refinement, or running beside it as the thing being measured.
+    """
+    from aiida_koopmans.workgraphs.kcp import _model_replaces_refinement
+
+    assert _model_replaces_refinement(ml_model=ml_model, ml_test=ml_test) is expected
+
+
 # ----------------------------------------------------------------------
 # Skip-mode final KI vs first-iteration trial KI: concrete kcp.x inputs
 # ----------------------------------------------------------------------
@@ -2445,8 +2464,8 @@ class TestPredictTrialMatchesComputeTrial:
         assert not diffs, diffs
 
 
-class TestMlCompareGraphBuild:
-    """``ml_model`` + ``ml_compare`` builds the side-by-side final KIs."""
+class TestMlTestModeGraphBuild:
+    """``ml_model`` + ``ml_test`` builds the side-by-side final KIs."""
 
     def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, **overrides):
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
@@ -2484,7 +2503,7 @@ class TestMlCompareGraphBuild:
         _walk(wg.tasks)
         return labels
 
-    def test_compare_keeps_refinement_and_adds_the_predicted_arm(
+    def test_ml_test_keeps_refinement_and_adds_the_second_ki(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """The refinement still runs, plus prediction and a second final KI."""
@@ -2493,7 +2512,7 @@ class TestMlCompareGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_model=_linear_sh_model(),
-            ml_compare=True,
+            ml_test=True,
         )
         labels = self._labels(wg)
 
@@ -2503,12 +2522,12 @@ class TestMlCompareGraphBuild:
         # Comparison baseline: the full refinement, not the predict-only route.
         assert _has("ComputeScreeningParameters"), labels
         assert not _has("PredictScreeningParameters"), labels
-        # The predicted arm: model prediction + second final KI off the trial.
+        # The predicted route: model prediction + second final KI off the trial.
         assert _has("predict_alphas"), labels
-        assert _has("run_final_ki_ml"), labels
+        assert _has("run_final_ki_predicted"), labels
         assert _has("RunFinalKI"), labels
 
-    def test_compare_allows_multiple_refinement_steps(
+    def test_ml_test_allows_multiple_refinement_steps(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """``alpha_numsteps > 1`` is the comparison baseline, not an error."""
@@ -2517,28 +2536,28 @@ class TestMlCompareGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_model=_linear_sh_model(),
-            ml_compare=True,
+            ml_test=True,
             alpha_numsteps=2,
         )
         assert any("ComputeScreeningParameters" in label for label in self._labels(wg))
 
-    def test_compare_without_model_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
-        """``ml_compare`` without a model has nothing to predict with."""
+    def test_ml_test_without_model_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """``ml_test`` without a model has nothing to predict with."""
         with pytest.raises(ValueError, match="supply ml_model"):
             self._build_wg(
                 ozone_structure=ozone_structure,
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
-                ml_compare=True,
+                ml_test=True,
             )
 
-    def test_twin_shares_the_trial_and_applies_the_prediction(
+    def test_predicted_ki_shares_the_trial_and_applies_the_prediction(
         self, ozone_structure, kcp_code, ozone_pseudo_family
     ):
         """Both final KIs hang off one trial socket; only the alphas differ.
 
         Socket identity is what backs the parity claim at build level: a
-        twin parented elsewhere, fed the refined alphas (every delta
+        second KI parented elsewhere, fed the refined alphas (every delta
         identically zero), restarted as a first iteration, or built
         without the shared overrides/nbnd passes every shape test.
         """
@@ -2547,30 +2566,30 @@ class TestMlCompareGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_model=_linear_sh_model(),
-            ml_compare=True,
+            ml_test=True,
             overrides={"ki": {"CONTROL": {"iprint": 7}}},
         )
         by_name = {t.name: t for t in wg.tasks}
-        base, twin = by_name["RunFinalKI"], by_name["run_final_ki_ml"]
+        base, predicted = by_name["RunFinalKI"], by_name["run_final_ki_predicted"]
 
         def source(task, port):
             links = task.inputs[port]._links
             assert len(links) == 1, (port, links)
             return links[0].from_socket
 
-        assert source(base, "parent_folder") is source(twin, "parent_folder")
-        assert source(base, "nbnd") is source(twin, "nbnd")
+        assert source(base, "parent_folder") is source(predicted, "parent_folder")
+        assert source(base, "nbnd") is source(predicted, "nbnd")
         base_alphas = source(base, "alphas")
-        twin_alphas = source(twin, "alphas")
-        assert base_alphas is not twin_alphas
-        assert twin_alphas._task.name == "predict_alphas", twin_alphas._task.name
-        assert twin.inputs["is_first_iteration"].value is False
-        twin_control = dict(twin.inputs["overrides"]["CONTROL"].value)
-        assert twin_control == dict(base.inputs["overrides"]["CONTROL"].value)
-        assert twin_control["iprint"] == 7
+        predicted_alphas = source(predicted, "alphas")
+        assert base_alphas is not predicted_alphas
+        assert predicted_alphas._task.name == "predict_alphas", predicted_alphas._task.name
+        assert predicted.inputs["is_first_iteration"].value is False
+        predicted_control = dict(predicted.inputs["overrides"]["CONTROL"].value)
+        assert predicted_control == dict(base.inputs["overrides"]["CONTROL"].value)
+        assert predicted_control["iprint"] == 7
 
-    def test_compare_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
-        """The compare-route graph survives the to_dict/from_dict round trip."""
+    def test_ml_test_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """The ml_test graph survives the to_dict/from_dict round trip."""
         from tests.fixtures import assert_graph_roundtrips
 
         assert_graph_roundtrips(
@@ -2579,6 +2598,6 @@ class TestMlCompareGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_model=_linear_sh_model(),
-                ml_compare=True,
+                ml_test=True,
             )
         )

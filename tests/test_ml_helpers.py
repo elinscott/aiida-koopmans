@@ -698,13 +698,15 @@ class TestCentresHelpers:
 
 
 class TestFinalKiDeltas:
-    """Observable-level deltas between the twin final KIs."""
+    """Deltas between the computed- and predicted-alpha final KIs."""
 
     @staticmethod
     def _call(computed_alphas, predicted_alphas, computed_eigs, predicted_eigs):
-        from aiida_koopmans.workgraphs.ml.helpers import final_ki_deltas
+        from aiida_koopmans.workgraphs.ml.helpers import compute_alpha_and_eigenvalue_deltas
 
-        return final_ki_deltas(computed_alphas, predicted_alphas, computed_eigs, predicted_eigs)
+        return compute_alpha_and_eigenvalue_deltas(
+            computed_alphas, predicted_alphas, computed_eigs, predicted_eigs
+        )
 
     def test_deltas_are_exact(self):
         """Max and RMS reproduce a hand-computed two-orbital case."""
