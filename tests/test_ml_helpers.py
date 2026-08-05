@@ -695,3 +695,73 @@ class TestCentresHelpers:
         xyz = "n\ncomment\n" + "".join(f"X {ln}\n" for ln in formatted.splitlines()[1:])
         recovered = ml_helpers.parse_wannier_centres_xyz(xyz)
         assert np.allclose(recovered, centres)
+
+
+class TestFinalKiDeltas:
+    """Deltas between the computed- and predicted-alpha final KIs."""
+
+    @staticmethod
+    def _call(computed_alphas, predicted_alphas, computed_eigs, predicted_eigs):
+        from aiida_koopmans.workgraphs.ml.helpers import compute_alpha_and_eigenvalue_deltas
+
+        return compute_alpha_and_eigenvalue_deltas(
+            computed_alphas, predicted_alphas, computed_eigs, predicted_eigs
+        )
+
+    def test_deltas_are_exact(self):
+        """Max and RMS reproduce a hand-computed two-orbital case."""
+        computed = {"filled": {"none": [0.60]}, "empty": {"none": [0.70]}}
+        predicted = {"filled": {"none": [0.62]}, "empty": {"none": [0.66]}}
+        result = self._call(computed, predicted, [[-10.0, -5.0]], [[-10.1, -4.7]])
+        assert result["alphas"]["max_abs_delta"] == pytest.approx(0.04)
+        assert result["alphas"]["rms_delta"] == pytest.approx((0.5 * (0.02**2 + 0.04**2)) ** 0.5)
+        assert result["eigenvalues"]["max_abs_delta"] == pytest.approx(0.3)
+        assert result["eigenvalues"]["rms_delta"] == pytest.approx((0.5 * (0.1**2 + 0.3**2)) ** 0.5)
+        # Raw rows ride along for reporting.
+        assert result["alphas"]["computed"] == [0.60, 0.70]
+        assert result["alphas"]["predicted"] == [0.62, 0.66]
+
+    def test_flatten_matches_the_dataset_row_order(self):
+        """Flattened rows align with ``build_snapshot_dataset``'s traversal.
+
+        The direct comparison, not flatten-vs-itself: the dataset walks
+        channels outer (spin-index order) with filled-then-empty inside,
+        and the evaluation's ``predictions`` rows are in that order.
+        """
+        from aiida_koopmans.workgraphs.ml.helpers import (
+            build_snapshot_dataset,
+            flatten_alpha_screening,
+        )
+
+        alphas = {
+            "filled": {"up": [0.6], "down": [0.7]},
+            "empty": {"up": [0.5], "down": [0.4]},
+        }
+        dataset = build_snapshot_dataset([[-1.0, -2.0], [-3.0, -4.0]], alphas)
+        assert flatten_alpha_screening(alphas) == dataset["alpha_targets"]
+        assert flatten_alpha_screening(alphas) == [0.6, 0.5, 0.7, 0.4]
+
+    def test_empty_payloads_raise_a_domain_error(self):
+        """Two empty payloads fail with the domain message, not a numpy error."""
+        with pytest.raises(ValueError, match="no orbitals"):
+            self._call({"filled": {}, "empty": {}}, {"filled": {}, "empty": {}}, [[]], [[]])
+
+    def test_layout_mismatch_raises(self):
+        """Twin arms that cover different orbital counts are rejected."""
+        with pytest.raises(ValueError, match="did not share a layout"):
+            self._call(
+                {"filled": {"none": [0.6, 0.6]}, "empty": {}},
+                {"filled": {"none": [0.6]}, "empty": {}},
+                [[0.0]],
+                [[0.0]],
+            )
+
+    def test_eigenvalue_shape_mismatch_raises(self):
+        """Twin arms whose eigenvalue arrays disagree in shape are rejected."""
+        with pytest.raises(ValueError, match="shapes"):
+            self._call(
+                {"filled": {"none": [0.6]}, "empty": {}},
+                {"filled": {"none": [0.6]}, "empty": {}},
+                [[0.0, 1.0]],
+                [[0.0]],
+            )

@@ -444,3 +444,82 @@ class TestTrainedModelArtifact:
         assert model["correction"] == "ki"
         assert model["init_orbitals"] == "kohn-sham"
         assert set(model["submodels"]) == {"all"}
+
+
+class TestTestModeTwin:
+    """TEST mode runs both final KIs and gathers their deltas."""
+
+    def _build_wg(self, *, ozone_structure, kcp_code, ozone_pseudo_family, ml_mode, n=2):
+        from aiida_koopmans.workgraphs.ml import TrajectoryWorkflow, helpers
+
+        model = helpers.fit_screening_model(
+            {
+                "descriptors": [[-1.0], [-2.0]],
+                "alpha_targets": [0.6, 0.7],
+                "filled": [True, False],
+                "labels": ["orb_1", "orb_2"],
+            },
+            "linear_regression",
+            correction="ki",
+            init_orbitals="kohn-sham",
+        )
+        return TrajectoryWorkflow.build(
+            code=kcp_code,
+            snapshots={f"snapshot_{i + 1}": ozone_structure for i in range(n)},
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            tot_magnetization=None,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            alpha_numsteps=1,
+            fix_spin_contamination=False,
+            initial_alpha=0.6,
+            spin_polarized=False,
+            ml_mode=ml_mode,
+            ml_model=model,
+            descriptor=MLDescriptor.SELF_HARTREE,
+        )
+
+    def test_test_mode_gathers_per_snapshot_deltas(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """One delta task per snapshot feeds the evaluation gather."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="test",
+        )
+        names = _all_task_names(wg)
+        assert any("alpha_and_eigenvalue_deltas_snapshot_1" in n for n in names), names
+        assert any("alpha_and_eigenvalue_deltas_snapshot_2" in n for n in names), names
+        assert sum(1 for n in names if "evaluate_screening_model" in n) == 1, names
+
+    def test_test_mode_graph_roundtrips(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """The test-mode comparison graph survives the to_dict/from_dict round trip."""
+        from tests.fixtures import assert_graph_roundtrips
+
+        assert_graph_roundtrips(
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="test",
+            )
+        )
+
+    def test_predict_mode_builds_no_delta_layer(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """Predict applies the model; there are no computed alphas to compare against."""
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="predict",
+        )
+        names = _all_task_names(wg)
+        assert not any("compute_alpha_and_eigenvalue_deltas" in n for n in names), names
