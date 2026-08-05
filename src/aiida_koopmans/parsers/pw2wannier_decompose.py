@@ -35,6 +35,15 @@ _ORBITAL_COEFF_RE = re.compile(r"^(?P<seed>.+?)_(?P<index>\d{5})\.coeff$")
 _GROUP_COEFF_RE = re.compile(r"^(?P<seed>.+?)_gc_(?P<index>\d{5})\.coeff$")
 _POWER_RE = re.compile(r"^(?P<seed>.+?)_(?P<index>\d{5})\.power$")
 
+# QE's ``read_namelists`` aborts on the first ``&inputpp`` key the binary does
+# not declare, quoting that line. The CalcJob writes only keys from its
+# ``_VALID_KEYS``, of which the ``decompose_*`` ones are exactly those a
+# pw2wannier90.x outside the ``wann-decompose`` branch lacks, so a quoted
+# ``decompose_*`` line identifies a build without the feature.
+_UNKNOWN_DECOMPOSE_KEY_RE = re.compile(
+    r"bad line in namelist &inputpp:\s*\"[^\"]*decompose_", re.IGNORECASE
+)
+
 
 class Pw2wannierDecomposeParser(KoopmansStdoutParser):
     """Parse the output of a :class:`Pw2wannierDecomposeCalculation`.
@@ -42,11 +51,12 @@ class Pw2wannierDecomposeParser(KoopmansStdoutParser):
     Emits ``output_parameters`` (``job_done`` flag, optional ``walltime``,
     basis sizes), ``coefficients`` / ``power`` ``ArrayData`` (one row per
     Wannier function) and, when a ``centres_file`` was supplied,
-    ``group_coefficients``. Returns ``ERROR_OUTPUT_STDOUT_INCOMPLETE`` when
-    the run did not reach ``JOB DONE``, ``ERROR_OUTPUT_COEFF_MISSING`` when a
-    completed run produced no coefficient files, and
-    ``ERROR_OUTPUT_COEFF_MALFORMED`` when a retrieved file could not be
-    parsed or the per-WF vectors disagree in length.
+    ``group_coefficients``. Returns ``ERROR_CODE_LACKS_DECOMPOSE`` when the
+    binary rejected the ``decompose_*`` namelist keys,
+    ``ERROR_OUTPUT_STDOUT_INCOMPLETE`` for any other run that did not reach
+    ``JOB DONE``, ``ERROR_OUTPUT_COEFF_MISSING`` when a completed run produced
+    no coefficient files, and ``ERROR_OUTPUT_COEFF_MALFORMED`` when a retrieved
+    file could not be parsed or the per-WF vectors disagree in length.
     """
 
     def parse(self, **kwargs: Any):
@@ -59,6 +69,8 @@ class Pw2wannierDecomposeParser(KoopmansStdoutParser):
 
         if not parsed.get("job_done", False):
             self.out("output_parameters", orm.Dict(dict=parsed))
+            if _UNKNOWN_DECOMPOSE_KEY_RE.search(stdout):
+                return self.exit_codes.ERROR_CODE_LACKS_DECOMPOSE
             return self.exit_codes.ERROR_OUTPUT_STDOUT_INCOMPLETE
 
         try:
