@@ -283,6 +283,57 @@ def test_power_spectrum_dataset_nspin1_omits_spin_component(
     assert params is None or "spin_component" not in params
 
 
+def test_power_spectrum_dataset_drops_npool_but_keeps_ranks(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """A shared ``pw2wannier90.npool`` does not reach the decompose passes.
+
+    The knob is aimed at the wannierization's own pw2wannier90 pass, which
+    does pool over k points; the decompose pass aborts on more than one pool.
+    Its rank count must still arrive, or suppressing pools would cost the
+    parallelism as well.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDatasetWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    merge_groups = [_spin_block("occ", True, "none", 4, 4)]
+    alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
+
+    wg = PowerSpectrumDatasetWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations=block_wannierizations,
+        merge_groups=merge_groups,
+        alphas=alphas,
+        parallelization={"pw2wannier90": {"npool": 4, "ntasks": 8}},
+    )
+
+    settings = wg.tasks["decompose_occ"].inputs["settings"].value
+    cmdline = (settings or {}).get("cmdline", [])
+    assert "-npool" not in cmdline, cmdline
+
+    resources = wg.tasks["decompose_occ"].inputs["metadata"]["options"]["resources"].value
+    assert resources == {"num_machines": 1, "num_mpiprocs_per_machine": 8}, resources
+
+
+def test_spin_component_rejects_spinor():
+    """A noncollinear manifold is refused by name, not passed to QE as a key.
+
+    ``SpinChannel.SPINOR.value`` is a real string, so without this the graph
+    emits ``spin_component='spinor'``; QE ignores the unknown value and then
+    aborts on its own noncollinear guard, far from the cause.
+    """
+    from aiida_koopmans.spin import SpinChannel
+    from aiida_koopmans.workgraphs.ml import _spin_component
+
+    with pytest.raises(NotImplementedError, match="spinor"):
+        _spin_component(SpinChannel.SPINOR)
+
+
 def test_compute_block_descriptors_returns_cross_power(aiida_profile):
     """`compute_block_descriptors` cross-powers a block's decompose arrays."""
     import numpy as np

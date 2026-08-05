@@ -331,9 +331,17 @@ def _spin_component(group_spin: Any) -> str | None:
     ``SpinChannel.UP`` / ``SpinChannel.DOWN`` become ``'up'`` / ``'down'`` so
     the decompose pass reads one channel of an nspin=2 scratch; ``NONE``
     (nspin=1) returns ``None`` and the key is omitted, letting QE default to
-    the single channel.
+    the single channel. ``SPINOR`` raises: the decompose pass has no
+    noncollinear branch.
     """
     spin = group_spin if isinstance(group_spin, SpinChannel) else SpinChannel(group_spin)
+    if spin == SpinChannel.SPINOR:
+        raise NotImplementedError(
+            "The power_spectrum descriptor cannot be built for a spinor manifold: "
+            "pw2wannier90.x aborts a wan_mode='decompose' pass on a noncollinear "
+            "calculation. Use descriptor='self_hartree' for a noncollinear or "
+            "spin-orbit run."
+        )
     return None if spin == SpinChannel.NONE else spin.value
 
 
@@ -466,7 +474,9 @@ def PowerSpectrumDatasetWorkflow(
     matrix is lifted from ``retrieved`` and wired only when the block's
     metadata marks the manifold as disentangling (``num_bands`` > ``num_wann``);
     and the ``spin_component`` namelist key is set per group from the manifold's
-    spin channel so an nspin=2 scratch is read one channel at a time.
+    spin channel so an nspin=2 scratch is read one channel at a time. A
+    ``pw2wannier90`` ``npool`` in ``parallelization`` does not reach these
+    passes, which run on a single k-point pool; their rank count still does.
 
     ``merge_groups`` is the ``(filled, spin, blocks)`` partition (each block a
     ``{"label", "num_wann", "num_bands", ...}`` mapping); ``alphas`` is the
@@ -510,7 +520,13 @@ def PowerSpectrumDatasetWorkflow(
             # Seed the resources first so the pass is runnable with no
             # parallelization block; a supplied one overwrites them.
             decompose_inputs["metadata"]["options"] = dict(_DEFAULT_CALCJOB_OPTIONS)
-            merge_parallelization_into_inputs(decompose_inputs, parallelization, "pw2wannier90")
+            # ``pools=False``: a shared ``pw2wannier90.npool`` is aimed at the
+            # wannierization's own pw2wannier90 pass, which does parallelize
+            # over k-point pools; the decompose pass does not, and aborts if
+            # given one.
+            merge_parallelization_into_inputs(
+                decompose_inputs, parallelization, "pw2wannier90", pools=False
+            )
             decompose = DecomposeTask(**decompose_inputs)
             block_descriptors[label] = compute_block_descriptors(
                 coefficients=decompose["coefficients"],

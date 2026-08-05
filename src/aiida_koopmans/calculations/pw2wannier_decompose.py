@@ -100,6 +100,13 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         }
     )
 
+    # ``spin_component`` selects which half of an nspin=2 k list the pass
+    # reads. QE compares the string exactly and falls through to the
+    # unpolarized branch on anything it does not recognise, so a value
+    # outside this set would decompose the wrong states without any
+    # complaint from the binary.
+    _VALID_SPIN_COMPONENTS: ClassVar[frozenset[str]] = frozenset({"up", "down", "none"})
+
     # Radial-basis defaults matching the legacy koopmans ``ml`` settings
     # (``n_max=4, l_max=4, r_min=0.5, r_max=4.0``); the QE binary itself
     # defaults ``n_max=l_max=6`` but the Koopmans descriptor is defined
@@ -269,6 +276,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         raw = self.inputs.parameters.get_dict() if "parameters" in self.inputs else {}
         parameters = self._normalize_parameters(raw)
         self._inject_owned_keys(parameters)
+        self._reject_pool_parallelism()
 
         content = self._render_namelist(parameters)
         with folder.open(self._INPUT_FILE, "w", encoding="utf-8") as handle:
@@ -306,6 +314,26 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
             parameters["decompose_centres_file"] = self._CENTRES_FILE
         for key, default in self._DEFAULTS.items():
             parameters.setdefault(key, default)
+
+    def _reject_pool_parallelism(self) -> None:
+        """Reject a ``-npool`` greater than one in ``settings.cmdline``.
+
+        ``wan_mode='decompose'`` aborts with ``pool parallelism not
+        implemented``: the pass reconstructs each Wannier density from the
+        whole k list at once, which a pool-distributed k list cannot serve.
+        """
+        cmdline = self._cmdline_from_settings()
+        for position, flag in enumerate(cmdline):
+            if flag != "-npool":
+                continue
+            value = cmdline[position + 1] if position + 1 < len(cmdline) else ""
+            if value.isdigit() and int(value) == 1:
+                continue
+            raise ValueError(
+                f"``-npool {value}`` was requested, but a wan_mode='decompose' pass "
+                "runs on a single k-point pool. Drop ``npool`` for pw2wannier90, or "
+                "set it to 1; use ``ntasks`` to parallelize the pass instead."
+            )
 
     def _build_remote_symlink_list(self) -> list[tuple[str, str, str]]:
         """Symlink the parent nscf ``.save`` into ``./TMP/<prefix>.save``.
@@ -382,7 +410,22 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
                     f"{', '.join(sorted(cls._VALID_KEYS - cls._BLOCKED_KEYS))}."
                 )
             normalized[k] = val
+        cls._validate_spin_component(normalized)
         return normalized
+
+    @classmethod
+    def _validate_spin_component(cls, parameters: dict) -> None:
+        """Reject a ``spin_component`` value QE would not recognise."""
+        if "spin_component" not in parameters:
+            return
+        value = parameters["spin_component"]
+        if not isinstance(value, str) or value not in cls._VALID_SPIN_COMPONENTS:
+            raise ValueError(
+                f"``spin_component`` must be one of "
+                f"{', '.join(sorted(cls._VALID_SPIN_COMPONENTS))}, got {value!r}. "
+                "Use ``up`` or ``down`` to decompose one channel of an nspin=2 "
+                "scratch, ``none`` (or omit the key) for an nspin=1 one."
+            )
 
     @classmethod
     def _render_namelist(cls, parameters: dict) -> str:

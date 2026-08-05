@@ -63,6 +63,21 @@ class TestNormalizeParameters:
         out = Pw2wannierDecomposeCalculation._normalize_parameters({"spin_component": "up"})
         assert out == {"spin_component": "up"}
 
+    def test_accepts_spin_component_none(self):
+        out = Pw2wannierDecomposeCalculation._normalize_parameters({"spin_component": "none"})
+        assert out == {"spin_component": "none"}
+
+    @pytest.mark.parametrize("value", ["UP", "Down", "spinor", "both", 1])
+    def test_rejects_unrecognised_spin_component(self, value):
+        """QE matches the string exactly and silently runs unpolarized otherwise.
+
+        ``'UP'`` is the discriminating case: only value-level validation
+        catches it, since key lowercasing leaves values untouched and the
+        binary would decompose the full k list rather than the up channel.
+        """
+        with pytest.raises(ValueError, match="spin_component"):
+            Pw2wannierDecomposeCalculation._normalize_parameters({"spin_component": value})
+
 
 class TestInjectOwnedKeys:
     """``_inject_owned_keys`` defaults and owned-key injection."""
@@ -269,6 +284,74 @@ def test_missing_nnkp_input_is_rejected(
 
     with pytest.raises(ValueError, match="nnkp"):
         generate_calc_job(fixture_sandbox, "koopmans.pw2wannier_decompose", inputs)
+
+
+def test_pool_parallelism_is_rejected(
+    aiida_profile,
+    register_decompose_entry_points,
+    fixture_sandbox,
+    generate_calc_job,
+    _decompose_inputs,
+):
+    """``-npool 4`` is refused at build: the decompose pass aborts on pools.
+
+    Without this the calculation submits happily and dies inside QE with
+    ``pool parallelism not implemented``, after the scheduler wait.
+    """
+    from aiida import orm
+
+    code, remote, _parent_root, u_mat, centres, nnkp = _decompose_inputs
+
+    inputs = {
+        "code": code,
+        "parent_folder": remote,
+        "nnkp": nnkp,
+        "u_mat": u_mat,
+        "centres_xyz": centres,
+        "settings": orm.Dict(dict={"cmdline": ["-npool", "4"]}),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    with pytest.raises(ValueError, match="single k-point pool"):
+        generate_calc_job(fixture_sandbox, "koopmans.pw2wannier_decompose", inputs)
+
+
+def test_single_pool_and_other_flags_are_accepted(
+    aiida_profile,
+    register_decompose_entry_points,
+    fixture_sandbox,
+    generate_calc_job,
+    _decompose_inputs,
+):
+    """``-npool 1`` and unrelated flags pass through untouched.
+
+    Discriminates a guard on pooling from one on the flag's mere presence:
+    one pool *is* the decompose pass's own layout.
+    """
+    from aiida import orm
+
+    code, remote, _parent_root, u_mat, centres, nnkp = _decompose_inputs
+
+    inputs = {
+        "code": code,
+        "parent_folder": remote,
+        "nnkp": nnkp,
+        "u_mat": u_mat,
+        "centres_xyz": centres,
+        "settings": orm.Dict(dict={"cmdline": ["-npool", "1", "-pd", "true"]}),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+
+    calc_info = generate_calc_job(fixture_sandbox, "koopmans.pw2wannier_decompose", inputs)
+
+    assert calc_info.codes_info[0].cmdline_params == [
+        "-npool",
+        "1",
+        "-pd",
+        "true",
+        "-in",
+        "aiida.decompose.in",
+    ]
 
 
 def test_spin_component_accepted_and_rendered(
