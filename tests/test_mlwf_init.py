@@ -244,3 +244,44 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
         assert not any("dft_init_nspin" in name for name in names), names
         assert any(name.startswith("ComputeScreeningParameters") for name in names), names
         assert any(name.startswith("RunFinalKI") for name in names), names
+
+
+class TestWannierOverridesThreading:
+    """``wannier_overrides`` reach the wannierize step unchanged."""
+
+    def test_windows_reach_the_wannierize_task(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos
+    ):
+        """The window keywords land on the wannierize task's overrides socket.
+
+        Regression for koopmans#94: the hop between the DSCF initialisation
+        and the per-block wannierization — a window lost here never reaches
+        any block.
+        """
+        from aiida.orm import KpointsData, List
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+        from tests.fixtures import explicit_block
+
+        kpoints = KpointsData()
+        kpoints.set_kpoints_mesh([2, 1, 1])
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+        wg = MlwfInitialization.build(
+            codes={**mlwf_codes, "kcp": mlwf_codes["pw"]},
+            structure=periodic_ozone_structure,
+            supercell=supercell,
+            pseudos=ozone_real_pseudos,
+            blocks=[explicit_block("block_1", range(1, 10), filled=True)],
+            kpoints=kpoints,
+            kgrid=[2, 1, 1],
+            nelec=36,
+            nelup=18,
+            neldw=18,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=20,
+            pseudo_family="unused-here",
+            wannier_overrides={"wannier90": {"dis_froz_max": 1.0}},
+        )
+        overrides = wg.tasks["wannierize"].inputs["overrides"]["wannier90"].value
+        assert overrides["dis_froz_max"] == 1.0

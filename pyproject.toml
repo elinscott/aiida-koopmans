@@ -29,6 +29,7 @@ dependencies = [
     "pydantic-espresso>=0.0.1",
     "node-graph>=0.6.5",
     "aiida-wannierjl",
+    "wannier90-input>=0.0.2",
 ]
 
 [project.optional-dependencies]

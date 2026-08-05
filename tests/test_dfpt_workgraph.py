@@ -9,6 +9,7 @@ style of ``test_block_wannierize.py``. Also unit-tests the
 from __future__ import annotations
 
 import pytest
+from wannier90_input.models.parameters import Projection
 
 from aiida_koopmans.projections import ExplicitProjectionBlock, get_wannier_indices
 from aiida_koopmans.spin import SpinChannel
@@ -572,22 +573,6 @@ class TestSinglepointDFPTBuild:
 # ----------------------------------------------------------------------
 
 
-class _FakeQuantumNumbers:
-    def __init__(self, l_value, m_r=None):
-        self.angular = type("A", (), {"value": l_value})()
-        self.m_r = m_r
-
-    def __str__(self):
-        mr = "" if self.m_r is None else ",mr=" + ",".join(str(m) for m in self.m_r)
-        return f"l={self.angular.value}{mr}"
-
-
-class _FakeProjection:
-    def __init__(self, site, l_value, m_r=None):
-        self.site = site
-        self.ang_mtm = _FakeQuantumNumbers(l_value, m_r)
-
-
 class TestDeriveDfptManifolds:
     def test_silicon_like_split(self, silicon_structure):
         from aiida_koopmans.projections import derive_dfpt_manifolds
@@ -597,8 +582,11 @@ class TestDeriveDfptManifolds:
         # mr=1 (pz -> 2 atoms x 1 = 2). The mr restriction is what pins the
         # len(m_r) multiplicity: counting 2l+1 regardless would give the
         # empty block 6 Wannier functions and overrun nbnd.
-        occ = [_FakeProjection("Si", 0), _FakeProjection("Si", 1)]
-        emp = [_FakeProjection("Si", 1, m_r=[1])]
+        occ = [
+            Projection(site="Si", ang_mtm="l=0"),
+            Projection(site="Si", ang_mtm="l=1"),
+        ]
+        emp = [Projection(site="Si", ang_mtm="l=1,mr=1")]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
@@ -610,12 +598,15 @@ class TestDeriveDfptManifolds:
         assert occ_block["num_wann"] == 8
         assert occ_block["num_bands"] == 8
         assert occ_block["exclude_bands"] == [9, 10, 11, 12]
-        assert occ_block["projections"] == ["Si:l=0", "Si:l=1"]
+        assert occ_block["projections"] == [
+            "Si:l=0:0,0,1:1,0,0:1:1.0",
+            "Si:l=1:0,0,1:1,0,0:1:1.0",
+        ]
         (emp_block,) = emp_blocks
         assert emp_block["label"] == "emp"
         assert emp_block["num_wann"] == 2
         assert emp_block["num_bands"] == 4
-        assert emp_block["projections"] == ["Si:l=1,mr=1"]
+        assert emp_block["projections"] == ["Si:l=1,mr=1:0,0,1:1,0,0:1:1.0"]
         # The empty block disentangles, so the two Wannier-function
         # indices it takes (9-10 of a 12-band nscf) are the only thing left
         # that could be read as an occupancy; the stamp says it is empty.
@@ -629,7 +620,7 @@ class TestDeriveDfptManifolds:
         from aiida_koopmans.projections import derive_dfpt_manifolds
 
         # sp3 hybrids: l=-3 -> 4 orbitals per atom, 2 atoms -> 8.
-        occ = [_FakeProjection("Si", -3)]
+        occ = [Projection(site="Si", ang_mtm="l=-3")]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ],
@@ -649,7 +640,7 @@ class TestDeriveDfptManifolds:
         with pytest.raises(ValueError, match="straddles"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
-                projection_blocks=[[_FakeProjection("Si", -3)]],  # 8 wann
+                projection_blocks=[[Projection(site="Si", ang_mtm="l=-3")]],  # 8 wann
                 nelec=12,  # nocc = 6: block spans bands 1-8
                 nbnd=8,
             )
@@ -670,8 +661,13 @@ class TestDeriveDfptManifolds:
         """``nbnd`` must leave at least as many empty bands as the empty blocks need."""
         from aiida_koopmans.projections import derive_dfpt_manifolds
 
-        occ = [_FakeProjection("Si", 0), _FakeProjection("Si", 1)]  # 8 wann occ (nocc=8)
-        emp = [_FakeProjection("Si", 1)]  # full p triplet: 3 orbitals x 2 atoms = 6 wann
+        occ = [
+            Projection(site="Si", ang_mtm="l=0"),
+            Projection(site="Si", ang_mtm="l=1"),
+        ]  # 8 wann occ (nocc=8)
+        emp = [
+            Projection(site="Si", ang_mtm="l=1")
+        ]  # full p triplet: 3 orbitals x 2 atoms = 6 wann
         with pytest.raises(ValueError, match="leaves only 2 empty bands"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
@@ -685,10 +681,10 @@ class TestDeriveDfptManifolds:
         from aiida_koopmans.projections import derive_dfpt_manifolds
 
         blocks = [
-            [_FakeProjection("Si", 0)],  # 2 wann: bands 1-2 (occ)
-            [_FakeProjection("Si", 1)],  # 6 wann: bands 3-8 (occ)
-            [_FakeProjection("Si", 0)],  # 2 wann: bands 9-10 (emp)
-            [_FakeProjection("Si", 0)],  # 2 wann: bands 11-14 (emp + 2 extra)
+            [Projection(site="Si", ang_mtm="l=0")],  # 2 wann: bands 1-2 (occ)
+            [Projection(site="Si", ang_mtm="l=1")],  # 6 wann: bands 3-8 (occ)
+            [Projection(site="Si", ang_mtm="l=0")],  # 2 wann: bands 9-10 (emp)
+            [Projection(site="Si", ang_mtm="l=0")],  # 2 wann: bands 11-14 (emp + 2 extra)
         ]
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
@@ -723,7 +719,10 @@ class TestDeriveDfptManifolds:
     def test_incomplete_occupied_coverage_raises(self, silicon_structure):
         from aiida_koopmans.projections import derive_dfpt_manifolds
 
-        blocks = [[_FakeProjection("Si", 0)], [_FakeProjection("Si", 0)]]  # 2 + 2 occ
+        blocks = [
+            [Projection(site="Si", ang_mtm="l=0")],
+            [Projection(site="Si", ang_mtm="l=0")],
+        ]  # 2 + 2 occ
         with pytest.raises(ValueError, match="occupied projection blocks span"):
             derive_dfpt_manifolds(
                 structure=silicon_structure, projection_blocks=blocks, nelec=12, nbnd=6
@@ -735,7 +734,7 @@ class TestDeriveDfptManifolds:
         with pytest.raises(ValueError, match="Odd electron count"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
-                projection_blocks=[[_FakeProjection("Si", 0)]],
+                projection_blocks=[[Projection(site="Si", ang_mtm="l=0")]],
                 nelec=7,
                 nbnd=None,
             )
@@ -747,7 +746,7 @@ class TestDeriveDfptManifolds:
         with pytest.raises(ValueError, match="per-channel"):
             derive_dfpt_manifolds(
                 structure=silicon_structure,
-                projection_blocks=[[_FakeProjection("Si", -3)]],
+                projection_blocks=[[Projection(site="Si", ang_mtm="l=-3")]],
                 nelec=16,
                 nbnd=None,
                 spin_channel=SpinChannel.UP,
@@ -758,8 +757,8 @@ class TestDeriveDfptManifolds:
         from aiida_koopmans.spin import SpinChannel
 
         # A magnetic system: nelec=14, tot_magnetization=2 -> nocc 8 up / 6 down.
-        up_blocks = [[_FakeProjection("Si", -3)]]  # 8 wann
-        dn_blocks = [[_FakeProjection("Si", 1)]]  # 6 wann
+        up_blocks = [[Projection(site="Si", ang_mtm="l=-3")]]  # 8 wann
+        dn_blocks = [[Projection(site="Si", ang_mtm="l=1")]]  # 6 wann
         occ_up_blocks, emp_up_blocks, _, n_up = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=up_blocks,
@@ -793,8 +792,8 @@ class TestDeriveDfptManifolds:
         # KCW example05.1 nspin4: the same sp3 block that gives num_wann=8
         # in a collinear run spans 16 spinor Wannier functions, and all
         # nelec=16 bands are singly occupied.
-        occ = [_FakeProjection("Si", -3)]  # 8 orbitals -> 16 spinor WFs
-        emp = [_FakeProjection("Si", 0)]  # 2 orbitals -> 4 spinor WFs
+        occ = [Projection(site="Si", ang_mtm="l=-3")]  # 8 orbitals -> 16 spinor WFs
+        emp = [Projection(site="Si", ang_mtm="l=0")]  # 2 orbitals -> 4 spinor WFs
         occ_blocks, emp_blocks, has_disentangle, n_orbitals = derive_dfpt_manifolds(
             structure=silicon_structure,
             projection_blocks=[occ, emp],
