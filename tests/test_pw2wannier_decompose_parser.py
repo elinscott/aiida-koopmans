@@ -357,6 +357,26 @@ class TestParseFullFlow:
         _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
         assert calc.exit_status == 310  # ERROR_OUTPUT_STDOUT_INCOMPLETE
 
+    def test_malformed_decompose_value_stays_incomplete(
+        self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
+    ):
+        """A ``wann-decompose`` build also aborts on a ``decompose_*`` bad value.
+
+        A list-valued parameter renders as ``decompose_n_max(1) = 4``, which
+        every build rejects, so a quoted ``decompose_*`` key does not by itself
+        identify a code without the feature. Verbatim from a ``wann-decompose``
+        build fed ``parameters={'decompose_n_max': [4, 4]}``.
+        """
+        files = {
+            "aiida.decompose.out": (
+                b"     Error in routine  read_namelists (1):\n"
+                b'      bad line in namelist &inputpp: "  decompose_n_max(1) = 4"'
+                b" (error could be in the previous line)\n"
+            )
+        }
+        _results, calc = _parse_folder(generate_calc_job_node, generate_parser, files)
+        assert calc.exit_status == 310  # ERROR_OUTPUT_STDOUT_INCOMPLETE
+
     def test_no_coeff_files_exit_code(
         self, aiida_profile, _register_decompose_ep, generate_calc_job_node, generate_parser
     ):

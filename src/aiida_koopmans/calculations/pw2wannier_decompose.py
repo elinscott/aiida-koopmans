@@ -257,10 +257,11 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
             311,
             "ERROR_CODE_LACKS_DECOMPOSE",
             message=(
-                "pw2wannier90.x rejected the ``decompose_*`` keys of the "
+                "pw2wannier90.x aborted reading a ``decompose_*`` key of the "
                 "``&inputpp`` namelist. Register a pw2wannier90.x built from the "
-                "``wann-decompose`` branch of Quantum ESPRESSO as the code for "
-                "this calculation."
+                "``wann-decompose`` branch of Quantum ESPRESSO as the code for this "
+                "calculation; if it already is one, check the ``decompose_*`` values "
+                "in ``parameters`` against the retrieved stdout."
             ),
             invalidates_cache=True,
         )
