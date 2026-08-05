@@ -283,6 +283,45 @@ def test_power_spectrum_dataset_nspin1_omits_spin_component(
     assert params is None or "spin_component" not in params
 
 
+def test_power_spectrum_dataset_survives_a_replayed_worker(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """The ``dataset`` graph output is wired socket by socket, so phantom sockets pass.
+
+    A worker that has replayed a cached python task's namespaced outputs
+    builds every later python task with those outputs attached. Returning
+    ``align_block_descriptors``' whole output namespace as the graph's
+    ``dataset`` would then be rejected: the namespaces no longer have the
+    same children.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs import ml
+    from tests.fixtures import assert_graph_roundtrips, replayed_namespace_outputs
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    merge_groups = [_spin_block("occ", True, "none", 4, 4)]
+    alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
+
+    with replayed_namespace_outputs(
+        "alphas.filled",
+        "errors.filled",
+        handles=[(ml, "align_block_descriptors")],
+    ):
+        wg = ml.PowerSpectrumDatasetWorkflow.build(
+            code=code,
+            nscf_remote_folder=nscf,
+            block_wannierizations=block_wannierizations,
+            merge_groups=merge_groups,
+            alphas=alphas,
+        )
+        align = next(t for t in wg.tasks if "align_block_descriptors" in t.name)
+        assert {"alphas", "errors"} <= {socket._name for socket in align.outputs}
+        assert_graph_roundtrips(wg)
+
+
 def test_compute_block_descriptors_returns_cross_power(aiida_profile):
     """`compute_block_descriptors` cross-powers a block's decompose arrays."""
     import numpy as np

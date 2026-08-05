@@ -366,6 +366,11 @@ def replayed_namespace_outputs(*paths, handles=()):
     carrying output sockets the function never declared, which a fresh
     interpreter — a test run — never sees.
 
+    The merge lets the planted ports win, so a same-named declared output is
+    not extended but replaced: under ``alphas.filled`` / ``errors.filled``,
+    ``assemble_alpha_screening`` — which declares both namespaces itself —
+    builds with ``alphas.empty`` and ``errors.empty`` gone.
+
     ``paths`` are dotted output paths (``"alphas.filled"``); ``handles`` are
     ``(module, attribute)`` pairs rebuilt inside the context, so the graph
     under test is wired from handles shaped the way the worker's are. Ports

@@ -523,7 +523,13 @@ def PowerSpectrumDatasetWorkflow(
         merge_groups=merge_groups,
         alphas=alphas,
     )
-    return PowerSpectrumDatasetOutputs(dataset=dataset)
+    # Filled one column at a time, for the reason given at the ``datasets``
+    # assignment in :func:`TrajectoryWorkflow`.
+    return PowerSpectrumDatasetOutputs(
+        dataset=cast(
+            "SnapshotDataset", {key: dataset[key] for key in SnapshotDataset.__annotations__}
+        )
+    )
 
 
 def require_power_spectrum_route(
