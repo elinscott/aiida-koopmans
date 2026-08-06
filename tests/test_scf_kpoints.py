@@ -217,6 +217,48 @@ class TestSinglepointDFPT:
         assert _mesh(scf_nscf, "scf_kpoints") == [2, 2, 2]
         assert len(scf_nscf.inputs["nscf_kpoints"].value.get_kpoints()) == 8
 
+    def test_scf_kpoints_moves_the_scf_alone(
+        self, dfpt_codes, silicon_structure, kmesh, kpath, denser_kmesh
+    ):
+        """A denser ground state must not move the mesh kcw.x counts in."""
+        from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
+
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            scf_kpoints=denser_kmesh,
+            bands_kpoints=kpath,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf=11.7,
+        )
+        scf_nscf = wg.tasks["scf_nscf"]
+        assert _mesh(scf_nscf, "scf_kpoints") == [4, 4, 4]
+        assert len(scf_nscf.inputs["nscf_kpoints"].value.get_kpoints()) == 8
+
+    def test_an_scf_kpoints_distance_leaves_the_scf_meshless(
+        self, dfpt_codes, silicon_structure, kmesh, kpath
+    ):
+        """The two inputs exclude each other, so the fallback mesh has to stand down."""
+        from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
+
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            overrides={"scf": {"kpoints_distance": 0.11}},
+            bands_kpoints=kpath,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf=11.7,
+        )
+        scf_nscf = wg.tasks["scf_nscf"]
+        assert scf_nscf.inputs["scf_kpoints"].value is None
+        assert scf_nscf.inputs["overrides"].value["scf"]["kpoints_distance"] == 0.11
+
 
 class TestMlwfInitialization:
     def test_the_wannierization_scf_samples_the_kpoints_mesh(
