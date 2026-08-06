@@ -1170,6 +1170,7 @@ def KoopmansDSCFWorkflow(
         descriptor=descriptor,
         init_orbitals=init_orbitals,
         pw2wannier90_code=pw2wannier90_code,
+        spin_polarized=spin_polarized,
     )
     predict_only = _model_replaces_refinement(ml_model=ml_model, ml_test=ml_test)
 
@@ -3496,6 +3497,7 @@ def _validate_ml_model_inputs(
     descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     pw2wannier90_code: orm.AbstractCode | None = None,
+    spin_polarized: bool = False,
 ) -> None:
     """Fail fast on ``ml_model`` / ``ml_test`` inputs that cannot take effect.
 
@@ -3508,13 +3510,16 @@ def _validate_ml_model_inputs(
 
     A ``power_spectrum`` model additionally predicts from a decompose pass
     over the per-block Wannierizations, so it needs the Wannier-initialised
-    route and a ``pw2wannier90_code`` to run that pass with.
+    route, a ``pw2wannier90_code`` to run that pass with, and a closed
+    shell.
     """
     if ml_model is not None and descriptor == MLDescriptor.POWER_SPECTRUM:
         # Function-local: the ml package's __init__ imports this module.
         from aiida_koopmans.workgraphs.ml import require_power_spectrum_route
 
-        require_power_spectrum_route(init_orbitals, pw2wannier90_code)
+        require_power_spectrum_route(
+            init_orbitals, pw2wannier90_code, spin_polarized=spin_polarized
+        )
     if ml_test and ml_model is None:
         raise ValueError(
             "ml_test runs a second final KI at model-predicted alphas, which "

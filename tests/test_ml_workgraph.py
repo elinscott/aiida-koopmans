@@ -109,6 +109,7 @@ class TestTrajectoryGraphBuild:
 
         snapshots = {f"snapshot_{i + 1}": ozone_structure for i in range(n_snapshots)}
         ml_kwargs.setdefault("init_orbitals", VariationalOrbitalType.KOHN_SHAM)
+        ml_kwargs.setdefault("spin_polarized", False)
         return TrajectoryWorkflow.build(
             code=kcp_code,
             snapshots=snapshots,
@@ -122,7 +123,6 @@ class TestTrajectoryGraphBuild:
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
-            spin_polarized=False,
             **ml_kwargs,
         )
 
@@ -295,6 +295,25 @@ class TestTrajectoryGraphBuild:
                 ml_mode="train",
                 descriptor="power_spectrum",
                 init_orbitals=VariationalOrbitalType.MLWFS,
+            )
+
+    def test_power_spectrum_on_a_spin_polarized_run_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
+    ):
+        """The descriptor is closed-shell only, and says so before any snapshot runs."""
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        with pytest.raises(NotImplementedError, match="spin='collinear'"):
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="train",
+                descriptor="power_spectrum",
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                pw2wannier90_code=p2w,
+                spin_polarized=True,
             )
 
     def test_power_spectrum_routes_to_decompose_segment(

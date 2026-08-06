@@ -2922,6 +2922,28 @@ class TestPowerSpectrumPredictionGraph:
                 descriptor=MLDescriptor.POWER_SPECTRUM,
             )
 
+    def test_power_spectrum_on_a_spin_polarized_run_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The DSCF-level guard: the descriptor is closed-shell only."""
+        from aiida_koopmans.ml import MLDescriptor
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        with pytest.raises(NotImplementedError, match="spin='collinear'"):
+            KoopmansDSCFWorkflow.build(
+                code=kcp_code,
+                structure=ozone_structure,
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                ml_model=self._model(),
+                descriptor=MLDescriptor.POWER_SPECTRUM,
+                spin_polarized=True,
+            )
+
     def test_the_dscf_forwards_every_descriptor_input_to_both_sites(
         self, ozone_structure, kcp_code, ozone_pseudo_family, monkeypatch
     ):

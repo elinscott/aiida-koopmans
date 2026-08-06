@@ -677,17 +677,25 @@ def PowerSpectrumDescriptorWorkflow(
 def require_power_spectrum_route(
     init_orbitals: Any,
     pw2wannier90_code: Any,
+    *,
+    spin_polarized: bool,
 ) -> None:
     """Guard the trajectory-level requirements of the power_spectrum descriptor.
 
     The descriptor is built from a pw2wannier90.x ``wan_mode='decompose'``
     pass over each snapshot's per-block Wannierizations, so it needs both a
     Wannier-initialised DSCF route to produce them and a code to run the
-    pass with. Raise here — at graph build, before any snapshot is
-    launched — rather than letting the requirement surface per snapshot
-    once the fan-out is already running. Kept as a plain function so both
-    failure paths are unit-testable without building the graph.
+    pass with, and it is closed-shell only. Raise here — at graph build,
+    before any snapshot is launched — rather than letting the requirement
+    surface per snapshot once the fan-out is already running. Kept as a
+    plain function so every failure path is unit-testable without building
+    the graph.
     """
+    if spin_polarized:
+        raise NotImplementedError(
+            "descriptor='power_spectrum' is not implemented for spin='collinear'. "
+            "Use descriptor='self_hartree', or run with spin='none'."
+        )
     orbitals = VariationalOrbitalType(init_orbitals)
     if orbitals not in (VariationalOrbitalType.MLWFS, VariationalOrbitalType.PROJWFS):
         raise ValueError(
@@ -713,6 +721,7 @@ def require_ml_mode_inputs(
     init_orbitals: Any,
     pw2wannier90_code: Any,
     ml_model: dict | None,
+    spin_polarized: bool = False,
 ) -> None:
     """Guard the ``ml_mode`` / ``descriptor`` / ``ml_model`` combinations.
 
@@ -726,7 +735,9 @@ def require_ml_mode_inputs(
         if descriptor not in ML_DESCRIPTOR_TYPES:
             raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
         if descriptor == MLDescriptor.POWER_SPECTRUM:
-            require_power_spectrum_route(init_orbitals, pw2wannier90_code)
+            require_power_spectrum_route(
+                init_orbitals, pw2wannier90_code, spin_polarized=spin_polarized
+            )
     if ml_mode in (MLMode.TEST, MLMode.PREDICT) and ml_model is None:
         raise ValueError(f"ml_mode='{ml_mode}' requires a trained `ml_model`")
 
@@ -842,6 +853,7 @@ def TrajectoryWorkflow(
         init_orbitals=init_orbitals,
         pw2wannier90_code=pw2wannier90_code,
         ml_model=ml_model,
+        spin_polarized=spin_polarized,
     )
 
     # Stamped into a trained model and re-checked before an existing one
