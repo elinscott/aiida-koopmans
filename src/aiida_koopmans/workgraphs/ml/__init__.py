@@ -78,8 +78,12 @@ DecomposeTask = task(Pw2wannierDecomposeCalculation)
 
 #: Fallback ``metadata.options`` for the decompose CalcJob this module creates
 #: directly. A CalcJob cannot run without ``resources``, and the descriptor
-#: route must not depend on the caller supplying a parallelization block.
-_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
+#: route must not depend on the caller supplying a parallelization block. The
+#: rank count is written out rather than left to the scheduler, which would
+#: otherwise resolve it against the computer's default at submission time.
+_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {
+    "resources": {"num_machines": 1, "num_mpiprocs_per_machine": 1}
+}
 
 ML_DESCRIPTOR_TYPES = tuple(descriptor.value for descriptor in MLDescriptor)
 ML_MODES = tuple(mode.value for mode in MLMode)

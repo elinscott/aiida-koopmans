@@ -98,8 +98,12 @@ _PARENT_CONVERGENCE_KEYS = ("num_iter", "num_cg_steps", "conv_tol", "conv_window
 
 #: Fallback ``metadata.options`` for the raw CalcJobs this module creates
 #: directly (the protocol-built steps carry their own defaults). A CalcJob
-#: cannot run without ``resources``; MPI behaviour follows the code node.
-_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {"resources": {"num_machines": 1}}
+#: cannot run without ``resources``; MPI behaviour follows the code node. The
+#: rank count is written out rather than left to the scheduler, which would
+#: otherwise resolve it against the computer's default at submission time.
+_DEFAULT_CALCJOB_OPTIONS: dict[str, Any] = {
+    "resources": {"num_machines": 1, "num_mpiprocs_per_machine": 1}
+}
 
 
 def _plain_options(options: dict[str, Any] | None) -> dict[str, Any]:
