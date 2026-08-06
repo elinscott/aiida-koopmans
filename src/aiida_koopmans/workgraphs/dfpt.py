@@ -812,6 +812,7 @@ def SinglepointDFPTWorkflow(
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
     kgrid: list[int],
+    scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -829,6 +830,12 @@ def SinglepointDFPTWorkflow(
     (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
     tensor feeds the screen step.
+
+    ``kpoints`` is the nscf mesh, which the Wannier functions and kcw.x's
+    ``CONTROL.mp1-3`` both count in. The scf shares it unless ``scf_kpoints``
+    gives it a mesh of its own or ``overrides["scf"]`` a
+    ``kpoints_distance``. The dielectric chain behind ``eps_inf = "auto"``
+    is an independent ground state and always takes ``kpoints``.
 
     The workflow has three stages: compute the ground state (one shared
     scf + nscf, with ``nosym`` / ``noinv`` on the nscf so kcw.x sees the
@@ -943,6 +950,11 @@ def SinglepointDFPTWorkflow(
     mp_grid = kpoints.get_kpoints_mesh()[0]
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
+    # The scf shares the nscf mesh unless the caller states otherwise, either
+    # as a mesh of its own or as a ``kpoints_distance`` in its overrides.
+    if scf_kpoints is None and "kpoints_distance" not in scf_nscf_overrides["scf"]:
+        scf_kpoints = kpoints
+
     scf_nscf = RunScfNscf(
         code=codes["pw"],
         structure=structure,
@@ -950,7 +962,7 @@ def SinglepointDFPTWorkflow(
         protocol=protocol,
         overrides=scf_nscf_overrides,
         nscf_kpoints=explicit_kpoints,
-        scf_kpoints=kpoints,
+        scf_kpoints=scf_kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "scf_nscf"},
     )
