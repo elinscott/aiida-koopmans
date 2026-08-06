@@ -900,6 +900,15 @@ class TestModelStamps:
         with pytest.raises(ModelMismatchError, match="trained on `power_spectrum`"):
             self._check(model, descriptor="self_hartree", radial_basis=None)
 
+    def test_a_model_that_names_no_descriptor_raises(self):
+        """No descriptor stamp is no evidence of a self-Hartree model."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)
+        del model["descriptor"]
+        with pytest.raises(ModelMismatchError, match="does not record which descriptor"):
+            self._check(model)
+
     def test_an_unstamped_basis_raises(self):
         """A model fitted before the stamp existed cannot be validated, so it is refused."""
         from aiida_koopmans.ml import ModelMismatchError

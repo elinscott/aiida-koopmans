@@ -32,10 +32,17 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
-from aiida_koopmans.ml import RADIAL_BASIS_KEYS
+from aiida_koopmans.ml import (
+    RADIAL_BASIS_KEYS,
+    MLDescriptor,
+    ModelMismatchError,
+    radial_basis_mismatches,
+)
 
 if TYPE_CHECKING:
+    from aiida_koopmans.functionals import Correction
     from aiida_koopmans.screening import AlphaScreening
+    from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 
 # Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
 # written against this value.
@@ -1111,9 +1118,9 @@ def fit_screening_model(
 def check_model_matches_run(
     model: Mapping[str, Any],
     *,
-    descriptor: Any,
-    correction: Any,
-    init_orbitals: Any,
+    descriptor: MLDescriptor | str,
+    correction: Correction | str,
+    init_orbitals: VariationalOrbitalType | str,
     radial_basis: Mapping[str, Any] | None = None,
 ) -> None:
     """Reject a trained model whose stamps disagree with the run using it.
@@ -1123,21 +1130,24 @@ def check_model_matches_run(
     its training alphas were computed under, and — for
     ``power_spectrum`` — the radial basis the densities were expanded on.
     Each of those is stamped by :func:`fit_screening_model`; a
-    disagreement, or a stamp the model predates, raises
+    disagreement, or a stamp the model does not carry, raises
     :class:`~aiida_koopmans.ml.ModelMismatchError`.
 
-    ``radial_basis`` is the run's own resolved basis (see
+    The three run settings are the members of their enums, or the plain
+    strings an AiiDA round-trip delivers them as. ``radial_basis`` is the
+    run's own resolved basis (see
     :func:`~aiida_koopmans.ml.resolve_radial_basis`) and is required
     whenever ``descriptor`` is ``power_spectrum``.
     """
-    from aiida_koopmans.ml import (
-        MLDescriptor,
-        ModelMismatchError,
-        radial_basis_mismatches,
-    )
-
     run_descriptor = getattr(descriptor, "value", descriptor)
-    model_descriptor = model.get("descriptor", MLDescriptor.SELF_HARTREE.value)
+    model_descriptor = model.get("descriptor")
+    if model_descriptor is None:
+        raise ModelMismatchError(
+            "The supplied model does not record which descriptor it was trained on, "
+            f"so it cannot be applied to this run's `{run_descriptor}` ones. Retrain "
+            "the model.",
+            field="descriptor",
+        )
     if model_descriptor != run_descriptor:
         raise ModelMismatchError(
             f"The supplied model was trained on `{model_descriptor}` descriptors, but "
