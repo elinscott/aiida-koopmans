@@ -2409,18 +2409,54 @@ class TestPredictFromPowerSpectrumRows:
         with pytest.raises(ModelMismatchError, match="radial basis"):
             self._call(self._model(r_min=0.5), {"orb_1": [1.0, 0.0, 0.0]}, orbitals)
 
-    def test_an_orbital_without_a_row_names_the_counts(self):
+    def test_fewer_rows_than_orbitals_names_the_counts(self):
         """A supercell run has more orbitals than primitive Wannier functions.
 
-        The rows are per primitive Wannier function, so the join fails; the
-        message must say so rather than surfacing a bare ``KeyError``.
+        The rows are per primitive Wannier function, so one of the two
+        representatives has no row of its own; the message must name both
+        counts rather than surfacing a bare ``KeyError``.
         """
         orbitals = [
             self._orb(1, filled=True, group_id=1, representative=True),
             self._orb(2, filled=True, group_id=2, representative=True),
         ]
-        with pytest.raises(ValueError, match="No `power_spectrum` descriptor for orbital"):
+        with pytest.raises(ValueError, match=r"screens 2 orbitals but 1 `power_spectrum`"):
             self._call(self._model(), {"orb_1": [1.0, 0.0, 0.0]}, orbitals)
+
+    def test_rows_that_prefix_the_orbitals_raise_rather_than_mispredict(self):
+        """Every representative finds a row, and every row is the wrong one.
+
+        A supercell labels its orbitals ``orb_1..orb_{M*ncells}`` while the
+        rows cover only the M primitive Wannier functions, so the row keys
+        are a strict prefix of the orbital labels. When both group
+        representatives happen to sit at an index below M, a per-label
+        lookup succeeds throughout and hands each representative another
+        Wannier function's power spectrum. Only the counts show it.
+        """
+        # One occupied and five empty primitive Wannier functions, ncells=2;
+        # the empties are near-degenerate, so grouping collapses them into
+        # one group whose representative is the lowest-index empty orbital.
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=False),
+            self._orb(2, filled=True, group_id=1, representative=True),
+            *[
+                self._orb(i, filled=False, group_id=2, representative=(i == 3))
+                for i in range(3, 13)
+            ],
+        ]
+        rows = {f"orb_{i}": [float(i), 0.0, 0.0] for i in range(1, 7)}
+        with pytest.raises(ValueError, match=r"screens 12 orbitals but 6 `power_spectrum`"):
+            self._call(self._model(), rows, orbitals)
+
+    def test_matching_counts_with_mismatched_labels_name_the_labels(self):
+        """Equal counts but disjoint labels is a labelling fault, not a count one."""
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=2, representative=True),
+        ]
+        rows = {"up_orb_1": [1.0, 0.0, 0.0], "up_orb_2": [0.0, 1.0, 0.0]}
+        with pytest.raises(ValueError, match=r"No `power_spectrum` descriptor row for orbital"):
+            self._call(self._model(), rows, orbitals)
 
 
 # ----------------------------------------------------------------------

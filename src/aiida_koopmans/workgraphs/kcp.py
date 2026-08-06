@@ -318,10 +318,15 @@ def predict_alpha_screening(
     ``descriptor_rows`` maps each orbital's label (see
     :func:`~aiida_koopmans.variational_orbitals.map_key_for`) to its
     descriptor row — one scalar per orbital for ``self_hartree``, one power
-    spectrum per Wannier function for ``power_spectrum``. ``orbitals`` is
-    the :func:`assign_orbital_groups` output; one prediction is made per
-    group representative and broadcast onto the other members, the same
-    rule the Delta-SCF fan-out follows.
+    spectrum per Wannier function for ``power_spectrum``. There must be
+    exactly one row per orbital: a supercell run screens every image of a
+    Wannier function but the rows cover only the primitive ones, and the
+    labels of the missing images collide with rows belonging to other
+    Wannier functions, so such a run is rejected on the counts.
+
+    ``orbitals`` is the :func:`assign_orbital_groups` output; one
+    prediction is made per group representative and broadcast onto the
+    other members, the same rule the Delta-SCF fan-out follows.
 
     The model's stamps must match this run — descriptor, ``correction``,
     ``init_orbitals`` and, for ``power_spectrum``, the radial basis
@@ -340,6 +345,16 @@ def predict_alpha_screening(
         radial_basis=radial_basis,
     )
 
+    name = getattr(descriptor, "value", descriptor)
+    if len(descriptor_rows) != len(orbitals):
+        raise ValueError(
+            f"The run screens {len(orbitals)} orbitals but {len(descriptor_rows)} "
+            f"`{name}` descriptor rows were built. The power spectrum is computed "
+            "per primitive Wannier function, so a supercell run screens more "
+            "orbitals than there are rows, and mapping a supercell image back to "
+            "its Wannier function is not ported yet. Use descriptor='self_hartree'."
+        )
+
     submodels = model["submodels"]
     rep_alpha_by_group: dict[int, float] = {}
     for o in orbitals:
@@ -348,13 +363,9 @@ def predict_alpha_screening(
         label = map_key_for(o)
         if label not in descriptor_rows:
             raise ValueError(
-                f"No `{getattr(descriptor, 'value', descriptor)}` descriptor for orbital "
-                f"`{label}`: the run screens {len(orbitals)} orbitals but only "
-                f"{len(descriptor_rows)} descriptor rows were built. The power spectrum "
-                "is computed per primitive Wannier function, so a supercell run screens "
-                "more orbitals than there are rows, and mapping a supercell image back "
-                "to its Wannier function is not ported yet. Use "
-                "descriptor='self_hartree'."
+                f"No `{name}` descriptor row for orbital `{label}`. The counts agree "
+                f"({len(orbitals)} of each), so the rows and the orbitals disagree on "
+                f"labels: the rows are labelled {sorted(descriptor_rows)}."
             )
         descriptor_row = [float(x) for x in descriptor_rows[label]]
         if model.get("occ_and_emp_together", True):
