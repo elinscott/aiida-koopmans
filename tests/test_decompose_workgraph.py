@@ -458,10 +458,10 @@ class TestArrayInputShapes:
 def test_descriptor_workflow_fans_out_and_gathers_rows(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
-    """The prediction segment runs the same per-block passes, gathering rows.
+    """The prediction segment runs the same per-block passes, gathering slots.
 
     Discriminates against a descriptor route that quietly reuses the
-    dataset builder: the gather is ``gather_block_descriptor_rows`` and no
+    dataset builder: the gather is ``gather_block_descriptor_slots`` and no
     ``align_block_descriptors`` (which needs alphas that do not exist yet)
     appears.
     """
@@ -481,35 +481,43 @@ def test_descriptor_workflow_fans_out_and_gathers_rows(
     names = [t.name for t in wg.tasks]
     assert "decompose_occ" in names, names
     assert "decompose_emp" in names, names
-    assert any("gather_block_descriptor_rows" in n for n in names), names
+    assert any("gather_block_descriptor_slots" in n for n in names), names
     assert not any("align_block_descriptors" in n for n in names), names
 
 
-def test_gather_block_descriptor_rows_keys_match_map_key_for(aiida_profile):
+def test_gathered_slots_pair_with_the_orbitals_by_map_key_for(aiida_profile):
     """Rows arrive under the labels an orbital's own identity produces.
 
-    The join between descriptors and orbitals is a dict lookup on these
-    keys, so a drift between the two conventions would silently strand
-    every row.
+    The join between descriptors and orbitals runs on the labels the
+    prediction looks its rows up by, so a drift between the two
+    conventions would silently strand every row.
     """
     import numpy as np
 
     from aiida_koopmans.variational_orbitals import map_key_for
-    from aiida_koopmans.workgraphs.ml import gather_block_descriptor_rows
+    from aiida_koopmans.workgraphs.kcp import power_spectrum_descriptor_rows
+    from aiida_koopmans.workgraphs.ml import gather_block_descriptor_slots
 
-    rows = gather_block_descriptor_rows._callable(
+    slots = gather_block_descriptor_slots._callable(
         block_descriptors={
             "occ": np.array([[1.0, 2.0], [3.0, 4.0]]),
             "emp": np.array([[5.0, 6.0]]),
         },
         merge_groups=occ_emp_merge_groups(),
     )
-    expected = {
+    assert [(slot["spin"], slot["filled"]) for slot in slots] == [("none", True), ("none", False)]
+
+    orbitals = [
+        {"spin": "none", "index": 1, "filled": True, "group_id": 1, "representative": True},
+        {"spin": "none", "index": 2, "filled": True, "group_id": 2, "representative": True},
+        {"spin": "none", "index": 3, "filled": False, "group_id": 3, "representative": True},
+    ]
+    rows = power_spectrum_descriptor_rows._callable(slots=slots, orbitals=orbitals)
+    assert rows == {
         map_key_for({"spin": "none", "index": 1}): [1.0, 2.0],
         map_key_for({"spin": "none", "index": 2}): [3.0, 4.0],
         map_key_for({"spin": "none", "index": 3}): [5.0, 6.0],
     }
-    assert rows == expected
 
 
 def test_compute_block_descriptors_rejects_a_basis_qe_did_not_use(aiida_profile):
