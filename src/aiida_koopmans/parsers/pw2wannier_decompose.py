@@ -35,6 +35,18 @@ _ORBITAL_COEFF_RE = re.compile(r"^(?P<seed>.+?)_(?P<index>\d{5})\.coeff$")
 _GROUP_COEFF_RE = re.compile(r"^(?P<seed>.+?)_gc_(?P<index>\d{5})\.coeff$")
 _POWER_RE = re.compile(r"^(?P<seed>.+?)_(?P<index>\d{5})\.power$")
 
+# QE's ``read_namelists`` aborts on a bad ``&inputpp`` line and quotes it --
+# or, by its own warning, the line after. A quoted ``decompose_*`` key usually
+# means a build without the feature, since the CalcJob rejects unknown key
+# *names* before writing them. It is a heuristic, not a proof: a
+# ``wann-decompose`` build quotes the key name the same way when the value is
+# malformed. Only a bare ``decompose_<key> =`` assignment matches, which the
+# array form ``decompose_n_max(1) = 4`` (a list-valued parameter no build
+# accepts) does not.
+_UNKNOWN_DECOMPOSE_KEY_RE = re.compile(
+    r"bad line in namelist &inputpp:\s*\"\s*decompose_\w+\s*=", re.IGNORECASE
+)
+
 
 class Pw2wannierDecomposeParser(KoopmansStdoutParser):
     """Parse the output of a :class:`Pw2wannierDecomposeCalculation`.
@@ -42,11 +54,12 @@ class Pw2wannierDecomposeParser(KoopmansStdoutParser):
     Emits ``output_parameters`` (``job_done`` flag, optional ``walltime``,
     basis sizes), ``coefficients`` / ``power`` ``ArrayData`` (one row per
     Wannier function) and, when a ``centres_file`` was supplied,
-    ``group_coefficients``. Returns ``ERROR_OUTPUT_STDOUT_INCOMPLETE`` when
-    the run did not reach ``JOB DONE``, ``ERROR_OUTPUT_COEFF_MISSING`` when a
-    completed run produced no coefficient files, and
-    ``ERROR_OUTPUT_COEFF_MALFORMED`` when a retrieved file could not be
-    parsed or the per-WF vectors disagree in length.
+    ``group_coefficients``. Returns ``ERROR_CODE_LACKS_DECOMPOSE`` when the
+    stdout shows a namelist abort quoting a ``decompose_*`` key,
+    ``ERROR_OUTPUT_STDOUT_INCOMPLETE`` for any other run that did not reach
+    ``JOB DONE``, ``ERROR_OUTPUT_COEFF_MISSING`` when a completed run produced
+    no coefficient files, and ``ERROR_OUTPUT_COEFF_MALFORMED`` when a retrieved
+    file could not be parsed or the per-WF vectors disagree in length.
     """
 
     def parse(self, **kwargs: Any):
@@ -59,6 +72,8 @@ class Pw2wannierDecomposeParser(KoopmansStdoutParser):
 
         if not parsed.get("job_done", False):
             self.out("output_parameters", orm.Dict(dict=parsed))
+            if _UNKNOWN_DECOMPOSE_KEY_RE.search(stdout):
+                return self.exit_codes.ERROR_CODE_LACKS_DECOMPOSE
             return self.exit_codes.ERROR_OUTPUT_STDOUT_INCOMPLETE
 
         try:

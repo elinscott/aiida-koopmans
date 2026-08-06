@@ -254,13 +254,24 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
         )
 
         spec.exit_code(
+            311,
+            "ERROR_CODE_LACKS_DECOMPOSE",
+            message=(
+                "pw2wannier90.x aborted reading a ``decompose_*`` key of the "
+                "``&inputpp`` namelist. Register a pw2wannier90.x built from the "
+                "``wann-decompose`` branch of Quantum ESPRESSO as the code for this "
+                "calculation; if it already is one, check the ``decompose_*`` values "
+                "in ``parameters`` against the retrieved stdout."
+            ),
+            invalidates_cache=True,
+        )
+        spec.exit_code(
             330,
             "ERROR_OUTPUT_COEFF_MISSING",
             message=(
-                "A completed decompose run retrieved no ``*.coeff`` files. "
-                "A pw2wannier90.x build without the decompose feature runs "
-                "wan_mode='decompose' without doing anything, so this usually "
-                "means the registered pw2wannier90 code lacks the feature."
+                "A completed decompose run retrieved no "
+                "``<seedname>_NNNNN.coeff`` files. Read the retrieved stdout for "
+                "what the decomposition reported."
             ),
             invalidates_cache=True,
         )

@@ -144,6 +144,17 @@ class TestRenderNamelist:
         assert "decompose_r_min =" in rendered
         assert "5.0000000000d-01" in rendered
 
+    def test_list_value_renders_as_array_elements(self):
+        """A list value renders one indexed element per entry, which QE rejects.
+
+        ``_normalize_parameters`` checks key names, not value types, so a list
+        reaches the input file as the array form the parser's build-mismatch
+        heuristic excludes.
+        """
+        rendered = Pw2wannierDecomposeCalculation._render_namelist({"decompose_n_max": [4, 4]})
+        assert "decompose_n_max(1) = 4" in rendered
+        assert "decompose_n_max(2) = 4" in rendered
+
 
 @pytest.fixture
 def _decompose_inputs(fixture_localhost, aiida_local_code_factory, tmp_path_factory):
