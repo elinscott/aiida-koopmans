@@ -694,7 +694,7 @@ def require_power_spectrum_route(
     if spin_polarized:
         raise NotImplementedError(
             "descriptor='power_spectrum' is not implemented for spin='collinear'. "
-            "Use descriptor='self_hartree', or run with spin='none'."
+            "Set spin='none' to use it."
         )
     orbitals = VariationalOrbitalType(init_orbitals)
     if orbitals not in (VariationalOrbitalType.MLWFS, VariationalOrbitalType.PROJWFS):
