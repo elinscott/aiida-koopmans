@@ -7,6 +7,7 @@ KI run (4 occupied + 4 empty Wannier functions), named with the CalcJob's
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from aiida import orm
 
@@ -151,3 +152,42 @@ def test_ham_parser_bands_and_grid_eigenvalues(
     assert params["ki_lumo_energy"] == pytest.approx(7.4306)
     assert params["ks_eigenvalues_on_grid"][0][0] == pytest.approx(-5.4890)
     assert params["ki_eigenvalues_on_grid"][0][0] == pytest.approx(-6.1254)
+
+
+def test_ham_parser_seeds_the_bands_from_the_k_path(
+    aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
+):
+    """The ``bands`` output inherits the cell and labels of the ``kpoints`` input.
+
+    Without them a band structure plots on a crystal-coordinate axis with
+    unnamed ticks, and nothing downstream can tell it apart from a mesh.
+    """
+    kpoints = orm.KpointsData()
+    kpoints.set_cell([[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]])
+    kpoints.set_kpoints([[index / 44.0, 0.0, 0.0] for index in range(23)])
+    kpoints.labels = [(0, "GAMMA"), (22, "X")]
+
+    node = generate_calc_job_node(
+        entry_point_name="koopmans.kcw_ham",
+        computer=fixture_localhost,
+        test_name="default",
+        fixture_subdir="kcw_ham",
+        input_filename="aiida.khi",
+        output_filename="aiida.kho",
+        inputs={
+            "parameters": orm.Dict({"CONTROL": {}, "WANNIER": {}, "HAM": {"do_bands": True}}),
+            "alphas": orm.List(list=[0.14] * 8),
+            "kpoints": kpoints,
+        },
+    )
+    parser = generate_parser("koopmans.kcw_ham")
+    results, calcfunction = parser.parse_from_node(node, store_provenance=False)
+
+    assert calcfunction.is_finished_ok, calcfunction.exit_message
+
+    bands = results["bands"]
+    assert bands.labels == [(0, "GAMMA"), (22, "X")]
+    assert np.allclose(bands.cell, kpoints.cell)
+    # The eigenvalues are still the ones the stdout reported.
+    assert bands.get_bands().shape == (23, 8)
+    assert bands.get_bands()[0][0] == pytest.approx(-6.1254)
