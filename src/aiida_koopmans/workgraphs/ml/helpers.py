@@ -32,6 +32,8 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
+from aiida_koopmans.ml import RADIAL_BASIS_DEFAULTS
+
 if TYPE_CHECKING:
     from aiida_koopmans.screening import AlphaScreening
 
@@ -687,6 +689,39 @@ def _gather_channel_rows(
     return rows
 
 
+def gather_power_spectrum_rows(
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    merge_groups: Sequence[Mapping[str, Any]],
+) -> dict[str, list[float]]:
+    """Key every block's descriptor rows by the orbital label they describe.
+
+    The label is the one
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds from an
+    orbital's spin and per-spin band index (``orb_3``, ``up_orb_3``), so a
+    caller holding ``list[VariationalOrbital]`` joins the two by dict
+    lookup. Row order within a channel follows
+    :func:`assemble_power_spectrum_dataset`: filled orbitals first, then
+    empty, each slot walking ``merge_groups`` and their blocks in order.
+
+    No alphas are involved — this is the descriptor side alone, which is
+    what prediction needs (there are no computed screening parameters to
+    pair with yet).
+    """
+    channels = sorted(
+        {group["spin"] for group in merge_groups},
+        key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), str(ch)),
+    )
+    rows: dict[str, list[float]] = {}
+    for channel in channels:
+        prefix = "" if channel == "none" else f"{getattr(channel, 'value', channel)}_"
+        channel_rows = _gather_channel_rows(
+            merge_groups, block_descriptors, True, channel
+        ) + _gather_channel_rows(merge_groups, block_descriptors, False, channel)
+        for position, row in enumerate(channel_rows):
+            rows[f"{prefix}orb_{position + 1}"] = row
+    return rows
+
+
 def assemble_power_spectrum_dataset(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
     merge_groups: Sequence[Mapping[str, Any]],
@@ -959,6 +994,7 @@ def fit_screening_model(
     descriptor: str = "self_hartree",
     correction: str | None = None,
     init_orbitals: str | None = None,
+    radial_basis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit the screening-parameter model on a (merged) dataset.
 
@@ -966,10 +1002,13 @@ def fit_screening_model(
     otherwise separate ``occ`` / ``emp`` estimators are fitted.
 
     ``correction`` and ``init_orbitals`` record the physics the training
-    alphas were computed under; prediction refuses a model whose stamps
-    disagree with the run (or are absent), so screening parameters
-    trained for one functional or orbital seeding are never silently
-    applied to another.
+    alphas were computed under, and ``radial_basis`` (``n_max`` / ``l_max``
+    / ``r_min`` / ``r_max``, see
+    :func:`~aiida_koopmans.ml.resolve_radial_basis`) the basis a
+    ``power_spectrum`` descriptor was expanded on. Prediction refuses a
+    model whose stamps disagree with the run (or are absent), so screening
+    parameters trained for one functional, orbital seeding or descriptor
+    basis are never silently applied to another.
     """
     submodels: dict[str, dict[str, Any]] = {}
     if occ_and_emp_together:
@@ -989,7 +1028,7 @@ def fit_screening_model(
                 [dataset["alpha_targets"][i] for i in rows],
                 estimator_type,
             )
-    return {
+    model = {
         "descriptor": getattr(descriptor, "value", descriptor),
         "estimator_type": estimator_type,
         "occ_and_emp_together": occ_and_emp_together,
@@ -997,6 +1036,79 @@ def fit_screening_model(
         "init_orbitals": getattr(init_orbitals, "value", init_orbitals),
         "submodels": submodels,
     }
+    for key in RADIAL_BASIS_DEFAULTS:
+        model[key] = None if radial_basis is None else radial_basis.get(key)
+    return model
+
+
+def check_model_matches_run(
+    model: Mapping[str, Any],
+    *,
+    descriptor: Any,
+    correction: Any,
+    init_orbitals: Any,
+    radial_basis: Mapping[str, Any] | None = None,
+) -> None:
+    """Reject a trained model whose stamps disagree with the run using it.
+
+    A model describes one quantity fitted under one set of physics: the
+    descriptor it was trained on, the ``correction`` and ``init_orbitals``
+    its training alphas were computed under, and — for
+    ``power_spectrum`` — the radial basis the densities were expanded on.
+    Each of those is stamped by :func:`fit_screening_model`; a
+    disagreement, or a stamp the model predates, raises
+    :class:`~aiida_koopmans.ml.ModelMismatchError`.
+
+    ``radial_basis`` is the run's own resolved basis (see
+    :func:`~aiida_koopmans.ml.resolve_radial_basis`) and is required
+    whenever ``descriptor`` is ``power_spectrum``.
+    """
+    from aiida_koopmans.ml import (
+        MLDescriptor,
+        ModelMismatchError,
+        radial_basis_mismatches,
+    )
+
+    run_descriptor = getattr(descriptor, "value", descriptor)
+    model_descriptor = model.get("descriptor", MLDescriptor.SELF_HARTREE.value)
+    if model_descriptor != run_descriptor:
+        raise ModelMismatchError(
+            f"The supplied model was trained on `{model_descriptor}` descriptors, but "
+            f"this run computes `{run_descriptor}` ones. Train a model with "
+            f"descriptor='{run_descriptor}', or run with "
+            f"descriptor='{model_descriptor}'.",
+            field="descriptor",
+        )
+    for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
+        run_str = getattr(run_value, "value", run_value)
+        model_value = model.get(key)
+        if model_value != run_str:
+            raise ModelMismatchError(
+                f"The supplied model was trained with {key}={model_value!r}, but this "
+                f"run uses {key}={run_str!r}. Train a model under the run's settings "
+                f"(a model without the {key} stamp predates it; retrain to predict).",
+                field=key,
+            )
+
+    if run_descriptor != MLDescriptor.POWER_SPECTRUM.value:
+        return
+    if radial_basis is None:
+        raise ValueError(
+            "A power_spectrum model can only be checked against the run's own radial "
+            "basis; `radial_basis` was not supplied."
+        )
+    mismatched = radial_basis_mismatches(model, radial_basis)
+    if mismatched:
+        stamped = {key: model.get(key) for key in mismatched}
+        wanted = {key: radial_basis.get(key) for key in mismatched}
+        raise ModelMismatchError(
+            f"The supplied model was trained with {stamped}, but this run expands the "
+            f"orbital densities with {wanted}. A power spectrum is defined by its "
+            "radial basis, so the two are different descriptors. Set ml:n_max / "
+            "ml:l_max / ml:r_min / ml:r_max to the training values, or retrain "
+            "(a model with a null stamp predates it and must be retrained).",
+            field=mismatched[0],
+        )
 
 
 def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[float]:

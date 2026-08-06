@@ -33,7 +33,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.functionals import Correction
-from aiida_koopmans.ml import ModelMismatchError
+from aiida_koopmans.ml import MLDescriptor, resolve_radial_basis
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
@@ -285,53 +285,78 @@ def echo_trial_output_parameters(parameters: dict) -> dict:
 
 
 @task
+def self_hartree_descriptor_rows(
+    metric: list[list[float]],
+    orbitals: list[VariationalOrbital],
+) -> dict:
+    """Turn a trial KI's self-Hartree array into orbital-labelled rows.
+
+    ``metric`` is the per-spin, per-band self-Hartree array; each orbital's
+    row is its own scalar. The keys are the labels
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds, so both
+    descriptor routes hand :func:`predict_alpha_screening` the same shape.
+    """
+    rows: dict[str, list[float]] = {}
+    for o in orbitals:
+        spin = SpinChannel(o["spin"])
+        rows[map_key_for(o)] = [float(metric[spin.axis][o["index"] - 1])]
+    return rows
+
+
+@task
 def predict_alpha_screening(
     model: dict,
-    descriptors: list[list[float]],
+    descriptor_rows: dict,
     orbitals: list[VariationalOrbital],
     correction: Correction,
     init_orbitals: VariationalOrbitalType,
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    radial_basis: dict | None = None,
 ) -> AlphaScreening:
     """Predict every orbital's screening parameter from a trained model.
 
-    ``descriptors`` is the trial KI's per-spin self-Hartree array (the
-    model's descriptor); ``orbitals`` is the :func:`assign_orbital_groups` output.
-    One prediction is made per group representative and broadcast onto the
-    other members — the same rule the Delta-SCF fan-out follows. The model
-    must have been trained on ``self_hartree`` descriptors and carry
-    ``correction`` / ``init_orbitals`` stamps matching this run
-    (:func:`~aiida_koopmans.workgraphs.ml.helpers.fit_screening_model` writes them);
+    ``descriptor_rows`` maps each orbital's label (see
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for`) to its
+    descriptor row — one scalar per orbital for ``self_hartree``, one power
+    spectrum per Wannier function for ``power_spectrum``. ``orbitals`` is
+    the :func:`assign_orbital_groups` output; one prediction is made per
+    group representative and broadcast onto the other members, the same
+    rule the Delta-SCF fan-out follows.
+
+    The model's stamps must match this run — descriptor, ``correction``,
+    ``init_orbitals`` and, for ``power_spectrum``, the radial basis
+    (:func:`~aiida_koopmans.workgraphs.ml.helpers.check_model_matches_run`);
     a mismatched or unstamped model is rejected.
     """
     # Function-local: the ml package's __init__ imports this module, so a
     # module-level import of its helpers would be circular.
-    from aiida_koopmans.workgraphs.ml.helpers import predict_estimator
+    from aiida_koopmans.workgraphs.ml.helpers import check_model_matches_run, predict_estimator
 
-    if model.get("descriptor", "self_hartree") != "self_hartree":
-        raise ModelMismatchError(
-            f"The supplied model was trained on `{model['descriptor']}` descriptors, "
-            "but prediction computes `self_hartree` descriptors from the trial KI. "
-            "Train a model with descriptor='self_hartree' to predict here.",
-            field="descriptor",
-        )
-    for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
-        run_str = getattr(run_value, "value", run_value)
-        model_value = model.get(key)
-        if model_value != run_str:
-            raise ModelMismatchError(
-                f"The supplied model was trained with {key}={model_value!r}, but this "
-                f"run uses {key}={run_str!r}. Train a model under the run's settings "
-                f"(a model without the {key} stamp predates it; retrain to predict).",
-                field=key,
-            )
+    check_model_matches_run(
+        model,
+        descriptor=descriptor,
+        correction=correction,
+        init_orbitals=init_orbitals,
+        radial_basis=radial_basis,
+    )
 
     submodels = model["submodels"]
     rep_alpha_by_group: dict[int, float] = {}
     for o in orbitals:
         if not o["representative"]:
             continue
-        spin = SpinChannel(o["spin"])
-        descriptor_row = [float(descriptors[spin.axis][o["index"] - 1])]
+        label = map_key_for(o)
+        if label not in descriptor_rows:
+            raise ValueError(
+                f"No `{getattr(descriptor, 'value', descriptor)}` descriptor for orbital "
+                f"`{label}`: the run screens {len(orbitals)} orbitals but only "
+                f"{len(descriptor_rows)} descriptor rows were built. The power spectrum "
+                "is computed per primitive Wannier function, so a supercell run screens "
+                "more orbitals than there are rows, and mapping a supercell image back "
+                "to its Wannier function is not ported yet. Use "
+                "descriptor='self_hartree'."
+            )
+        descriptor_row = [float(x) for x in descriptor_rows[label]]
         if model.get("occ_and_emp_together", True):
             submodel = submodels["all"]
         else:
@@ -351,6 +376,65 @@ def predict_alpha_screening(
         return {spin: [alpha for _, alpha in sorted(items)] for spin, items in channels.items()}
 
     return AlphaScreening(filled=_pack(by_spin[True]), empty=_pack(by_spin[False]))
+
+
+def _radial_basis_for(
+    descriptor: MLDescriptor, decompose_parameters: dict | None
+) -> dict[str, float | int] | None:
+    """Return the run's radial basis, or ``None`` when the descriptor has none.
+
+    Only ``power_spectrum`` is defined by a radial basis; a
+    ``self_hartree`` model carries no such stamp and must not be checked
+    against one.
+    """
+    if descriptor != MLDescriptor.POWER_SPECTRUM:
+        return None
+    return resolve_radial_basis(decompose_parameters)
+
+
+def wire_descriptor_rows(
+    *,
+    descriptor: MLDescriptor,
+    metric: Any,
+    orbitals: Any,
+    pw2wannier90_code: orm.AbstractCode | None,
+    nscf_remote_folder: Any,
+    block_wannierizations: Any,
+    merge_groups: Any,
+    decompose_parameters: dict | None,
+    parallelization: ParallelizationDict | None,
+    call_link_label: str,
+) -> Any:
+    """Wire the descriptor rows a screening prediction consumes.
+
+    ``self_hartree`` reads them off the trial KI's per-orbital output;
+    ``power_spectrum`` runs a ``wan_mode='decompose'`` pass over the
+    snapshot's per-block Wannierizations, which does not depend on the
+    trial KI and so runs alongside it. Both return
+    ``{orbital_label: row}``. Called from a ``@task.graph`` body, so the
+    tasks it creates join that graph.
+    """
+    if descriptor == MLDescriptor.POWER_SPECTRUM:
+        # Function-local: the ml package's __init__ imports this module, so a
+        # module-level import would be circular.
+        from aiida_koopmans.workgraphs.ml import PowerSpectrumDescriptorWorkflow
+
+        if pw2wannier90_code is None:
+            raise ValueError(
+                "descriptor='power_spectrum' predicts from a pw2wannier90.x "
+                "wan_mode='decompose' pass, so it needs `pw2wannier90_code`. Use "
+                "descriptor='self_hartree' if no such code is available."
+            )
+        return PowerSpectrumDescriptorWorkflow(
+            code=pw2wannier90_code,
+            nscf_remote_folder=nscf_remote_folder,
+            block_wannierizations=block_wannierizations,
+            merge_groups=merge_groups,
+            decompose_parameters=decompose_parameters,
+            parallelization=parallelization,
+            metadata={"call_link_label": call_link_label},
+        )["rows"]
+    return self_hartree_descriptor_rows(metric=metric, orbitals=orbitals).result
 
 
 class ScreeningParametersOutputs(TypedDict):
@@ -941,6 +1025,9 @@ def KoopmansDSCFWorkflow(
     calculate_alpha: bool = True,
     ml_model: dict | None = None,
     ml_test: bool = False,
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    pw2wannier90_code: orm.AbstractCode | None = None,
+    decompose_parameters: dict | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     codes: Codes | None = None,
@@ -1041,6 +1128,9 @@ def KoopmansDSCFWorkflow(
         ml_test=ml_test,
         calculate_alpha=calculate_alpha,
         alpha_numsteps=alpha_numsteps,
+        descriptor=descriptor,
+        init_orbitals=init_orbitals,
+        pw2wannier90_code=pw2wannier90_code,
     )
     predict_only = _model_replaces_refinement(ml_model=ml_model, ml_test=ml_test)
 
@@ -1271,6 +1361,12 @@ def KoopmansDSCFWorkflow(
                 ml_model=ml_model,
                 initial_evc_occupied1=initial_evc_occupied1,
                 initial_evc_occupied2=initial_evc_occupied2,
+                descriptor=descriptor,
+                pw2wannier90_code=pw2wannier90_code,
+                decompose_parameters=decompose_parameters,
+                nscf_remote_folder=nscf_remote_folder,
+                block_wannierizations=block_wannierizations,
+                merge_groups=merge_groups,
                 overrides=overrides,
                 parallelization=parallelization,
             )
@@ -1402,6 +1498,12 @@ def KoopmansDSCFWorkflow(
         orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
         ml_model=ml_model,
         screening=screening,
+        descriptor=descriptor,
+        pw2wannier90_code=pw2wannier90_code,
+        decompose_parameters=decompose_parameters,
+        nscf_remote_folder=nscf_remote_folder,
+        block_wannierizations=block_wannierizations,
+        merge_groups=merge_groups,
         overrides=overrides,
         parallelization=parallelization,
     )
@@ -1435,18 +1537,24 @@ def _run_predicted_final_ki(
     orbital_groups_self_hartree_tol: float | None,
     ml_model: dict | None,
     screening: Any,
+    descriptor: MLDescriptor,
+    pw2wannier90_code: orm.AbstractCode | None,
+    decompose_parameters: dict | None,
+    nscf_remote_folder: Any,
+    block_wannierizations: Any,
+    merge_groups: Any,
     overrides: KoopmansDSCFOverrides | None,
     parallelization: ParallelizationDict | None,
 ) -> None:
     """Run a second final KI at the model-predicted alphas.
 
-    Predicts alphas from the last trial's self-Hartrees (same grouping
-    rule as the refinement) and runs the final KI off the same trial
-    save as the computed one, so the two spectra differ only through the
-    screening parameters; records both in ``predicted_alphas`` /
-    ``predicted_eigenvalues`` on ``outputs``. Called from the
-    ``KoopmansDSCFWorkflow`` body, so its tasks join that graph. A no-op
-    without ``ml_test``; with it, ``ml_model`` is non-None
+    Predicts alphas from the model's descriptor (grouping still by the
+    last trial's self-Hartrees, as in the refinement) and runs the final
+    KI off the same trial save as the computed one, so the two spectra
+    differ only through the screening parameters; records both in
+    ``predicted_alphas`` / ``predicted_eigenvalues`` on ``outputs``.
+    Called from the ``KoopmansDSCFWorkflow`` body, so its tasks join that
+    graph. A no-op without ``ml_test``; with it, ``ml_model`` is non-None
     (``_validate_ml_model_inputs`` rejects ``ml_test`` without a model).
     """
     if not ml_test:
@@ -1464,10 +1572,23 @@ def _run_predicted_final_ki(
     )
     predicted_alphas = predict_alpha_screening(
         model=ml_model,
-        descriptors=trial_metric.result,
+        descriptor_rows=wire_descriptor_rows(
+            descriptor=descriptor,
+            metric=trial_metric.result,
+            orbitals=trial_orbitals.result,
+            pw2wannier90_code=pw2wannier90_code,
+            nscf_remote_folder=nscf_remote_folder,
+            block_wannierizations=block_wannierizations,
+            merge_groups=merge_groups,
+            decompose_parameters=decompose_parameters,
+            parallelization=parallelization,
+            call_link_label="predicted_descriptors",
+        ),
         orbitals=trial_orbitals.result,
         correction=correction,
         init_orbitals=init_orbitals,
+        descriptor=descriptor,
+        radial_basis=_radial_basis_for(descriptor, decompose_parameters),
         metadata={"call_link_label": "predict_alphas"},
     )
     ki_final_ml = RunFinalKI(
@@ -2449,6 +2570,12 @@ def PredictScreeningParameters(
     self_hartree_tol: float | None = None,
     initial_evc_occupied1: orm.SinglefileData | None = None,
     initial_evc_occupied2: orm.SinglefileData | None = None,
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    pw2wannier90_code: orm.AbstractCode | None = None,
+    decompose_parameters: dict | None = None,
+    nscf_remote_folder: orm.RemoteData | None = None,
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
+    merge_groups: list | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
@@ -2458,10 +2585,17 @@ def PredictScreeningParameters(
     runs the same first trial KI / KIPZ (identical parenting, KS overlay
     and Wannier-seed staging, starting from ``initial_alphas`` when given,
     else uniform ``initial_alpha``), then replaces the per-orbital
-    Delta-SCF fan-out with :func:`predict_alpha_screening` applied to the
-    trial's self-Hartree descriptors. Grouping (``self_hartree_tol``)
-    works as in the refinement loop: one prediction per representative,
-    broadcast onto the group members.
+    Delta-SCF fan-out with :func:`predict_alpha_screening`. Grouping
+    (``self_hartree_tol``) works as in the refinement loop: one prediction
+    per representative, broadcast onto the group members — and it always
+    clusters on the trial's self-Hartrees, whichever descriptor the model
+    was trained on.
+
+    ``descriptor`` selects what the model predicts from. ``self_hartree``
+    reads the trial's own per-orbital output; ``power_spectrum`` needs
+    ``pw2wannier90_code`` plus the Wannier-route sockets
+    (``nscf_remote_folder`` / ``block_wannierizations`` / ``merge_groups``)
+    to run its decompose pass.
 
     Returns the same ``{alphas, trial_remote}`` pair, so the final KI
     parents on the trial save and applies the predicted alphas exactly as
@@ -2531,10 +2665,23 @@ def PredictScreeningParameters(
     )
     predicted = predict_alpha_screening(
         model=ml_model,
-        descriptors=metric.result,
+        descriptor_rows=wire_descriptor_rows(
+            descriptor=descriptor,
+            metric=metric.result,
+            orbitals=orbitals.result,
+            pw2wannier90_code=pw2wannier90_code,
+            nscf_remote_folder=nscf_remote_folder,
+            block_wannierizations=block_wannierizations,
+            merge_groups=merge_groups,
+            decompose_parameters=decompose_parameters,
+            parallelization=parallelization,
+            call_link_label="descriptors",
+        ),
         orbitals=orbitals.result,
         correction=correction,
         init_orbitals=init_orbitals,
+        descriptor=descriptor,
+        radial_basis=_radial_basis_for(descriptor, decompose_parameters),
         metadata={"call_link_label": "predict_alphas"},
     )
 
@@ -3307,15 +3454,28 @@ def _validate_ml_model_inputs(
     ml_test: bool,
     calculate_alpha: bool,
     alpha_numsteps: int,
+    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
+    pw2wannier90_code: orm.AbstractCode | None = None,
 ) -> None:
     """Fail fast on ``ml_model`` / ``ml_test`` inputs that cannot take effect.
 
-    Prediction needs a trial KI (its self-Hartrees are the descriptors),
-    so both routes require ``calculate_alpha=True``. Without ``ml_test``
-    the model replaces the Delta-SCF refinement with a single pass, so
+    Prediction needs a trial KI (it supplies the grouping metric and, on
+    the ``self_hartree`` route, the descriptors themselves), so both
+    routes require ``calculate_alpha=True``. Without ``ml_test`` the model
+    replaces the Delta-SCF refinement with a single pass, so
     ``alpha_numsteps`` must stay 1; with ``ml_test`` the refinement runs
     in full (it is the comparison baseline) and ``alpha_numsteps`` is free.
+
+    A ``power_spectrum`` model additionally predicts from a decompose pass
+    over the per-block Wannierizations, so it needs the Wannier-initialised
+    route and a ``pw2wannier90_code`` to run that pass with.
     """
+    if ml_model is not None and descriptor == MLDescriptor.POWER_SPECTRUM:
+        # Function-local: the ml package's __init__ imports this module.
+        from aiida_koopmans.workgraphs.ml import require_power_spectrum_route
+
+        require_power_spectrum_route(init_orbitals, pw2wannier90_code)
     if ml_test and ml_model is None:
         raise ValueError(
             "ml_test runs a second final KI at model-predicted alphas, which "

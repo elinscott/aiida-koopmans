@@ -2204,15 +2204,31 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
 
 class TestPredictAlphaScreening:
     @staticmethod
-    def _call(model, descriptors, orbitals, correction="ki", init_orbitals="kohn-sham"):
-        from aiida_koopmans.workgraphs.kcp import predict_alpha_screening
+    def _call(model, descriptors, orbitals, correction="ki", init_orbitals="kohn-sham", **kwargs):
+        """Predict from a per-spin self-Hartree array, via the row adapter.
 
+        ``descriptors`` is the trial KI's ``[nspin][nbnd]`` metric; it goes
+        through ``self_hartree_descriptor_rows`` so these tests exercise
+        the same adapter the graph wires.
+        """
+        from aiida_koopmans.workgraphs.kcp import (
+            predict_alpha_screening,
+            self_hartree_descriptor_rows,
+        )
+
+        rows = kwargs.pop(
+            "descriptor_rows",
+            self_hartree_descriptor_rows._callable(  # type: ignore[attr-defined]
+                metric=descriptors, orbitals=orbitals
+            ),
+        )
         return predict_alpha_screening._callable(  # type: ignore[attr-defined]
             model=model,
-            descriptors=descriptors,
+            descriptor_rows=rows,
             orbitals=orbitals,
             correction=correction,
             init_orbitals=init_orbitals,
+            **kwargs,
         )
 
     @staticmethod
@@ -2319,6 +2335,92 @@ class TestPredictAlphaScreening:
             self._call(
                 model, [[-1.0]], [self._orb(1, filled=True, group_id=1, representative=True)]
             )
+
+
+class TestPredictFromPowerSpectrumRows:
+    """Prediction off multi-valued rows: the ``power_spectrum`` descriptor."""
+
+    BASIS: ClassVar[dict] = {"n_max": 6, "l_max": 6, "r_min": 1.0, "r_max": 4.0}
+
+    @staticmethod
+    def _orb(index, *, filled, group_id, representative, spin="none"):
+        return {
+            "spin": spin,
+            "index": index,
+            "filled": filled,
+            "group_id": group_id,
+            "representative": representative,
+        }
+
+    def _model(self, **basis):
+        """Fit a three-wide model, so a scalar row could not be substituted."""
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+        return ml_helpers.fit_screening_model(
+            {
+                "descriptors": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                "alpha_targets": [0.5, 0.6, 0.7],
+                "filled": [True, True, False],
+                "labels": ["orb_1", "orb_2", "orb_3"],
+            },
+            "linear_regression",
+            descriptor="power_spectrum",
+            correction="ki",
+            init_orbitals="mlwfs",
+            radial_basis={**self.BASIS, **basis},
+        )
+
+    def _call(self, model, rows, orbitals, **overrides):
+        from aiida_koopmans.ml import MLDescriptor
+        from aiida_koopmans.workgraphs.kcp import predict_alpha_screening
+
+        kwargs = {
+            "correction": "ki",
+            "init_orbitals": "mlwfs",
+            "descriptor": MLDescriptor.POWER_SPECTRUM,
+            "radial_basis": dict(self.BASIS),
+        }
+        kwargs.update(overrides)
+        return predict_alpha_screening._callable(  # type: ignore[attr-defined]
+            model=model, descriptor_rows=rows, orbitals=orbitals, **kwargs
+        )
+
+    def test_alphas_come_back_in_the_orbital_layout(self):
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=1, representative=False),
+            self._orb(3, filled=False, group_id=2, representative=True),
+        ]
+        rows = {
+            "orb_1": [1.0, 0.0, 0.0],
+            "orb_2": [0.0, 1.0, 0.0],
+            "orb_3": [0.0, 0.0, 1.0],
+        }
+        result = self._call(self._model(), rows, orbitals)
+        # Two filled (the second inheriting its representative's value) and
+        # one empty, in per-spin band order.
+        assert result["filled"][SpinChannel.NONE] == pytest.approx([0.5, 0.5])
+        assert result["empty"][SpinChannel.NONE] == pytest.approx([0.7])
+
+    def test_a_basis_mismatch_raises_instead_of_predicting(self):
+        from aiida_koopmans.ml import ModelMismatchError
+
+        orbitals = [self._orb(1, filled=True, group_id=1, representative=True)]
+        with pytest.raises(ModelMismatchError, match="radial basis"):
+            self._call(self._model(r_min=0.5), {"orb_1": [1.0, 0.0, 0.0]}, orbitals)
+
+    def test_an_orbital_without_a_row_names_the_counts(self):
+        """A supercell run has more orbitals than primitive Wannier functions.
+
+        The rows are per primitive Wannier function, so the join fails; the
+        message must say so rather than surfacing a bare ``KeyError``.
+        """
+        orbitals = [
+            self._orb(1, filled=True, group_id=1, representative=True),
+            self._orb(2, filled=True, group_id=2, representative=True),
+        ]
+        with pytest.raises(ValueError, match="No `power_spectrum` descriptor for orbital"):
+            self._call(self._model(), {"orb_1": [1.0, 0.0, 0.0]}, orbitals)
 
 
 # ----------------------------------------------------------------------
@@ -2601,3 +2703,228 @@ class TestMlTestModeGraphBuild:
                 ml_test=True,
             )
         )
+
+
+class TestPowerSpectrumPredictionGraph:
+    """The two prediction sites wire the decompose segment for ``power_spectrum``.
+
+    Construction-level: nothing runs. Both sites take the same descriptor
+    wiring, so both are asserted — a fix applied to one alone would leave
+    ``mode: test`` predicting off self-Hartrees while claiming otherwise.
+    """
+
+    @staticmethod
+    def _labels(wg) -> list[str]:
+        labels: list[str] = []
+
+        def _walk(tasks):
+            for t in tasks:
+                labels.append(t.name)
+                children = getattr(t, "children", None)
+                if children:
+                    _walk(children)
+
+        _walk(wg.tasks)
+        return labels
+
+    @staticmethod
+    def _model():
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+        return ml_helpers.fit_screening_model(
+            {
+                "descriptors": [[1.0, 0.0], [0.0, 1.0]],
+                "alpha_targets": [0.5, 0.7],
+                "filled": [True, False],
+                "labels": ["orb_1", "orb_2"],
+            },
+            "linear_regression",
+            descriptor="power_spectrum",
+            correction="ki",
+            init_orbitals="mlwfs",
+            radial_basis={"n_max": 4, "l_max": 4, "r_min": 0.5, "r_max": 4.0},
+        )
+
+    def _build(self, *, ozone_structure, kcp_code, ozone_pseudo_family, p2w, tmp_path, **overrides):
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.ml import MLDescriptor
+        from aiida_koopmans.workgraphs.kcp import PredictScreeningParameters
+        from tests.fixtures import block_wannierization, occ_emp_merge_groups
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        inputs = {
+            "code": kcp_code,
+            "structure": ozone_structure,
+            "pseudos": family.get_pseudos(structure=ozone_structure),
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 3,
+            "nspin": 2,
+            "nelec": 18,
+            "nelup": 2,
+            "neldw": 2,
+            "tot_magnetization": 0,
+            "initial_alpha": 0.6,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.MLWFS,
+            "dft_remote": orm.RemoteData(remote_path="/nonexistent/fake"),
+            "ml_model": self._model(),
+            "descriptor": MLDescriptor.POWER_SPECTRUM,
+            "pw2wannier90_code": p2w,
+            "nscf_remote_folder": orm.RemoteData(
+                computer=p2w.computer, remote_path=str(tmp_path)
+            ).store(),
+            "block_wannierizations": {
+                label: block_wannierization(label) for label in ("occ", "emp")
+            },
+            "merge_groups": occ_emp_merge_groups(),
+        }
+        inputs.update(overrides)
+        return PredictScreeningParameters.build(**inputs)
+
+    def test_predict_route_decomposes_instead_of_reading_self_hartrees(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory, tmp_path
+    ):
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            p2w=p2w,
+            tmp_path=tmp_path,
+        )
+        labels = self._labels(wg)
+        # The trial KI still runs: it supplies the grouping metric.
+        assert any("ki_trial" in label for label in labels), labels
+        assert any("assign_orbital_groups" in label for label in labels), labels
+        assert any("predict_alphas" in label for label in labels), labels
+        # The descriptors come from the decompose segment, not the adapter:
+        # follow the link the prediction actually reads its rows from.
+        assert not any("self_hartree_descriptor_rows" in label for label in labels), labels
+        by_name = {t.name: t for t in wg.tasks}
+        rows_links = by_name["predict_alphas"].inputs["descriptor_rows"]._links
+        assert len(rows_links) == 1, rows_links
+        assert rows_links[0].from_socket._task.name == "descriptors", labels
+        assert "PowerSpectrumDescriptorWorkflow" in by_name["descriptors"].identifier
+
+    def test_self_hartree_route_builds_no_decompose_segment(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory, tmp_path
+    ):
+        """Negative control: the live route is untouched by the new wiring."""
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            p2w=p2w,
+            tmp_path=tmp_path,
+            descriptor="self_hartree",
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            ml_model=_linear_sh_model(),
+        )
+        labels = self._labels(wg)
+        assert any("self_hartree_descriptor_rows" in label for label in labels), labels
+        assert not any("decompose" in label for label in labels), labels
+
+    def test_power_spectrum_predict_graph_roundtrips(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory, tmp_path
+    ):
+        """The new sockets survive the to_dict/from_dict the daemon performs."""
+        from tests.fixtures import assert_graph_roundtrips
+
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        assert_graph_roundtrips(
+            self._build(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                p2w=p2w,
+                tmp_path=tmp_path,
+            )
+        )
+
+    def test_power_spectrum_on_the_molecular_route_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """The DSCF-level guard: a KS-init run wannierizes nothing to decompose."""
+        from aiida_koopmans.ml import MLDescriptor
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        with pytest.raises(ValueError, match="init_orbitals"):
+            KoopmansDSCFWorkflow.build(
+                code=kcp_code,
+                structure=ozone_structure,
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                ml_model=self._model(),
+                descriptor=MLDescriptor.POWER_SPECTRUM,
+            )
+
+    def test_the_dscf_forwards_every_descriptor_input_to_both_sites(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, monkeypatch
+    ):
+        """Both prediction sites receive the whole descriptor-route input set.
+
+        The three Wannier sockets are ``None`` on this molecular route, so
+        what this pins is that each site is *handed* them — a site missing
+        one would fall back to its own default and silently predict off
+        self-Hartrees on a Wannier run, which no molecular test can see.
+        """
+        import aiida_koopmans.workgraphs.kcp as kcp_mod
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        required = {
+            "descriptor",
+            "pw2wannier90_code",
+            "decompose_parameters",
+            "nscf_remote_folder",
+            "block_wannierizations",
+            "merge_groups",
+        }
+        seen: dict[str, set[str]] = {}
+        real_predict = kcp_mod.PredictScreeningParameters
+        real_twin = kcp_mod._run_predicted_final_ki
+
+        def spy_predict(**kwargs):
+            seen["PredictScreeningParameters"] = set(kwargs)
+            return real_predict(**kwargs)
+
+        def spy_twin(outputs, **kwargs):
+            seen["_run_predicted_final_ki"] = set(kwargs)
+            return real_twin(outputs, **kwargs)
+
+        monkeypatch.setattr(kcp_mod, "PredictScreeningParameters", spy_predict)
+        monkeypatch.setattr(kcp_mod, "_run_predicted_final_ki", spy_twin)
+
+        common = {
+            "code": kcp_code,
+            "structure": ozone_structure,
+            "pseudo_family": ozone_pseudo_family,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+            "ml_model": _linear_sh_model(),
+        }
+        KoopmansDSCFWorkflow.build(**common)
+        KoopmansDSCFWorkflow.build(**common, ml_test=True)
+
+        assert required <= seen["PredictScreeningParameters"], seen
+        assert required <= seen["_run_predicted_final_ki"], seen

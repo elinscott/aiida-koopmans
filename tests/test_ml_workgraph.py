@@ -32,6 +32,28 @@ def pre_rename_dataset() -> PreRenameDataset:
     return {"descriptors": [[1.0]], "alphas": [0.6], "filled": [True], "labels": ["orb_1"]}
 
 
+def _power_spectrum_model(**basis):
+    """Fit a two-wide model stamped as ``power_spectrum`` on the given basis."""
+    from aiida_koopmans.ml import resolve_radial_basis
+    from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+    return ml_helpers.fit_screening_model(
+        {
+            "descriptors": [[1.0, 0.0], [0.0, 1.0]],
+            "alpha_targets": [0.6, 0.7],
+            "filled": [True, False],
+            "labels": ["orb_1", "orb_2"],
+        },
+        "linear_regression",
+        descriptor="power_spectrum",
+        correction="ki",
+        init_orbitals="mlwfs",
+        radial_basis=resolve_radial_basis(
+            {f"decompose_{key}": value for key, value in basis.items()}
+        ),
+    )
+
+
 # ----------------------------------------------------------------------
 # extract_snapshot_dataset — plain-python callable
 # ----------------------------------------------------------------------
@@ -219,18 +241,34 @@ class TestTrajectoryGraphBuild:
                 ml_mode="predict",
             )
 
-    def test_predict_mode_rejects_power_spectrum(
-        self, ozone_structure, kcp_code, ozone_pseudo_family
+    def test_predict_mode_threads_the_descriptor_route_into_each_dscf(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
     ):
-        with pytest.raises(NotImplementedError, match="self_hartree"):
-            self._build_wg(
-                ozone_structure=ozone_structure,
-                kcp_code=kcp_code,
-                ozone_pseudo_family=ozone_pseudo_family,
-                ml_mode="predict",
-                ml_model={"descriptor": "power_spectrum", "submodels": {}},
-                descriptor="power_spectrum",
-            )
+        """Predict on ``power_spectrum`` builds, with the decompose inputs on each DSCF.
+
+        The DSCF sub-graph body is deferred, so the discriminator at this
+        level is that every snapshot's DSCF receives the descriptor, the
+        code and the basis — the three the prediction site needs and which
+        the trajectory previously kept to itself.
+        """
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="predict",
+            ml_model=_power_spectrum_model(),
+            descriptor="power_spectrum",
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            pw2wannier90_code=p2w,
+            decompose_parameters={"decompose_n_max": 6, "decompose_l_max": 6},
+        )
+        dscf = next(t for t in wg.tasks if "dscf_snapshot_1" in t.name)
+        assert dscf.inputs["descriptor"].value == MLDescriptor.POWER_SPECTRUM
+        assert dscf.inputs["pw2wannier90_code"].value.uuid == p2w.uuid
+        assert dict(dscf.inputs["decompose_parameters"].value)["decompose_n_max"] == 6
 
     def test_power_spectrum_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
@@ -523,3 +561,62 @@ class TestTestModeTwin:
         )
         names = _all_task_names(wg)
         assert not any("compute_alpha_and_eigenvalue_deltas" in n for n in names), names
+
+
+class TestEvaluateStampCheck:
+    """``mode: test`` scores a model only when it describes the run's quantity.
+
+    The estimators broadcast a wrong-width row instead of complaining, so
+    a score against a mismatched model would come back as a number.
+    """
+
+    DATASETS = {  # noqa: RUF012
+        "snapshot_1": {
+            "descriptors": [[-1.0], [-2.0]],
+            "alpha_targets": [0.6, 0.7],
+            "filled": [True, False],
+            "labels": ["orb_1", "orb_2"],
+        }
+    }
+
+    def _call(self, model, **overrides):
+        from aiida_koopmans.workgraphs.ml import evaluate_screening_model
+
+        kwargs = {
+            "descriptor": MLDescriptor.SELF_HARTREE,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+        }
+        kwargs.update(overrides)
+        return evaluate_screening_model._callable(  # type: ignore[attr-defined]
+            datasets=self.DATASETS, model=model, **kwargs
+        )
+
+    def test_a_matching_model_scores(self):
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+        model = ml_helpers.fit_screening_model(
+            self.DATASETS["snapshot_1"],
+            "linear_regression",
+            correction="ki",
+            init_orbitals="kohn-sham",
+        )
+        outputs = self._call(model)
+        assert outputs["evaluation"]["metrics"]["n_samples"] == 2
+
+    def test_a_power_spectrum_model_scored_on_self_hartree_rows_raises(self):
+        from aiida_koopmans.ml import ModelMismatchError
+
+        with pytest.raises(ModelMismatchError, match="trained on `power_spectrum`"):
+            self._call(_power_spectrum_model())
+
+    def test_a_basis_mismatch_raises(self):
+        from aiida_koopmans.ml import ModelMismatchError, resolve_radial_basis
+
+        with pytest.raises(ModelMismatchError, match="radial basis"):
+            self._call(
+                _power_spectrum_model(r_min=1.0),
+                descriptor=MLDescriptor.POWER_SPECTRUM,
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                radial_basis=resolve_radial_basis(None),
+            )
