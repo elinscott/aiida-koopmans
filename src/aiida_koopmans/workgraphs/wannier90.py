@@ -129,6 +129,50 @@ def _finalize_wannier_builder(
     return data
 
 
+def _apply_kpoint_mesh(
+    data: dict[str, Any],
+    *,
+    kpoints: orm.KpointsData | None,
+    mp_grid: list[int] | None,
+    scf_kpoints: orm.KpointsData | None,
+) -> None:
+    """Substitute the caller's Brillouin-zone sampling into a flattened builder.
+
+    ``Wannier90WorkChain.get_builder_from_protocol`` derives one mesh from
+    the protocol's ``kpoints_distance`` and uses it for the wannier90 k-list,
+    the ``mp_grid`` in the ``.win`` and the nscf; the scf takes the distance
+    itself. Each is replaced here when the caller states one, and left to the
+    protocol when it does not.
+
+    ``kpoints`` is the explicit k-list wannier90 and the nscf share, so that
+    a single node fixes the k-ordering for both. ``mp_grid`` travels beside
+    it because an explicit-list ``KpointsData`` cannot represent its parent
+    mesh and wannier90 cannot re-derive it.
+    """
+    if kpoints is not None and mp_grid is None:
+        raise ValueError(
+            "`kpoints` was given without `mp_grid`: an explicit k-list cannot "
+            "state the Monkhorst-Pack dimensions wannier90 requires in the "
+            "`.win`. Pass the mesh dimensions the list was generated from."
+        )
+
+    if scf_kpoints is not None:
+        data["scf"].pop("kpoints_distance", None)
+        data["scf"]["kpoints"] = scf_kpoints
+
+    if kpoints is None:
+        return
+
+    data["nscf"].pop("kpoints_distance", None)
+    data["nscf"]["kpoints"] = kpoints
+
+    w90 = data["wannier90"]["wannier90"]
+    w90["kpoints"] = kpoints
+    parameters = w90["parameters"].get_dict()
+    parameters["mp_grid"] = list(mp_grid)  # type: ignore[arg-type]
+    w90["parameters"] = orm.Dict(parameters)
+
+
 @task.graph
 def Wannierize(
     codes: Codes,
@@ -153,6 +197,9 @@ def Wannierize(
     bands_kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
+    kpoints: orm.KpointsData | None = None,
+    mp_grid: list[int] | None = None,
+    scf_kpoints: orm.KpointsData | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
 
@@ -189,6 +236,13 @@ def Wannierize(
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
         retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.
         print_summary: If True, print a summary of key input parameters.
+        kpoints: the explicit k-point list the nscf and wannier90 share.
+            Unset leaves both on the protocol's ``kpoints_distance``-derived
+            mesh. Requires ``mp_grid``.
+        mp_grid: the Monkhorst-Pack dimensions ``kpoints`` was generated
+            from, written into the ``.win``.
+        scf_kpoints: the mesh the scf samples. Unset falls back to the
+            protocol's ``kpoints_distance``.
 
     Returns:
         Dict with outputs from the Wannier90WorkChain.
@@ -236,6 +290,8 @@ def Wannierize(
         projector_rotation=projector_rotation,
         set_bands_kpoints=True,
     )
+
+    _apply_kpoint_mesh(data, kpoints=kpoints, mp_grid=mp_grid, scf_kpoints=scf_kpoints)
 
     # Per-code parallelization into whichever calcjob namespaces this run has.
     merge_parallelization_into_existing_namespaces(
