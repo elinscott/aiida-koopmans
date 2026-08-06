@@ -154,18 +154,32 @@ def test_ham_parser_bands_and_grid_eigenvalues(
     assert params["ki_eigenvalues_on_grid"][0][0] == pytest.approx(-6.1254)
 
 
+#: The path the ``kcw_ham`` fixture's stdout interpolates along: Gamma to X and
+#: back, 23 points, exactly as its "KC interpolated eigenvalues at k=" lines
+#: report them. The ``kpoints`` input must list the same points in the same
+#: order, which is what a real run passes.
+HAM_FIXTURE_KPATH = [
+    [t / 11.0 * 0.5, 0.0, t / 11.0 * 0.5] for t in list(range(12)) + list(range(10, -1, -1))
+]
+
+#: The fcc silicon cell the fixture run used, in Angstrom.
+SI_CELL = [[0.0, 2.715, 2.715], [2.715, 0.0, 2.715], [2.715, 2.715, 0.0]]
+
+
 def test_ham_parser_seeds_the_bands_from_the_k_path(
     aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
 ):
     """The ``bands`` output inherits the cell and labels of the ``kpoints`` input.
 
-    Without them a band structure plots on a crystal-coordinate axis with
-    unnamed ticks, and nothing downstream can tell it apart from a mesh.
+    ``set_kpoints`` sets neither, so the cell and the labels are what tell the
+    two apart: rebuilding the output from the stdout alone leaves a band
+    structure that plots on a crystal-coordinate axis with unnamed ticks, and
+    that nothing downstream can distinguish from a mesh.
     """
     kpoints = orm.KpointsData()
-    kpoints.set_cell([[0.0, 2.7, 2.7], [2.7, 0.0, 2.7], [2.7, 2.7, 0.0]])
-    kpoints.set_kpoints([[index / 44.0, 0.0, 0.0] for index in range(23)])
-    kpoints.labels = [(0, "GAMMA"), (22, "X")]
+    kpoints.set_cell(SI_CELL)
+    kpoints.set_kpoints(HAM_FIXTURE_KPATH)
+    kpoints.labels = [(0, "GAMMA"), (11, "X"), (22, "GAMMA")]
 
     node = generate_calc_job_node(
         entry_point_name="koopmans.kcw_ham",
@@ -186,8 +200,36 @@ def test_ham_parser_seeds_the_bands_from_the_k_path(
     assert calcfunction.is_finished_ok, calcfunction.exit_message
 
     bands = results["bands"]
-    assert bands.labels == [(0, "GAMMA"), (22, "X")]
-    assert np.allclose(bands.cell, kpoints.cell)
+    assert bands.labels == [(0, "GAMMA"), (11, "X"), (22, "GAMMA")]
+    assert np.allclose(bands.cell, SI_CELL)
+    # The k-points the input listed are the ones the stdout reports, to the
+    # four decimals it prints them at.
+    assert np.allclose(bands.get_kpoints(), HAM_FIXTURE_KPATH, atol=1e-4)
     # The eigenvalues are still the ones the stdout reported.
     assert bands.get_bands().shape == (23, 8)
     assert bands.get_bands()[0][0] == pytest.approx(-6.1254)
+
+
+def test_ham_parser_without_a_k_path_falls_back_to_the_stdout(
+    aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
+):
+    """A run given no ``kpoints`` keeps the k-points its stdout reported."""
+    node = generate_calc_job_node(
+        entry_point_name="koopmans.kcw_ham",
+        computer=fixture_localhost,
+        test_name="default",
+        fixture_subdir="kcw_ham",
+        input_filename="aiida.khi",
+        output_filename="aiida.kho",
+        inputs={
+            "parameters": orm.Dict({"CONTROL": {}, "WANNIER": {}, "HAM": {"do_bands": True}}),
+            "alphas": orm.List(list=[0.14] * 8),
+        },
+    )
+    parser = generate_parser("koopmans.kcw_ham")
+    results, calcfunction = parser.parse_from_node(node, store_provenance=False)
+
+    assert calcfunction.is_finished_ok, calcfunction.exit_message
+    bands = results["bands"]
+    assert bands.labels is None
+    assert np.allclose(bands.get_kpoints(), HAM_FIXTURE_KPATH, atol=1e-4)
