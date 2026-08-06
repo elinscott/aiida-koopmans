@@ -378,6 +378,72 @@ class TestTrajectoryGraphBuild:
             )
 
 
+class TestDescriptorIsNeverAssumed:
+    """A run that never names a descriptor must not be given one.
+
+    The graph entry points still carry a default, because node-graph marks
+    every enum-typed socket required whatever its default (aiida-koopmans#73),
+    so a nullable one would block every non-ML submission. These two
+    validators are where the rule is enforced, and both are plain functions
+    precisely so the path is testable without building a graph.
+    """
+
+    @pytest.mark.parametrize("ml_mode", ["train", "test", "predict"])
+    def test_a_working_mode_without_a_descriptor_raises(self, ml_mode):
+        from aiida_koopmans.workgraphs.ml import require_ml_mode_inputs
+
+        with pytest.raises(ValueError, match="needs a `descriptor`"):
+            require_ml_mode_inputs(
+                ml_mode=ml_mode,
+                descriptor=None,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                pw2wannier90_code=None,
+                ml_model={"submodels": {}},
+            )
+
+    def test_mode_none_needs_no_descriptor(self):
+        """Negative control: without ML there is nothing to describe."""
+        from aiida_koopmans.workgraphs.ml import require_ml_mode_inputs
+
+        assert (
+            require_ml_mode_inputs(
+                ml_mode="none",
+                descriptor=None,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                pw2wannier90_code=None,
+                ml_model=None,
+            )
+            is None
+        )
+
+    def test_a_dscf_carrying_a_model_without_a_descriptor_raises(self):
+        from aiida_koopmans.workgraphs.kcp import _validate_ml_model_inputs
+
+        with pytest.raises(ValueError, match="predicts from a descriptor"):
+            _validate_ml_model_inputs(
+                ml_model={"submodels": {}},
+                ml_test=False,
+                calculate_alpha=True,
+                alpha_numsteps=1,
+                descriptor=None,
+            )
+
+    def test_a_dscf_without_a_model_needs_no_descriptor(self):
+        """Negative control: the descriptor only matters once a model reads it."""
+        from aiida_koopmans.workgraphs.kcp import _validate_ml_model_inputs
+
+        assert (
+            _validate_ml_model_inputs(
+                ml_model=None,
+                ml_test=False,
+                calculate_alpha=True,
+                alpha_numsteps=1,
+                descriptor=None,
+            )
+            is None
+        )
+
+
 class TestSharedOutputSpecCollision:
     """Dataset columns must not be shadowed by the screening namespace ports.
 

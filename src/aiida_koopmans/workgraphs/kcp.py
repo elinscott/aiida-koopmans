@@ -331,7 +331,7 @@ def predict_alpha_screening(
     orbitals: list[VariationalOrbital],
     correction: Correction,
     init_orbitals: VariationalOrbitalType,
-    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    descriptor: MLDescriptor,
     radial_basis: dict | None = None,
 ) -> AlphaScreening:
     """Predict every orbital's screening parameter from a trained model.
@@ -1064,6 +1064,9 @@ def KoopmansDSCFWorkflow(
     calculate_alpha: bool = True,
     ml_model: dict | None = None,
     ml_test: bool = False,
+    # Not `MLDescriptor | None = None`: node-graph forces every enum-typed
+    # socket to `required`, so a nullable one would block every non-ML
+    # submission. See aiida-koopmans#73.
     descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,
@@ -2602,6 +2605,7 @@ def PredictScreeningParameters(
     init_orbitals: VariationalOrbitalType,
     dft_remote: orm.RemoteData,
     ml_model: dict,
+    descriptor: MLDescriptor,
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
@@ -2610,7 +2614,6 @@ def PredictScreeningParameters(
     self_hartree_tol: float | None = None,
     initial_evc_occupied1: orm.SinglefileData | None = None,
     initial_evc_occupied2: orm.SinglefileData | None = None,
-    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
@@ -3494,7 +3497,7 @@ def _validate_ml_model_inputs(
     ml_test: bool,
     calculate_alpha: bool,
     alpha_numsteps: int,
-    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    descriptor: MLDescriptor | None,
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     pw2wannier90_code: orm.AbstractCode | None = None,
     spin_polarized: bool = False,
@@ -3508,11 +3511,17 @@ def _validate_ml_model_inputs(
     ``alpha_numsteps`` must stay 1; with ``ml_test`` the refinement runs
     in full (it is the comparison baseline) and ``alpha_numsteps`` is free.
 
-    A ``power_spectrum`` model additionally predicts from a decompose pass
-    over the per-block Wannierizations, so it needs the Wannier-initialised
-    route, a ``pw2wannier90_code`` to run that pass with, and a closed
-    shell.
+    A model predicts from a descriptor, so a run carrying one must name
+    which. A ``power_spectrum`` model additionally predicts from a
+    decompose pass over the per-block Wannierizations, so it needs the
+    Wannier-initialised route, a ``pw2wannier90_code`` to run that pass
+    with, and a closed shell.
     """
+    if ml_model is not None and descriptor is None:
+        raise ValueError(
+            "A trained `ml_model` predicts from a descriptor, but `descriptor` was "
+            "not set. Set it to the one the model was trained on."
+        )
     if ml_model is not None and descriptor == MLDescriptor.POWER_SPECTRUM:
         # Function-local: the ml package's __init__ imports this module.
         from aiida_koopmans.workgraphs.ml import require_power_spectrum_route

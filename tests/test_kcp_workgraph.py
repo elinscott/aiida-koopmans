@@ -1845,6 +1845,7 @@ class TestKoopmansDSCFGraphBuild:
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
+        from aiida_koopmans.ml import MLDescriptor
         from aiida_koopmans.workgraphs.kcp import PredictScreeningParameters
 
         family = (
@@ -1872,6 +1873,7 @@ class TestKoopmansDSCFGraphBuild:
             init_orbitals=VariationalOrbitalType.KOHN_SHAM,
             dft_remote=dummy_remote,
             ml_model=_linear_sh_model(),
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         sub_labels = self._all_link_labels(sub_wg)
 
@@ -2204,12 +2206,22 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
 
 class TestPredictAlphaScreening:
     @staticmethod
-    def _call(model, descriptors, orbitals, correction="ki", init_orbitals="kohn-sham", **kwargs):
+    def _call(
+        model,
+        descriptors,
+        orbitals,
+        correction="ki",
+        init_orbitals="kohn-sham",
+        descriptor="self_hartree",
+        **kwargs,
+    ):
         """Predict from a per-spin self-Hartree array, via the row adapter.
 
         ``descriptors`` is the trial KI's ``[nspin][nbnd]`` metric; it goes
         through ``self_hartree_descriptor_rows`` so these tests exercise
-        the same adapter the graph wires.
+        the same adapter the graph wires. ``descriptor`` is named here
+        rather than defaulted in the task: these are the self-Hartree
+        route's tests, and the task takes no default.
         """
         from aiida_koopmans.workgraphs.kcp import (
             predict_alpha_screening,
@@ -2228,6 +2240,7 @@ class TestPredictAlphaScreening:
             orbitals=orbitals,
             correction=correction,
             init_orbitals=init_orbitals,
+            descriptor=descriptor,
             **kwargs,
         )
 
@@ -2530,6 +2543,7 @@ class TestPredictTrialMatchesComputeTrial:
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
+        from aiida_koopmans.ml import MLDescriptor
         from aiida_koopmans.workgraphs import kcp as kcp_mod
 
         family = (
@@ -2573,7 +2587,9 @@ class TestPredictTrialMatchesComputeTrial:
             return real_trial(**kwargs)
 
         monkeypatch.setattr(kcp_mod, "_trial_kcp_inputs", spy_trial)
-        kcp_mod.PredictScreeningParameters.build(**common, ml_model=_linear_sh_model())
+        kcp_mod.PredictScreeningParameters.build(
+            **common, ml_model=_linear_sh_model(), descriptor=MLDescriptor.SELF_HARTREE
+        )
         monkeypatch.undo()
 
         seen_compute: dict = {}

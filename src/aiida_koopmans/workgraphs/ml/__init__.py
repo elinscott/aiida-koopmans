@@ -717,7 +717,7 @@ def require_power_spectrum_route(
 def require_ml_mode_inputs(
     *,
     ml_mode: MLMode,
-    descriptor: MLDescriptor,
+    descriptor: MLDescriptor | None,
     init_orbitals: Any,
     pw2wannier90_code: Any,
     ml_model: dict | None,
@@ -725,21 +725,28 @@ def require_ml_mode_inputs(
 ) -> None:
     """Guard the ``ml_mode`` / ``descriptor`` / ``ml_model`` combinations.
 
-    ``test`` and ``predict`` need a trained ``ml_model``; a
+    Every mode but ``none`` needs a ``descriptor`` named outright; ``test``
+    and ``predict`` additionally need a trained ``ml_model``; a
     ``power_spectrum`` run must satisfy
     :func:`require_power_spectrum_route`.
     """
     if ml_mode not in ML_MODES:
         raise ValueError(f"ml_mode must be one of {ML_MODES}, not `{ml_mode}`")
-    if ml_mode != MLMode.NONE:
-        if descriptor not in ML_DESCRIPTOR_TYPES:
-            raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
-        if descriptor == MLDescriptor.POWER_SPECTRUM:
-            require_power_spectrum_route(
-                init_orbitals, pw2wannier90_code, spin_polarized=spin_polarized
-            )
+    if ml_mode == MLMode.NONE:
+        return
     if ml_mode in (MLMode.TEST, MLMode.PREDICT) and ml_model is None:
         raise ValueError(f"ml_mode='{ml_mode}' requires a trained `ml_model`")
+    if descriptor is None:
+        raise ValueError(
+            f"ml_mode='{ml_mode}' needs a `descriptor`, which is what the model "
+            f"reads for each orbital. Set it to one of {ML_DESCRIPTOR_TYPES}."
+        )
+    if descriptor not in ML_DESCRIPTOR_TYPES:
+        raise ValueError(f"`{descriptor}` is not implemented as a valid descriptor.")
+    if descriptor == MLDescriptor.POWER_SPECTRUM:
+        require_power_spectrum_route(
+            init_orbitals, pw2wannier90_code, spin_polarized=spin_polarized
+        )
 
 
 def wire_snapshot_dataset(
@@ -803,6 +810,9 @@ def TrajectoryWorkflow(
     ml_mode: MLMode = MLMode.NONE,
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",
+    # Not `MLDescriptor | None = None`: node-graph forces every enum-typed
+    # socket to `required`, so a nullable one would block every non-ML
+    # submission. See aiida-koopmans#73.
     descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
     occ_and_emp_together: bool = True,
     pw2wannier90_code: orm.AbstractCode | None = None,
