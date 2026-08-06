@@ -74,8 +74,8 @@ from aiida_koopmans.workgraphs.ml.helpers import (
     evaluate_predictions,
     fit_screening_model,
     format_group_centres_file,
-    gather_power_spectrum_rows,
     parse_wannier_centres_xyz,
+    power_spectrum_slots,
     predict_screening,
 )
 
@@ -615,31 +615,32 @@ def PowerSpectrumDatasetWorkflow(
 class PowerSpectrumDescriptorOutputs(TypedDict):
     """Outputs of :func:`PowerSpectrumDescriptorWorkflow`.
 
-    * ``rows`` — ``{orbital_label: descriptor row}`` for every Wannier
-      function of the snapshot, the labels being the ones
-      :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds.
+    * ``slots`` — one
+      :class:`~aiida_koopmans.workgraphs.ml.helpers.DescriptorSlot` per
+      ``(spin, filling)`` manifold of the snapshot, each stating its own
+      spin and filling alongside its Wannier functions' descriptor rows.
     """
 
-    rows: dict
+    slots: list
 
 
 @task
-def gather_block_descriptor_rows(
+def gather_block_descriptor_slots(
     block_descriptors: Annotated[dict, dynamic(orm.ArrayData)],
     merge_groups: list,
-) -> dict:
-    """Gather the per-block descriptors into orbital-labelled rows.
+) -> list:
+    """Gather the per-block descriptors into ``(spin, filling)`` slots.
 
     The single gather point of the prediction route: consumes the per-block
-    descriptor namespace and returns the rows keyed by orbital label (see
-    :func:`~aiida_koopmans.workgraphs.ml.helpers.gather_power_spectrum_rows`),
-    the shape a screening prediction joins against its orbitals.
+    descriptor namespace and returns the slots (see
+    :func:`~aiida_koopmans.workgraphs.ml.helpers.power_spectrum_slots`) a
+    screening prediction pairs with its variational orbitals.
     """
     descriptors_by_label = {
         label: array_payload(node, "descriptors").tolist()
         for label, node in block_descriptors.items()
     }
-    return gather_power_spectrum_rows(descriptors_by_label, merge_groups)
+    return list(power_spectrum_slots(descriptors_by_label, merge_groups))
 
 
 @task.graph
@@ -654,13 +655,12 @@ def PowerSpectrumDescriptorWorkflow(
     """Build one snapshot's power-spectrum descriptors, without any alphas.
 
     The descriptor half of :func:`PowerSpectrumDatasetWorkflow`: the same
-    per-block ``wan_mode='decompose'`` fan-out, gathered into rows keyed by
-    orbital label instead of paired with screening parameters. This is what
-    a prediction consumes — it runs before any alphas exist, and the
-    descriptors do not depend on the trial KI, so the fan-out is free to
-    run alongside it.
+    per-block ``wan_mode='decompose'`` fan-out, split into ``(spin,
+    filling)`` slots instead of paired with screening parameters. This is
+    what a prediction consumes — it runs before any alphas exist, and takes
+    no input from the trial KI, so the fan-out is free to run alongside it.
     """
-    rows = gather_block_descriptor_rows(
+    slots = gather_block_descriptor_slots(
         block_descriptors=fan_out_block_descriptors(
             code=code,
             nscf_remote_folder=nscf_remote_folder,
@@ -671,7 +671,7 @@ def PowerSpectrumDescriptorWorkflow(
         ),
         merge_groups=merge_groups,
     )
-    return PowerSpectrumDescriptorOutputs(rows=rows.result)
+    return PowerSpectrumDescriptorOutputs(slots=slots.result)
 
 
 def require_power_spectrum_route(

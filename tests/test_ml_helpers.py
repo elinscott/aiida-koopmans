@@ -911,34 +911,98 @@ class TestModelStamps:
             self._check(model)
 
 
-class TestGatherPowerSpectrumRows:
+def _orbital(spin, index, filled):
+    return {
+        "spin": spin,
+        "index": index,
+        "filled": filled,
+        "group_id": index,
+        "representative": True,
+    }
+
+
+class TestPowerSpectrumSlots:
+    # The down-spin group is listed first and the up-spin empty manifold
+    # last, so no consumer can read spin or filling off a slot's position.
     MERGE_GROUPS = [  # noqa: RUF012
+        {"filled": True, "spin": "down", "blocks": [{"label": "occ_dn"}]},
         {"filled": True, "spin": "up", "blocks": [{"label": "occ_up"}]},
         {"filled": False, "spin": "up", "blocks": [{"label": "emp_up"}]},
-        {"filled": True, "spin": "down", "blocks": [{"label": "occ_dn"}]},
+    ]
+    BLOCK_DESCRIPTORS = {  # noqa: RUF012
+        "occ_dn": [[4.0]],
+        "occ_up": [[1.0], [2.0]],
+        "emp_up": [[3.0]],
+    }
+    # Two filled and one empty up-spin orbital, one filled down-spin one.
+    ORBITALS = [  # noqa: RUF012
+        _orbital("up", 1, True),
+        _orbital("up", 2, True),
+        _orbital("up", 3, False),
+        _orbital("down", 1, True),
     ]
 
-    def test_rows_are_keyed_per_spin_with_filled_first(self):
-        rows = ml_helpers.gather_power_spectrum_rows(
-            {
-                "occ_up": [[1.0], [2.0]],
-                "emp_up": [[3.0]],
-                "occ_dn": [[4.0]],
-            },
-            self.MERGE_GROUPS,
-        )
-        assert rows == {
+    def test_each_slot_states_its_own_spin_and_filling(self):
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        assert slots == [
+            {"spin": "down", "filled": True, "rows": [[4.0]]},
+            {"spin": "up", "filled": True, "rows": [[1.0], [2.0]]},
+            {"spin": "up", "filled": False, "rows": [[3.0]]},
+        ]
+
+    def test_one_slot_is_extracted_on_its_own(self):
+        assert ml_helpers.power_spectrum_rows_for(
+            self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS, spin="up", filled=True
+        ) == [[1.0], [2.0]]
+
+    def test_a_block_without_descriptors_raises(self):
+        with pytest.raises(ValueError, match="emp_up"):
+            ml_helpers.power_spectrum_slots(
+                {"occ_up": [[1.0]], "occ_dn": [[4.0]]}, self.MERGE_GROUPS
+            )
+
+    def test_rows_follow_the_orbital_s_spin_not_the_slot_s_position(self):
+        """The down-spin slot comes first; its row still keys to a down label."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        assert ml_helpers.power_spectrum_rows_by_orbital(slots, self.ORBITALS) == {
             "up_orb_1": [1.0],
             "up_orb_2": [2.0],
             "up_orb_3": [3.0],
             "down_orb_1": [4.0],
         }
 
-    def test_a_block_without_descriptors_raises(self):
-        with pytest.raises(ValueError, match="emp_up"):
-            ml_helpers.gather_power_spectrum_rows(
-                {"occ_up": [[1.0]], "occ_dn": [[4.0]]}, self.MERGE_GROUPS
-            )
+    def test_a_disagreeing_filling_boundary_raises_rather_than_relabelling(self):
+        """Two occupied Wannier functions, one occupied orbital: a raise, not a shift.
+
+        Nothing downstream can catch this on counts or labels — the
+        channel holds three of each either way — so a row keyed by its
+        position in the channel would hand an empty orbital an occupied
+        Wannier function's power spectrum, and the occupied estimator
+        would score it.
+        """
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [
+            _orbital("up", 1, True),
+            _orbital("up", 2, False),
+            _orbital("up", 3, False),
+            _orbital("down", 1, True),
+        ]
+        with pytest.raises(ValueError, match="up-spin occupied manifold holds 1"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+
+    def test_a_manifold_with_the_wrong_count_names_it(self):
+        """The supercell case: more orbitals than primitive Wannier functions."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [*self.ORBITALS, _orbital("up", 4, True)]
+        with pytest.raises(ValueError, match="up-spin occupied manifold holds 3"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+
+    def test_a_manifold_without_descriptors_at_all_raises(self):
+        """A screened manifold no block covers must not pass unnoticed."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [*self.ORBITALS, _orbital("down", 2, False)]
+        with pytest.raises(ValueError, match="No descriptors were built for the down-spin empty"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
 
     def test_row_order_matches_the_dataset_builder(self):
         """The dataset and prediction routes must enumerate orbitals identically.
@@ -946,10 +1010,12 @@ class TestGatherPowerSpectrumRows:
         A drift between them would train on one ordering and predict on
         another, which no shape check would catch.
         """
-        block_descriptors = {"occ_up": [[1.0], [2.0]], "emp_up": [[3.0]], "occ_dn": [[4.0]]}
-        rows = ml_helpers.gather_power_spectrum_rows(block_descriptors, self.MERGE_GROUPS)
+        rows = ml_helpers.power_spectrum_rows_by_orbital(
+            ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS),
+            self.ORBITALS,
+        )
         dataset = ml_helpers.assemble_power_spectrum_dataset(
-            block_descriptors,
+            self.BLOCK_DESCRIPTORS,
             self.MERGE_GROUPS,
             {"filled": {"up": [0.1, 0.2], "down": [0.4]}, "empty": {"up": [0.3]}},
         )

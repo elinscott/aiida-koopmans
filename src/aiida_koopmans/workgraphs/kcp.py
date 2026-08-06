@@ -304,6 +304,27 @@ def self_hartree_descriptor_rows(
 
 
 @task
+def power_spectrum_descriptor_rows(
+    slots: list,
+    orbitals: list[VariationalOrbital],
+) -> dict:
+    """Turn a snapshot's decomposed Wannier functions into orbital-labelled rows.
+
+    ``slots`` are the ``(spin, filling)`` manifolds
+    :func:`~aiida_koopmans.workgraphs.ml.PowerSpectrumDescriptorWorkflow`
+    emits; each is paired with the orbitals of its own spin and filling.
+    The keys are the labels
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds, so both
+    descriptor routes hand :func:`predict_alpha_screening` the same shape.
+    """
+    # Function-local: the ml package's __init__ imports this module, so a
+    # module-level import of its helpers would be circular.
+    from aiida_koopmans.workgraphs.ml.helpers import power_spectrum_rows_by_orbital
+
+    return power_spectrum_rows_by_orbital(slots, orbitals)
+
+
+@task
 def predict_alpha_screening(
     model: dict,
     descriptor_rows: dict,
@@ -436,7 +457,7 @@ def wire_descriptor_rows(
                 "wan_mode='decompose' pass, so it needs `pw2wannier90_code`. Use "
                 "descriptor='self_hartree' if no such code is available."
             )
-        return PowerSpectrumDescriptorWorkflow(
+        slots = PowerSpectrumDescriptorWorkflow(
             code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
             block_wannierizations=block_wannierizations,
@@ -444,7 +465,14 @@ def wire_descriptor_rows(
             decompose_parameters=decompose_parameters,
             parallelization=parallelization,
             metadata={"call_link_label": call_link_label},
-        )["rows"]
+        )["slots"]
+        # Labelled outside the descriptor workflow, which therefore takes
+        # no input from the trial KI and runs alongside it.
+        return power_spectrum_descriptor_rows(
+            slots=slots,
+            orbitals=orbitals,
+            metadata={"call_link_label": f"{call_link_label}_rows"},
+        ).result
     return self_hartree_descriptor_rows(metric=metric, orbitals=orbitals).result
 
 

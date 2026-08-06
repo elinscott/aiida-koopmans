@@ -663,20 +663,22 @@ def build_power_spectrum_dataset(
     }
 
 
-def _gather_channel_rows(
-    merge_groups: Sequence[Mapping[str, Any]],
+def power_spectrum_rows_for(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
-    want_filled: bool,
-    channel: Any,
+    merge_groups: Sequence[Mapping[str, Any]],
+    *,
+    spin: Any,
+    filled: bool,
 ) -> list[list[float]]:
-    """Concatenate the descriptor rows of one ``(filled, spin)`` slot.
+    """Return the descriptor rows of one ``(spin, filling)`` slot.
 
-    Iterates ``merge_groups`` (and each group's ``blocks``) in order, so the
-    row order matches the band order the alphas were gathered in.
+    Walks ``merge_groups`` (and each group's ``blocks``) in order, so the
+    rows come out in the band order of that slot's manifold. Raises when a
+    member block has no descriptor matrix.
     """
     rows: list[list[float]] = []
     for group in merge_groups:
-        if bool(group["filled"]) != want_filled or group["spin"] != channel:
+        if bool(group["filled"]) != filled or group["spin"] != spin:
             continue
         for block in group["blocks"]:
             block_rows = block_descriptors.get(block["label"])
@@ -689,37 +691,98 @@ def _gather_channel_rows(
     return rows
 
 
-def gather_power_spectrum_rows(
+class DescriptorSlot(TypedDict):
+    """One ``(spin, filling)`` slot's descriptor rows, in band order.
+
+    ``spin`` is the channel key (``"none"`` / ``"up"`` / ``"down"``) and
+    ``filled`` names the manifold, so a consumer reads both off the slot
+    instead of recovering them from where it sits in a list.
+    """
+
+    spin: str
+    filled: bool
+    rows: list[list[float]]
+
+
+def power_spectrum_slots(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
     merge_groups: Sequence[Mapping[str, Any]],
-) -> dict[str, list[float]]:
-    """Key every block's descriptor rows by the orbital label they describe.
+) -> list[DescriptorSlot]:
+    """Split the per-block descriptors into ``(spin, filling)`` slots.
 
-    The label is the one
-    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds from an
-    orbital's spin and per-spin band index (``orb_3``, ``up_orb_3``), so a
-    caller holding ``list[VariationalOrbital]`` joins the two by dict
-    lookup. Row order within a channel follows
-    :func:`assemble_power_spectrum_dataset`: filled orbitals first, then
-    empty, each slot walking ``merge_groups`` and their blocks in order.
-
-    No alphas are involved — this is the descriptor side alone, which is
-    what prediction needs (there are no computed screening parameters to
-    pair with yet).
+    One slot per ``(spin, filled)`` pair ``merge_groups`` covers, in the
+    order the groups first mention it. Each slot states its own spin and
+    filling; :func:`power_spectrum_rows_by_orbital` pairs the slots with
+    the orbitals they describe.
     """
-    channels = sorted(
-        {group["spin"] for group in merge_groups},
-        key=lambda ch: (_SPIN_KEY_TO_INDEX.get(ch, 0), str(ch)),
-    )
+    keys: list[tuple[Any, bool]] = []
+    for group in merge_groups:
+        key = (group["spin"], bool(group["filled"]))
+        if key not in keys:
+            keys.append(key)
+    return [
+        DescriptorSlot(
+            spin=str(getattr(spin, "value", spin)),
+            filled=filled,
+            rows=power_spectrum_rows_for(block_descriptors, merge_groups, spin=spin, filled=filled),
+        )
+        for spin, filled in keys
+    ]
+
+
+def power_spectrum_rows_by_orbital(
+    slots: Sequence[Mapping[str, Any]],
+    orbitals: Sequence[Mapping[str, Any]],
+) -> dict[str, list[float]]:
+    """Key every descriptor row by the orbital it describes.
+
+    Each slot is paired with the orbitals of its own spin channel and
+    filling, taken in band-index order, and each row is keyed by that
+    orbital's label (see
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for`). Spin and
+    filling come from the two records, never from a row's position in a
+    flat list.
+
+    Raises ``ValueError`` when a slot and its orbitals differ in count, or
+    when either side covers a ``(spin, filling)`` the other does not.
+    """
+    from aiida_koopmans.variational_orbitals import map_key_for
+
+    by_slot: dict[tuple[str, bool], list[Mapping[str, Any]]] = {}
+    for orbital in orbitals:
+        spin = orbital["spin"]
+        key = (str(getattr(spin, "value", spin)), bool(orbital["filled"]))
+        by_slot.setdefault(key, []).append(orbital)
+
     rows: dict[str, list[float]] = {}
-    for channel in channels:
-        prefix = "" if channel == "none" else f"{getattr(channel, 'value', channel)}_"
-        channel_rows = _gather_channel_rows(
-            merge_groups, block_descriptors, True, channel
-        ) + _gather_channel_rows(merge_groups, block_descriptors, False, channel)
-        for position, row in enumerate(channel_rows):
-            rows[f"{prefix}orb_{position + 1}"] = row
+    for slot in slots:
+        key = (str(slot["spin"]), bool(slot["filled"]))
+        members = sorted(by_slot.pop(key, []), key=lambda o: int(o["index"]))
+        slot_rows = [[float(x) for x in row] for row in slot["rows"]]
+        if len(members) != len(slot_rows):
+            raise ValueError(
+                f"The {_slot_name(key)} manifold holds {len(members)} variational "
+                f"orbital(s) but {len(slot_rows)} Wannier function(s) were "
+                "decomposed. A supercell run screens every image of a Wannier "
+                "function while the descriptors cover only the primitive ones; "
+                "mapping an image back to its Wannier function is not ported yet."
+            )
+        for orbital, row in zip(members, slot_rows, strict=True):
+            rows[map_key_for(orbital)] = row  # type: ignore[arg-type]
+    if by_slot:
+        raise ValueError(
+            "No descriptors were built for the "
+            + ", ".join(_slot_name(key) for key in sorted(by_slot))
+            + " manifold(s), which the run nonetheless screens."
+        )
     return rows
+
+
+def _slot_name(key: tuple[str, bool]) -> str:
+    """Name a ``(spin, filled)`` slot the way an error message should read."""
+    spin, filled = key
+    filling = "occupied" if filled else "empty"
+    return filling if spin == "none" else f"{spin}-spin {filling}"
 
 
 def assemble_power_spectrum_dataset(
@@ -777,8 +840,12 @@ def assemble_power_spectrum_dataset(
 
     dataset: SnapshotDataset = {"descriptors": [], "alpha_targets": [], "filled": [], "labels": []}
     for channel in channels:
-        filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
-        empty_rows = _gather_channel_rows(merge_groups, block_descriptors, False, channel)
+        filled_rows = power_spectrum_rows_for(
+            block_descriptors, merge_groups, spin=channel, filled=True
+        )
+        empty_rows = power_spectrum_rows_for(
+            block_descriptors, merge_groups, spin=channel, filled=False
+        )
         channel_filled = [float(a) for a in filled_alphas.get(channel, [])]
         channel_empty = [float(a) for a in empty_alphas.get(channel, [])]
         if len(filled_rows) != len(channel_filled):

@@ -2848,8 +2848,18 @@ class TestPowerSpectrumPredictionGraph:
         by_name = {t.name: t for t in wg.tasks}
         rows_links = by_name["predict_alphas"].inputs["descriptor_rows"]._links
         assert len(rows_links) == 1, rows_links
-        assert rows_links[0].from_socket._task.name == "descriptors", labels
+        assert rows_links[0].from_socket._task.name == "descriptors_rows", labels
         assert "PowerSpectrumDescriptorWorkflow" in by_name["descriptors"].identifier
+        # The slots are labelled against the run's own orbitals, so the
+        # descriptor workflow itself takes nothing from the trial KI.
+        labelling = by_name["descriptors_rows"]
+        assert [link.from_socket._task.name for link in labelling.inputs["slots"]._links] == [
+            "descriptors"
+        ]
+        assert [link.from_socket._task.name for link in labelling.inputs["orbitals"]._links] == [
+            "assign_orbital_groups"
+        ]
+        assert not by_name["descriptors"].inputs._links
 
     def test_self_hartree_route_builds_no_decompose_segment(
         self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory, tmp_path
