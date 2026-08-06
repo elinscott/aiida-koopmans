@@ -810,6 +810,24 @@ class TestRadialBasisResolution:
         assert resolved["r_min"] == injected["decompose_r_min"]
         assert resolved["r_max"] == injected["decompose_r_max"]
 
+    def test_each_setting_resolves_to_its_own_type(self):
+        """`RadialBasis` separates the expansion orders from the radii."""
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        resolved = resolve_radial_basis(
+            {
+                "decompose_n_max": "6",
+                "decompose_l_max": 6.0,
+                "decompose_r_min": 1,
+                "decompose_r_max": 4,
+            }
+        )
+        assert resolved == {"n_max": 6, "l_max": 6, "r_min": 1.0, "r_max": 4.0}
+        assert isinstance(resolved["n_max"], int)
+        assert isinstance(resolved["l_max"], int)
+        assert isinstance(resolved["r_min"], float)
+        assert isinstance(resolved["r_max"], float)
+
     def test_mismatch_list_names_only_the_disagreeing_keys(self):
         from aiida_koopmans.ml import radial_basis_mismatches
 

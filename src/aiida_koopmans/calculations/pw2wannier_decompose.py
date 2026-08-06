@@ -44,7 +44,7 @@ outputs.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from aiida.common import CalcInfo
 from aiida.orm import ArrayData, Dict, RemoteData, SinglefileData
@@ -112,7 +112,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
     # (``n_max=4, l_max=4, r_min=0.5, r_max=4.0``); the QE binary itself
     # defaults ``n_max=l_max=6`` but the Koopmans descriptor is defined
     # against the legacy values, so they are the injected defaults here.
-    _DEFAULTS: ClassVar[dict[str, float | int]] = {
+    _DEFAULTS: ClassVar[dict[str, Any]] = {
         f"{DECOMPOSE_KEY_PREFIX}{key}": value for key, value in RADIAL_BASIS_DEFAULTS.items()
     }
 

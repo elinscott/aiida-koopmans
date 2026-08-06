@@ -32,7 +32,7 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
-from aiida_koopmans.ml import RADIAL_BASIS_DEFAULTS
+from aiida_koopmans.ml import RADIAL_BASIS_KEYS
 
 if TYPE_CHECKING:
     from aiida_koopmans.screening import AlphaScreening
@@ -1036,7 +1036,7 @@ def fit_screening_model(
         "init_orbitals": getattr(init_orbitals, "value", init_orbitals),
         "submodels": submodels,
     }
-    for key in RADIAL_BASIS_DEFAULTS:
+    for key in RADIAL_BASIS_KEYS:
         model[key] = None if radial_basis is None else radial_basis.get(key)
     return model
 

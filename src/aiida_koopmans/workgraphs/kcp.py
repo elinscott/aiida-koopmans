@@ -33,7 +33,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.functionals import Correction
-from aiida_koopmans.ml import MLDescriptor, resolve_radial_basis
+from aiida_koopmans.ml import MLDescriptor, RadialBasis, resolve_radial_basis
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
@@ -391,7 +391,7 @@ def predict_alpha_screening(
 
 def _radial_basis_for(
     descriptor: MLDescriptor, decompose_parameters: dict | None
-) -> dict[str, float | int] | None:
+) -> RadialBasis | None:
     """Return the run's radial basis, or ``None`` when the descriptor has none.
 
     Only ``power_spectrum`` is defined by a radial basis; a

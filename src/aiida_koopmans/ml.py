@@ -5,14 +5,34 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from enum import Enum
 from math import isclose
-from typing import Any
+from typing import Any, TypedDict
 
-#: The radial-basis settings that define a ``power_spectrum`` descriptor,
-#: with the values the Koopmans descriptor is defined against (the legacy
-#: ``ml`` defaults). Two models trained under different values describe
-#: different quantities, so these are stamped into a trained model and
-#: re-checked before it predicts.
-RADIAL_BASIS_DEFAULTS: dict[str, float | int] = {
+
+class RadialBasis(TypedDict):
+    """The radial basis a ``power_spectrum`` descriptor is expanded on.
+
+    ``n_max`` and ``l_max`` are the radial and angular expansion orders;
+    ``r_min`` and ``r_max`` bound the radial window in Bohr. Two models
+    trained under different values describe different quantities, so a
+    trained model carries these and re-checks them before it predicts.
+    """
+
+    n_max: int
+    l_max: int
+    r_min: float
+    r_max: float
+
+
+#: Every :class:`RadialBasis` field, for the callers that walk the
+#: settings by name (a model's stamp, a pw2wannier90.x namelist).
+RADIAL_BASIS_KEYS: tuple[str, ...] = ("n_max", "l_max", "r_min", "r_max")
+
+#: The fields that compare as integers; the rest compare as floats.
+_INTEGER_BASIS_KEYS = frozenset({"n_max", "l_max"})
+
+#: The values the Koopmans descriptor is defined against (the legacy
+#: ``ml`` defaults), used wherever a decompose pass leaves a setting out.
+RADIAL_BASIS_DEFAULTS: RadialBasis = {
     "n_max": 4,
     "l_max": 4,
     "r_min": 0.5,
@@ -24,7 +44,7 @@ RADIAL_BASIS_DEFAULTS: dict[str, float | int] = {
 DECOMPOSE_KEY_PREFIX = "decompose_"
 
 
-def resolve_radial_basis(decompose_parameters: Mapping[str, Any] | None) -> dict[str, float | int]:
+def resolve_radial_basis(decompose_parameters: Mapping[str, Any] | None) -> RadialBasis:
     """Return the radial basis a decompose pass runs with.
 
     ``decompose_parameters`` is the pw2wannier90.x ``&inputpp`` override
@@ -34,33 +54,40 @@ def resolve_radial_basis(decompose_parameters: Mapping[str, Any] | None) -> dict
     compare it against the model's stamp before predicting.
     """
     supplied = {str(key).lower(): value for key, value in (decompose_parameters or {}).items()}
-    resolved: dict[str, float | int] = {}
-    for key, default in RADIAL_BASIS_DEFAULTS.items():
-        value = supplied.get(f"{DECOMPOSE_KEY_PREFIX}{key}", default)
-        resolved[key] = int(value) if key in ("n_max", "l_max") else float(value)
-    return resolved
+
+    def setting(key: str, default: float | int) -> Any:
+        return supplied.get(f"{DECOMPOSE_KEY_PREFIX}{key}", default)
+
+    return RadialBasis(
+        n_max=int(setting("n_max", RADIAL_BASIS_DEFAULTS["n_max"])),
+        l_max=int(setting("l_max", RADIAL_BASIS_DEFAULTS["l_max"])),
+        r_min=float(setting("r_min", RADIAL_BASIS_DEFAULTS["r_min"])),
+        r_max=float(setting("r_max", RADIAL_BASIS_DEFAULTS["r_max"])),
+    )
 
 
 def radial_basis_mismatches(
-    left: Mapping[str, Any],
-    right: Mapping[str, Any],
+    stamped: Mapping[str, Any],
+    wanted: Mapping[str, Any],
     keys: Iterable[str] | None = None,
 ) -> list[str]:
     """Return the radial-basis keys on which two settings disagree.
 
-    ``n_max`` / ``l_max`` compare as integers and ``r_min`` / ``r_max``
-    as floats within a relative tolerance, so a value that has been
-    through a text header or a JSON round-trip still matches. A key
-    missing from either side counts as a disagreement, which is what
-    makes an unstamped model fail the comparison; pass ``keys`` to
-    restrict the comparison to the settings a source actually reports.
+    Both sides are loose mappings because both have been through
+    storage: ``stamped`` is a trained model's own record or a decompose
+    run's reported namelist, ``wanted`` a basis that reached this process
+    as an ``orm.Dict``. So the values are compared by value, not by type:
+    ``n_max`` / ``l_max`` as integers and ``r_min`` / ``r_max`` as floats
+    within a relative tolerance. A key missing from either side counts as
+    a disagreement; pass ``keys`` to restrict the comparison to the
+    settings a source actually reports.
     """
     mismatched: list[str] = []
-    for key in RADIAL_BASIS_DEFAULTS if keys is None else keys:
-        a, b = left.get(key), right.get(key)
+    for key in RADIAL_BASIS_KEYS if keys is None else keys:
+        a, b = stamped.get(key), wanted.get(key)
         if a is None or b is None:
             mismatched.append(key)
-        elif key in ("n_max", "l_max"):
+        elif key in _INTEGER_BASIS_KEYS:
             if int(a) != int(b):
                 mismatched.append(key)
         elif not isclose(float(a), float(b), rel_tol=1e-9):

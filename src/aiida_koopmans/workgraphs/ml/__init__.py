@@ -39,7 +39,7 @@ from aiida_workgraph import dynamic, task
 from aiida_koopmans.calculations.pw2wannier_decompose import Pw2wannierDecomposeCalculation
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml import (
-    RADIAL_BASIS_DEFAULTS,
+    RADIAL_BASIS_KEYS,
     MLDescriptor,
     MLMode,
     radial_basis_mismatches,
@@ -412,7 +412,7 @@ def compute_block_descriptors(
     one a model stamped with ``radial_basis`` describes, so it raises.
     Settings the header omits are not compared.
     """
-    reported = [key for key in RADIAL_BASIS_DEFAULTS if key in output_parameters]
+    reported = [key for key in RADIAL_BASIS_KEYS if key in output_parameters]
     mismatched = radial_basis_mismatches(output_parameters, radial_basis, reported)
     if mismatched:
         used = {key: output_parameters.get(key) for key in mismatched}
