@@ -1085,8 +1085,7 @@ def check_model_matches_run(
         if model_value != run_str:
             raise ModelMismatchError(
                 f"The supplied model was trained with {key}={model_value!r}, but this "
-                f"run uses {key}={run_str!r}. Train a model under the run's settings "
-                f"(a model without the {key} stamp predates it; retrain to predict).",
+                f"run uses {key}={run_str!r}. Train a model under the run's settings.",
                 field=key,
             )
 
@@ -1105,8 +1104,7 @@ def check_model_matches_run(
             f"The supplied model was trained with {stamped}, but this run expands the "
             f"orbital densities with {wanted}. A power spectrum is defined by its "
             "radial basis, so the two are different descriptors. Set ml:n_max / "
-            "ml:l_max / ml:r_min / ml:r_max to the training values, or retrain "
-            "(a model with a null stamp predates it and must be retrained).",
+            "ml:l_max / ml:r_min / ml:r_max to the training values, or retrain.",
             field=mismatched[0],
         )
 
