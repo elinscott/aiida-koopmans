@@ -108,6 +108,48 @@ class TestSinglepointDFPTAutoEps:
         assert "dielectric" in names
         assert "dfpt" in names
 
+    def test_the_dielectric_scf_follows_the_chain_scf(
+        self, ph_codes, silicon_structure, kmesh, denser_kmesh
+    ):
+        """One graph must not hold two ground states on two meshes.
+
+        The dielectric chain is independent of the kcw chain but not of the
+        input that describes it, and nothing downstream would record the
+        disagreement.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            scf_kpoints=denser_kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
+
+    def test_the_dielectric_scf_keeps_a_kpoints_distance(self, ph_codes, silicon_structure, kmesh):
+        """A spacing must not be displaced by the mesh the dielectric would default to.
+
+        Its overrides already carry the distance; handing it a mesh as well
+        leaves the distance inert, so the two ground states drift apart on
+        exactly the input that asked them not to.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            kgrid=[2, 2, 2],
+            overrides={"scf": {"kpoints_distance": 0.11}},
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        dielectric = wg.tasks["dielectric"]
+        assert dielectric.inputs["scf_kpoints"].value is None
+        assert dielectric.inputs["overrides"].value["scf"]["kpoints_distance"] == 0.11
+
     def test_numeric_eps_skips_dielectric_task(self, ph_codes, silicon_structure, kmesh):
         """A numeric eps_inf builds no dielectric chain."""
         wg = SinglepointDFPTWorkflow.build(
