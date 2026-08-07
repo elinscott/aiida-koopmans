@@ -208,7 +208,6 @@ class TestSinglepointDFPT:
             structure=silicon_structure,
             manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             bands_kpoints=kpath,
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf=11.7,
@@ -216,6 +215,22 @@ class TestSinglepointDFPT:
         scf_nscf = wg.tasks["scf_nscf"]
         assert _mesh(scf_nscf, "scf_kpoints") == [2, 2, 2]
         assert len(scf_nscf.inputs["nscf_kpoints"].value.get_kpoints()) == 8
+        # The mesh kcw.x counts in comes from ``kpoints`` alone.
+        assert list(wg.tasks["dfpt"].inputs["kgrid"].value) == [2, 2, 2]
+
+    def test_a_kpath_names_the_mistake(self, dfpt_codes, silicon_structure, kpath):
+        """An explicit list has no mesh dimensions, so it cannot reach kcw.x unnoticed."""
+        from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
+
+        with pytest.raises(ValueError, match=r"kpoints.*Monkhorst-Pack mesh"):
+            SinglepointDFPTWorkflow.build(
+                codes=dfpt_codes,
+                structure=silicon_structure,
+                manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
+                kpoints=kpath,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                eps_inf=11.7,
+            )
 
     def test_scf_kpoints_moves_the_scf_alone(
         self, dfpt_codes, silicon_structure, kmesh, kpath, denser_kmesh
@@ -228,7 +243,6 @@ class TestSinglepointDFPT:
             structure=silicon_structure,
             manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             scf_kpoints=denser_kmesh,
             bands_kpoints=kpath,
             pseudo_family="SSSP/1.3/PBE/efficiency",
@@ -237,6 +251,9 @@ class TestSinglepointDFPT:
         scf_nscf = wg.tasks["scf_nscf"]
         assert _mesh(scf_nscf, "scf_kpoints") == [4, 4, 4]
         assert len(scf_nscf.inputs["nscf_kpoints"].value.get_kpoints()) == 8
+        # kcw.x counts in the nscf mesh, so the denser SCF must leave
+        # ``CONTROL.mp1-3`` on the 2x2x2 the Wannier functions were built on.
+        assert list(wg.tasks["dfpt"].inputs["kgrid"].value) == [2, 2, 2]
 
     def test_an_scf_kpoints_distance_leaves_the_scf_meshless(
         self, dfpt_codes, silicon_structure, kmesh, kpath
@@ -249,7 +266,6 @@ class TestSinglepointDFPT:
             structure=silicon_structure,
             manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             overrides={"scf": {"kpoints_distance": 0.11}},
             bands_kpoints=kpath,
             pseudo_family="SSSP/1.3/PBE/efficiency",

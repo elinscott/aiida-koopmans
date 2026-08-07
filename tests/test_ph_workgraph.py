@@ -100,7 +100,6 @@ class TestSinglepointDFPTAutoEps:
             structure=silicon_structure,
             manifolds=_si_manifolds(),
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf="auto",
         )
@@ -122,7 +121,6 @@ class TestSinglepointDFPTAutoEps:
             structure=silicon_structure,
             manifolds=_si_manifolds(),
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             scf_kpoints=denser_kmesh,
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf="auto",
@@ -141,7 +139,6 @@ class TestSinglepointDFPTAutoEps:
             structure=silicon_structure,
             manifolds=_si_manifolds(),
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             overrides={"scf": {"kpoints_distance": 0.11}},
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf="auto",
@@ -157,7 +154,6 @@ class TestSinglepointDFPTAutoEps:
             structure=silicon_structure,
             manifolds=_si_manifolds(),
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf=11.7,
         )
@@ -172,7 +168,6 @@ class TestSinglepointDFPTAutoEps:
                 structure=silicon_structure,
                 manifolds=_si_manifolds(),
                 kpoints=kmesh,
-                kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",
                 eps_inf="auto",
             )

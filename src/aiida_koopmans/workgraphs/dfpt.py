@@ -811,7 +811,6 @@ def SinglepointDFPTWorkflow(
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
-    kgrid: list[int],
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
@@ -831,9 +830,10 @@ def SinglepointDFPTWorkflow(
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
     tensor feeds the screen step.
 
-    ``kpoints`` is the nscf mesh, which the Wannier functions and kcw.x's
-    ``CONTROL.mp1-3`` both count in. The scf shares it unless ``scf_kpoints``
-    gives it a mesh of its own or ``overrides["scf"]`` a
+    ``kpoints`` is the nscf mesh, and must be a Monkhorst-Pack mesh rather
+    than an explicit list: the Wannier functions and kcw.x's
+    ``CONTROL.mp1-3`` both count in its dimensions. The scf shares it unless
+    ``scf_kpoints`` gives it a mesh of its own or ``overrides["scf"]`` a
     ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
     dielectric chain's ground state samples the same.
 
@@ -955,7 +955,16 @@ def SinglepointDFPTWorkflow(
     # The scf takes the mesh itself and may reduce it by symmetry.
     from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
 
-    mp_grid = kpoints.get_kpoints_mesh()[0]
+    # wannier90's ``mp_grid`` and kcw.x's ``CONTROL.mp1-3`` are the same three
+    # numbers: the dimensions of the mesh the Wannier functions were built on.
+    try:
+        mp_grid = [int(size) for size in kpoints.get_kpoints_mesh()[0]]
+    except AttributeError:
+        raise ValueError(
+            "`kpoints` must be a Monkhorst-Pack mesh (`set_kpoints_mesh`), not an "
+            "explicit list of k-points: kcw.x counts in the mesh dimensions "
+            "(`CONTROL.mp1-3`)."
+        ) from None
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
@@ -1013,7 +1022,7 @@ def SinglepointDFPTWorkflow(
             "occ_labels": [str(block["label"]) for block in occ_blocks],
             "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
-            "kgrid": kgrid,
+            "kgrid": mp_grid,
             "spreads": wannierized["spreads"],
             "bands_kpoints": bands_kpoints,
             "eps_inf": eps_inf,
