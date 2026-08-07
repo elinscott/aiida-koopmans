@@ -89,6 +89,27 @@ def _record_homo_lumo(stripped: str, results: dict[str, Any]) -> None:
     results[f"{prefix}_homo_energy"] = homo
 
 
+def _bands_data(
+    kpts: list[list[float]],
+    eigenvalues: list[list[float]],
+    kpath: orm.KpointsData | None,
+) -> orm.BandsData:
+    """Return the eigenvalues as a ``BandsData``, seeded from ``kpath``.
+
+    The stdout carries the k-points and nothing else. Seeding from the
+    ``kpoints`` input copies its cell, pbc and high-symmetry labels onto the
+    output, so the band structure gets a reciprocal-space x axis and named
+    ticks. ``kpath`` must list the same k-points, in the same order.
+    """
+    bands = orm.BandsData()
+    if kpath is None:
+        bands.set_kpoints(np.array(kpts))
+    else:
+        bands.set_kpointsdata(kpath)
+    bands.set_bands(np.array(eigenvalues), units="eV")
+    return bands
+
+
 class KcwBaseParser(KoopmansStdoutParser):
     """Shared stdout retrieval + common-scalar parsing for the kcw.x modes."""
 
@@ -224,16 +245,16 @@ class KcwHamParser(KcwBaseParser):
 
         do_bands = self._do_bands_requested()
 
-        if not eigenvalues and len(ki_on_grid) == 1:
+        gamma_only = not eigenvalues and len(ki_on_grid) == 1
+        if gamma_only:
             # Gamma-only: the KI grid eigenvalues *are* the band energies.
             eigenvalues = ki_on_grid
             kpts = [[0.0, 0.0, 0.0]]
 
         if eigenvalues:
-            bands = orm.BandsData()
-            bands.set_kpoints(np.array(kpts))
-            bands.set_bands(np.array(eigenvalues), units="eV")
-            self.out("bands", bands)
+            # A Gamma-only run interpolates nothing and is given no k-path.
+            kpath = None if gamma_only else getattr(self.node.inputs, "kpoints", None)
+            self.out("bands", _bands_data(kpts, eigenvalues, kpath))
         elif do_bands:
             return self.exit_codes.ERROR_OUTPUT_BANDS_MISSING
         return None
