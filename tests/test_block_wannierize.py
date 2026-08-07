@@ -1219,13 +1219,28 @@ class TestWannierizeBlockBuild:
         with pytest.raises(ValueError, match=r"occ_down_1.*freezes 5.*3\.200000"):
             _build(SpinChannel.DOWN)
 
+    @pytest.mark.parametrize("split", [1.1e-3, 0.1])
     def test_spin_resolved_bands_on_an_unstamped_block_raise(
-        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+        self, split, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
-        """Neither channel is a defensible guess, so the pairing is refused."""
+        """Channels past the degeneracy tolerance are two manifolds, so neither is a guess.
+
+        Both the rejection and the value it names matter: a check that
+        accepted any two-channel array would silently judge a polarized
+        run's window against half of it. The smaller split sits just over
+        the tolerance, so a tolerance loosened towards exchange-splitting
+        size fails here.
+        """
         block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
-        bands = bands_data([[[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]], [[0.1, 1.1, 2.1, 3.1, 8.1, 9.1]]])
-        with pytest.raises(ValueError, match="names no spin channel"):
+        bands = bands_data(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]],
+                [[split, 1.0 + split, 2.0 + split, 3.0 + split, 8.0 + split, 9.0 + split]],
+            ]
+        )
+        with pytest.raises(
+            ValueError, match=rf"names no spin channel.*differ by up to {split:.6f} eV"
+        ):
             self._build_block(
                 wannier_codes,
                 silicon_structure,
@@ -1234,6 +1249,63 @@ class TestWannierizeBlockBuild:
                 block,
                 fake_cutoffs_family.label,
                 overrides={"wannier90": {"dis_froz_max": 4.0}},
+                nscf_bands=bands,
+            )
+
+    def test_degenerate_channels_on_an_unstamped_block_are_read_as_one(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A closed-shell nspin=2 scratch pairs with a block that names no channel.
+
+        The DFPT route forces nspin=2 (kcw.x needs spin-dependent
+        perturbations) on blocks that carry no channel, so the two channels
+        arrive separated by scf noise alone. Splitting them is meaningless
+        there, and the up channel is the one pw2wannier90 and wannier90
+        read.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        bands = bands_data(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]],
+                [[5.0e-5, 1.00005, 2.00005, 3.00005, 8.00005, 9.00005]],
+            ]
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"dis_froz_max": 4.0}},
+            nscf_bands=bands,
+        )
+        assert self._w90_parameters(wg)["dis_froz_max"] == 4.0
+
+    def test_degenerate_channels_are_still_judged_against_the_window(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Taking one channel is not skipping the check.
+
+        The same degenerate pair with a window over the fifth band freezes
+        five bands for four Wannier functions, which wannier90 refuses.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        bands = bands_data(
+            [
+                [[0.0, 1.0, 2.0, 3.0, 8.0, 9.0]],
+                [[5.0e-5, 1.00005, 2.00005, 3.00005, 8.00005, 9.00005]],
+            ]
+        )
+        with pytest.raises(FrozenWindowError, match=r"block_1.*freezes 5.*8\.000000"):
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                overrides={"wannier90": {"dis_froz_max": 8.5}},
                 nscf_bands=bands,
             )
 
