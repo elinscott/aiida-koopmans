@@ -283,30 +283,53 @@ def _disentanglement_unconstrained(
     return frozen_type not in _WINDOW_SETTING_FROZEN_TYPES
 
 
-def _block_eigenvalues(label: str, spin: Any, nscf_bands: orm.BandsData) -> np.ndarray:
+#: Largest ``max_kn |E_up - E_down|``, in eV, at which a two-channel nscf still
+#: counts as one channel for a block that names none. A closed-shell run forced
+#: to nspin=2 leaves the channels apart by its scf convergence noise (4e-8 eV on
+#: the ZnO DFPT chain), while the smallest exchange splitting worth reading off
+#: a band structure is two orders above this value.
+_DEGENERATE_CHANNEL_TOLERANCE = 1.0e-3
+
+
+def _block_eigenvalues(label: str, spin: SpinChannel, nscf_bands: orm.BandsData) -> np.ndarray:
     """Return one block's own eigenvalues as a ``(nkpoints, nbands)`` array.
 
     A collinear nscf emits one array per spin channel, and the block's own
-    channel selects between them. A block that names no channel cannot be
-    matched against a spin-resolved array, so that pairing raises instead
-    of picking a half.
+    channel selects between them. A block that names no channel keeps the
+    up channel when the pair satisfies ``max_kn |E_up - E_down| <=
+    _DEGENERATE_CHANNEL_TOLERANCE`` — a closed-shell scratch that carries
+    two channels only because kcw.x demands nspin=2, where up is also the
+    channel pw2wannier90 and wannier90 read. Channels further apart than
+    that make the block's manifold ambiguous, so that pairing raises
+    instead of picking a half.
     """
     eigenvalues = np.asarray(nscf_bands.get_bands(), dtype=float)
     if eigenvalues.ndim < 3:
         return eigenvalues
-    # In a graph body the block's fields arrive as provenance-tagged
-    # proxies, which the ``SpinChannel`` constructor's by-value lookup
-    # rejects; attribute access and ``str`` delegate cleanly.
-    channel = str(getattr(spin, "value", spin))
-    index = {SpinChannel.UP.value: 0, SpinChannel.DOWN.value: 1}.get(channel)
-    if index is None:
+    # A graph body receives the block's fields as provenance-tagged proxies,
+    # and a stored block round-trips its channel back as a plain string; both
+    # answer the constructor by value, so normalise once and read the member.
+    spin = SpinChannel(spin)
+    index = {SpinChannel.UP: 0, SpinChannel.DOWN: 1}.get(spin)
+    if index is not None:
+        return eigenvalues[index]
+    if spin == SpinChannel.NONE and eigenvalues.shape[0] == 2:
+        split = float(np.abs(eigenvalues[0] - eigenvalues[1]).max())
+        if split <= _DEGENERATE_CHANNEL_TOLERANCE:
+            return eigenvalues[SpinChannel.NONE.axis]
         raise ValueError(
-            f"Block '{label}' names no spin channel (spin = '{channel}'), but the "
-            f"eigenvalues it was given are spin-resolved ({eigenvalues.shape[0]} "
-            "channels). Give the block the channel it belongs to, or pass that "
-            "channel's own eigenvalues."
+            f"Block '{label}' names no spin channel (spin = '{spin.value}'), but the two "
+            f"channels of the eigenvalues it was given differ by up to {split:.6f} eV, "
+            f"above the {_DEGENERATE_CHANNEL_TOLERANCE} eV at which they count as one. "
+            "Set the block's spin to 'up' or 'down', or pass that channel's own "
+            "eigenvalues."
         )
-    return eigenvalues[index]
+    raise ValueError(
+        f"Block '{label}' names no spin channel (spin = '{spin.value}'), but the "
+        f"eigenvalues it was given are spin-resolved ({eigenvalues.shape[0]} "
+        "channels). Give the block the channel it belongs to, or pass that "
+        "channel's own eigenvalues."
+    )
 
 
 class FrozenWindowError(ValueError):
@@ -327,7 +350,7 @@ class FrozenWindowError(ValueError):
 def validate_frozen_window(
     label: str,
     parameters: dict[str, Any],
-    spin: Any,
+    spin: SpinChannel,
     nscf_bands: orm.BandsData | None,
 ) -> None:
     """Reject a frozen window that freezes more bands than the block Wannierises.
