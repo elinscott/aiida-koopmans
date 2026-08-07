@@ -767,13 +767,19 @@ def power_spectrum_rows_by_orbital(
         members = sorted(by_slot.pop(key, []), key=lambda o: int(o["index"]))
         slot_rows = [[float(x) for x in row] for row in slot["rows"]]
         if len(members) != len(slot_rows):
-            raise ValueError(
+            message = (
                 f"The {_slot_name(key)} manifold holds {len(members)} variational "
                 f"orbital(s) but {len(slot_rows)} Wannier function(s) were "
-                "decomposed. A supercell run screens every image of a Wannier "
-                "function while the descriptors cover only the primitive ones; "
-                "mapping an image back to its Wannier function is not ported yet."
+                "decomposed. Check the `filled` stamps of the projection blocks "
+                "against the run's occupied-band count."
             )
+            if slot_rows and len(members) > len(slot_rows):
+                message += (
+                    " A supercell run screens every image of a Wannier function "
+                    "while the descriptors cover only the primitive ones; mapping "
+                    "an image back to its Wannier function is not ported yet."
+                )
+            raise ValueError(message)
         for orbital, row in zip(members, slot_rows, strict=True):
             rows[map_key_for(orbital)] = row  # type: ignore[arg-type]
     if by_slot:
