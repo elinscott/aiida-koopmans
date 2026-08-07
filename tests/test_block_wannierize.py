@@ -1252,6 +1252,32 @@ class TestWannierizeBlockBuild:
                 nscf_bands=bands,
             )
 
+    def test_more_channels_than_a_spin_pair_on_an_unstamped_block_raise(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """An array of neither one nor two channels names no manifold to read.
+
+        The degeneracy tolerance answers a spin pair and nothing else, so
+        an array carrying more channels than that reaches the same refusal
+        a block naming an unknown channel does.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"], num_bands=6)
+        row = [0.0, 1.0, 2.0, 3.0, 8.0, 9.0]
+        bands = bands_data([[row], [row], [row]])
+        with pytest.raises(
+            ValueError, match=r"names no spin channel.*spin-resolved \(3 channels\)"
+        ):
+            self._build_block(
+                wannier_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                fake_cutoffs_family.label,
+                overrides={"wannier90": {"dis_froz_max": 4.0}},
+                nscf_bands=bands,
+            )
+
     def test_degenerate_channels_on_an_unstamped_block_are_read_as_one(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
