@@ -980,6 +980,33 @@ class TestPowerSpectrumSlots:
             "down_orb_1": [4.0],
         }
 
+    def test_rows_pair_by_band_index_not_by_arrival_order(self):
+        """Orbitals handed over out of index order still get their own rows.
+
+        A slot's rows are in band order, so the orbitals must be put in
+        band order to meet them. Every other fixture here happens to
+        arrive sorted, which cannot tell an index pairing apart from one
+        that consumes the orbitals in whatever order they came.
+        """
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        # Within the up-spin occupied slot, band 2 arrives before band 1.
+        shuffled = [self.ORBITALS[i] for i in (3, 1, 2, 0)]
+        assert ml_helpers.power_spectrum_rows_by_orbital(slots, shuffled) == {
+            "up_orb_1": [1.0],
+            "up_orb_2": [2.0],
+            "up_orb_3": [3.0],
+            "down_orb_1": [4.0],
+        }
+
+    def test_an_undecomposed_manifold_is_not_reported_as_a_supercell(self):
+        """A slot no block covers gets the count, not the supercell hint."""
+        merge_groups = [*self.MERGE_GROUPS, {"filled": False, "spin": "down", "blocks": []}]
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, merge_groups)
+        orbitals = [*self.ORBITALS, _orbital("down", 2, False)]
+        with pytest.raises(ValueError, match="down-spin empty manifold holds 1") as raised:
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+        assert "supercell" not in str(raised.value)
+
     def test_a_disagreeing_filling_boundary_raises_rather_than_relabelling(self):
         """Two occupied Wannier functions, one occupied orbital: a raise, not a shift.
 
