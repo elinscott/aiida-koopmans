@@ -262,9 +262,12 @@ class TestDefaultsNameTheirRanks:
         """The fallback a graph uses when the caller supplies no options.
 
         Reached only when nothing else sets ``metadata.options``, which is
-        exactly when no rank count would otherwise be stored.
+        exactly when no rank count would otherwise be stored. The count is
+        asserted, not just its presence: a fallback that named some other
+        number would be a rank count koopmans never asked for and the
+        computer never offered.
         """
         import importlib
 
         resources = importlib.import_module(module)._DEFAULT_CALCJOB_OPTIONS["resources"]
-        assert "num_mpiprocs_per_machine" in resources
+        assert resources == {"num_machines": 1, "num_mpiprocs_per_machine": 1}
