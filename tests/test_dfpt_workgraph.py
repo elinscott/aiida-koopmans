@@ -309,7 +309,6 @@ class TestSinglepointDFPTBuild:
                 }
             },
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             bands_kpoints=bands_path,
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf=11.7,
@@ -370,7 +369,6 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
         )
         names = [t.name for t in wg.tasks]
@@ -393,7 +391,6 @@ class TestSinglepointDFPTBuild:
                 }
             },
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
         )
         names = [t.name for t in wg.tasks]
@@ -419,7 +416,6 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             check_spread=False,
         )
         assert wg.tasks["dfpt"].inputs["check_spread"].value == False  # noqa: E712 — TaggedValue breaks `is`
@@ -431,7 +427,6 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"nspin": 1}}}}},
         )
@@ -456,7 +451,6 @@ class TestSinglepointDFPTBuild:
                 },
             },
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             spin=SpinType.COLLINEAR,
             overrides={"scf": magnetization, "nscf": magnetization},
@@ -504,7 +498,6 @@ class TestSinglepointDFPTBuild:
                 structure=silicon_structure,
                 manifolds={"up": {"occ": [_block("occ_up", range(1, 5))]}},
                 kpoints=kmesh,
-                kgrid=[2, 2, 2],
                 pseudo_family="SSSP/1.3/PBE/efficiency",
                 spin=SpinType.COLLINEAR,
             )
@@ -518,7 +511,6 @@ class TestSinglepointDFPTBuild:
             # Spinor manifold: counts doubled; single "none" channel.
             manifolds={"none": {"occ": [_block("occ", range(1, 9))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             spin=SpinType.SPIN_ORBIT,
         )
@@ -551,7 +543,6 @@ class TestSinglepointDFPTBuild:
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 9))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             pseudo_family="SSSP/1.3/PBE/efficiency",
             spin=SpinType.NON_COLLINEAR,
             overrides={
@@ -1050,7 +1041,6 @@ class TestSinglepointDFPTGrouping:
                 }
             },
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
             group_orbitals_tol=0.05,
         )
         dfpt_inputs = wg.tasks["dfpt"].inputs
@@ -1067,6 +1057,5 @@ class TestSinglepointDFPTGrouping:
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
-            kgrid=[2, 2, 2],
         )
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
