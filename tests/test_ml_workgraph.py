@@ -132,6 +132,7 @@ class TestTrajectoryGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="train",
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
 
@@ -148,6 +149,25 @@ class TestTrajectoryGraphBuild:
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
+
+    def test_a_non_ml_trajectory_submits_without_a_descriptor(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """An omitted ``descriptor`` must not block a non-ML submission.
+
+        A build-time assertion cannot see this: the graph builds either
+        way. ``check_before_run`` is what a submission runs first, and it
+        is where a socket wrongly marked required surfaces.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="none",
+        )
+        assert wg.inputs["descriptor"]._metadata.required is False
+        assert wg.inputs["descriptor"].value is None
+        assert wg.check_before_run() is None
 
     def test_none_mode_skips_ml_layer(self, ozone_structure, kcp_code, ozone_pseudo_family):
         wg = self._build_wg(
@@ -184,6 +204,7 @@ class TestTrajectoryGraphBuild:
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="test",
             ml_model=model,
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
         assert sum(1 for n in names if "evaluate_screening_model" in n) == 1, names
@@ -219,6 +240,7 @@ class TestTrajectoryGraphBuild:
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="predict",
             ml_model=model,
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
         assert any("dscf_snapshot_1" in n for n in names), names
@@ -381,11 +403,10 @@ class TestTrajectoryGraphBuild:
 class TestDescriptorIsNeverAssumed:
     """A run that never names a descriptor must not be given one.
 
-    The graph entry points still carry a default, because node-graph marks
-    every enum-typed socket required whatever its default (aiida-koopmans#73),
-    so a nullable one would block every non-ML submission. These two
-    validators are where the rule is enforced, and both are plain functions
-    precisely so the path is testable without building a graph.
+    Both entry points leave ``descriptor`` unset by default. These two
+    validators are where a working mode's missing descriptor is refused,
+    and both are plain functions precisely so the path is testable
+    without building a graph.
     """
 
     @pytest.mark.parametrize("ml_mode", ["train", "test", "predict"])

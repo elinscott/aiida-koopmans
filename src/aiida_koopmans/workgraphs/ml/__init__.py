@@ -810,10 +810,7 @@ def TrajectoryWorkflow(
     ml_mode: MLMode = MLMode.NONE,
     ml_model: dict | None = None,
     estimator: str = "ridge_regression",
-    # Not `MLDescriptor | None = None`: node-graph forces every enum-typed
-    # socket to `required`, so a nullable one would block every non-ML
-    # submission. See aiida-koopmans#73.
-    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    descriptor: MLDescriptor | None = None,
     occ_and_emp_together: bool = True,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,

@@ -1064,10 +1064,7 @@ def KoopmansDSCFWorkflow(
     calculate_alpha: bool = True,
     ml_model: dict | None = None,
     ml_test: bool = False,
-    # Not `MLDescriptor | None = None`: node-graph forces every enum-typed
-    # socket to `required`, so a nullable one would block every non-ML
-    # submission. See aiida-koopmans#73.
-    descriptor: MLDescriptor = MLDescriptor.SELF_HARTREE,
+    descriptor: MLDescriptor | None = None,
     pw2wannier90_code: orm.AbstractCode | None = None,
     decompose_parameters: dict | None = None,
     spin_polarized: bool = False,

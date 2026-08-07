@@ -15,6 +15,7 @@ from typing import ClassVar
 import pytest
 
 from aiida_koopmans.functionals import Correction
+from aiida_koopmans.ml import MLDescriptor
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons, filled_and_empty_counts
 from aiida_koopmans.variational_orbitals import VariationalOrbitalType
@@ -1831,6 +1832,7 @@ class TestKoopmansDSCFGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_model=_linear_sh_model(),
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         labels = self._all_link_labels(wg)
         assert any("PredictScreeningParameters" in label for label in labels), labels
@@ -1904,6 +1906,7 @@ class TestKoopmansDSCFGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_model=_linear_sh_model(),
+                descriptor=MLDescriptor.SELF_HARTREE,
                 calculate_alpha=False,
                 initial_alpha=None,
                 initial_alphas={
@@ -1919,6 +1922,7 @@ class TestKoopmansDSCFGraphBuild:
                 kcp_code=kcp_code,
                 ozone_pseudo_family=ozone_pseudo_family,
                 ml_model=_linear_sh_model(),
+                descriptor=MLDescriptor.SELF_HARTREE,
                 alpha_numsteps=2,
             )
 
@@ -2639,6 +2643,8 @@ class TestMlTestModeGraphBuild:
             "fix_spin_contamination": False,
             "initial_alpha": 0.6,
             "spin_polarized": False,
+            # Every test here runs the ml_test route off a self-Hartree model.
+            "descriptor": MLDescriptor.SELF_HARTREE,
         }
         inputs.update(overrides)
         return KoopmansDSCFWorkflow.build(**inputs)
@@ -3006,6 +3012,7 @@ class TestPowerSpectrumPredictionGraph:
             "correction": Correction.KI,
             "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
             "ml_model": _linear_sh_model(),
+            "descriptor": MLDescriptor.SELF_HARTREE,
         }
         KoopmansDSCFWorkflow.build(**common)
         KoopmansDSCFWorkflow.build(**common, ml_test=True)
