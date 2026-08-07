@@ -811,7 +811,7 @@ def SinglepointDFPTWorkflow(
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
-    kgrid: list[int],
+    scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -829,6 +829,13 @@ def SinglepointDFPTWorkflow(
     (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
     tensor feeds the screen step.
+
+    ``kpoints`` is the nscf mesh, and must be a Monkhorst-Pack mesh rather
+    than an explicit list: the Wannier functions and kcw.x's
+    ``CONTROL.mp1-3`` both count in its dimensions. The scf shares it unless
+    ``scf_kpoints`` gives it a mesh of its own or ``overrides["scf"]`` a
+    ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
+    dielectric chain's ground state samples the same.
 
     The workflow has three stages: compute the ground state (one shared
     scf + nscf, with ``nosym`` / ``noinv`` on the nscf so kcw.x sees the
@@ -888,11 +895,19 @@ def SinglepointDFPTWorkflow(
             f"{sorted(expected_keys)}, got {sorted(channel_keys)}."
         )
 
+    # The scf shares the nscf mesh unless the caller states otherwise, either
+    # as a mesh of its own or as a ``kpoints_distance`` in its overrides. Both
+    # scf runs the graph may contain resolve it here, so the two ground states
+    # in one graph cannot end up on different meshes.
+    if scf_kpoints is None and "kpoints_distance" not in overrides.get("scf", {}):
+        scf_kpoints = kpoints
+
     if eps_inf == "auto":
         # Run a scf + ph.x dielectric chain first and feed tr(eps)/3 into the
         # screen step. The dielectric scf drops ``nbnd`` (no empty bands are
         # needed for a ground-state response) and none of the kcw spin
-        # forcing — it is an independent ground state.
+        # forcing — it is an independent ground state, but on the same mesh as
+        # the chain's own.
         if "ph" not in codes:
             raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
@@ -903,7 +918,7 @@ def SinglepointDFPTWorkflow(
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
-            scf_kpoints=kpoints,
+            scf_kpoints=scf_kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             metadata={"call_link_label": "dielectric"},
@@ -940,7 +955,16 @@ def SinglepointDFPTWorkflow(
     # The scf takes the mesh itself and may reduce it by symmetry.
     from aiida_wannier90_workflows.utils.kpoints import get_explicit_kpoints
 
-    mp_grid = kpoints.get_kpoints_mesh()[0]
+    # wannier90's ``mp_grid`` and kcw.x's ``CONTROL.mp1-3`` are the same three
+    # numbers: the dimensions of the mesh the Wannier functions were built on.
+    try:
+        mp_grid = [int(size) for size in kpoints.get_kpoints_mesh()[0]]
+    except AttributeError:
+        raise ValueError(
+            "`kpoints` must be a Monkhorst-Pack mesh (`set_kpoints_mesh`), not an "
+            "explicit list of k-points: kcw.x counts in the mesh dimensions "
+            "(`CONTROL.mp1-3`)."
+        ) from None
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
@@ -950,7 +974,7 @@ def SinglepointDFPTWorkflow(
         protocol=protocol,
         overrides=scf_nscf_overrides,
         nscf_kpoints=explicit_kpoints,
-        scf_kpoints=kpoints,
+        scf_kpoints=scf_kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "scf_nscf"},
     )
@@ -998,7 +1022,7 @@ def SinglepointDFPTWorkflow(
             "occ_labels": [str(block["label"]) for block in occ_blocks],
             "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
-            "kgrid": kgrid,
+            "kgrid": mp_grid,
             "spreads": wannierized["spreads"],
             "bands_kpoints": bands_kpoints,
             "eps_inf": eps_inf,
