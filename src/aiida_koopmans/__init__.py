@@ -16,8 +16,14 @@ def _patch_hyperqueue_accepts_computer_default() -> None:
     regardless of the user's ``--procs-per-calc`` setting.
 
     Until upstream fixes that, flip the classmethod to ``True`` once at
-    import time. This module is imported by the AiiDA daemon worker via
-    plugin entry points, so the patch is in effect everywhere we submit.
+    import time.
+
+    Where the patch is in effect is not something this module can promise:
+    a daemon worker imports it only once something pulls in an entry point
+    it owns, and koopmans has seen the same calculation stored with 14
+    ranks and with 1 in one run. Treat it as a floor for a rank count
+    nothing else declares, not as a guarantee — a CalcJob whose count
+    matters names it in ``metadata.options.resources``.
 
     Track upstream: https://github.com/aiidateam/aiida-hyperqueue/issues
     """

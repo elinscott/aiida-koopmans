@@ -95,7 +95,13 @@ class MergeEvcCalculation(KoopmansCalculation):
         spec.inputs["metadata"]["options"]["output_filename"].default = cls._OUTPUT_FILE
         # merge_evc.x is a serial concatenation tool; never launched under MPI.
         spec.inputs["metadata"]["options"]["withmpi"].default = False
-        spec.inputs["metadata"]["options"]["resources"].default = {"num_machines": 1}
+        # One rank, written out: a ``num_machines``-only default leaves the count
+        # to the scheduler, which reserves the computer's default CPUs for a
+        # single-process concatenation.
+        spec.inputs["metadata"]["options"]["resources"].default = {
+            "num_machines": 1,
+            "num_mpiprocs_per_machine": 1,
+        }
 
         spec.output(
             "output_parameters",

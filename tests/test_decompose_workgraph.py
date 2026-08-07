@@ -254,7 +254,7 @@ def test_power_spectrum_dataset_builds_without_parallelization(
     )
 
     resources = wg.tasks["decompose_occ"].inputs["metadata"]["options"]["resources"].value
-    assert resources == {"num_machines": 1}, resources
+    assert resources == {"num_machines": 1, "num_mpiprocs_per_machine": 1}, resources
 
 
 def test_power_spectrum_dataset_nspin1_omits_spin_component(

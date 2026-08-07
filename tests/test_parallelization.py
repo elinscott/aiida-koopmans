@@ -222,3 +222,52 @@ class TestSchedulerCanary:
         )
         # No pw entry in the mapping and no projwfc config: data is untouched.
         assert data == {"projwfc": {"projwfc": {"parameters": {}}}}
+
+
+class TestDefaultsNameTheirRanks:
+    """The resource dicts koopmans authors for the always-serial steps name a rank count.
+
+    A ``num_machines``-only dict is resolved at submission against the
+    computer's ``default_mpiprocs_per_machine``, so the count is decided by
+    the submitting process, not by the stored inputs. The kcp.x and kcw.x spec
+    defaults are deliberately not here: those codes do run in parallel, and
+    their rank count comes from the caller's ``parallelization`` block.
+    """
+
+    def test_merge_evc_reserves_one_rank(self):
+        """merge_evc.x concatenates in one process; it must reserve one CPU."""
+        from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
+
+        options = MergeEvcCalculation.spec().inputs["metadata"]["options"]
+        assert options["resources"].default == {
+            "num_machines": 1,
+            "num_mpiprocs_per_machine": 1,
+        }
+
+    def test_wann2kcp_reserves_one_rank(self):
+        """wann2kcp.x races on its scratch under several ranks."""
+        from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
+
+        options = Wann2kcpCalculation.spec().inputs["metadata"]["options"]
+        assert options["resources"].default == {
+            "num_machines": 1,
+            "num_mpiprocs_per_machine": 1,
+        }
+
+    @pytest.mark.parametrize(
+        "module",
+        ["aiida_koopmans.workgraphs.auto_wannierize", "aiida_koopmans.workgraphs.ml"],
+    )
+    def test_graph_fallback_options_name_their_ranks(self, module):
+        """The fallback a graph uses when the caller supplies no options.
+
+        Reached only when nothing else sets ``metadata.options``, which is
+        exactly when no rank count would otherwise be stored. The count is
+        asserted, not just its presence: a fallback that named some other
+        number would be a rank count koopmans never asked for and the
+        computer never offered.
+        """
+        import importlib
+
+        resources = importlib.import_module(module)._DEFAULT_CALCJOB_OPTIONS["resources"]
+        assert resources == {"num_machines": 1, "num_mpiprocs_per_machine": 1}

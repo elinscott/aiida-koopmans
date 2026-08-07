@@ -659,8 +659,9 @@ class TestPlainOptions:
     """Rebuilding CalcJob ``metadata.options`` free of provenance proxies."""
 
     def test_defaults_when_absent(self):
-        assert _plain_options(None) == {"resources": {"num_machines": 1}}
-        assert _plain_options({}) == {"resources": {"num_machines": 1}}
+        one_rank = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 1}}
+        assert _plain_options(None) == one_rank
+        assert _plain_options({}) == one_rank
 
     def test_rebuilds_nested_mapping_into_a_fresh_dict(self):
         opts = {"resources": {"num_machines": 2}, "max_wallclock_seconds": 60}
