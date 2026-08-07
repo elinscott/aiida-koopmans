@@ -236,6 +236,16 @@ def kmesh(aiida_profile):
 
 
 @pytest.fixture
+def denser_kmesh(aiida_profile):
+    """Return a 4x4x4 ``KpointsData`` mesh, for a step that samples finer."""
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints_mesh([4, 4, 4])
+    return kpts
+
+
+@pytest.fixture
 def kpath(aiida_profile):
     """Return a short explicit k-path ``KpointsData``."""
     from aiida.orm import KpointsData
