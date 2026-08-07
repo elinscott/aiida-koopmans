@@ -1627,7 +1627,9 @@ class TestFrozenWindowError:
         """A rejection arrives as ``FrozenWindowError`` through ``except ValueError``."""
         parameters = {"num_wann": 1, "dis_froz_max": 5.0}
         try:
-            validate_frozen_window("block_1", parameters, "none", bands_data([[0.0, 1.0, 2.0]]))
+            validate_frozen_window(
+                "block_1", parameters, SpinChannel.NONE, bands_data([[0.0, 1.0, 2.0]])
+            )
         except ValueError as exc:
             assert type(exc) is FrozenWindowError
             assert exc.label == "block_1"
