@@ -306,9 +306,10 @@ def _block_eigenvalues(label: str, spin: SpinChannel, nscf_bands: orm.BandsData)
     eigenvalues = np.asarray(nscf_bands.get_bands(), dtype=float)
     if eigenvalues.ndim < 3:
         return eigenvalues
-    # Compare and look up by member, never ``SpinChannel(spin)``: in a graph
-    # body the block's fields arrive as provenance-tagged proxies, which the
-    # constructor's by-value lookup rejects while ``==`` and ``hash`` delegate.
+    # A graph body receives the block's fields as provenance-tagged proxies,
+    # and a stored block round-trips its channel back as a plain string; both
+    # answer the constructor by value, so normalise once and read the member.
+    spin = SpinChannel(spin)
     index = {SpinChannel.UP: 0, SpinChannel.DOWN: 1}.get(spin)
     if index is not None:
         return eigenvalues[index]
