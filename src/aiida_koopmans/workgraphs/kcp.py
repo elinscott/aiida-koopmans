@@ -1538,7 +1538,9 @@ def KoopmansDSCFWorkflow(
         orbital_groups_self_hartree_tol=orbital_groups_self_hartree_tol,
         ml_model=ml_model,
         screening=screening,
-        descriptor=descriptor,
+        # Reached only with an `ml_model`, which `_validate_ml_model_inputs`
+        # refuses without a descriptor.
+        descriptor=cast("MLDescriptor", descriptor),
         pw2wannier90_code=pw2wannier90_code,
         decompose_parameters=decompose_parameters,
         nscf_remote_folder=nscf_remote_folder,

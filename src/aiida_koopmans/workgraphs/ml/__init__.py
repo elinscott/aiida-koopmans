@@ -938,7 +938,9 @@ def TrajectoryWorkflow(
             # each snapshot's DSCF, and there are no computed alphas to
             # pair descriptors with.
             datasets[label] = wire_snapshot_dataset(
-                descriptor,
+                # A working `ml_mode`, which `require_ml_mode_inputs` refuses
+                # without a descriptor.
+                cast("MLDescriptor", descriptor),
                 dscf,
                 label=label,
                 pw2wannier90_code=pw2wannier90_code,
