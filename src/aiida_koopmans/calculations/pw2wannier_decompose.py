@@ -50,7 +50,7 @@ from aiida.common import CalcInfo
 from aiida.orm import ArrayData, Dict, RemoteData, SinglefileData
 
 from aiida_koopmans.calculations.base import KoopmansStdoutCalculation
-from aiida_koopmans.ml import DECOMPOSE_KEY_PREFIX, RADIAL_BASIS_DEFAULTS
+from aiida_koopmans.ml import RadialBasisSettings
 
 
 class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
@@ -108,13 +108,7 @@ class Pw2wannierDecomposeCalculation(KoopmansStdoutCalculation):
     # complaint from the binary.
     _VALID_SPIN_COMPONENTS: ClassVar[frozenset[str]] = frozenset({"up", "down", "none"})
 
-    # Radial-basis defaults matching the legacy koopmans ``ml`` settings
-    # (``n_max=4, l_max=4, r_min=0.5, r_max=4.0``); the QE binary itself
-    # defaults ``n_max=l_max=6`` but the Koopmans descriptor is defined
-    # against the legacy values, so they are the injected defaults here.
-    _DEFAULTS: ClassVar[dict[str, Any]] = {
-        f"{DECOMPOSE_KEY_PREFIX}{key}": value for key, value in RADIAL_BASIS_DEFAULTS.items()
-    }
+    _DEFAULTS: ClassVar[dict[str, Any]] = RadialBasisSettings().model_dump(by_alias=True)
 
     @classmethod
     def define(cls, spec):

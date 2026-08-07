@@ -7,6 +7,12 @@ from enum import Enum
 from math import isclose
 from typing import Any, TypedDict
 
+from pydantic import BaseModel, ConfigDict
+
+#: pw2wannier90.x spells the radial-basis settings ``decompose_<key>`` in
+#: its ``&inputpp`` namelist.
+DECOMPOSE_KEY_PREFIX = "decompose_"
+
 
 class RadialBasis(TypedDict):
     """The radial basis a ``power_spectrum`` descriptor is expanded on.
@@ -23,46 +29,52 @@ class RadialBasis(TypedDict):
     r_max: float
 
 
+class RadialBasisSettings(BaseModel):
+    """The ``decompose_*`` keys of a pw2wannier90.x ``&inputpp`` namelist.
+
+    Each field is read under its ``decompose_``-prefixed alias and only
+    that alias; every other ``&inputpp`` key is ignored. The defaults are
+    the values the Koopmans descriptor is defined against (the legacy
+    ``ml`` settings, not the binary's own ``n_max=l_max=6``), so the
+    CalcJob writes all four into the namelist.
+    """
+
+    model_config = ConfigDict(alias_generator=lambda name: f"{DECOMPOSE_KEY_PREFIX}{name}")
+
+    n_max: int = 4
+    l_max: int = 4
+    r_min: float = 0.5
+    r_max: float = 4.0
+
+
 #: Every :class:`RadialBasis` field, for the callers that walk the
 #: settings by name (a model's stamp, a pw2wannier90.x namelist).
-RADIAL_BASIS_KEYS: tuple[str, ...] = ("n_max", "l_max", "r_min", "r_max")
+RADIAL_BASIS_KEYS: tuple[str, ...] = tuple(RadialBasisSettings.model_fields)
 
 #: The fields that compare as integers; the rest compare as floats.
-_INTEGER_BASIS_KEYS = frozenset({"n_max", "l_max"})
-
-#: The values the Koopmans descriptor is defined against (the legacy
-#: ``ml`` defaults), used wherever a decompose pass leaves a setting out.
-RADIAL_BASIS_DEFAULTS: RadialBasis = {
-    "n_max": 4,
-    "l_max": 4,
-    "r_min": 0.5,
-    "r_max": 4.0,
-}
-
-#: pw2wannier90.x spells the same settings ``decompose_<key>`` in its
-#: ``&inputpp`` namelist.
-DECOMPOSE_KEY_PREFIX = "decompose_"
+_INTEGER_BASIS_KEYS = frozenset(
+    name for name, field in RadialBasisSettings.model_fields.items() if field.annotation is int
+)
 
 
 def resolve_radial_basis(decompose_parameters: Mapping[str, Any] | None) -> RadialBasis:
     """Return the radial basis a decompose pass runs with.
 
     ``decompose_parameters`` is the pw2wannier90.x ``&inputpp`` override
-    dict, whose keys carry the ``decompose_`` prefix; anything it leaves
-    out falls back to :data:`RADIAL_BASIS_DEFAULTS`, the same fallback the
+    dict; keys are matched case-insensitively and anything it leaves out
+    takes the :class:`RadialBasisSettings` default, the same fallback the
     CalcJob injects. Callers stamp the result into a trained model and
     compare it against the model's stamp before predicting.
     """
+    # A graph body receives these as an ``orm.Dict``, which pydantic will
+    # not validate; iterating ``.items()`` is what makes them parseable.
     supplied = {str(key).lower(): value for key, value in (decompose_parameters or {}).items()}
-
-    def setting(key: str, default: float | int) -> Any:
-        return supplied.get(f"{DECOMPOSE_KEY_PREFIX}{key}", default)
-
+    settings = RadialBasisSettings.model_validate(supplied)
     return RadialBasis(
-        n_max=int(setting("n_max", RADIAL_BASIS_DEFAULTS["n_max"])),
-        l_max=int(setting("l_max", RADIAL_BASIS_DEFAULTS["l_max"])),
-        r_min=float(setting("r_min", RADIAL_BASIS_DEFAULTS["r_min"])),
-        r_max=float(setting("r_max", RADIAL_BASIS_DEFAULTS["r_max"])),
+        n_max=settings.n_max,
+        l_max=settings.l_max,
+        r_min=settings.r_min,
+        r_max=settings.r_max,
     )
 
 

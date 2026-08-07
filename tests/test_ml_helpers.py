@@ -828,6 +828,37 @@ class TestRadialBasisResolution:
         assert isinstance(resolved["r_min"], float)
         assert isinstance(resolved["r_max"], float)
 
+    def test_keys_resolve_case_insensitively_from_any_mapping(self):
+        """A namelist override reaches the basis whatever its case or container."""
+        from collections.abc import Mapping
+
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        class NotADict(Mapping):
+            """A mapping that is not a ``dict``, as ``orm.Dict`` is."""
+
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+        resolved = resolve_radial_basis(NotADict({"DECOMPOSE_N_MAX": 6, "wan_mode": "decompose"}))
+        assert resolved == {"n_max": 6, "l_max": 4, "r_min": 0.5, "r_max": 4.0}
+
+    def test_a_fractional_expansion_order_is_rejected(self):
+        """`n_max` and `l_max` count basis functions, so they take no fraction."""
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        with pytest.raises(ValueError, match="n_max"):
+            resolve_radial_basis({"decompose_n_max": 4.7})
+
     def test_mismatch_list_names_only_the_disagreeing_keys(self):
         from aiida_koopmans.ml import radial_basis_mismatches
 
