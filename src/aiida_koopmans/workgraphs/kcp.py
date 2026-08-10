@@ -304,27 +304,6 @@ def self_hartree_descriptor_rows(
 
 
 @task
-def power_spectrum_descriptor_rows(
-    slots: list,
-    orbitals: list[VariationalOrbital],
-) -> dict:
-    """Turn a snapshot's decomposed Wannier functions into orbital-labelled rows.
-
-    ``slots`` are the ``(spin, filling)`` manifolds
-    :func:`~aiida_koopmans.workgraphs.ml.PowerSpectrumDescriptorWorkflow`
-    emits; each is paired with the orbitals of its own spin and filling.
-    The keys are the labels
-    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds, so both
-    descriptor routes hand :func:`predict_alpha_screening` the same shape.
-    """
-    # Function-local: the ml package's __init__ imports this module, so a
-    # module-level import of its helpers would be circular.
-    from aiida_koopmans.workgraphs.ml.helpers import power_spectrum_rows_by_orbital
-
-    return power_spectrum_rows_by_orbital(slots, orbitals)
-
-
-@task
 def predict_alpha_screening(
     model: dict,
     descriptor_rows: dict,
@@ -449,7 +428,10 @@ def wire_descriptor_rows(
     if descriptor == MLDescriptor.POWER_SPECTRUM:
         # Function-local: the ml package's __init__ imports this module, so a
         # module-level import would be circular.
-        from aiida_koopmans.workgraphs.ml import PowerSpectrumDescriptorWorkflow
+        from aiida_koopmans.workgraphs.ml import (
+            PowerSpectrumDescriptorWorkflow,
+            power_spectrum_descriptor_rows,
+        )
 
         if pw2wannier90_code is None:
             raise ValueError(

@@ -52,7 +52,7 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.variational_orbitals import VariationalOrbitalType
+from aiida_koopmans.variational_orbitals import VariationalOrbital, VariationalOrbitalType
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -75,6 +75,7 @@ from aiida_koopmans.workgraphs.ml.helpers import (
     fit_screening_model,
     format_group_centres_file,
     parse_wannier_centres_xyz,
+    power_spectrum_rows_by_orbital,
     power_spectrum_slots,
     predict_screening,
 )
@@ -672,6 +673,24 @@ def PowerSpectrumDescriptorWorkflow(
         merge_groups=merge_groups,
     )
     return PowerSpectrumDescriptorOutputs(slots=slots.result)
+
+
+@task
+def power_spectrum_descriptor_rows(
+    slots: list,
+    orbitals: list[VariationalOrbital],
+) -> dict:
+    """Turn a snapshot's decomposed Wannier functions into orbital-labelled rows.
+
+    ``slots`` are the ``(spin, filling)`` manifolds
+    :func:`PowerSpectrumDescriptorWorkflow` emits; each is paired with the
+    orbitals of its own spin and filling. The keys are the labels
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for` builds, so both
+    descriptor routes hand
+    :func:`~aiida_koopmans.workgraphs.kcp.predict_alpha_screening` the same
+    shape.
+    """
+    return power_spectrum_rows_by_orbital(slots, orbitals)
 
 
 def require_power_spectrum_route(

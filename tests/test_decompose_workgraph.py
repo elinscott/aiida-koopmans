@@ -495,8 +495,10 @@ def test_gathered_slots_pair_with_the_orbitals_by_map_key_for(aiida_profile):
     import numpy as np
 
     from aiida_koopmans.variational_orbitals import map_key_for
-    from aiida_koopmans.workgraphs.kcp import power_spectrum_descriptor_rows
-    from aiida_koopmans.workgraphs.ml import gather_block_descriptor_slots
+    from aiida_koopmans.workgraphs.ml import (
+        gather_block_descriptor_slots,
+        power_spectrum_descriptor_rows,
+    )
 
     slots = gather_block_descriptor_slots._callable(
         block_descriptors={
