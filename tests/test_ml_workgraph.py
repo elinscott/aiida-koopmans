@@ -324,10 +324,9 @@ class TestTrajectoryGraphBuild:
     ):
         """The descriptor is closed-shell only, and says so before any snapshot runs.
 
-        The message offers the setting that keeps the descriptor the user
-        asked for, and does not name ``self_hartree`` — reaching for a
-        one-scalar-per-orbital descriptor should be a choice, not what a
-        blocked user is steered into.
+        The message states the gap and names the one descriptor that does
+        work for spin-polarized runs; it must not tell the user to change
+        ``spin``, which describes their system rather than a choice.
         """
         p2w = aiida_local_code_factory(
             executable="true", entry_point="koopmans.pw2wannier_decompose"
@@ -343,8 +342,8 @@ class TestTrajectoryGraphBuild:
                 pw2wannier90_code=p2w,
                 spin_polarized=True,
             )
-        assert "spin='none'" in str(excinfo.value)
-        assert "self_hartree" not in str(excinfo.value)
+        assert "self_hartree" in str(excinfo.value)
+        assert "spin='none'" not in str(excinfo.value)
 
     def test_power_spectrum_routes_to_decompose_segment(
         self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
