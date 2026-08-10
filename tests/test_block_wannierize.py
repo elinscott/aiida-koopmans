@@ -312,7 +312,7 @@ class TestSplitMode:
         self, wannier_codes, silicon_structure, kmesh, kpath
     ):
         """The detected groups are split with Wannier.jl, so its code is required."""
-        with pytest.raises(ValueError, match="wannierjl"):
+        with pytest.raises(ValueError, match="Split mode requires a `wannierjl` code"):
             self._build_split(wannier_codes, silicon_structure, kmesh, kpath)
 
     def test_split_with_external_scratch_raises(
