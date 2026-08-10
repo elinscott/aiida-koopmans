@@ -35,9 +35,10 @@ def _bands_data(*, eigenvalues, occupations):
     from aiida.orm import BandsData
 
     bands = BandsData()
-    kpoints = np.zeros((len(eigenvalues), 3))
-    bands.set_kpoints(kpoints)
-    bands.set_bands(np.array(eigenvalues), occupations=np.array(occupations))
+    eigenvalues = np.array(eigenvalues)
+    # (nkpoints, nbands) or, on a collinear run, (nspin, nkpoints, nbands).
+    bands.set_kpoints(np.zeros((eigenvalues.shape[-2], 3)))
+    bands.set_bands(eigenvalues, occupations=np.array(occupations))
     return bands
 
 
@@ -99,6 +100,30 @@ class TestCheckWannierInitialization:
     def test_all_bands_occupied_raises(self, aiida_profile):
         bands = _bands_data(eigenvalues=[[-2.0, -1.0]], occupations=[[2.0, 2.0]])
         with pytest.raises(ValueError, match="no empty bands"):
+            _run_check(bands=bands)
+
+    def test_collinear_bands_use_cross_channel_extrema(self, aiida_profile):
+        # (nspin, nkpoints, nbands): the HOMO comes from the up channel
+        # (-1.0) and the LUMO from the down channel (1.0). The cross-channel
+        # gap (2.0 eV) differs from both per-channel gaps (2.5 / 2.2 eV), so
+        # this pins the kcp.x-matching semantics.
+        bands = _bands_data(
+            eigenvalues=[[[-2.0, -1.0, 1.5]], [[-2.5, -1.2, 1.0]]],
+            occupations=[[[1.0, 1.0, 0.0]], [[1.0, 1.0, 0.0]]],
+        )
+        report = _run_check(bands=bands)
+        assert report["pw_gap"] == pytest.approx(2.0)
+
+    def test_wrong_rank_raises(self, aiida_profile):
+        from aiida.orm import BandsData
+
+        # set_bands itself refuses ranks other than 2 and 3, so plant the
+        # arrays directly to reach the check's own guard.
+        bands = BandsData()
+        bands.set_kpoints(np.zeros((1, 3)))
+        bands.set_array("bands", np.zeros((2, 2, 1, 3)))
+        bands.set_array("occupations", np.ones((2, 2, 1, 3)))
+        with pytest.raises(ValueError, match="band array has shape"):
             _run_check(bands=bands)
 
     def test_missing_cp_lumo_raises(self, aiida_profile):
