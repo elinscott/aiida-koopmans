@@ -765,3 +765,325 @@ class TestFinalKiDeltas:
                 [[0.0, 1.0]],
                 [[0.0]],
             )
+
+
+# ----------------------------------------------------------------------
+# Radial-basis stamp: fit, resolve, and the checks that guard prediction
+# ----------------------------------------------------------------------
+
+
+def _dataset(width=1):
+    return {
+        "descriptors": [[float(i)] * width for i in (1, 2, 3)],
+        "alpha_targets": [0.5, 0.6, 0.7],
+        "filled": [True, True, False],
+        "labels": ["orb_1", "orb_2", "orb_3"],
+    }
+
+
+def _power_spectrum_model(width=3, **basis):
+    from aiida_koopmans.ml import resolve_radial_basis
+
+    radial_basis = resolve_radial_basis({f"decompose_{key}": value for key, value in basis.items()})
+    return ml_helpers.fit_screening_model(
+        _dataset(width),
+        "linear_regression",
+        descriptor="power_spectrum",
+        correction="ki",
+        init_orbitals="mlwfs",
+        radial_basis=radial_basis,
+    )
+
+
+class TestRadialBasisResolution:
+    def test_unset_keys_fall_back_to_the_calcjob_defaults(self):
+        """The stamp records what the pass runs with, not only what was asked."""
+        from aiida_koopmans.calculations.pw2wannier_decompose import (
+            Pw2wannierDecomposeCalculation,
+        )
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        resolved = resolve_radial_basis({"decompose_n_max": 6})
+        assert resolved["n_max"] == 6
+        injected = Pw2wannierDecomposeCalculation._DEFAULTS
+        assert resolved["l_max"] == injected["decompose_l_max"]
+        assert resolved["r_min"] == injected["decompose_r_min"]
+        assert resolved["r_max"] == injected["decompose_r_max"]
+
+    def test_each_setting_resolves_to_its_own_type(self):
+        """`RadialBasis` separates the expansion orders from the radii."""
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        resolved = resolve_radial_basis(
+            {
+                "decompose_n_max": "6",
+                "decompose_l_max": 6.0,
+                "decompose_r_min": 1,
+                "decompose_r_max": 4,
+            }
+        )
+        assert resolved == {"n_max": 6, "l_max": 6, "r_min": 1.0, "r_max": 4.0}
+        assert isinstance(resolved["n_max"], int)
+        assert isinstance(resolved["l_max"], int)
+        assert isinstance(resolved["r_min"], float)
+        assert isinstance(resolved["r_max"], float)
+
+    def test_keys_resolve_case_insensitively_from_any_mapping(self):
+        """A namelist override reaches the basis whatever its case or container."""
+        from collections.abc import Mapping
+
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        class NotADict(Mapping):
+            """A mapping that is not a ``dict``, as ``orm.Dict`` is."""
+
+            def __init__(self, data):
+                self._data = data
+
+            def __getitem__(self, key):
+                return self._data[key]
+
+            def __iter__(self):
+                return iter(self._data)
+
+            def __len__(self):
+                return len(self._data)
+
+        resolved = resolve_radial_basis(NotADict({"DECOMPOSE_N_MAX": 6, "wan_mode": "decompose"}))
+        assert resolved == {"n_max": 6, "l_max": 4, "r_min": 0.5, "r_max": 4.0}
+
+    def test_a_fractional_expansion_order_is_rejected(self):
+        """`n_max` and `l_max` count basis functions, so they take no fraction."""
+        from aiida_koopmans.ml import resolve_radial_basis
+
+        with pytest.raises(ValueError, match="n_max"):
+            resolve_radial_basis({"decompose_n_max": 4.7})
+
+    def test_mismatch_list_names_only_the_disagreeing_keys(self):
+        from aiida_koopmans.ml import radial_basis_mismatches
+
+        left = {"n_max": 6, "l_max": 6, "r_min": 1.0, "r_max": 4.0}
+        right = {"n_max": 6, "l_max": 4, "r_min": 1.0, "r_max": 4.0}
+        assert radial_basis_mismatches(left, right) == ["l_max"]
+
+    def test_a_missing_stamp_counts_as_a_mismatch(self):
+        """A model predating the stamp must not pass by omission."""
+        from aiida_koopmans.ml import radial_basis_mismatches
+
+        run_basis = {"n_max": 4, "l_max": 4, "r_min": 0.5, "r_max": 4.0}
+        assert radial_basis_mismatches({}, run_basis) == ["n_max", "l_max", "r_min", "r_max"]
+
+
+class TestModelStamps:
+    def test_power_spectrum_fit_stamps_the_basis(self):
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)
+        assert (model["n_max"], model["l_max"]) == (6, 6)
+        assert (model["r_min"], model["r_max"]) == (1.0, 4.0)
+
+    def test_self_hartree_fit_stamps_no_basis(self):
+        """A scalar descriptor has no radial basis; the keys are present but null."""
+        model = ml_helpers.fit_screening_model(
+            _dataset(), "linear_regression", correction="ki", init_orbitals="kohn-sham"
+        )
+        assert model["descriptor"] == "self_hartree"
+        assert [model[key] for key in ("n_max", "l_max", "r_min", "r_max")] == [None] * 4
+
+    @staticmethod
+    def _check(model, **overrides):
+        settings = {
+            "descriptor": "power_spectrum",
+            "correction": "ki",
+            "init_orbitals": "mlwfs",
+            "radial_basis": {"n_max": 6, "l_max": 6, "r_min": 1.0, "r_max": 4.0},
+        }
+        settings.update(overrides)
+        return ml_helpers.check_model_matches_run(model, **settings)
+
+    def test_a_matching_model_passes(self):
+        assert self._check(_power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)) is None
+
+    def test_a_different_cutoff_radius_raises(self):
+        """`r_min` / `r_max` change the basis without changing the row width.
+
+        This is the case that used to return a plausible-looking number
+        from a model describing a different quantity.
+        """
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=0.5, r_max=4.0)
+        with pytest.raises(ModelMismatchError, match="r_min") as excinfo:
+            self._check(model)
+        assert excinfo.value.field == "r_min"
+
+    def test_a_different_expansion_order_raises(self):
+        """`n_max` / `l_max` change the row width; the message names the basis."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=4, l_max=4, r_min=1.0, r_max=4.0)
+        with pytest.raises(ModelMismatchError, match="radial basis"):
+            self._check(model)
+
+    def test_a_power_spectrum_model_in_a_self_hartree_run_raises(self):
+        """The wide-model-fed-a-scalar-row case: caught on the descriptor stamp."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)
+        with pytest.raises(ModelMismatchError, match="trained on `power_spectrum`"):
+            self._check(model, descriptor="self_hartree", radial_basis=None)
+
+    def test_a_model_that_names_no_descriptor_raises(self):
+        """No descriptor stamp is no evidence of a self-Hartree model."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)
+        del model["descriptor"]
+        with pytest.raises(ModelMismatchError, match="does not record which descriptor"):
+            self._check(model)
+
+    def test_an_unstamped_basis_raises(self):
+        """A model fitted before the stamp existed cannot be validated, so it is refused."""
+        from aiida_koopmans.ml import ModelMismatchError
+
+        model = _power_spectrum_model(n_max=6, l_max=6, r_min=1.0, r_max=4.0)
+        for key in ("n_max", "l_max", "r_min", "r_max"):
+            del model[key]
+        with pytest.raises(ModelMismatchError, match="retrain"):
+            self._check(model)
+
+
+def _orbital(spin, index, filled):
+    return {
+        "spin": spin,
+        "index": index,
+        "filled": filled,
+        "group_id": index,
+        "representative": True,
+    }
+
+
+class TestPowerSpectrumSlots:
+    # The down-spin group is listed first and the up-spin empty manifold
+    # last, so no consumer can read spin or filling off a slot's position.
+    MERGE_GROUPS = [  # noqa: RUF012
+        {"filled": True, "spin": "down", "blocks": [{"label": "occ_dn"}]},
+        {"filled": True, "spin": "up", "blocks": [{"label": "occ_up"}]},
+        {"filled": False, "spin": "up", "blocks": [{"label": "emp_up"}]},
+    ]
+    BLOCK_DESCRIPTORS = {  # noqa: RUF012
+        "occ_dn": [[4.0]],
+        "occ_up": [[1.0], [2.0]],
+        "emp_up": [[3.0]],
+    }
+    # Two filled and one empty up-spin orbital, one filled down-spin one.
+    ORBITALS = [  # noqa: RUF012
+        _orbital("up", 1, True),
+        _orbital("up", 2, True),
+        _orbital("up", 3, False),
+        _orbital("down", 1, True),
+    ]
+
+    def test_each_slot_states_its_own_spin_and_filling(self):
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        assert slots == [
+            {"spin": "down", "filled": True, "rows": [[4.0]]},
+            {"spin": "up", "filled": True, "rows": [[1.0], [2.0]]},
+            {"spin": "up", "filled": False, "rows": [[3.0]]},
+        ]
+
+    def test_one_slot_is_extracted_on_its_own(self):
+        assert ml_helpers.power_spectrum_rows_for(
+            self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS, spin="up", filled=True
+        ) == [[1.0], [2.0]]
+
+    def test_a_block_without_descriptors_raises(self):
+        with pytest.raises(ValueError, match="emp_up"):
+            ml_helpers.power_spectrum_slots(
+                {"occ_up": [[1.0]], "occ_dn": [[4.0]]}, self.MERGE_GROUPS
+            )
+
+    def test_rows_follow_the_orbital_s_spin_not_the_slot_s_position(self):
+        """The down-spin slot comes first; its row still keys to a down label."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        assert ml_helpers.power_spectrum_rows_by_orbital(slots, self.ORBITALS) == {
+            "up_orb_1": [1.0],
+            "up_orb_2": [2.0],
+            "up_orb_3": [3.0],
+            "down_orb_1": [4.0],
+        }
+
+    def test_rows_pair_by_band_index_not_by_arrival_order(self):
+        """Orbitals handed over out of index order still get their own rows.
+
+        A slot's rows are in band order, so the orbitals must be put in
+        band order to meet them. Every other fixture here happens to
+        arrive sorted, which cannot tell an index pairing apart from one
+        that consumes the orbitals in whatever order they came.
+        """
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        # Within the up-spin occupied slot, band 2 arrives before band 1.
+        shuffled = [self.ORBITALS[i] for i in (3, 1, 2, 0)]
+        assert ml_helpers.power_spectrum_rows_by_orbital(slots, shuffled) == {
+            "up_orb_1": [1.0],
+            "up_orb_2": [2.0],
+            "up_orb_3": [3.0],
+            "down_orb_1": [4.0],
+        }
+
+    def test_an_undecomposed_manifold_is_not_reported_as_a_supercell(self):
+        """A slot no block covers gets the count, not the supercell hint."""
+        merge_groups = [*self.MERGE_GROUPS, {"filled": False, "spin": "down", "blocks": []}]
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, merge_groups)
+        orbitals = [*self.ORBITALS, _orbital("down", 2, False)]
+        with pytest.raises(ValueError, match="down-spin empty manifold holds 1") as raised:
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+        assert "supercell" not in str(raised.value)
+
+    def test_a_disagreeing_filling_boundary_raises_rather_than_relabelling(self):
+        """Two occupied Wannier functions, one occupied orbital: a raise, not a shift.
+
+        Nothing downstream can catch this on counts or labels — the
+        channel holds three of each either way — so a row keyed by its
+        position in the channel would hand an empty orbital an occupied
+        Wannier function's power spectrum, and the occupied estimator
+        would score it.
+        """
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [
+            _orbital("up", 1, True),
+            _orbital("up", 2, False),
+            _orbital("up", 3, False),
+            _orbital("down", 1, True),
+        ]
+        with pytest.raises(ValueError, match="up-spin occupied manifold holds 1"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+
+    def test_a_manifold_with_the_wrong_count_names_it(self):
+        """The supercell case: more orbitals than primitive Wannier functions."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [*self.ORBITALS, _orbital("up", 4, True)]
+        with pytest.raises(ValueError, match="up-spin occupied manifold holds 3"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+
+    def test_a_manifold_without_descriptors_at_all_raises(self):
+        """A screened manifold no block covers must not pass unnoticed."""
+        slots = ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS)
+        orbitals = [*self.ORBITALS, _orbital("down", 2, False)]
+        with pytest.raises(ValueError, match="No descriptors were built for the down-spin empty"):
+            ml_helpers.power_spectrum_rows_by_orbital(slots, orbitals)
+
+    def test_row_order_matches_the_dataset_builder(self):
+        """The dataset and prediction routes must enumerate orbitals identically.
+
+        A drift between them would train on one ordering and predict on
+        another, which no shape check would catch.
+        """
+        rows = ml_helpers.power_spectrum_rows_by_orbital(
+            ml_helpers.power_spectrum_slots(self.BLOCK_DESCRIPTORS, self.MERGE_GROUPS),
+            self.ORBITALS,
+        )
+        dataset = ml_helpers.assemble_power_spectrum_dataset(
+            self.BLOCK_DESCRIPTORS,
+            self.MERGE_GROUPS,
+            {"filled": {"up": [0.1, 0.2], "down": [0.4]}, "empty": {"up": [0.3]}},
+        )
+        assert [rows[label] for label in dataset["labels"]] == dataset["descriptors"]

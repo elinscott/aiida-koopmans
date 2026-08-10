@@ -32,8 +32,17 @@ from xml.etree import ElementTree as ET
 
 import numpy as np
 
+from aiida_koopmans.ml import (
+    RADIAL_BASIS_KEYS,
+    MLDescriptor,
+    ModelMismatchError,
+    radial_basis_mismatches,
+)
+
 if TYPE_CHECKING:
+    from aiida_koopmans.functionals import Correction
     from aiida_koopmans.screening import AlphaScreening
+    from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 
 # Bohr radius in Angstrom; the density normalisation (1 / Bohr^3) is
 # written against this value.
@@ -661,20 +670,22 @@ def build_power_spectrum_dataset(
     }
 
 
-def _gather_channel_rows(
-    merge_groups: Sequence[Mapping[str, Any]],
+def power_spectrum_rows_for(
     block_descriptors: Mapping[str, Sequence[Sequence[float]]],
-    want_filled: bool,
-    channel: Any,
+    merge_groups: Sequence[Mapping[str, Any]],
+    *,
+    spin: Any,
+    filled: bool,
 ) -> list[list[float]]:
-    """Concatenate the descriptor rows of one ``(filled, spin)`` slot.
+    """Return the descriptor rows of one ``(spin, filling)`` slot.
 
-    Iterates ``merge_groups`` (and each group's ``blocks``) in order, so the
-    row order matches the band order the alphas were gathered in.
+    Walks ``merge_groups`` (and each group's ``blocks``) in order, so the
+    rows come out in the band order of that slot's manifold. Raises when a
+    member block has no descriptor matrix.
     """
     rows: list[list[float]] = []
     for group in merge_groups:
-        if bool(group["filled"]) != want_filled or group["spin"] != channel:
+        if bool(group["filled"]) != filled or group["spin"] != spin:
             continue
         for block in group["blocks"]:
             block_rows = block_descriptors.get(block["label"])
@@ -685,6 +696,106 @@ def _gather_channel_rows(
                 )
             rows.extend([float(x) for x in row] for row in block_rows)
     return rows
+
+
+class DescriptorSlot(TypedDict):
+    """One ``(spin, filling)`` slot's descriptor rows, in band order.
+
+    ``spin`` is the channel key (``"none"`` / ``"up"`` / ``"down"``) and
+    ``filled`` names the manifold, so a consumer reads both off the slot
+    instead of recovering them from where it sits in a list.
+    """
+
+    spin: str
+    filled: bool
+    rows: list[list[float]]
+
+
+def power_spectrum_slots(
+    block_descriptors: Mapping[str, Sequence[Sequence[float]]],
+    merge_groups: Sequence[Mapping[str, Any]],
+) -> list[DescriptorSlot]:
+    """Split the per-block descriptors into ``(spin, filling)`` slots.
+
+    One slot per ``(spin, filled)`` pair ``merge_groups`` covers, in the
+    order the groups first mention it. Each slot states its own spin and
+    filling; :func:`power_spectrum_rows_by_orbital` pairs the slots with
+    the orbitals they describe.
+    """
+    keys: list[tuple[Any, bool]] = []
+    for group in merge_groups:
+        key = (group["spin"], bool(group["filled"]))
+        if key not in keys:
+            keys.append(key)
+    return [
+        DescriptorSlot(
+            spin=str(getattr(spin, "value", spin)),
+            filled=filled,
+            rows=power_spectrum_rows_for(block_descriptors, merge_groups, spin=spin, filled=filled),
+        )
+        for spin, filled in keys
+    ]
+
+
+def power_spectrum_rows_by_orbital(
+    slots: Sequence[Mapping[str, Any]],
+    orbitals: Sequence[Mapping[str, Any]],
+) -> dict[str, list[float]]:
+    """Key every descriptor row by the orbital it describes.
+
+    Each slot is paired with the orbitals of its own spin channel and
+    filling, taken in band-index order, and each row is keyed by that
+    orbital's label (see
+    :func:`~aiida_koopmans.variational_orbitals.map_key_for`). Spin and
+    filling come from the two records, never from a row's position in a
+    flat list.
+
+    Raises ``ValueError`` when a slot and its orbitals differ in count, or
+    when either side covers a ``(spin, filling)`` the other does not.
+    """
+    from aiida_koopmans.variational_orbitals import map_key_for
+
+    by_slot: dict[tuple[str, bool], list[Mapping[str, Any]]] = {}
+    for orbital in orbitals:
+        spin = orbital["spin"]
+        key = (str(getattr(spin, "value", spin)), bool(orbital["filled"]))
+        by_slot.setdefault(key, []).append(orbital)
+
+    rows: dict[str, list[float]] = {}
+    for slot in slots:
+        key = (str(slot["spin"]), bool(slot["filled"]))
+        members = sorted(by_slot.pop(key, []), key=lambda o: int(o["index"]))
+        slot_rows = [[float(x) for x in row] for row in slot["rows"]]
+        if len(members) != len(slot_rows):
+            message = (
+                f"The {_slot_name(key)} manifold holds {len(members)} variational "
+                f"orbital(s) but {len(slot_rows)} Wannier function(s) were "
+                "decomposed. Check the `filled` stamps of the projection blocks "
+                "against the run's occupied-band count."
+            )
+            if slot_rows and len(members) > len(slot_rows):
+                message += (
+                    " A supercell run screens every image of a Wannier function "
+                    "while the descriptors cover only the primitive ones; mapping "
+                    "an image back to its Wannier function is not ported yet."
+                )
+            raise ValueError(message)
+        for orbital, row in zip(members, slot_rows, strict=True):
+            rows[map_key_for(orbital)] = row  # type: ignore[arg-type]
+    if by_slot:
+        raise ValueError(
+            "No descriptors were built for the "
+            + ", ".join(_slot_name(key) for key in sorted(by_slot))
+            + " manifold(s), which the run nonetheless screens."
+        )
+    return rows
+
+
+def _slot_name(key: tuple[str, bool]) -> str:
+    """Name a ``(spin, filled)`` slot the way an error message should read."""
+    spin, filled = key
+    filling = "occupied" if filled else "empty"
+    return filling if spin == "none" else f"{spin}-spin {filling}"
 
 
 def assemble_power_spectrum_dataset(
@@ -742,8 +853,12 @@ def assemble_power_spectrum_dataset(
 
     dataset: SnapshotDataset = {"descriptors": [], "alpha_targets": [], "filled": [], "labels": []}
     for channel in channels:
-        filled_rows = _gather_channel_rows(merge_groups, block_descriptors, True, channel)
-        empty_rows = _gather_channel_rows(merge_groups, block_descriptors, False, channel)
+        filled_rows = power_spectrum_rows_for(
+            block_descriptors, merge_groups, spin=channel, filled=True
+        )
+        empty_rows = power_spectrum_rows_for(
+            block_descriptors, merge_groups, spin=channel, filled=False
+        )
         channel_filled = [float(a) for a in filled_alphas.get(channel, [])]
         channel_empty = [float(a) for a in empty_alphas.get(channel, [])]
         if len(filled_rows) != len(channel_filled):
@@ -959,6 +1074,7 @@ def fit_screening_model(
     descriptor: str = "self_hartree",
     correction: str | None = None,
     init_orbitals: str | None = None,
+    radial_basis: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit the screening-parameter model on a (merged) dataset.
 
@@ -966,10 +1082,13 @@ def fit_screening_model(
     otherwise separate ``occ`` / ``emp`` estimators are fitted.
 
     ``correction`` and ``init_orbitals`` record the physics the training
-    alphas were computed under; prediction refuses a model whose stamps
-    disagree with the run (or are absent), so screening parameters
-    trained for one functional or orbital seeding are never silently
-    applied to another.
+    alphas were computed under, and ``radial_basis`` (``n_max`` / ``l_max``
+    / ``r_min`` / ``r_max``, see
+    :func:`~aiida_koopmans.ml.resolve_radial_basis`) the basis a
+    ``power_spectrum`` descriptor was expanded on. Prediction refuses a
+    model whose stamps disagree with the run (or are absent), so screening
+    parameters trained for one functional, orbital seeding or descriptor
+    basis are never silently applied to another.
     """
     submodels: dict[str, dict[str, Any]] = {}
     if occ_and_emp_together:
@@ -989,7 +1108,7 @@ def fit_screening_model(
                 [dataset["alpha_targets"][i] for i in rows],
                 estimator_type,
             )
-    return {
+    model = {
         "descriptor": getattr(descriptor, "value", descriptor),
         "estimator_type": estimator_type,
         "occ_and_emp_together": occ_and_emp_together,
@@ -997,6 +1116,80 @@ def fit_screening_model(
         "init_orbitals": getattr(init_orbitals, "value", init_orbitals),
         "submodels": submodels,
     }
+    for key in RADIAL_BASIS_KEYS:
+        model[key] = None if radial_basis is None else radial_basis.get(key)
+    return model
+
+
+def check_model_matches_run(
+    model: Mapping[str, Any],
+    *,
+    descriptor: MLDescriptor | str,
+    correction: Correction | str,
+    init_orbitals: VariationalOrbitalType | str,
+    radial_basis: Mapping[str, Any] | None = None,
+) -> None:
+    """Reject a trained model whose stamps disagree with the run using it.
+
+    A model describes one quantity fitted under one set of physics: the
+    descriptor it was trained on, the ``correction`` and ``init_orbitals``
+    its training alphas were computed under, and — for
+    ``power_spectrum`` — the radial basis the densities were expanded on.
+    Each of those is stamped by :func:`fit_screening_model`; a
+    disagreement, or a stamp the model does not carry, raises
+    :class:`~aiida_koopmans.ml.ModelMismatchError`.
+
+    The three run settings are the members of their enums, or the plain
+    strings an AiiDA round-trip delivers them as. ``radial_basis`` is the
+    run's own resolved basis (see
+    :func:`~aiida_koopmans.ml.resolve_radial_basis`) and is required
+    whenever ``descriptor`` is ``power_spectrum``.
+    """
+    run_descriptor = getattr(descriptor, "value", descriptor)
+    model_descriptor = model.get("descriptor")
+    if model_descriptor is None:
+        raise ModelMismatchError(
+            "The supplied model does not record which descriptor it was trained on, "
+            f"so it cannot be applied to this run's `{run_descriptor}` ones. Retrain "
+            "the model.",
+            field="descriptor",
+        )
+    if model_descriptor != run_descriptor:
+        raise ModelMismatchError(
+            f"The supplied model was trained on `{model_descriptor}` descriptors, but "
+            f"this run computes `{run_descriptor}` ones. Train a model with "
+            f"descriptor='{run_descriptor}', or run with "
+            f"descriptor='{model_descriptor}'.",
+            field="descriptor",
+        )
+    for key, run_value in (("correction", correction), ("init_orbitals", init_orbitals)):
+        run_str = getattr(run_value, "value", run_value)
+        model_value = model.get(key)
+        if model_value != run_str:
+            raise ModelMismatchError(
+                f"The supplied model was trained with {key}={model_value!r}, but this "
+                f"run uses {key}={run_str!r}. Train a model under the run's settings.",
+                field=key,
+            )
+
+    if run_descriptor != MLDescriptor.POWER_SPECTRUM.value:
+        return
+    if radial_basis is None:
+        raise ValueError(
+            "A power_spectrum model can only be checked against the run's own radial "
+            "basis; `radial_basis` was not supplied."
+        )
+    mismatched = radial_basis_mismatches(model, radial_basis)
+    if mismatched:
+        stamped = {key: model.get(key) for key in mismatched}
+        wanted = {key: radial_basis.get(key) for key in mismatched}
+        raise ModelMismatchError(
+            f"The supplied model was trained with {stamped}, but this run expands the "
+            f"orbital densities with {wanted}. A power spectrum is defined by its "
+            "radial basis, so the two are different descriptors. Set ml:n_max / "
+            "ml:l_max / ml:r_min / ml:r_max to the training values, or retrain.",
+            field=mismatched[0],
+        )
 
 
 def predict_screening(model: dict[str, Any], dataset: SnapshotDataset) -> list[float]:

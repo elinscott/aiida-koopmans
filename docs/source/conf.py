@@ -28,6 +28,14 @@ extensions = [
     "aiida.sphinxext",
 ]
 
+# Sphinx's type-comment pass writes annotations it scrapes from a module's
+# source onto the live classes, including ones guarded by ``TYPE_CHECKING``.
+# Documenting any ``pydantic.BaseModel`` subclass therefore plants
+# ``__pydantic_extra__`` on ``BaseModel`` itself, after which every model
+# declaring ``extra="allow"`` fails to build - node-graph's included, so the
+# whole plugin stops importing. Unknown to Sphinx 8, ignored there.
+autodoc_use_type_comments = False
+
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "aiida": ("https://aiida.readthedocs.io/projects/aiida-core/en/latest", None),

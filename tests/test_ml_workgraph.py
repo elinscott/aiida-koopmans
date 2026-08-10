@@ -32,6 +32,28 @@ def pre_rename_dataset() -> PreRenameDataset:
     return {"descriptors": [[1.0]], "alphas": [0.6], "filled": [True], "labels": ["orb_1"]}
 
 
+def _power_spectrum_model(**basis):
+    """Fit a two-wide model stamped as ``power_spectrum`` on the given basis."""
+    from aiida_koopmans.ml import resolve_radial_basis
+    from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+    return ml_helpers.fit_screening_model(
+        {
+            "descriptors": [[1.0, 0.0], [0.0, 1.0]],
+            "alpha_targets": [0.6, 0.7],
+            "filled": [True, False],
+            "labels": ["orb_1", "orb_2"],
+        },
+        "linear_regression",
+        descriptor="power_spectrum",
+        correction="ki",
+        init_orbitals="mlwfs",
+        radial_basis=resolve_radial_basis(
+            {f"decompose_{key}": value for key, value in basis.items()}
+        ),
+    )
+
+
 # ----------------------------------------------------------------------
 # extract_snapshot_dataset — plain-python callable
 # ----------------------------------------------------------------------
@@ -87,6 +109,7 @@ class TestTrajectoryGraphBuild:
 
         snapshots = {f"snapshot_{i + 1}": ozone_structure for i in range(n_snapshots)}
         ml_kwargs.setdefault("init_orbitals", VariationalOrbitalType.KOHN_SHAM)
+        ml_kwargs.setdefault("spin_polarized", False)
         return TrajectoryWorkflow.build(
             code=kcp_code,
             snapshots=snapshots,
@@ -100,7 +123,6 @@ class TestTrajectoryGraphBuild:
             alpha_numsteps=1,
             fix_spin_contamination=False,
             initial_alpha=0.6,
-            spin_polarized=False,
             **ml_kwargs,
         )
 
@@ -110,6 +132,7 @@ class TestTrajectoryGraphBuild:
             kcp_code=kcp_code,
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="train",
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
 
@@ -126,6 +149,25 @@ class TestTrajectoryGraphBuild:
         # Exactly one gather/fit task.
         assert sum(1 for n in names if "train_screening_model" in n) == 1, names
         assert not any("evaluate_screening_model" in n for n in names), names
+
+    def test_a_non_ml_trajectory_submits_without_a_descriptor(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
+        """An omitted ``descriptor`` must not block a non-ML submission.
+
+        A build-time assertion cannot see this: the graph builds either
+        way. ``check_before_run`` is what a submission runs first, and it
+        is where a socket wrongly marked required surfaces.
+        """
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="none",
+        )
+        assert wg.inputs["descriptor"]._metadata.required is False
+        assert wg.inputs["descriptor"].value is None
+        assert wg.check_before_run() is None
 
     def test_none_mode_skips_ml_layer(self, ozone_structure, kcp_code, ozone_pseudo_family):
         wg = self._build_wg(
@@ -162,6 +204,7 @@ class TestTrajectoryGraphBuild:
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="test",
             ml_model=model,
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
         assert sum(1 for n in names if "evaluate_screening_model" in n) == 1, names
@@ -197,6 +240,7 @@ class TestTrajectoryGraphBuild:
             ozone_pseudo_family=ozone_pseudo_family,
             ml_mode="predict",
             ml_model=model,
+            descriptor=MLDescriptor.SELF_HARTREE,
         )
         names = _all_task_names(wg)
         assert any("dscf_snapshot_1" in n for n in names), names
@@ -219,18 +263,34 @@ class TestTrajectoryGraphBuild:
                 ml_mode="predict",
             )
 
-    def test_predict_mode_rejects_power_spectrum(
-        self, ozone_structure, kcp_code, ozone_pseudo_family
+    def test_predict_mode_threads_the_descriptor_route_into_each_dscf(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
     ):
-        with pytest.raises(NotImplementedError, match="self_hartree"):
-            self._build_wg(
-                ozone_structure=ozone_structure,
-                kcp_code=kcp_code,
-                ozone_pseudo_family=ozone_pseudo_family,
-                ml_mode="predict",
-                ml_model={"descriptor": "power_spectrum", "submodels": {}},
-                descriptor="power_spectrum",
-            )
+        """Predict on ``power_spectrum`` builds, with the decompose inputs on each DSCF.
+
+        The DSCF sub-graph body is deferred, so the discriminator at this
+        level is that every snapshot's DSCF receives the descriptor, the
+        code and the basis — the three the prediction site needs and which
+        the trajectory previously kept to itself.
+        """
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        wg = self._build_wg(
+            ozone_structure=ozone_structure,
+            kcp_code=kcp_code,
+            ozone_pseudo_family=ozone_pseudo_family,
+            ml_mode="predict",
+            ml_model=_power_spectrum_model(),
+            descriptor="power_spectrum",
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            pw2wannier90_code=p2w,
+            decompose_parameters={"decompose_n_max": 6, "decompose_l_max": 6},
+        )
+        dscf = next(t for t in wg.tasks if "dscf_snapshot_1" in t.name)
+        assert dscf.inputs["descriptor"].value == MLDescriptor.POWER_SPECTRUM
+        assert dscf.inputs["pw2wannier90_code"].value.uuid == p2w.uuid
+        assert dict(dscf.inputs["decompose_parameters"].value)["decompose_n_max"] == 6
 
     def test_power_spectrum_on_molecular_route_raises(
         self, ozone_structure, kcp_code, ozone_pseudo_family
@@ -258,6 +318,32 @@ class TestTrajectoryGraphBuild:
                 descriptor="power_spectrum",
                 init_orbitals=VariationalOrbitalType.MLWFS,
             )
+
+    def test_power_spectrum_on_a_spin_polarized_run_raises(
+        self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
+    ):
+        """The descriptor is closed-shell only, and says so before any snapshot runs.
+
+        The message states the gap and names the one descriptor that does
+        work for spin-polarized runs; it must not tell the user to change
+        ``spin``, which describes their system rather than a choice.
+        """
+        p2w = aiida_local_code_factory(
+            executable="true", entry_point="koopmans.pw2wannier_decompose"
+        )
+        with pytest.raises(NotImplementedError, match="spin='collinear'") as excinfo:
+            self._build_wg(
+                ozone_structure=ozone_structure,
+                kcp_code=kcp_code,
+                ozone_pseudo_family=ozone_pseudo_family,
+                ml_mode="train",
+                descriptor="power_spectrum",
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                pw2wannier90_code=p2w,
+                spin_polarized=True,
+            )
+        assert "self_hartree" in str(excinfo.value)
+        assert "spin='none'" not in str(excinfo.value)
 
     def test_power_spectrum_routes_to_decompose_segment(
         self, ozone_structure, kcp_code, ozone_pseudo_family, aiida_local_code_factory
@@ -311,6 +397,71 @@ class TestTrajectoryGraphBuild:
                 ecutrho=260.0,
                 nbnd=10,
             )
+
+
+class TestDescriptorIsNeverAssumed:
+    """A run that never names a descriptor must not be given one.
+
+    Both entry points leave ``descriptor`` unset by default. These two
+    validators are where a working mode's missing descriptor is refused,
+    and both are plain functions precisely so the path is testable
+    without building a graph.
+    """
+
+    @pytest.mark.parametrize("ml_mode", ["train", "test", "predict"])
+    def test_a_working_mode_without_a_descriptor_raises(self, ml_mode):
+        from aiida_koopmans.workgraphs.ml import require_ml_mode_inputs
+
+        with pytest.raises(ValueError, match="needs a `descriptor`"):
+            require_ml_mode_inputs(
+                ml_mode=ml_mode,
+                descriptor=None,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                pw2wannier90_code=None,
+                ml_model={"submodels": {}},
+            )
+
+    def test_mode_none_needs_no_descriptor(self):
+        """Negative control: without ML there is nothing to describe."""
+        from aiida_koopmans.workgraphs.ml import require_ml_mode_inputs
+
+        assert (
+            require_ml_mode_inputs(
+                ml_mode="none",
+                descriptor=None,
+                init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+                pw2wannier90_code=None,
+                ml_model=None,
+            )
+            is None
+        )
+
+    def test_a_dscf_carrying_a_model_without_a_descriptor_raises(self):
+        from aiida_koopmans.workgraphs.kcp import _validate_ml_model_inputs
+
+        with pytest.raises(ValueError, match="predicts from a descriptor"):
+            _validate_ml_model_inputs(
+                ml_model={"submodels": {}},
+                ml_test=False,
+                calculate_alpha=True,
+                alpha_numsteps=1,
+                descriptor=None,
+            )
+
+    def test_a_dscf_without_a_model_needs_no_descriptor(self):
+        """Negative control: the descriptor only matters once a model reads it."""
+        from aiida_koopmans.workgraphs.kcp import _validate_ml_model_inputs
+
+        assert (
+            _validate_ml_model_inputs(
+                ml_model=None,
+                ml_test=False,
+                calculate_alpha=True,
+                alpha_numsteps=1,
+                descriptor=None,
+            )
+            is None
+        )
 
 
 class TestSharedOutputSpecCollision:
@@ -523,3 +674,62 @@ class TestTestModeTwin:
         )
         names = _all_task_names(wg)
         assert not any("compute_alpha_and_eigenvalue_deltas" in n for n in names), names
+
+
+class TestEvaluateStampCheck:
+    """``mode: test`` scores a model only when it describes the run's quantity.
+
+    The estimators broadcast a wrong-width row instead of complaining, so
+    a score against a mismatched model would come back as a number.
+    """
+
+    DATASETS = {  # noqa: RUF012
+        "snapshot_1": {
+            "descriptors": [[-1.0], [-2.0]],
+            "alpha_targets": [0.6, 0.7],
+            "filled": [True, False],
+            "labels": ["orb_1", "orb_2"],
+        }
+    }
+
+    def _call(self, model, **overrides):
+        from aiida_koopmans.workgraphs.ml import evaluate_screening_model
+
+        kwargs = {
+            "descriptor": MLDescriptor.SELF_HARTREE,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.KOHN_SHAM,
+        }
+        kwargs.update(overrides)
+        return evaluate_screening_model._callable(  # type: ignore[attr-defined]
+            datasets=self.DATASETS, model=model, **kwargs
+        )
+
+    def test_a_matching_model_scores(self):
+        from aiida_koopmans.workgraphs.ml import helpers as ml_helpers
+
+        model = ml_helpers.fit_screening_model(
+            self.DATASETS["snapshot_1"],
+            "linear_regression",
+            correction="ki",
+            init_orbitals="kohn-sham",
+        )
+        outputs = self._call(model)
+        assert outputs["evaluation"]["metrics"]["n_samples"] == 2
+
+    def test_a_power_spectrum_model_scored_on_self_hartree_rows_raises(self):
+        from aiida_koopmans.ml import ModelMismatchError
+
+        with pytest.raises(ModelMismatchError, match="trained on `power_spectrum`"):
+            self._call(_power_spectrum_model())
+
+    def test_a_basis_mismatch_raises(self):
+        from aiida_koopmans.ml import ModelMismatchError, resolve_radial_basis
+
+        with pytest.raises(ModelMismatchError, match="radial basis"):
+            self._call(
+                _power_spectrum_model(r_min=1.0),
+                descriptor=MLDescriptor.POWER_SPECTRUM,
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                radial_basis=resolve_radial_basis(None),
+            )

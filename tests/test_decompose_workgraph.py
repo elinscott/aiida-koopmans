@@ -6,6 +6,8 @@ import io
 
 import pytest
 
+from tests.fixtures import block_wannierization, occ_emp_merge_groups
+
 
 def _wannierize_folder():
     """Build a stored ``FolderData`` mimicking a per-block wannier90 retrieved folder."""
@@ -97,23 +99,8 @@ def test_power_spectrum_dataset_workflow_fans_out_per_block(
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
-    blocks = {}
-    for label in ("occ", "emp"):
-        folder = orm.FolderData()
-        folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
-        folder.base.repository.put_object_from_filelike(
-            io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
-        )
-        folder.store()
-        blocks[label] = {
-            "retrieved": folder,
-            "remote_folder": nscf,
-            "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
-        }
-    merge_groups = [
-        {"filled": True, "spin": "none", "blocks": [{"label": "occ"}]},
-        {"filled": False, "spin": "none", "blocks": [{"label": "emp"}]},
-    ]
+    blocks = {label: block_wannierization(label) for label in ("occ", "emp")}
+    merge_groups = occ_emp_merge_groups()
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
 
     wg = PowerSpectrumDatasetWorkflow.build(
@@ -139,24 +126,6 @@ def _spin_block(label, filled, spin, num_bands, num_wann):
     }
 
 
-def _block_wannierization(label, *, with_u_dis):
-    """Build a stored per-block WannierizeBlockOutputs-shaped namespace entry."""
-    from aiida import orm
-
-    folder = orm.FolderData()
-    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
-    if with_u_dis:
-        folder.base.repository.put_object_from_filelike(io.BytesIO(b"ud"), "aiida_u_dis.mat")
-    folder.base.repository.put_object_from_filelike(
-        io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
-    )
-    folder.store()
-    return {
-        "retrieved": folder,
-        "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
-    }
-
-
 def test_power_spectrum_dataset_workflow_threads_nnkp_udis_spin(
     aiida_profile, aiida_local_code_factory, tmp_path
 ):
@@ -179,7 +148,7 @@ def test_power_spectrum_dataset_workflow_threads_nnkp_udis_spin(
     # Empty manifolds disentangle (num_bands 6 > num_wann 2); occupied do not.
     disentangling = {"emp_up", "emp_down"}
     block_wannierizations = {
-        label: _block_wannierization(label, with_u_dis=label in disentangling) for label in labels
+        label: block_wannierization(label, with_u_dis=label in disentangling) for label in labels
     }
     merge_groups = [
         _spin_block("occ_up", True, "up", 4, 4),
@@ -241,7 +210,7 @@ def test_power_spectrum_dataset_builds_without_parallelization(
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
-    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    block_wannierizations = {"occ": block_wannierization("occ", with_u_dis=False)}
     merge_groups = [_spin_block("occ", True, "none", 4, 4)]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
@@ -267,7 +236,7 @@ def test_power_spectrum_dataset_nspin1_omits_spin_component(
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
-    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    block_wannierizations = {"occ": block_wannierization("occ", with_u_dis=False)}
     merge_groups = [_spin_block("occ", True, "none", 4, 4)]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
@@ -299,7 +268,7 @@ def test_power_spectrum_dataset_drops_npool_but_keeps_ranks(
 
     code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
-    block_wannierizations = {"occ": _block_wannierization("occ", with_u_dis=False)}
+    block_wannierizations = {"occ": block_wannierization("occ", with_u_dis=False)}
     merge_groups = [_spin_block("occ", True, "none", 4, 4)]
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
@@ -356,6 +325,7 @@ def test_compute_block_descriptors_returns_cross_power(aiida_profile):
         coefficients=coeff_node,
         group_coefficients=group_node,
         output_parameters={"n_max": n_max, "l_max": l_max},
+        radial_basis={"n_max": n_max, "l_max": l_max, "r_min": 0.5, "r_max": 4.0},
     )
     descriptors = out.get_array("descriptors")
     expected = ml_helpers.cross_power_spectra(coeff, group, n_max, l_max)
@@ -429,6 +399,10 @@ class TestArrayInputShapes:
     def _output_parameters():
         return {"n_max": 2, "l_max": 1}
 
+    @staticmethod
+    def _radial_basis():
+        return {"n_max": 2, "l_max": 1, "r_min": 0.5, "r_max": 4.0}
+
     def test_compute_block_descriptors_accepts_bare_arrays(self):
         import numpy as np
 
@@ -440,6 +414,7 @@ class TestArrayInputShapes:
             coefficients=coefficients,
             group_coefficients=group,
             output_parameters=self._output_parameters(),
+            radial_basis=self._radial_basis(),
         )
         assert out.get_array("descriptors").shape[0] == 2
 
@@ -457,6 +432,7 @@ class TestArrayInputShapes:
             coefficients=coefficients,
             group_coefficients=group,
             output_parameters=self._output_parameters(),
+            radial_basis=self._radial_basis(),
         )
         assert out.get_array("descriptors").shape[0] == 2
 
@@ -472,3 +448,94 @@ class TestArrayInputShapes:
         )
         assert dataset["descriptors"] == [[1.0, 2.0]]
         assert dataset["alpha_targets"] == [0.6]
+
+
+# ----------------------------------------------------------------------
+# Descriptor-only route (prediction): rows without alphas
+# ----------------------------------------------------------------------
+
+
+def test_descriptor_workflow_fans_out_and_gathers_rows(
+    aiida_profile, aiida_local_code_factory, tmp_path
+):
+    """The prediction segment runs the same per-block passes, gathering slots.
+
+    Discriminates against a descriptor route that quietly reuses the
+    dataset builder: the gather is ``gather_block_descriptor_slots`` and no
+    ``align_block_descriptors`` (which needs alphas that do not exist yet)
+    appears.
+    """
+    from aiida import orm
+
+    from aiida_koopmans.workgraphs.ml import PowerSpectrumDescriptorWorkflow
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.pw2wannier_decompose")
+    nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
+
+    wg = PowerSpectrumDescriptorWorkflow.build(
+        code=code,
+        nscf_remote_folder=nscf,
+        block_wannierizations={label: block_wannierization(label) for label in ("occ", "emp")},
+        merge_groups=occ_emp_merge_groups(),
+    )
+    names = [t.name for t in wg.tasks]
+    assert "decompose_occ" in names, names
+    assert "decompose_emp" in names, names
+    assert any("gather_block_descriptor_slots" in n for n in names), names
+    assert not any("align_block_descriptors" in n for n in names), names
+
+
+def test_gathered_slots_pair_with_the_orbitals_by_map_key_for(aiida_profile):
+    """Rows arrive under the labels an orbital's own identity produces.
+
+    The join between descriptors and orbitals runs on the labels the
+    prediction looks its rows up by, so a drift between the two
+    conventions would silently strand every row.
+    """
+    import numpy as np
+
+    from aiida_koopmans.variational_orbitals import map_key_for
+    from aiida_koopmans.workgraphs.ml import (
+        gather_block_descriptor_slots,
+        power_spectrum_descriptor_rows,
+    )
+
+    slots = gather_block_descriptor_slots._callable(
+        block_descriptors={
+            "occ": np.array([[1.0, 2.0], [3.0, 4.0]]),
+            "emp": np.array([[5.0, 6.0]]),
+        },
+        merge_groups=occ_emp_merge_groups(),
+    )
+    assert [(slot["spin"], slot["filled"]) for slot in slots] == [("none", True), ("none", False)]
+
+    orbitals = [
+        {"spin": "none", "index": 1, "filled": True, "group_id": 1, "representative": True},
+        {"spin": "none", "index": 2, "filled": True, "group_id": 2, "representative": True},
+        {"spin": "none", "index": 3, "filled": False, "group_id": 3, "representative": True},
+    ]
+    rows = power_spectrum_descriptor_rows._callable(slots=slots, orbitals=orbitals)
+    assert rows == {
+        map_key_for({"spin": "none", "index": 1}): [1.0, 2.0],
+        map_key_for({"spin": "none", "index": 2}): [3.0, 4.0],
+        map_key_for({"spin": "none", "index": 3}): [5.0, 6.0],
+    }
+
+
+def test_compute_block_descriptors_rejects_a_basis_qe_did_not_use(aiida_profile):
+    """A header disagreeing with the requested basis is a wrong descriptor.
+
+    Without this the model's radial-basis stamp would record what was
+    asked for rather than what was expanded on.
+    """
+    import numpy as np
+
+    from aiida_koopmans.workgraphs.ml import compute_block_descriptors
+
+    with pytest.raises(ValueError, match="asked for"):
+        compute_block_descriptors._callable(
+            coefficients=np.arange(16, dtype=float).reshape(2, 8),
+            group_coefficients=np.arange(16, dtype=float).reshape(2, 8),
+            output_parameters={"n_max": 2, "l_max": 1, "r_min": 0.5, "r_max": 4.0},
+            radial_basis={"n_max": 2, "l_max": 1, "r_min": 1.0, "r_max": 4.0},
+        )

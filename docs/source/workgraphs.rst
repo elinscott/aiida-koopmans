@@ -95,7 +95,17 @@ parameter)`` pairs into a single training or evaluation task. The
 ``self_hartree`` descriptor is read from the final KI's parsed output; the
 ``power_spectrum`` descriptor instead runs ``PowerSpectrumDatasetWorkflow``,
 which needs the Wannier-initialized route and a pw2wannier90.x code built
-with ``wan_mode='decompose'``.
+with ``wan_mode='decompose'``. Under ``mode: predict`` the same decompose
+pass runs as ``PowerSpectrumDescriptorWorkflow`` inside each snapshot's
+screening step, where there are no computed screening parameters to pair
+the descriptors with.
+
+A trained model records the descriptor it was fitted on, the ``correction``
+and ``init_orbitals`` its screening parameters were computed under, and —
+for ``power_spectrum`` — the radial basis (``n_max`` / ``l_max`` / ``r_min``
+/ ``r_max``) the densities were expanded on. A model whose stamps disagree
+with the run asking it to predict, or which predates a stamp, raises
+``ModelMismatchError``.
 
 Gaps
 ====

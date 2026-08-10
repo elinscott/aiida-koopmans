@@ -575,6 +575,42 @@ def si_reference() -> dict:
         return json.load(handle)
 
 
+def block_wannierization(label: str, *, with_u_dis: bool = False) -> dict:
+    """Build a stored per-block ``WannierizeBlockOutputs``-shaped entry.
+
+    The ``retrieved`` folder carries the wannier90 read-back files a
+    ``wan_mode='decompose'`` pass stages (``aiida_u.mat``,
+    ``aiida_centres.xyz``, and ``aiida_u_dis.mat`` for a disentangling
+    manifold), plus the ``nnkp_file`` the pass reads first. Contents are
+    placeholders: every consumer of this fixture inspects graph structure
+    rather than running the pass.
+    """
+    import io
+
+    from aiida import orm
+
+    folder = orm.FolderData()
+    folder.base.repository.put_object_from_filelike(io.BytesIO(b"u"), "aiida_u.mat")
+    if with_u_dis:
+        folder.base.repository.put_object_from_filelike(io.BytesIO(b"ud"), "aiida_u_dis.mat")
+    folder.base.repository.put_object_from_filelike(
+        io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
+    )
+    folder.store()
+    return {
+        "retrieved": folder,
+        "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
+    }
+
+
+def occ_emp_merge_groups(spin: str = "none") -> list[dict]:
+    """Return a one-block-per-filling ``merge_groups`` partition for one spin channel."""
+    return [
+        {"filled": True, "spin": spin, "blocks": [{"label": "occ"}]},
+        {"filled": False, "spin": spin, "blocks": [{"label": "emp"}]},
+    ]
+
+
 def si_external_projector_tables() -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 
