@@ -675,6 +675,10 @@ def PowerSpectrumDescriptorWorkflow(
     return PowerSpectrumDescriptorOutputs(slots=slots.result)
 
 
+# A wrapper rather than ``task(power_spectrum_rows_by_orbital)``: the socket
+# layer refuses to link a ``workgraph.list`` socket into the helper's
+# ``Sequence`` annotations, so the task needs socket-facing ``list``
+# signatures the pure helper should not carry.
 @task
 def power_spectrum_descriptor_rows(
     slots: list,
