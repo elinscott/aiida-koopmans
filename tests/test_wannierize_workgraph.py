@@ -51,6 +51,64 @@ class TestWannierizeGraphBuild:
             )
 
 
+class TestBandInterpolation:
+    """A bands path switches wannier90's interpolation on; no path leaves it off."""
+
+    @staticmethod
+    def _w90_inputs(wg):
+        return wg.tasks["Wannier90WorkChain"].inputs["wannier90"]["wannier90"]
+
+    def _build(self, fake_cutoffs_family, silicon_structure, wannier_codes, **kwargs):
+        return Wannierize.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            **kwargs,
+        )
+
+    def test_bands_kpoints_sets_bands_plot(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+    ):
+        """The path reaches the wannier90 step together with ``bands_plot``.
+
+        ``Wannier90WorkChain`` never sets ``bands_plot`` itself, and without
+        it wannier90 interpolates nothing, so the keyword must ride with the
+        path.
+        """
+        wg = self._build(
+            fake_cutoffs_family, silicon_structure, wannier_codes, bands_kpoints=labelled_kpath
+        )
+        inputs = self._w90_inputs(wg)
+        assert inputs["parameters"].value.get_dict()["bands_plot"] is True
+        assert inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        assert_graph_roundtrips(wg)
+
+    def test_kpoint_path_sets_bands_plot(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        """The Dict form of the path also switches ``bands_plot`` on."""
+        path = {
+            "path": [["GAMMA", "X"]],
+            "point_coords": {"GAMMA": [0.0, 0.0, 0.0], "X": [0.5, 0.0, 0.0]},
+        }
+        wg = self._build(fake_cutoffs_family, silicon_structure, wannier_codes, kpoint_path=path)
+        inputs = self._w90_inputs(wg)
+        assert inputs["parameters"].value.get_dict()["bands_plot"] is True
+        value = inputs["kpoint_path"].value
+        assert (value.get_dict() if hasattr(value, "get_dict") else dict(value)) == path
+        assert_graph_roundtrips(wg)
+
+    def test_no_path_leaves_interpolation_off(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        """Negative control: without a path the parameters carry no ``bands_plot``."""
+        wg = self._build(fake_cutoffs_family, silicon_structure, wannier_codes)
+        inputs = self._w90_inputs(wg)
+        assert "bands_plot" not in inputs["parameters"].value.get_dict()
+        assert inputs["bands_kpoints"].value is None
+        assert inputs["kpoint_path"].value is None
+
+
 class TestKpointMesh:
     """The caller's Brillouin-zone sampling replaces the protocol's."""
 
