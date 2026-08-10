@@ -29,6 +29,7 @@ from aiida import orm
 from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
@@ -47,7 +48,6 @@ from aiida_koopmans.variational_orbitals import (
     VariationalOrbitalType,
     map_key_for,
 )
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -88,6 +88,29 @@ class KIFinalOutputs(TypedDict):
     lambdas: np.ndarray
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
+
+
+#: Annotation for the DSCF codes only the periodic Wannier route consumes.
+WannierRouteCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed for the Wannier-initialised route (init_orbitals='mlwfs'/'projwfs')."),
+]
+
+
+class DscfCodes(TypedDict):
+    """Codes for the DSCF chain (:func:`KoopmansDSCFWorkflow` and the trajectory).
+
+    ``kcp`` runs every DSCF step; the remaining members exist only for the
+    periodic Wannier-initialised route
+    (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+    """
+
+    kcp: orm.AbstractCode
+    pw: NotRequired[WannierRouteCode]
+    pw2wannier90: NotRequired[WannierRouteCode]
+    wannier90: NotRequired[WannierRouteCode]
+    wann2kcp: NotRequired[WannierRouteCode]
+    merge_evc: NotRequired[WannierRouteCode]
 
 
 class KoopmansDSCFOutputs(TypedDict):
@@ -1029,7 +1052,7 @@ def InitializeOrbitals(
 
 @task.graph
 def KoopmansDSCFWorkflow(
-    code: orm.AbstractCode,
+    codes: DscfCodes,
     structure: orm.StructureData,
     pseudo_family: str,
     ecutwfc: float,
@@ -1051,7 +1074,6 @@ def KoopmansDSCFWorkflow(
     decompose_parameters: dict | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
-    codes: Codes | None = None,
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -1111,8 +1133,9 @@ def KoopmansDSCFWorkflow(
       extensive inputs (``nbnd``, ``tot_magnetization``, and — via the
       supercell structure — the electron counts) scaled by
       ``prod(kgrid)``. This route
-      additionally requires ``codes`` (pw / wannier90 / pw2wannier90 /
-      wann2kcp / merge_evc), ``blocks`` (projection blocks with
+      additionally requires the Wannier-route ``codes`` members (pw /
+      wannier90 / pw2wannier90 / wann2kcp / merge_evc), ``blocks``
+      (projection blocks with
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
@@ -1120,6 +1143,9 @@ def KoopmansDSCFWorkflow(
     deferred; ``_validate_scope`` rejects that path.
     """
     validate_parallelization(parallelization)
+
+    # Every kcp.x step below wires the same code; bind it once.
+    code = codes["kcp"]
 
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
@@ -1173,8 +1199,8 @@ def KoopmansDSCFWorkflow(
 
     # For the periodic Wannier route every kcp.x step runs on the Γ-point
     # supercell; the extensive inputs scale by the primitive-cell count.
-    # ``_validate_scope`` guarantees ``kgrid`` and ``codes`` are set on
-    # this route.
+    # ``_validate_scope`` guarantees ``kgrid`` and the Wannier-route
+    # ``codes`` members are set on this route.
     if wannier_init:
         ncells = supercell_size(cast("list[int]", kgrid))
         run_structure = primitive_to_supercell(
@@ -1225,7 +1251,14 @@ def KoopmansDSCFWorkflow(
     merge_groups = None
     if wannier_init:
         init = MlwfInitialization(
-            codes={**cast("dict", codes), "kcp": code},
+            codes={
+                "pw": codes["pw"],
+                "pw2wannier90": codes["pw2wannier90"],
+                "wannier90": codes["wannier90"],
+                "wann2kcp": codes["wann2kcp"],
+                "merge_evc": codes["merge_evc"],
+                "kcp": codes["kcp"],
+            },
             structure=structure,
             supercell=run_structure,
             pseudos=pseudos,
@@ -2730,15 +2763,15 @@ def _validate_scope(
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
-    codes: Codes | None = None,
+    codes: DscfCodes | None = None,
 ) -> None:
     """Fail fast on inputs the workflow cannot honour yet.
 
     Two initialisation routes are supported: molecular Kohn-Sham
     (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
     (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
-    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` /
-    ``codes``). Everything else raises.
+    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` and the
+    Wannier-route members of ``codes``). Everything else raises.
     """
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
@@ -2766,7 +2799,14 @@ def _validate_scope(
                 f"init_orbitals={init_orbitals!r} requires a periodic structure — "
                 "Wannierisation is only defined for extended systems."
             )
-        required = {"blocks": blocks, "kgrid": kgrid, "kpoints": kpoints, "codes": codes}
+        wannier_members = ("pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc")
+        has_wannier_codes = codes is not None and all(member in codes for member in wannier_members)
+        required = {
+            "blocks": blocks,
+            "kgrid": kgrid,
+            "kpoints": kpoints,
+            "codes": codes if has_wannier_codes else None,
+        }
         missing = sorted(name for name, value in required.items() if value is None)
         if missing:
             raise ValueError(

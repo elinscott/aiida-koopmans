@@ -111,7 +111,7 @@ class TestTrajectoryGraphBuild:
         ml_kwargs.setdefault("init_orbitals", VariationalOrbitalType.KOHN_SHAM)
         ml_kwargs.setdefault("spin_polarized", False)
         return TrajectoryWorkflow.build(
-            code=kcp_code,
+            codes={"kcp": kcp_code},
             snapshots=snapshots,
             pseudo_family=ozone_pseudo_family,
             ecutwfc=65.0,
@@ -390,7 +390,7 @@ class TestTrajectoryGraphBuild:
 
         with pytest.raises(ValueError, match="letters, digits and underscores"):
             TrajectoryWorkflow.build(
-                code=kcp_code,
+                codes={"kcp": kcp_code},
                 snapshots={"snapshot-1": ozone_structure},
                 pseudo_family=ozone_pseudo_family,
                 ecutwfc=65.0,
@@ -615,7 +615,7 @@ class TestTestModeTwin:
             init_orbitals="kohn-sham",
         )
         return TrajectoryWorkflow.build(
-            code=kcp_code,
+            codes={"kcp": kcp_code},
             snapshots={f"snapshot_{i + 1}": ozone_structure for i in range(n)},
             pseudo_family=ozone_pseudo_family,
             ecutwfc=65.0,

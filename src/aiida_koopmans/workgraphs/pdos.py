@@ -15,7 +15,15 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import Codes, inject_pseudo_family
+from aiida_koopmans.workgraphs import inject_pseudo_family
+
+
+class PdosCodes(TypedDict):
+    """Codes for the projected-DOS chain (:func:`RunPdos`)."""
+
+    pw: orm.AbstractCode
+    dos: orm.AbstractCode
+    projwfc: orm.AbstractCode
 
 
 class PdosOutputs(TypedDict):
@@ -36,7 +44,7 @@ PdosStep = task(PdosWorkChain)
 
 @task.graph
 def RunPdos(
-    codes: Codes,
+    codes: PdosCodes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,

@@ -49,7 +49,6 @@ from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
 from aiida_koopmans.parallelization import ParallelizationDict, merge_parallelization_into_inputs
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import MergeGroup, merge_dest_filename
 
@@ -84,6 +83,13 @@ def extract_wannier_files(retrieved: orm.FolderData) -> dict:
         with retrieved.base.repository.open(filename, "rb") as handle:
             outputs[key] = orm.SinglefileData(handle, filename=filename)
     return outputs
+
+
+class FoldingCodes(TypedDict):
+    """Codes for the fold-to-supercell chain (:func:`FoldToSupercell`)."""
+
+    wann2kcp: orm.AbstractCode
+    merge_evc: orm.AbstractCode
 
 
 class FoldToSupercellOutputs(TypedDict, total=False):
@@ -147,7 +153,7 @@ def enumerate_fold_targets(
 
 @task.graph
 def FoldToSupercell(
-    codes: Codes,
+    codes: FoldingCodes,
     blocks: list[ProjectionBlock],
     merge_groups: list[MergeGroup],
     nscf_remote_folder: orm.RemoteData,
@@ -160,7 +166,7 @@ def FoldToSupercell(
     """Convert per-block Wannier orbitals into merged supercell kcp.x files.
 
     Args:
-        codes: code instances; required keys ``wann2kcp`` and ``merge_evc``.
+        codes: code instances (:class:`FoldingCodes`); both members are wired.
         blocks: the projection blocks, in the same order they were
             Wannierised.
         merge_groups: the per-(manifold, spin) grouping of ``blocks`` from

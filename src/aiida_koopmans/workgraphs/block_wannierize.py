@@ -61,6 +61,7 @@ from aiida_wannier90_workflows.utils.workflows.builder.projections import (
 )
 from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -78,7 +79,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
-from aiida_koopmans.workgraphs import Codes, unwrap_enum
+from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
@@ -104,6 +105,33 @@ SUPPORTED_PROJECTION_TYPES = (
     WannierProjectionType.ATOMIC_PROJECTORS_QE,
     WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
 )
+
+
+class WannierizeBlockCodes(TypedDict):
+    """Codes for one block's wannierization (:func:`WannierizeBlock`).
+
+    ``pw`` never runs here (the block skips scf / nscf) but the upstream
+    ``Wannier90WorkChain`` builder still requires it to assemble the pw
+    namespaces this graph discards.
+    """
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+
+
+class WannierizeBlocksCodes(TypedDict):
+    """Codes for the block-by-block wannierization chain (:func:`WannierizeBlocks`)."""
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+    wannierjl: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed for block splitting via parallel transport."),
+        ]
+    ]
 
 
 def validate_projection_type(projection_type: WannierProjectionType) -> None:
@@ -654,7 +682,7 @@ def emit_wannier90_parameters(parameters: orm.Dict) -> orm.Dict:
 
 @task.graph
 def WannierizeBlock(
-    codes: Codes,
+    codes: WannierizeBlockCodes,
     structure: orm.StructureData,
     block: ProjectionBlock,
     projection_type: WannierProjectionType,
@@ -1009,7 +1037,7 @@ def _reject_inputs_an_external_scratch_ignores(
 
 
 def _resolve_split_mode(
-    codes: Codes,
+    codes: WannierizeBlocksCodes,
     blocks: list[ProjectionBlock],
     mp_grid: list[int] | None,
     nscf_remote_folder: orm.RemoteData | None,
@@ -1091,7 +1119,7 @@ def _resolve_split_mode(
 
 @task.graph
 def WannierizeBlocks(
-    codes: Codes,
+    codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
     blocks: list[ProjectionBlock],
     kpoints: orm.KpointsData,
@@ -1144,9 +1172,8 @@ def WannierizeBlocks(
     are collected unconditionally.
 
     Args:
-        codes: code instances. Required keys: ``pw``, ``wannier90``,
-            ``pw2wannier90``; ``projwfc`` is accepted but unused by the
-            supported projection types (:data:`SUPPORTED_PROJECTION_TYPES`).
+        codes: code instances (:class:`WannierizeBlocksCodes`); ``wannierjl``
+            only in split mode.
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
@@ -1333,7 +1360,14 @@ def WannierizeBlocks(
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
             wannierized = WannierizeAndSplitBlock(
-                codes=codes,
+                # The split graph's namespace declares exactly its four codes;
+                # the guard above guarantees ``wannierjl`` is present here.
+                codes={
+                    "pw": codes["pw"],
+                    "pw2wannier90": codes["pw2wannier90"],
+                    "wannier90": codes["wannier90"],
+                    "wannierjl": codes["wannierjl"],
+                },
                 structure=structure,
                 block=block,
                 groups=detect.result,
@@ -1354,7 +1388,11 @@ def WannierizeBlocks(
             )
         else:
             wannierized = WannierizeBlock(
-                codes=codes,
+                codes={
+                    "pw": codes["pw"],
+                    "pw2wannier90": codes["pw2wannier90"],
+                    "wannier90": codes["wannier90"],
+                },
                 structure=structure,
                 block=block,
                 projection_type=block["projection_type"],

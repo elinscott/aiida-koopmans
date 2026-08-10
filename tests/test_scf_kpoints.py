@@ -90,7 +90,7 @@ class TestRunPwBands:
         from aiida_koopmans.workgraphs.pw import RunPwBands
 
         wg = RunPwBands.build(
-            code=pw_code,
+            codes={"pw": pw_code},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             scf_kpoints=kmesh,
@@ -114,7 +114,7 @@ class TestRunPwBands:
         from aiida_koopmans.workgraphs.pw import RunPwBands
 
         wg = RunPwBands.build(
-            code=pw_code,
+            codes={"pw": pw_code},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             bands_kpoints=kpath,
@@ -132,8 +132,7 @@ class TestDielectricTask:
         from aiida_koopmans.workgraphs.ph import DielectricTask
 
         wg = DielectricTask.build(
-            pw_code=ph_codes["pw"],
-            ph_code=ph_codes["ph"],
+            codes={"pw": ph_codes["pw"], "ph": ph_codes["ph"]},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             scf_kpoints=kmesh,
@@ -152,8 +151,7 @@ class TestDielectricTask:
         from aiida_koopmans.workgraphs.ph import DielectricTask
 
         wg = DielectricTask.build(
-            pw_code=ph_codes["pw"],
-            ph_code=ph_codes["ph"],
+            codes={"pw": ph_codes["pw"], "ph": ph_codes["ph"]},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
         )

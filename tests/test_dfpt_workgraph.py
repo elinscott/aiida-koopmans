@@ -210,7 +210,7 @@ class TestKoopmansDFPTTaskBuild:
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved, bands_path
     ):
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
                 "occ": {"retrieved": occ_retrieved},
@@ -237,7 +237,7 @@ class TestKoopmansDFPTTaskBuild:
         self, dfpt_codes, nscf_remote, occ_retrieved, check_spread
     ):
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
@@ -252,7 +252,7 @@ class TestKoopmansDFPTTaskBuild:
     def test_parallelization_reaches_every_kcw_step(self, dfpt_codes, nscf_remote, occ_retrieved):
         """Ntasks + -pd reach every kcw step; -npool reaches wann2kc/screen but not ham."""
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],
@@ -278,7 +278,7 @@ class TestKoopmansDFPTTaskBuild:
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
                 "occ": {"retrieved": occ_retrieved},
@@ -967,7 +967,7 @@ class TestRunDFPTGrouping:
     ):
         """With a tolerance set: spread extraction + clustering + deferred fan-out."""
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
                 "occ": {"retrieved": occ_retrieved},
@@ -1000,7 +1000,7 @@ class TestRunDFPTGrouping:
         """The spread clustering depends on the unified wannier90 spreads."""
         with pytest.raises(ValueError, match="requires the channel's per-orbital"):
             RunDFPT.build(
-                codes=dfpt_codes,
+                code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
                 block_wannier={"occ": {"retrieved": occ_retrieved}},
                 occ_labels=["occ"],
@@ -1013,7 +1013,7 @@ class TestRunDFPTGrouping:
     def test_alpha_guess_wins_over_grouping(self, dfpt_codes, nscf_remote, occ_retrieved):
         """A caller guess skips screening entirely, grouping included."""
         wg = RunDFPT.build(
-            codes=dfpt_codes,
+            code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": {"retrieved": occ_retrieved}},
             occ_labels=["occ"],

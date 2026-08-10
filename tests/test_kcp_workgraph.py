@@ -84,6 +84,15 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
+    WANNIER_CODES: ClassVar[dict] = {
+        "kcp": object(),
+        "pw": object(),
+        "wannier90": object(),
+        "pw2wannier90": object(),
+        "wann2kcp": object(),
+        "merge_evc": object(),
+    }
+
     @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
     def test_wannier_init_missing_inputs_raises(self, periodic_ozone_structure, init_orbitals):
         with pytest.raises(ValueError, match=r"\['blocks', 'kgrid'\]"):
@@ -93,7 +102,24 @@ class TestValidateScope:
                 fix_spin_contamination=False,
                 structure=periodic_ozone_structure,
                 kpoints=object(),
-                codes=object(),
+                codes=self.WANNIER_CODES,
+            )
+
+    @pytest.mark.parametrize("absent", ["pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc"])
+    def test_wannier_init_missing_code_member_raises(self, periodic_ozone_structure, absent):
+        # A codes dict without a Wannier-route member counts as missing
+        # ``codes`` outright — the error names the full code set.
+        codes = {name: obj for name, obj in self.WANNIER_CODES.items() if name != absent}
+        with pytest.raises(ValueError, match=r"\['codes'\].*merge_evc codes"):
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                fix_spin_contamination=False,
+                structure=periodic_ozone_structure,
+                blocks=[object()],
+                kgrid=[2, 2, 2],
+                kpoints=object(),
+                codes=codes,
             )
 
     def test_wannier_init_with_all_inputs_passes(self, periodic_ozone_structure):
@@ -105,7 +131,7 @@ class TestValidateScope:
             blocks=[object()],
             kgrid=[2, 2, 2],
             kpoints=object(),
-            codes=object(),
+            codes=self.WANNIER_CODES,
         )
 
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
@@ -943,7 +969,7 @@ class TestKoopmansDSCFGraphBuild:
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
         inputs = {
-            "code": kcp_code,
+            "codes": {"kcp": kcp_code},
             "structure": ozone_structure,
             "pseudo_family": ozone_pseudo_family,
             "ecutwfc": 65.0,
@@ -2062,7 +2088,7 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
         common = {
-            "code": request.getfixturevalue("kcp_code"),
+            "codes": {"kcp": request.getfixturevalue("kcp_code")},
             "pseudo_family": request.getfixturevalue("ozone_pseudo_family"),
             "ecutwfc": 65.0,
             "ecutrho": 260.0,
@@ -2081,7 +2107,10 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
             common |= {
                 "structure": request.getfixturevalue("periodic_ozone_structure"),
                 "init_orbitals": VariationalOrbitalType.MLWFS,
-                "codes": request.getfixturevalue("mlwf_codes"),
+                "codes": {
+                    **request.getfixturevalue("mlwf_codes"),
+                    "kcp": request.getfixturevalue("kcp_code"),
+                },
                 "blocks": ozone_projection_blocks(),
                 "kgrid": [2, 1, 1],
                 "kpoints": request.getfixturevalue("kmesh"),
@@ -2629,7 +2658,7 @@ class TestMlTestModeGraphBuild:
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
         inputs = {
-            "code": kcp_code,
+            "codes": {"kcp": kcp_code},
             "structure": ozone_structure,
             "pseudo_family": ozone_pseudo_family,
             "ecutwfc": 65.0,
@@ -2932,7 +2961,7 @@ class TestPowerSpectrumPredictionGraph:
 
         with pytest.raises(ValueError, match="init_orbitals"):
             KoopmansDSCFWorkflow.build(
-                code=kcp_code,
+                codes={"kcp": kcp_code},
                 structure=ozone_structure,
                 pseudo_family=ozone_pseudo_family,
                 ecutwfc=65.0,
@@ -2953,7 +2982,7 @@ class TestPowerSpectrumPredictionGraph:
 
         with pytest.raises(NotImplementedError, match="spin='collinear'"):
             KoopmansDSCFWorkflow.build(
-                code=kcp_code,
+                codes={"kcp": kcp_code},
                 structure=ozone_structure,
                 pseudo_family=ozone_pseudo_family,
                 ecutwfc=65.0,
@@ -3003,7 +3032,7 @@ class TestPowerSpectrumPredictionGraph:
         monkeypatch.setattr(kcp_mod, "_run_predicted_final_ki", spy_twin)
 
         common = {
-            "code": kcp_code,
+            "codes": {"kcp": kcp_code},
             "structure": ozone_structure,
             "pseudo_family": ozone_pseudo_family,
             "ecutwfc": 65.0,

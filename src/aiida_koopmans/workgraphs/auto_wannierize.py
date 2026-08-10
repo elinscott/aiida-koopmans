@@ -52,7 +52,6 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlock,
     WannierizeBlockOutputs,
@@ -341,6 +340,15 @@ def _subblock_w90_parameters(
 # ----------------------------------------------------------------------
 
 
+class SplitBlockCodes(TypedDict):
+    """Codes for the wannierize-and-split path (:func:`WannierizeAndSplitBlock`)."""
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+    wannierjl: orm.AbstractCode
+
+
 class RewannierizeSplitOutputs(TypedDict):
     """Outputs of :func:`RewannierizeSplitBlocks`.
 
@@ -359,7 +367,7 @@ class RewannierizeSplitOutputs(TypedDict):
 
 @task.graph
 def RewannierizeSplitBlocks(
-    codes: Codes,
+    code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
     parent_parameters: orm.Dict,
@@ -395,7 +403,7 @@ def RewannierizeSplitBlocks(
     subblock_parameters: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
         rewannierized = Wannier90CalcStep(
-            code=codes["wannier90"],
+            code=code,
             structure=structure,
             parameters=_subblock_w90_parameters(
                 int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
@@ -434,7 +442,7 @@ def RewannierizeSplitBlocks(
 
 @task.graph
 def WannierizeAndSplitBlock(
-    codes: Codes,
+    codes: SplitBlockCodes,
     structure: orm.StructureData,
     block: ProjectionBlock,
     groups: list[list[int]],
@@ -485,7 +493,11 @@ def WannierizeAndSplitBlock(
     overrides = overrides or {}
 
     whole = WannierizeBlock(
-        codes=codes,
+        codes={
+            "pw": codes["pw"],
+            "pw2wannier90": codes["pw2wannier90"],
+            "wannier90": codes["wannier90"],
+        },
         structure=structure,
         block=block,
         projection_type=block["projection_type"],
@@ -553,7 +565,7 @@ def WannierizeAndSplitBlock(
     # them, so the parent run's resolved parameters are the trustworthy
     # source for the sub-block settings.
     rewannierized = RewannierizeSplitBlocks(
-        codes=codes,
+        code=codes["wannier90"],
         structure=structure,
         split_blocks=split["blocks"],
         parent_parameters=whole["wannier90_parameters"],

@@ -46,8 +46,7 @@ class TestDielectricTaskBuild:
     def test_chain_and_namelist(self, ph_codes, silicon_structure, fake_cutoffs_family):
         """The chain has three tasks and ph.x runs epsil-only at Gamma."""
         wg = DielectricTask.build(
-            pw_code=ph_codes["pw"],
-            ph_code=ph_codes["ph"],
+            codes={"pw": ph_codes["pw"], "ph": ph_codes["ph"]},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
         )
@@ -70,8 +69,7 @@ class TestDielectricTaskBuild:
     ):
         """tr2_ph from the caller survives; epsil / trans stay forced."""
         wg = DielectricTask.build(
-            pw_code=ph_codes["pw"],
-            ph_code=ph_codes["ph"],
+            codes={"pw": ph_codes["pw"], "ph": ph_codes["ph"]},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             overrides={

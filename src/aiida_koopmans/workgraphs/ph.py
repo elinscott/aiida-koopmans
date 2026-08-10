@@ -42,6 +42,13 @@ class DielectricOutputs(DielectricConstant):
     ph_output_parameters: dict
 
 
+class DielectricCodes(TypedDict):
+    """Codes for the dielectric chain (:func:`DielectricTask`)."""
+
+    pw: orm.AbstractCode
+    ph: orm.AbstractCode
+
+
 PhBaseTask = task(PhBaseWorkChain)
 
 
@@ -68,8 +75,7 @@ def extract_dielectric_constant(ph_parameters: dict) -> DielectricConstant:
 
 @task.graph
 def DielectricTask(
-    pw_code: orm.AbstractCode,
-    ph_code: orm.AbstractCode,
+    codes: DielectricCodes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -85,8 +91,8 @@ def DielectricTask(
     response, so the phonon protocol's q-mesh is bypassed.
 
     Args:
-        pw_code: Code configured for the quantumespresso.pw plugin.
-        ph_code: Code configured for the quantumespresso.ph plugin.
+        codes: Code instances; ``codes["pw"]`` runs the scf and
+            ``codes["ph"]`` the ph.x response.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label. If not specified, the protocol
             default is used.
@@ -130,7 +136,7 @@ def DielectricTask(
     # metallic (smeared) ground states, and the dielectric tensor is only
     # defined for insulators.
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=pw_code,
+        code=codes["pw"],
         structure=structure,
         protocol=protocol,
         overrides=scf_overrides,
@@ -152,7 +158,7 @@ def DielectricTask(
     merge_parallelization_into_overrides(ph_overrides, parallelization, [(("ph",), "ph")])
 
     ph_builder = PhBaseWorkChain.get_builder_from_protocol(
-        code=ph_code,
+        code=codes["ph"],
         protocol=protocol,
         overrides=ph_overrides,
     )

@@ -62,6 +62,7 @@ from typing import Annotated, Any, NotRequired, TypedDict
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -78,7 +79,6 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -314,6 +314,16 @@ class ChannelResults(TypedDict, total=False):
     wann2kc_remote_folder: orm.RemoteData
 
 
+class DfptCodes(TypedDict):
+    """Codes for the singlepoint DFPT chain (:func:`SinglepointDFPTWorkflow`)."""
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+    kcw: orm.AbstractCode
+    ph: NotRequired[Annotated[orm.AbstractCode, SocketMeta(help="Needed for eps_inf='auto'.")]]
+
+
 class KoopmansDFPTOutputs(TypedDict):
     """Outputs of :func:`SinglepointDFPTWorkflow`.
 
@@ -467,7 +477,7 @@ def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.Fold
 
 @task.graph
 def RunDFPT(
-    codes: Codes,
+    code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     occ_labels: list,
@@ -490,7 +500,7 @@ def RunDFPT(
     """Run the kcw.x chain off provided wannierization outputs.
 
     Args:
-        codes: code instances; only ``codes["kcw"]`` is used.
+        code: the kcw.x code; it runs every step of the chain.
         nscf_remote_folder: scratch of the pw.x **nscf** run the Wannier
             functions were built on (kcw.x re-reads its wavefunctions). Must
             be an ``nspin = 2`` run even for closed-shell systems -- the DFPT
@@ -598,7 +608,7 @@ def RunDFPT(
     )["wannier_files"]
 
     wann2kc_inputs: dict[str, Any] = {
-        "code": codes["kcw"],
+        "code": code,
         "parameters": {"CONTROL": control, "WANNIER": wannier},
         "parent_folder": nscf_remote_folder,
         "wannier_files": wannier_files,
@@ -649,7 +659,7 @@ def RunDFPT(
             metadata={"call_link_label": "assign_orbital_groups"},
         )
         grouped = GroupedKcwScreening(
-            code=codes["kcw"],
+            code=code,
             control=control,
             wannier=wannier,
             screen_namelist=screen_namelist,
@@ -664,7 +674,7 @@ def RunDFPT(
         # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
         screen_namelist["check_spread"] = bool(check_spread)
         screen_inputs: dict[str, Any] = {
-            "code": codes["kcw"],
+            "code": code,
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
             "parent_folder": wann2kc["remote_folder"],
             "wannier_files": wannier_files,
@@ -683,7 +693,7 @@ def RunDFPT(
         "on_site_only": False,
     }
     ham_inputs: dict[str, Any] = {
-        "code": codes["kcw"],
+        "code": code,
         "parameters": {"CONTROL": control, "WANNIER": wannier, "HAM": ham_namelist},
         "parent_folder": wann2kc["remote_folder"],
         "wannier_files": wannier_files,
@@ -807,7 +817,7 @@ def _manifold_wannier_overrides(
 
 @task.graph
 def SinglepointDFPTWorkflow(
-    codes: Codes,
+    codes: DfptCodes,
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
@@ -913,8 +923,7 @@ def SinglepointDFPTWorkflow(
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            pw_code=codes["pw"],
-            ph_code=codes["ph"],
+            codes={"pw": codes["pw"], "ph": codes["ph"]},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -997,7 +1006,11 @@ def SinglepointDFPTWorkflow(
         # channels. The unified ``spreads`` output is band-ordered by the
         # same list, exactly the order kcw.x counts ``SCREEN.i_orb`` in.
         wannierized = WannierizeBlocks(
-            codes=codes,
+            codes={
+                "pw": codes["pw"],
+                "pw2wannier90": codes["pw2wannier90"],
+                "wannier90": codes["wannier90"],
+            },
             structure=structure,
             blocks=occ_blocks + emp_blocks,
             kpoints=explicit_kpoints,
@@ -1016,7 +1029,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "codes": codes,
+            "code": codes["kcw"],
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],

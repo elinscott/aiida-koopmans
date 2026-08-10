@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -17,6 +17,7 @@ from aiida_wannier90_workflows.common.types import (
 )
 from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wannier90WorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -24,7 +25,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_existing_namespaces,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import Codes, enforce_step_calculation, unwrap_enum
+from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
@@ -32,6 +33,25 @@ from aiida_koopmans.workgraphs import Codes, enforce_step_calculation, unwrap_en
 from aiida_koopmans.workgraphs.pw import PwOutputs
 
 __all__ = ["PwOutputs"]
+
+
+class WannierizeCodes(TypedDict):
+    """Codes for the whole-manifold wannierization chain.
+
+    Shared by :func:`Wannierize` and :func:`OptimizeWannierization`, whose
+    upstream builders wire the same scf / nscf / pw2wannier90 / wannier90
+    steps.
+    """
+
+    pw: orm.AbstractCode
+    pw2wannier90: orm.AbstractCode
+    wannier90: orm.AbstractCode
+    projwfc: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed for SCDM projections and projectability disentanglement."),
+        ]
+    ]
 
 
 class Wannier90Outputs(TypedDict):
@@ -175,7 +195,7 @@ def _apply_kpoint_mesh(
 
 @task.graph
 def Wannierize(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -337,7 +357,7 @@ class WannierOptimizeOutputs(TypedDict, total=False):
 
 @task.graph
 def OptimizeWannierization(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     reference_bands: orm.BandsData | None = None,
     bands_distance_threshold: float = 1e-2,

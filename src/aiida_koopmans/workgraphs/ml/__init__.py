@@ -53,12 +53,12 @@ from aiida_koopmans.parallelization import (
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital, VariationalOrbitalType
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.kcp import (
+    DscfCodes,
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
@@ -809,7 +809,7 @@ def wire_snapshot_dataset(
 
 @task.graph
 def TrajectoryWorkflow(
-    code: orm.AbstractCode,
+    codes: DscfCodes,
     snapshots: Annotated[dict, dynamic(orm.StructureData)],
     pseudo_family: str,
     ecutwfc: float,
@@ -824,7 +824,6 @@ def TrajectoryWorkflow(
     initial_alpha: float = 0.6,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
-    codes: Codes | None = None,
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -906,7 +905,6 @@ def TrajectoryWorkflow(
     # validates them upstream (letters, digits and underscores only).
     for label, structure in snapshots.items():
         dscf = KoopmansDSCFWorkflow(
-            code=code,
             structure=structure,
             pseudo_family=pseudo_family,
             ecutwfc=ecutwfc,

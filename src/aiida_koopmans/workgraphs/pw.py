@@ -57,6 +57,12 @@ class ScfNscfOutputs(TypedDict):
     nscf_output_kpoints: NotRequired[orm.KpointsData]
 
 
+class PwBandsCodes(TypedDict):
+    """Codes for the DFT bands chain (:func:`RunPwBands`)."""
+
+    pw: orm.AbstractCode
+
+
 PwBaseStep = task(PwBaseWorkChain)
 PwBandsStep = task(PwBandsWorkChain)
 
@@ -109,7 +115,7 @@ def assemble_pw_base_step(
 
 @task.graph
 def RunPwBands(
-    code: orm.AbstractCode,
+    codes: PwBandsCodes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -121,11 +127,11 @@ def RunPwBands(
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
     This task wraps PwBandsWorkChain and uses get_builder_from_protocol to
-    construct the inputs from a simplified set of arguments (code, structure,
+    construct the inputs from a simplified set of arguments (codes, structure,
     protocol, overrides, parallelization).
 
     Args:
-        code: The Code instance configured for the quantumespresso.pw plugin.
+        codes: Code instances; ``codes["pw"]`` runs both the scf and bands steps.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
@@ -158,7 +164,7 @@ def RunPwBands(
     )
 
     builder = PwBandsWorkChain.get_builder_from_protocol(
-        code=code,
+        code=codes["pw"],
         structure=structure,
         protocol=protocol,
         overrides=overrides,
