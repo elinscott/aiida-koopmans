@@ -52,8 +52,10 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
+    _DEGENERATE_CHANNEL_TOLERANCE,
     WannierizeBlock,
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -184,7 +186,6 @@ def detect_band_groups(
     num_occ_bands: int | None = None,
     threshold: float | None = None,
     num_bands_total: int | None = None,
-    spin_channel_index: int = 0,
 ) -> orm.List:
     """Detect the energy-separated band groups of a bands calculation.
 
@@ -196,10 +197,34 @@ def detect_band_groups(
     it must not influence the grouping), and returns the 1-indexed groups. A
     calcfunction (not a plain ``@task``): it takes AiiDA data nodes, which
     the PyFunction deserializer refuses.
+
+    The one detection feeds every block, so it reads one spin channel.
+    Spin-resolved eigenvalues are accepted only when the two channels
+    satisfy ``max_kn |E_up - E_down| <= _DEGENERATE_CHANNEL_TOLERANCE`` — a
+    closed-shell run that carries two channels only because it was forced
+    to nspin=2 — and the up channel is read, the channel pw2wannier90 and
+    wannier90 also read. Channels further apart raise: groups detected on
+    one channel would be applied to blocks of both.
     """
     energies = np.asarray(bands.get_bands(), dtype=float)
     if energies.ndim == 3:
-        energies = energies[int(spin_channel_index)]
+        if energies.shape[0] != 2:
+            raise ValueError(
+                "The band-group detection reads one spin channel, but the bands it "
+                f"was given carry {energies.shape[0]} channels."
+            )
+        split = float(np.abs(energies[0] - energies[1]).max())
+        if split > _DEGENERATE_CHANNEL_TOLERANCE:
+            raise ValueError(
+                "The band-group detection reads one spin channel, but the two "
+                f"channels of the bands it was given differ by up to {split:.6f} eV, "
+                f"above the {_DEGENERATE_CHANNEL_TOLERANCE} eV at which they count "
+                "as one. Automated block splitting is not supported on a "
+                "spin-polarized run: drop the split trigger (`split_threshold` or "
+                "the automatic-projections block), or run without spin "
+                "polarization."
+            )
+        energies = energies[SpinChannel.NONE.axis]
     if num_bands_total is not None:
         energies = energies[:, : int(num_bands_total)]
     return orm.List(
