@@ -116,7 +116,12 @@ class DfptCodes(TypedDict):
             "in reciprocal space."
         ),
     ]
-    ph: NotRequired[Annotated[orm.AbstractCode, SocketMeta(help="Needed for eps_inf: auto.")]]
+    ph: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed if the dielectric constant is to be computed automatically."),
+        ]
+    ]
 
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its

@@ -95,7 +95,7 @@ class KIFinalOutputs(TypedDict):
 #: Annotation for the DSCF codes only the periodic Wannier route consumes.
 WannierRouteCode = Annotated[
     orm.AbstractCode,
-    SocketMeta(help="Needed for init_orbitals: mlwfs or projwfs."),
+    SocketMeta(help="Needed to initialize the variational orbitals as Wannier functions."),
 ]
 
 

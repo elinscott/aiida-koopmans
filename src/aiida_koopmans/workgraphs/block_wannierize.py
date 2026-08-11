@@ -100,7 +100,8 @@ class WannierizeBlockCodes(TypedDict):
 
     # The upstream ``Wannier90WorkChain`` builder cannot assemble its inputs
     # without a pw code, even though this graph discards the scf / nscf
-    # namespaces and runs no pw.x itself.
+    # namespaces and runs no pw.x itself. This member can be dropped once the
+    # upstream builder no longer demands a pw code for discarded namespaces.
     pw: Annotated[
         orm.AbstractCode,
         SocketMeta(help="Needed to set up the block's Wannierization; no pw.x calculation runs."),
@@ -118,7 +119,7 @@ class WannierizeBlocksCodes(TypedDict):
     wannierjl: NotRequired[
         Annotated[
             orm.AbstractCode,
-            SocketMeta(help="Needed when block_wannierization_threshold is set."),
+            SocketMeta(help="Needed for threshold-based splitting of bands into blocks."),
         ]
     ]
 

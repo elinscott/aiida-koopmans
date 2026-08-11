@@ -58,7 +58,7 @@ Wann2kcpCode = Annotated[
 ]
 MergeEvcCode = Annotated[
     orm.AbstractCode,
-    SocketMeta(help="Needed to merge the folded wavefunctions into supercell wavefunction files."),
+    SocketMeta(help="Needed to merge the folded wavefunctions."),
 ]
 
 
@@ -176,7 +176,7 @@ def FoldToSupercell(
     """Convert per-block Wannier orbitals into merged supercell kcp.x files.
 
     Args:
-        codes: code instances (:class:`FoldingCodes`); both members are wired.
+        codes: code instances (:class:`FoldingCodes`).
         blocks: the projection blocks, in the same order they were
             Wannierised.
         merge_groups: the per-(manifold, spin) grouping of ``blocks`` from
