@@ -4,6 +4,8 @@
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
+import copy
+import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
@@ -18,6 +20,7 @@ from aiida_wannier90_workflows.common.types import (
     WannierProjectionType,
 )
 from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wannier90WorkChain
+from aiida_wannier90_workflows.workflows.base.projwfc import ProjwfcBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
@@ -25,6 +28,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_existing_namespaces,
+    merge_parallelization_into_inputs,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
@@ -32,7 +36,7 @@ from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
 # existing ``from ...wannier90 import PwOutputs`` call sites keep working.
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, run_bands_step
 
 __all__ = ["PwOutputs"]
 
@@ -44,6 +48,10 @@ Pw2Wannier90Code = Annotated[
 Wannier90Code = Annotated[
     orm.AbstractCode,
     SocketMeta(help="Needed to compute Wannier functions."),
+]
+ProjwfcCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute projected densities of states."),
 ]
 
 
@@ -60,12 +68,7 @@ class WannierizeCodes(TypedDict):
     # The upstream builder also wires projwfc for SCDM projections and
     # frozen_type: energy_auto; koopmans uses neither, so the projected-DOS
     # runs are the only use a koopmans user meets.
-    projwfc: NotRequired[
-        Annotated[
-            orm.AbstractCode,
-            SocketMeta(help="Needed to compute projected densities of states."),
-        ]
-    ]
+    projwfc: NotRequired[ProjwfcCode]
 
 
 class Wannier90Outputs(TypedDict):
@@ -102,7 +105,23 @@ class ProjwfcOutputs(TypedDict, total=False):
 
 
 class WannierWorkflowOutputs(TypedDict):
-    """Output types for Wannier90 workgraph tasks."""
+    """Output types for Wannier90 workgraph tasks.
+
+    The workchain namespaces are forwarded whole. Two sockets depend on the
+    inputs:
+
+    * ``bands`` -- the pw.x ``bands`` quality-check run along the caller's
+      ``bands_kpoints``, off the scf density: the explicit eigenvalues the
+      Wannier interpolation is judged against. Populated only when
+      ``bands_kpoints`` was given (``kpoint_path`` carries no explicit
+      k-list for pw.x to sample, so it drives the interpolation only).
+    * ``projwfc`` -- with a ``projwfc`` code in ``codes``, the bands run
+      present, and every pseudo carrying ``PP_PSWFC`` atomic wavefunctions
+      (:func:`projected_dos_supported`), the projected DOS computed off
+      that run's scratch (:func:`run_projwfc_step`); otherwise the wrapped
+      workchain's own ``projwfc`` namespace (populated only by its SCDM
+      machinery).
+    """
 
     scf: PwOutputs
     nscf: PwOutputs
@@ -110,10 +129,111 @@ class WannierWorkflowOutputs(TypedDict):
     wannier90_up: Wannier90Outputs
     wannier90_down: Wannier90Outputs
     projwfc: ProjwfcOutputs
+    bands: NotRequired[PwOutputs]
 
 
 Wannier90Step = task(Wannier90WorkChain)
 Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
+ProjwfcBaseStep = task(ProjwfcBaseWorkChain)
+
+
+def projected_dos_supported(pseudo_family: str | None, structure: orm.StructureData) -> bool:
+    """Decide whether the projected DOS can run for this family and structure.
+
+    projwfc.x projects the bands run's eigenstates onto the
+    pseudopotentials' ``PP_PSWFC`` atomic wavefunctions, so every pseudo
+    the family resolves for ``structure`` must report ``number_of_wfc > 0``
+    in its UPF header (a header omitting the attribute promises none). Any
+    pseudo reporting none, or whose header cannot be read, skips the
+    projected DOS with a :class:`UserWarning` naming the pseudos — never an
+    error: the projected DOS is a side analysis, and no failure of this
+    gate may abort the Wannierization itself. Without a family label there
+    is nothing to check against, so that case is skipped the same way.
+    """
+    # Header-only read: the gate must not depend on the UPF body parsing,
+    # and the import stays function-local so this module imports without
+    # upf-tools' numeric dependency chain.
+    from upf_tools import header_from_str
+
+    from aiida_koopmans.utils.pseudos import resolve_pseudo_family
+
+    if pseudo_family is None:
+        warnings.warn(
+            "No pseudopotential family was named, so whether the pseudos carry "
+            "`PP_PSWFC` atomic wavefunctions cannot be checked. Skipping the "
+            "projected DOS calculation.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return False
+
+    # A graph input arrives as a wrapt proxy; the group loader binds the
+    # label as an SQL parameter, which needs a plain str.
+    pseudos = resolve_pseudo_family(str(pseudo_family), structure)
+    without_pswfc: list[str] = []
+    unreadable: list[str] = []
+    for kind, upf in sorted(pseudos.items()):
+        try:
+            header = header_from_str(upf.get_content("r"))
+            capable = int(header.get("number_of_wfc") or 0) > 0
+        except Exception:
+            unreadable.append(kind)
+            continue
+        if not capable:
+            without_pswfc.append(kind)
+
+    if unreadable:
+        warnings.warn(
+            f"The UPF files for {', '.join(unreadable)} could not be parsed, so whether "
+            "they carry `PP_PSWFC` atomic wavefunctions is unknown. Skipping the "
+            "projected DOS calculation.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if without_pswfc:
+        warnings.warn(
+            f"The pseudopotentials for {', '.join(without_pswfc)} have no `PP_PSWFC` "
+            "block, so a projected DOS calculation is not possible. Skipping it.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return not (unreadable or without_pswfc)
+
+
+def run_projwfc_step(
+    projwfc_code: orm.AbstractCode,
+    parent_folder: orm.RemoteData,
+    protocol: str | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> ProjwfcOutputs:
+    """Assemble a projwfc.x step off a pw.x run's scratch.
+
+    A plain graph-assembly helper, not a task: it must be called inside a
+    ``@task.graph`` body, where the ``ProjwfcBaseStep`` it creates joins the
+    surrounding graph (``call_link_label`` ``projwfc``). The step is seeded
+    from ``ProjwfcBaseWorkChain``'s protocol defaults and reads the
+    wavefunctions from ``parent_folder`` — the quality-check bands run's
+    scratch, so the projections resolve along the bands path. Returns the
+    parsed outputs wired into the :class:`ProjwfcOutputs` shape.
+    """
+    # A graph input arrives as a wrapt proxy; hand the protocol lookup a
+    # plain str.
+    builder = ProjwfcBaseWorkChain.get_builder_from_protocol(
+        code=projwfc_code, protocol=str(protocol) if protocol is not None else None
+    )
+    data = get_dict_from_builder(builder)
+    data.pop("clean_workdir", None)
+    data["projwfc"]["parent_folder"] = parent_folder
+    merge_parallelization_into_inputs(data["projwfc"], parallelization, "projwfc")
+    data.setdefault("metadata", {})["call_link_label"] = "projwfc"
+    outputs = ProjwfcBaseStep(**data)
+    return ProjwfcOutputs(
+        remote_folder=outputs["remote_folder"],
+        output_parameters=outputs["output_parameters"],
+        Dos=outputs["Dos"],
+        projections=outputs["projections"],
+        bands=outputs["bands"],
+    )
 
 
 def require_path_labels(kpoints: orm.KpointsData | None, name: str) -> None:
@@ -278,7 +398,11 @@ def Wannierize(
 
     Args:
         codes: Dictionary mapping code names to Code instances. Required keys:
-            'pw', 'pw2wannier90', 'wannier90'. Optional: 'projwfc'.
+            'pw', 'pw2wannier90', 'wannier90'. Optional: 'projwfc' — with
+            ``bands_kpoints`` given it computes the projected DOS off the
+            quality-check bands run (the ``projwfc`` output namespace),
+            skipped with a warning when a pseudo carries no ``PP_PSWFC``
+            atomic wavefunctions (:func:`projected_dos_supported`).
         structure: The StructureData instance to use.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary of inputs to override protocol defaults.
@@ -308,7 +432,11 @@ def Wannierize(
             nothing.
         bands_kpoints: the same path as a labelled explicit ``KpointsData``;
             mutually exclusive with ``kpoint_path``, and likewise sets
-            ``bands_plot = True``.
+            ``bands_plot = True``. Also runs pw.x along the same explicit
+            list off the scf density (the ``bands`` output namespace), so
+            the interpolation can be judged against computed eigenvalues on
+            identical k-points — which is why ``kpoint_path``, being
+            symbolic, triggers no such run.
         kpoints: the explicit k-point list the nscf and wannier90 share.
             Unset leaves both on the protocol's ``kpoints_distance``-derived
             mesh. Requires ``mp_grid``.
@@ -383,7 +511,7 @@ def Wannierize(
     outputs = Wannier90Step(**data)
 
     # Return available outputs
-    return WannierWorkflowOutputs(
+    workflow_outputs = WannierWorkflowOutputs(
         scf=outputs.scf,
         nscf=outputs.nscf,
         wannier90=outputs.wannier90,
@@ -391,6 +519,52 @@ def Wannierize(
         wannier90_down=outputs.wannier90_down,
         projwfc=outputs.projwfc,
     )
+
+    # Quality check on the Wannierisation: pw.x samples the same explicit
+    # path off the scf density, so the interpolated and computed bands share
+    # their k-points one-to-one. ``kpoint_path`` is symbolic (wannier90
+    # discretizes it itself), so only ``bands_kpoints`` can feed the run.
+    if bands_kpoints is not None:
+        # The run must compute every band the Wannierisation reads, but the
+        # workchain builder resolves ``nbnd`` internally (num_bands plus
+        # exclusions) rather than through the caller's overrides — without
+        # the copy below pw.x would default to the ~nelec/2 occupied bands
+        # and the reference curve would stop at the valence top. Lift the
+        # resolved value off the built nscf, on top of a deep copy of the
+        # caller's seed (the injection must not leak into ``overrides``).
+        bands_seed: dict[str, Any] = copy.deepcopy(dict((overrides or {}).get("nscf") or {}))
+        nscf_pw = data.get("nscf", {}).get("pw")
+        if nscf_pw is not None and nscf_pw.get("parameters") is not None:
+            nbnd = nscf_pw["parameters"].get_dict().get("SYSTEM", {}).get("nbnd")
+            if nbnd is not None:
+                bands_seed.setdefault("pw", {}).setdefault("parameters", {}).setdefault(
+                    "SYSTEM", {}
+                )["nbnd"] = nbnd
+        bands_step = run_bands_step(
+            pw_code=codes["pw"],
+            structure=structure,
+            bands_kpoints=bands_kpoints,
+            scf_remote_folder=outputs["scf"]["remote_folder"],
+            nscf_overrides=bands_seed,
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            electronic_type=electronic_type,
+            parallelization=parallelization,
+        )
+        workflow_outputs["bands"] = PwOutputs(
+            remote_folder=bands_step["remote_folder"],
+            output_parameters=bands_step["output_parameters"],
+            output_band=bands_step["output_band"],
+        )
+        if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
+            workflow_outputs["projwfc"] = run_projwfc_step(
+                projwfc_code=codes["projwfc"],
+                parent_folder=bands_step["remote_folder"],
+                protocol=protocol,
+                parallelization=parallelization,
+            )
+
+    return workflow_outputs
 
 
 class WannierOptimizeOutputs(TypedDict, total=False):

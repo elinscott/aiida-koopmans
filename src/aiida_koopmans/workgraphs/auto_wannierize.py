@@ -31,7 +31,6 @@ parent's gauge products, so a parent's disentanglement matrix would be
 dropped on the floor rather than carried into the sub-blocks.
 """
 
-import copy
 import io
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -51,12 +50,14 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import (
+    _DEGENERATE_CHANNEL_TOLERANCE,
     WannierizeBlock,
     WannierizeBlockOutputs,
     WannierizeOverrides,
 )
-from aiida_koopmans.workgraphs.pw import PwCode, assemble_pw_base_step
+from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
@@ -141,54 +142,6 @@ def _plain_options(options: dict[str, Any] | None) -> dict[str, Any]:
     return rebuild(options) if options else _DEFAULT_CALCJOB_OPTIONS
 
 
-def add_bands_step(
-    pw_code: orm.AbstractCode,
-    structure: orm.StructureData,
-    bands_kpoints: orm.KpointsData,
-    scf_remote_folder: orm.RemoteData,
-    nscf_overrides: dict[str, Any] | None = None,
-    pseudo_family: str | None = None,
-    protocol: str | None = None,
-    electronic_type: ElectronicType = ElectronicType.INSULATOR,
-    parallelization: ParallelizationDict | None = None,
-) -> Any:
-    """Assemble a pw.x ``bands`` step along ``bands_kpoints`` off an scf density.
-
-    A plain graph-assembly helper, not a task: it must be called inside a
-    ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
-    surrounding graph (``call_link_label`` ``bands``). The step is seeded
-    from the caller's nscf protocol overrides — so e.g. ``nbnd`` and the
-    cutoffs stay consistent with the nscf — with the calculation type forced
-    on top, and reads the density from ``scf_remote_folder``. Returns the
-    step's outputs (``output_band`` holds the eigenvalues along the path).
-    """
-    # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
-    # provenance-tagged proxies; the family label ends up bound as an SQL
-    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
-    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-
-    # Deep-copy the seed: the shared assembly stamps this step's calculation
-    # type into the overrides, which must never leak into the caller's nscf
-    # override through shared nested dicts.
-    bands_overrides = copy.deepcopy(dict(nscf_overrides or {}))
-    # A calculation type riding along in the seed is residue, not a conflict.
-    bands_overrides.get("pw", {}).get("parameters", {}).get("CONTROL", {}).pop("calculation", None)
-    if pseudo_family is not None:
-        bands_overrides.setdefault("pseudo_family", pseudo_family)
-    return assemble_pw_base_step(
-        pw_code,
-        structure,
-        calculation="bands",
-        call_link_label="bands",
-        overrides=bands_overrides,
-        protocol=protocol,
-        electronic_type=electronic_type,
-        kpoints=bands_kpoints,
-        parent_folder=scf_remote_folder,
-        parallelization=parallelization,
-    )
-
-
 # ----------------------------------------------------------------------
 # Leaf tasks
 # ----------------------------------------------------------------------
@@ -200,7 +153,6 @@ def detect_band_groups(
     num_occ_bands: int | None = None,
     threshold: float | None = None,
     num_bands_total: int | None = None,
-    spin_channel_index: int = 0,
 ) -> orm.List:
     """Detect the energy-separated band groups of a bands calculation.
 
@@ -212,10 +164,34 @@ def detect_band_groups(
     it must not influence the grouping), and returns the 1-indexed groups. A
     calcfunction (not a plain ``@task``): it takes AiiDA data nodes, which
     the PyFunction deserializer refuses.
+
+    The one detection feeds every block, so it reads one spin channel.
+    Spin-resolved eigenvalues are accepted only when the two channels
+    satisfy ``max_kn |E_up - E_down| <= _DEGENERATE_CHANNEL_TOLERANCE`` — a
+    closed-shell run that carries two channels only because it was forced
+    to nspin=2 — and the up channel is read, the channel pw2wannier90 and
+    wannier90 also read. Channels further apart raise: groups detected on
+    one channel would be applied to blocks of both.
     """
     energies = np.asarray(bands.get_bands(), dtype=float)
     if energies.ndim == 3:
-        energies = energies[int(spin_channel_index)]
+        if energies.shape[0] != 2:
+            raise ValueError(
+                "The band-group detection reads one spin channel, but the bands it "
+                f"was given carry {energies.shape[0]} channels."
+            )
+        split = float(np.abs(energies[0] - energies[1]).max())
+        if split > _DEGENERATE_CHANNEL_TOLERANCE:
+            raise ValueError(
+                "The band-group detection reads one spin channel, but the two "
+                f"channels of the bands it was given differ by up to {split:.6f} eV, "
+                f"above the {_DEGENERATE_CHANNEL_TOLERANCE} eV at which they count "
+                "as one. Automated block splitting is not supported on a "
+                "spin-polarized run: drop the split trigger (`split_threshold` or "
+                "the automatic-projections block), or run without spin "
+                "polarization."
+            )
+        energies = energies[SpinChannel.NONE.axis]
     if num_bands_total is not None:
         energies = energies[:, : int(num_bands_total)]
     return orm.List(

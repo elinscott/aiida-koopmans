@@ -27,7 +27,12 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     merge_split_block_products,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from tests.fixtures import assert_graph_roundtrips, bands_data, explicit_block
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    bands_data,
+    count_pw_bands_runs,
+    explicit_block,
+)
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -236,7 +241,7 @@ class TestTopLevelGraphBuild:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("scf_nscf") == 1
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("detect_band_groups") == 1
         # Nested graph tasks are named by their call_link_label.
         n_block_tasks = sum(1 for name in names if name.startswith("wannierize_split_block"))
@@ -604,17 +609,39 @@ class TestDetectBandGroupsCalcfunction:
         )
         assert groups.get_list() == [[1, 2], [3, 4]]
 
-    def test_selects_the_requested_spin_channel(self, aiida_profile):
-        """A 3D (spin-resolved) bands array is indexed by ``spin_channel_index``."""
+    def test_degenerate_channels_are_read_as_one(self, aiida_profile):
+        """A closed-shell nspin=2 scratch is grouped off the up channel.
+
+        A run forced to nspin=2 carries two channels separated by scf noise
+        alone; the up channel is the one pw2wannier90 and wannier90 read.
+        """
+        spin_up = [[0.0, 0.5, 4.0, 4.6], [0.4, 0.9, 4.5, 4.9]]  # 2 eV gap -> two groups
+        spin_down = [[e + 5.0e-5 for e in row] for row in spin_up]
+        bands = bands_data([spin_up, spin_down])
+        assert detect_band_groups._callable(bands=bands, threshold=2.0).get_list() == [
+            [1, 2],
+            [3, 4],
+        ]
+
+    def test_genuinely_split_channels_are_refused(self, aiida_profile):
+        """Channels apart by more than scf noise raise instead of reading up.
+
+        The down channel here groups differently from up (no gap at all), so
+        a silent up-channel read would return up's groups for both; the
+        refusal names the observed separation.
+        """
         spin_up = [[0.0, 0.5, 4.0, 4.6], [0.4, 0.9, 4.5, 4.9]]  # 2 eV gap -> two groups
         spin_down = [[0.0, 0.1, 0.2, 0.3], [0.4, 0.5, 0.6, 0.7]]  # no gap -> one group
         bands = bands_data([spin_up, spin_down])
-        assert detect_band_groups._callable(
-            bands=bands, threshold=2.0, spin_channel_index=0
-        ).get_list() == [[1, 2], [3, 4]]
-        assert detect_band_groups._callable(
-            bands=bands, threshold=2.0, spin_channel_index=1
-        ).get_list() == [[1, 2, 3, 4]]
+        with pytest.raises(ValueError, match=r"differ by up to 4\.300000 eV"):
+            detect_band_groups._callable(bands=bands, threshold=2.0)
+
+    def test_more_channels_than_a_spin_pair_are_refused(self, aiida_profile):
+        """The degeneracy tolerance answers a spin pair and nothing else."""
+        row = [[0.0, 0.5, 4.0, 4.6]]
+        bands = bands_data([row, row, row])
+        with pytest.raises(ValueError, match=r"carry 3 channels"):
+            detect_band_groups._callable(bands=bands, threshold=2.0)
 
 
 class TestExtractWinFile:

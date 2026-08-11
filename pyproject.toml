@@ -31,6 +31,9 @@ dependencies = [
     "node-graph>=0.6.5",
     "aiida-wannierjl",
     "wannier90-input>=0.0.2",
+    # Header-only UPF reads for the projected-DOS gate (header_from_str);
+    # needs the not-yet-released 0.2.1, hence the uv source below.
+    "upf-tools",
 ]
 
 [project.optional-dependencies]
@@ -196,6 +199,7 @@ lint-fix = "ruff check --config pyproject.toml --fix --exit-non-zero-on-fix --sh
 
 [tool.uv.sources]
 aiida-workgraph = { path = "../aiida-workgraph", editable = true }
+upf-tools = { path = "../upf-tools", editable = true }
 aiida-wannierjl = { path = "../aiida-wannierjl", editable = true }
 aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = true }
 node-graph = { path = "../node-graph", editable = true }
