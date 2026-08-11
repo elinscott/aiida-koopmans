@@ -31,8 +31,6 @@ parent's gauge products, so a parent's disentanglement matrix would be
 dropped on the floor rather than carried into the sub-blocks.
 """
 
-from __future__ import annotations
-
 import copy
 import io
 from typing import Annotated, Any, TypedDict
@@ -43,6 +41,7 @@ from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
@@ -57,12 +56,26 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
 )
-from aiida_koopmans.workgraphs.pw import assemble_pw_base_step
+from aiida_koopmans.workgraphs.pw import PwCode, assemble_pw_base_step
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
+from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+
+
+class SplitBlockCodes(TypedDict):
+    """Codes for the wannierize-and-split path (:func:`WannierizeAndSplitBlock`)."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wannierjl: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to split Wannier function blocks by parallel transport."),
+    ]
+
 
 Wannier90CalcStep = task(Wannier90Calculation)
 
@@ -338,15 +351,6 @@ def _subblock_w90_parameters(
 # ----------------------------------------------------------------------
 # Sub-block re-Wannierisation (nested: receives the resolved split folders)
 # ----------------------------------------------------------------------
-
-
-class SplitBlockCodes(TypedDict):
-    """Codes for the wannierize-and-split path (:func:`WannierizeAndSplitBlock`)."""
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-    wannierjl: orm.AbstractCode
 
 
 class RewannierizeSplitOutputs(TypedDict):

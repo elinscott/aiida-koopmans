@@ -37,12 +37,11 @@ contract — every folded manifold file is a ``merged_file`` node under its
 final kcp.x name, which ``KcpCalculation.read_wavefunctions`` stages as-is.
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, TypedDict, cast
 
 from aiida import orm
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
@@ -51,6 +50,24 @@ from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import MergeGroup, merge_dest_filename
+
+#: Shared annotations for the fold-to-supercell codes.
+Wann2kcpCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to convert Wannier functions to the supercell representation."),
+]
+MergeEvcCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to merge the folded wavefunctions into supercell wavefunction files."),
+]
+
+
+class FoldingCodes(TypedDict):
+    """Codes for :func:`FoldToSupercell`."""
+
+    wann2kcp: Wann2kcpCode
+    merge_evc: MergeEvcCode
+
 
 Wann2kcpTask = task(Wann2kcpCalculation)
 MergeEvcTask = task(MergeEvcCalculation)
@@ -83,13 +100,6 @@ def extract_wannier_files(retrieved: orm.FolderData) -> dict:
         with retrieved.base.repository.open(filename, "rb") as handle:
             outputs[key] = orm.SinglefileData(handle, filename=filename)
     return outputs
-
-
-class FoldingCodes(TypedDict):
-    """Codes for the fold-to-supercell chain (:func:`FoldToSupercell`)."""
-
-    wann2kcp: orm.AbstractCode
-    merge_evc: orm.AbstractCode
 
 
 class FoldToSupercellOutputs(TypedDict, total=False):

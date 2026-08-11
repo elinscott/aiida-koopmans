@@ -19,8 +19,10 @@ Spin-symmetrisation (``fix_spin_contamination=True``) is not yet supported
 and is rejected at build time.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -93,19 +95,24 @@ class KIFinalOutputs(TypedDict):
 #: Annotation for the DSCF codes only the periodic Wannier route consumes.
 WannierRouteCode = Annotated[
     orm.AbstractCode,
-    SocketMeta(help="Needed for the Wannier-initialised route (init_orbitals='mlwfs'/'projwfs')."),
+    SocketMeta(help="Needed for init_orbitals: mlwfs or projwfs."),
 ]
 
 
 class DscfCodes(TypedDict):
-    """Codes for the DSCF chain (:func:`KoopmansDSCFWorkflow` and the trajectory).
+    """Codes for :func:`KoopmansDSCFWorkflow` and the trajectory workflow.
 
     ``kcp`` runs every DSCF step; the remaining members exist only for the
     periodic Wannier-initialised route
     (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
     """
 
-    kcp: orm.AbstractCode
+    kcp: Annotated[
+        orm.AbstractCode,
+        SocketMeta(
+            help="Needed to perform explicitly orbital-density-dependent functional calculations."
+        ),
+    ]
     pw: NotRequired[WannierRouteCode]
     pw2wannier90: NotRequired[WannierRouteCode]
     wannier90: NotRequired[WannierRouteCode]

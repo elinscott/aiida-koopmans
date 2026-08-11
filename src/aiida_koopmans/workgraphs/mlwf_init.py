@@ -27,13 +27,12 @@ the ``dft_init`` save automatically, so only the ``evc_occupied{n}.dat``
 pair needs explicit re-staging).
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.parallelization import ParallelizationDict
@@ -45,15 +44,37 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlocks,
     WannierizeOverrides,
 )
-from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
+from aiida_koopmans.workgraphs.folding import (
+    FoldToSupercell,
+    MergeEvcCode,
+    Wann2kcpCode,
+    enumerate_fold_targets,
+)
 from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
     UpfData,
     build_dft_parameters,
     kcp_base_inputs,
 )
+from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.supercell import supercell_size
 from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
+from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+
+
+class MlwfInitCodes(TypedDict):
+    """Codes for the Wannier-seeded kcp.x initialisation (:func:`MlwfInitialization`)."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wann2kcp: Wann2kcpCode
+    merge_evc: MergeEvcCode
+    kcp: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to initialize the variational orbitals from Wannier functions."),
+    ]
+
 
 # Consistency-check thresholds for the initialisation.
 _GAP_RELATIVE_TOLERANCE = 2.0e-2
@@ -65,17 +86,6 @@ _BANDS_DESERIALIZERS = {
         "aiida_koopmans.utils.deserializers.passthrough_node"
     ),
 }
-
-
-class MlwfInitCodes(TypedDict):
-    """Codes for the Wannier-seeded kcp.x initialisation (:func:`MlwfInitialization`)."""
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-    wann2kcp: orm.AbstractCode
-    merge_evc: orm.AbstractCode
-    kcp: orm.AbstractCode
 
 
 class MlwfInitializationOutputs(TypedDict):

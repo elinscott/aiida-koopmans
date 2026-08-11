@@ -1,12 +1,12 @@
-"""Socket-level contract of the per-chain ``Codes`` TypedDicts.
+"""Socket-level contract of the per-workflow ``Codes`` TypedDicts.
 
-Every chain declares its codes as a TypedDict graph input: required members
+Every workflow graph declares its codes as a TypedDict input: required members
 become required ``workgraph.code`` sockets, ``NotRequired`` members stay
-optional and carry a "Needed for ..." help string. aiida-workgraph's input
+optional and carry a "Needed ..." purpose string. aiida-workgraph's input
 check is the error contract — ``check_before_run`` raises
 ``MissingRequiredInputsError`` whose entries name the socket path, the
 socket identifier, and the declared help. These tests pin that contract per
-chain (deferred-task shape, where no graph body runs before the check), the
+workflow (deferred-task shape, where no graph body runs before the check), the
 metadata on the sockets themselves, the serialization round-trip, and the
 build-time guards that cover the settings-conditional needs the socket
 layer cannot express.
@@ -85,6 +85,59 @@ CASES = {
 }
 
 
+#: The TypedDict behind each workflow, defined in the workflow's own module.
+TYPEDDICT_FOR = {
+    "RunPwBands": "PwBandsCodes",
+    "DielectricTask": "DielectricCodes",
+    "Wannierize": "WannierizeCodes",
+    "OptimizeWannierization": "WannierizeCodes",
+    "WannierizeBlocks": "WannierizeBlocksCodes",
+    "WannierizeBlock": "WannierizeBlockCodes",
+    "WannierizeAndSplitBlock": "SplitBlockCodes",
+    "MlwfInitialization": "MlwfInitCodes",
+    "FoldToSupercell": "FoldingCodes",
+    "KoopmansDSCFWorkflow": "DscfCodes",
+    "TrajectoryWorkflow": "DscfCodes",
+    "SinglepointDFPTWorkflow": "DfptCodes",
+    "RunPdos": "PdosCodes",
+}
+
+
+@pytest.mark.parametrize("case", CASES, ids=CASES)
+def test_typeddicts_introspect_like_the_dispatcher_will(case):
+    """The requirements are readable off the TypedDict in the workflow's module.
+
+    The dispatcher's pre-check reads required keys from
+    ``__required_keys__`` and the purpose strings from
+    ``typing.get_type_hints(..., include_extras=True)``; both must see
+    through ``NotRequired``. This holds because the defining modules avoid
+    ``from __future__ import annotations`` — stringified annotations hide
+    the qualifier from ``__required_keys__`` (python/cpython#97727).
+    """
+    import typing
+
+    from node_graph.socket_meta import SocketMeta
+
+    dotted, required, conditional = CASES[case]
+    module = import_module(dotted.rsplit(".", 1)[0])
+    cls = getattr(module, TYPEDDICT_FOR[case])
+    assert set(cls.__required_keys__) == required
+    assert set(cls.__optional_keys__) == conditional
+
+    hints = typing.get_type_hints(cls, include_extras=True)
+    assert set(hints) == required | conditional
+    for member in required | conditional:
+        annotation = hints[member]
+        if member in conditional:
+            assert typing.get_origin(annotation) is typing.NotRequired
+            (annotation,) = typing.get_args(annotation)
+        metas = [
+            meta for meta in getattr(annotation, "__metadata__", ()) if isinstance(meta, SocketMeta)
+        ]
+        assert metas, f"{member} carries no SocketMeta"
+        assert (metas[0].help or "").startswith("Needed ")
+
+
 def _graph(dotted: str):
     """Import a graph lazily (workgraph imports stay function-local in tests)."""
     module_name, attr = dotted.rsplit(".", 1)
@@ -92,7 +145,7 @@ def _graph(dotted: str):
 
 
 def _deferred(dotted: str, **inputs):
-    """Add the chain as a deferred task and return ``(workgraph, task)``."""
+    """Add the workflow graph as a deferred task and return ``(workgraph, task)``."""
     from aiida_workgraph import WorkGraph
 
     wg = WorkGraph()
@@ -128,11 +181,13 @@ class TestMissingRequiredCodes:
         members = {socket._name for socket in task.inputs.codes}
         assert members == required | conditional
         for member in required:
-            assert task.inputs.codes[member]._metadata.required
+            socket = task.inputs.codes[member]
+            assert socket._metadata.required
+            assert (socket._metadata.help or "").startswith("Needed ")
         for member in conditional:
             socket = task.inputs.codes[member]
             assert not socket._metadata.required
-            assert (socket._metadata.help or "").startswith("Needed for")
+            assert (socket._metadata.help or "").startswith("Needed ")
 
     def test_codes_socket_shape_survives_a_roundtrip(self, case, aiida_profile):
         from aiida_workgraph import WorkGraph
@@ -182,7 +237,7 @@ class TestProvidedRequiredCodesSatisfyTheCheck:
 
 
 class TestUndeclaredCodesAreRejected:
-    """A typed codes namespace refuses keys its chain does not declare."""
+    """A typed codes namespace refuses keys its workflow does not declare."""
 
     def test_extra_key_raises_at_assignment(self, wannier_codes, kcp_code, aiida_profile):
         with pytest.raises(ValueError, match="not defined"):
@@ -196,7 +251,7 @@ class TestConditionOnGuards:
     """The build-time guards own the settings-conditional needs.
 
     A conditional code's socket is optional, so when the setting that needs
-    it is on, the chain's own guard raises at build — the socket layer
+    it is on, the workflow's own guard raises at build — the socket layer
     cannot see the setting.
     """
 

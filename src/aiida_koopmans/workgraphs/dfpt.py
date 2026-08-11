@@ -54,8 +54,10 @@ Current limitations:
   unfold-and-interpolate postprocessing.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 from copy import deepcopy
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -85,7 +87,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
-from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwCode, RunScfNscf
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -98,6 +100,24 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     expand_alphas_by_group,
     spreads_metric_row,
 )
+from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+
+
+class DfptCodes(TypedDict):
+    """Codes for :func:`SinglepointDFPTWorkflow`."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    kcw: Annotated[
+        orm.AbstractCode,
+        SocketMeta(
+            help="Needed to compute screening parameters and construct Hamiltonians "
+            "in reciprocal space."
+        ),
+    ]
+    ph: NotRequired[Annotated[orm.AbstractCode, SocketMeta(help="Needed for eps_inf: auto.")]]
+
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
 # working directory. The wannier90 CalcJob writes its products with the
@@ -312,16 +332,6 @@ class ChannelResults(TypedDict, total=False):
     ham_parameters: dict
     bands: orm.BandsData
     wann2kc_remote_folder: orm.RemoteData
-
-
-class DfptCodes(TypedDict):
-    """Codes for the singlepoint DFPT chain (:func:`SinglepointDFPTWorkflow`)."""
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-    kcw: orm.AbstractCode
-    ph: NotRequired[Annotated[orm.AbstractCode, SocketMeta(help="Needed for eps_inf='auto'.")]]
 
 
 class KoopmansDFPTOutputs(TypedDict):

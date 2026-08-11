@@ -1,7 +1,9 @@
 """Workgraphs that wrap aiida-wannier90-workflows workchains."""
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
@@ -30,26 +32,38 @@ from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
 # existing ``from ...wannier90 import PwOutputs`` call sites keep working.
-from aiida_koopmans.workgraphs.pw import PwOutputs
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
 
 __all__ = ["PwOutputs"]
 
+#: Shared annotations for the codes every wannierization workflow wires.
+Pw2Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute the overlap and projection matrices for Wannierization."),
+]
+Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute Wannier functions."),
+]
+
 
 class WannierizeCodes(TypedDict):
-    """Codes for the whole-manifold wannierization chain.
+    """Codes for :func:`Wannierize` and :func:`OptimizeWannierization`.
 
-    Shared by :func:`Wannierize` and :func:`OptimizeWannierization`, whose
-    upstream builders wire the same scf / nscf / pw2wannier90 / wannier90
-    steps.
+    Shared because both workflows' upstream builders wire the same
+    scf / nscf / pw2wannier90 / wannier90 steps.
     """
 
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    # The upstream builder also wires projwfc for SCDM projections and
+    # frozen_type: energy_auto; koopmans uses neither, so the projected-DOS
+    # runs are the only use a koopmans user meets.
     projwfc: NotRequired[
         Annotated[
             orm.AbstractCode,
-            SocketMeta(help="Needed for SCDM projections and projectability disentanglement."),
+            SocketMeta(help="Needed to compute projected densities of states."),
         ]
     ]
 

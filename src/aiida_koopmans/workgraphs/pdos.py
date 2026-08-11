@@ -1,12 +1,11 @@
 """Workgraph that wraps aiida-quantumespresso PdosWorkChain."""
 
-from __future__ import annotations
-
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -16,14 +15,21 @@ from aiida_koopmans.parallelization import (
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs import inject_pseudo_family
+from aiida_koopmans.workgraphs.pw import PwCode
 
 
 class PdosCodes(TypedDict):
-    """Codes for the projected-DOS chain (:func:`RunPdos`)."""
+    """Codes for :func:`RunPdos`."""
 
-    pw: orm.AbstractCode
-    dos: orm.AbstractCode
-    projwfc: orm.AbstractCode
+    pw: PwCode
+    dos: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute the total density of states."),
+    ]
+    projwfc: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute projected densities of states."),
+    ]
 
 
 class PdosOutputs(TypedDict):

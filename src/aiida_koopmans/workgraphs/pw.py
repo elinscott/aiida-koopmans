@@ -1,14 +1,13 @@
 """Workgraphs that wrap aiida-quantumespresso.pw workchains."""
 
-from __future__ import annotations
-
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -57,10 +56,20 @@ class ScfNscfOutputs(TypedDict):
     nscf_output_kpoints: NotRequired[orm.KpointsData]
 
 
-class PwBandsCodes(TypedDict):
-    """Codes for the DFT bands chain (:func:`RunPwBands`)."""
+#: Annotation for the pw.x code as the workflows that run scf + nscf wire it.
+PwCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute DFT ground state properties."),
+]
 
-    pw: orm.AbstractCode
+
+class PwBandsCodes(TypedDict):
+    """Codes for :func:`RunPwBands`."""
+
+    pw: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute the DFT ground state and band structure."),
+    ]
 
 
 PwBaseStep = task(PwBaseWorkChain)

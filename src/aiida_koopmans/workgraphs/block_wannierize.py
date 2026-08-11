@@ -47,8 +47,10 @@ graph body: it depends on ``aiida-wannierjl``, which the plain mode must not
 require.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -80,12 +82,41 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
 )
-from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
+from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code, Wannier90Step
+
+
+class WannierizeBlockCodes(TypedDict):
+    """Codes for one block's wannierization (:func:`WannierizeBlock`)."""
+
+    # The upstream ``Wannier90WorkChain`` builder cannot assemble its inputs
+    # without a pw code, even though this graph discards the scf / nscf
+    # namespaces and runs no pw.x itself.
+    pw: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to set up the block's Wannierization; no pw.x calculation runs."),
+    ]
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+
+
+class WannierizeBlocksCodes(TypedDict):
+    """Codes for :func:`WannierizeBlocks`."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wannierjl: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed when block_wannierization_threshold is set."),
+        ]
+    ]
+
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
 # retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
@@ -105,33 +136,6 @@ SUPPORTED_PROJECTION_TYPES = (
     WannierProjectionType.ATOMIC_PROJECTORS_QE,
     WannierProjectionType.ATOMIC_PROJECTORS_EXTERNAL,
 )
-
-
-class WannierizeBlockCodes(TypedDict):
-    """Codes for one block's wannierization (:func:`WannierizeBlock`).
-
-    ``pw`` never runs here (the block skips scf / nscf) but the upstream
-    ``Wannier90WorkChain`` builder still requires it to assemble the pw
-    namespaces this graph discards.
-    """
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-
-
-class WannierizeBlocksCodes(TypedDict):
-    """Codes for the block-by-block wannierization chain (:func:`WannierizeBlocks`)."""
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-    wannierjl: NotRequired[
-        Annotated[
-            orm.AbstractCode,
-            SocketMeta(help="Needed for block splitting via parallel transport."),
-        ]
-    ]
 
 
 def validate_projection_type(projection_type: WannierProjectionType) -> None:

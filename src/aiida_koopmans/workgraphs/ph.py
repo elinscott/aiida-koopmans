@@ -9,15 +9,14 @@ the Koopmans DFPT screen step and the Gygi-Baldereschi / Makov-Payne
 corrections consume.
 """
 
-from __future__ import annotations
-
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.ph.base import PhBaseWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -26,7 +25,17 @@ from aiida_koopmans.parallelization import (
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs import pin_kpoints
-from aiida_koopmans.workgraphs.pw import PwBaseStep
+from aiida_koopmans.workgraphs.pw import PwBaseStep, PwCode
+
+
+class DielectricCodes(TypedDict):
+    """Codes for :func:`DielectricTask`."""
+
+    pw: PwCode
+    ph: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute the dielectric constant."),
+    ]
 
 
 class DielectricConstant(TypedDict):
@@ -40,13 +49,6 @@ class DielectricOutputs(DielectricConstant):
     """Outputs of a DielectricTask run (scf + ph.x with epsil)."""
 
     ph_output_parameters: dict
-
-
-class DielectricCodes(TypedDict):
-    """Codes for the dielectric chain (:func:`DielectricTask`)."""
-
-    pw: orm.AbstractCode
-    ph: orm.AbstractCode
 
 
 PhBaseTask = task(PhBaseWorkChain)
