@@ -33,7 +33,7 @@ dropped on the floor rather than carried into the sub-blocks.
 
 import copy
 import io
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -62,7 +62,11 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
-from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+from aiida_koopmans.workgraphs.wannier90 import (
+    Pw2Wannier90Code,
+    Wannier90Code,
+    require_path_labels,
+)
 
 
 class SplitBlockCodes(TypedDict):
@@ -304,6 +308,38 @@ def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
     return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
 
 
+@task.calcfunction
+def merge_interpolated_bands(**interpolated_bands: orm.BandsData) -> orm.BandsData:
+    """Concatenate per-group interpolated bands into one block-wide structure.
+
+    ``interpolated_bands`` holds the per-group re-Wannierisation results,
+    keyed so lexicographic order matches the group (= band) order (``b00``,
+    ``b01``, ...). Every group interpolates along the same k-path, and the
+    merged block Hamiltonian is block-diagonal in the groups, so its band
+    structure at every k-point is exactly the union of the groups': the
+    per-group bands are concatenated along the band axis in group order.
+    This threads parsed outputs (concatenating parsed ``BandsData``) — no
+    file is re-parsed.
+    """
+    ordered = [interpolated_bands[key] for key in sorted(interpolated_bands)]
+    reference = ordered[0]
+    kpoints = reference.get_kpoints()
+    for bands in ordered[1:]:
+        other = bands.get_kpoints()
+        if other.shape != kpoints.shape or not np.allclose(other, kpoints):
+            raise ValueError(
+                "The per-group interpolated bands do not share one k-path; "
+                "they cannot be merged into a single band structure."
+            )
+    merged = orm.BandsData()
+    merged.set_kpointsdata(reference)
+    merged.set_bands(
+        np.concatenate([np.asarray(bands.get_bands(), dtype=float) for bands in ordered], axis=-1),
+        units=reference.units,
+    )
+    return merged
+
+
 def _subblock_w90_parameters(
     num_wann: int,
     mp_grid: list[int],
@@ -360,13 +396,17 @@ class RewannierizeSplitOutputs(TypedDict):
     ``output_parameters`` — all describing the final (split) gauge. The
     per-sub-block wannier90 runs stay reachable through provenance (the
     merge tasks consume their ``retrieved`` folders and parsed Dicts as
-    inputs); they are not re-exported as sockets.
+    inputs); they are not re-exported as sockets. ``interpolated_bands``
+    (populated only when ``interpolation_kpoints`` was given) is the
+    per-group interpolated bands concatenated in group order — the merged
+    block-diagonal Hamiltonian's own band structure.
     """
 
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
     output_parameters: orm.Dict
+    interpolated_bands: NotRequired[orm.BandsData]
 
 
 @task.graph
@@ -380,6 +420,7 @@ def RewannierizeSplitBlocks(
     mp_grid: list[int],
     wannier90_overrides: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
 ) -> RewannierizeSplitOutputs:
     """Re-Wannierise each split sub-block and merge the products.
 
@@ -395,7 +436,15 @@ def RewannierizeSplitBlocks(
     / ``_hr.dat`` / ``_centres.xyz`` products are merged block-diagonally
     and the parsed per-group ``output_parameters`` are concatenated in
     group order.
+
+    When ``interpolation_kpoints`` (a labelled explicit-path
+    ``KpointsData``) is given, every sub-block run also sets
+    ``bands_plot = True`` and takes the path as its ``bands_kpoints``, so
+    each interpolates its own group's bands along it; the per-group
+    results are concatenated into the block-wide ``interpolated_bands``
+    output (:func:`merge_interpolated_bands`).
     """
+    require_path_labels(interpolation_kpoints, "interpolation_kpoints")
     # Deferred bodies receive the resolved ``orm.Dict`` node; eager builds
     # hand the graph input over as a plain mapping already.
     parent_w90_parameters = (
@@ -405,15 +454,25 @@ def RewannierizeSplitBlocks(
     )
     subblock_retrieved: dict[str, Any] = {}
     subblock_parameters: dict[str, Any] = {}
+    subblock_bands: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
+        parameters = _subblock_w90_parameters(
+            int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
+        )
+        # Wannier band interpolation: wannier90 interpolates only under
+        # ``bands_plot``, and the calculation validator requires the path
+        # alongside it, so the pair travels together.
+        path_inputs: dict[str, Any] = {}
+        if interpolation_kpoints is not None:
+            parameters["bands_plot"] = True
+            path_inputs["bands_kpoints"] = interpolation_kpoints
         rewannierized = Wannier90CalcStep(
             code=code,
             structure=structure,
-            parameters=_subblock_w90_parameters(
-                int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
-            ),
+            parameters=parameters,
             kpoints=kpoints,
             local_input_folder=split_blocks[f"block_{i}"],
+            **path_inputs,
             metadata={
                 "call_link_label": f"wannier90_split_block_{i}",
                 "options": _plain_options(wannier90_options),
@@ -421,6 +480,8 @@ def RewannierizeSplitBlocks(
         )
         subblock_retrieved[f"b{i:02d}"] = rewannierized["retrieved"]
         subblock_parameters[f"b{i:02d}"] = rewannierized["output_parameters"]
+        if interpolation_kpoints is not None:
+            subblock_bands[f"b{i:02d}"] = rewannierized["interpolated_bands"]
 
     merged = merge_split_block_products(
         **subblock_retrieved,
@@ -431,12 +492,19 @@ def RewannierizeSplitBlocks(
         metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
-    return RewannierizeSplitOutputs(
+    outputs = RewannierizeSplitOutputs(
         u_file=merged["u_file"],
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
         output_parameters=merged_parameters.result,
     )
+    if interpolation_kpoints is not None:
+        merged_bands = merge_interpolated_bands(
+            **subblock_bands,
+            metadata={"call_link_label": "merge_interpolated_bands"},
+        )
+        outputs["interpolated_bands"] = merged_bands.result
+    return outputs
 
 
 # ----------------------------------------------------------------------
@@ -462,6 +530,7 @@ def WannierizeAndSplitBlock(
     wjl_options: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     pw2wannier90_options: dict[str, Any] | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     external_projectors_path: str | None = None,
     external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
@@ -493,6 +562,18 @@ def WannierizeAndSplitBlock(
     Wannierisation: the split chain regenerates ``.mmn`` at most (its cubic
     pw2wannier90 rerun writes no ``.amn``) and the per-group re-runs are
     preprocessing-free, so neither reads the projectors again.
+
+    ``interpolation_kpoints`` (a labelled explicit-path ``KpointsData``)
+    reaches both the whole-block Wannierisation and — when the block splits
+    — every per-group re-run, so each interpolates its band structure along
+    it. The entry's ``interpolated_bands`` output is always the final
+    gauge's: the whole-block run's parse when the block stays whole, the
+    per-group results concatenated in group order when it splits. A split
+    block's pre-split interpolated bands are not re-exported here (the
+    entry contract carries final-gauge fields only); they remain the
+    ``interpolated_bands`` output of the nested ``wannierize_whole_block``
+    graph, reachable through provenance like the other whole-block
+    artifacts.
     """
     overrides = overrides or {}
 
@@ -514,6 +595,7 @@ def WannierizeAndSplitBlock(
         electronic_type=electronic_type,
         spin_type=spin_type,
         parallelization=parallelization,
+        interpolation_kpoints=interpolation_kpoints,
         external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
         metadata={"call_link_label": "wannierize_whole_block"},
@@ -530,13 +612,16 @@ def WannierizeAndSplitBlock(
         # folder fields stay unpopulated (consumers read ``None`` at
         # runtime): whether a block splits is a runtime question, and
         # their populated-ness stays uniform across the split route.
-        return WannierizeBlockOutputs(
+        block_outputs = WannierizeBlockOutputs(
             u_file=whole["u_file"],
             hr_file=whole["hr_file"],
             centres_file=whole["centres_file"],
             nnkp_file=whole["nnkp_file"],
             output_parameters=whole["output_parameters"],
         )
+        if interpolation_kpoints is not None:
+            block_outputs["interpolated_bands"] = whole["interpolated_bands"]
+        return block_outputs
 
     wann_groups = [
         [int(index) for index in group]
@@ -578,13 +663,17 @@ def WannierizeAndSplitBlock(
         mp_grid=mp_grid,
         wannier90_overrides=overrides.get("wannier90"),
         wannier90_options=wannier90_options,
+        interpolation_kpoints=interpolation_kpoints,
         metadata={"call_link_label": "rewannierize_split_blocks"},
     )
 
-    return WannierizeBlockOutputs(
+    block_outputs = WannierizeBlockOutputs(
         u_file=rewannierized["u_file"],
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],
         nnkp_file=whole["nnkp_file"],
         output_parameters=rewannierized["output_parameters"],
     )
+    if interpolation_kpoints is not None:
+        block_outputs["interpolated_bands"] = rewannierized["interpolated_bands"]
+    return block_outputs

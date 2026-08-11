@@ -256,6 +256,23 @@ def kpath(aiida_profile):
 
 
 @pytest.fixture
+def labelled_kpath(aiida_profile):
+    """Return a short explicit k-path ``KpointsData`` carrying labels.
+
+    The shape wannier90 band interpolation requires: the calculation's
+    ``bands_kpoints`` port rejects a path without ``labels``.
+    """
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints(
+        [[0.0, 0.0, 0.0], [0.25, 0.0, 0.0], [0.5, 0.0, 0.0]],
+        labels=[(0, "GAMMA"), (2, "X")],
+    )
+    return kpts
+
+
+@pytest.fixture
 def auto_codes(aiida_localhost):
     """Return stand-in codes for split-mode construction-only builds.
 

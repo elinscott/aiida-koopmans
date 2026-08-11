@@ -174,6 +174,57 @@ class TestBlockWannierizeGraphBuild:
                 f'TaskLink(from="scf_nscf.nscf_output_band", to="{name}.nscf_bands")'
             ]
 
+    def test_interpolation_kpoints_reach_every_block(
+        self, wannier_codes, silicon_structure, kmesh, labelled_kpath
+    ):
+        """The interpolation path feeds every per-block graph.
+
+        Each ``blocks`` entry then declares the ``interpolated_bands``
+        socket the per-block wannier90 populates.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            interpolation_kpoints=labelled_kpath,
+        )
+        block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for task_ in block_tasks:
+            assert task_.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
+        for label in ("block_1", "block_2"):
+            entry = wg.outputs["blocks"][label]
+            assert "interpolated_bands" in {socket._name for socket in entry}
+        assert_graph_roundtrips(wg)
+
+    def test_no_interpolation_kpoints_feeds_no_block(self, wannier_codes, silicon_structure, kmesh):
+        """Negative control: absent a path, no per-block graph receives one."""
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for task_ in block_tasks:
+            assert task_.inputs["interpolation_kpoints"].value is None
+
+    def test_unlabelled_interpolation_kpoints_raise_at_build(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """An unlabelled path fails at build, not after the scf and nscf runs."""
+        from aiida.orm import KpointsData
+
+        unlabelled = KpointsData()
+        unlabelled.set_kpoints([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]])
+        with pytest.raises(ValueError, match="labels"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                interpolation_kpoints=unlabelled,
+            )
+
     def test_external_scratch_leaves_the_bands_socket_to_the_caller(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote
     ):
@@ -329,6 +380,59 @@ class TestSplitMode:
         with pytest.raises(ValueError, match="mp_grid"):
             self._build_split(auto_codes, silicon_structure, kmesh, kpath, mp_grid=None)
 
+    def test_interpolation_kpoints_reach_every_split_block(
+        self, auto_codes, silicon_structure, kmesh, kpath, labelled_kpath, fake_cutoffs_family
+    ):
+        """The interpolation path feeds every per-block split graph.
+
+        The per-block bodies are deferred here; the eager builds in
+        ``test_auto_wannierize`` assert the path reaches the whole-block
+        run and every per-group re-run inside. Each ``blocks`` entry
+        declares the ``interpolated_bands`` socket the final gauge
+        populates.
+        """
+        wg = self._build_split(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            kpath,
+            pseudo_family=fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+        )
+        split_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_split")]
+        assert len(split_tasks) == 2
+        for task_ in split_tasks:
+            assert task_.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
+        for label in ("block_1", "block_2"):
+            entry = wg.outputs["blocks"][label]
+            assert "interpolated_bands" in {socket._name for socket in entry}
+        assert_graph_roundtrips(wg)
+
+    def test_no_interpolation_kpoints_feeds_no_split_block(
+        self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """Negative control: absent a path, no per-block split graph receives one."""
+        wg = self._build_split(
+            auto_codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
+        )
+        split_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_split")]
+        assert len(split_tasks) == 2
+        for task_ in split_tasks:
+            assert task_.inputs["interpolation_kpoints"].value is None
+
+    def test_unlabelled_interpolation_kpoints_raise_at_build(
+        self, auto_codes, silicon_structure, kmesh, kpath
+    ):
+        """An unlabelled path fails at build on the split route too."""
+        from aiida.orm import KpointsData
+
+        unlabelled = KpointsData()
+        unlabelled.set_kpoints([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]])
+        with pytest.raises(ValueError, match="labels"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, kpath, interpolation_kpoints=unlabelled
+            )
+
     def test_split_only_inputs_without_a_trigger_raise(
         self, wannier_codes, silicon_structure, kmesh, kpath
     ):
@@ -367,6 +471,7 @@ class TestSplitMode:
             "nnkp_file",
             "output_parameters",
             "wannier90_parameters",
+            "interpolated_bands",
         }
 
         wg = self._build_split(
@@ -781,6 +886,7 @@ class TestWannierizeBlockBuild:
         overrides=None,
         mp_grid=None,
         nscf_bands=None,
+        interpolation_kpoints=None,
     ):
         return WannierizeBlock.build(
             codes=codes,
@@ -793,6 +899,7 @@ class TestWannierizeBlockBuild:
             pseudo_family=pseudo_family,
             overrides=overrides,
             nscf_bands=nscf_bands,
+            interpolation_kpoints=interpolation_kpoints,
         )
 
     @staticmethod
@@ -808,6 +915,61 @@ class TestWannierizeBlockBuild:
         """Return the merged parameters the emit task feeds the wannier90 step."""
         value = wg.tasks["emit_wannier90_parameters"].inputs["parameters"].value
         return value.get_dict() if hasattr(value, "get_dict") else dict(value)
+
+    def test_interpolation_kpoints_switch_the_wannier90_step_to_bands_plot(
+        self,
+        wannier_codes,
+        silicon_structure,
+        kmesh,
+        nscf_scratch,
+        fake_cutoffs_family,
+        labelled_kpath,
+    ):
+        """The path reaches the wannier90 step together with ``bands_plot``.
+
+        wannier90 interpolates only under ``bands_plot``, and the
+        calculation validator refuses ``bands_plot`` without a path, so the
+        pair must land together; the parsed ``interpolated_bands`` then
+        rides out as a graph output.
+        """
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+        )
+        parameters = self._w90_parameters(wg)
+        assert parameters["bands_plot"] is True
+        w90_inputs = self._wannier_task(wg).inputs["wannier90"]["wannier90"]
+        assert w90_inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        assert wg.outputs["interpolated_bands"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_without_interpolation_kpoints_no_bands_plot(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """Negative control: absent a path, the wannier90 step is untouched."""
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+        )
+        assert "bands_plot" not in self._w90_parameters(wg)
+        w90_inputs = self._wannier_task(wg).inputs["wannier90"]["wannier90"]
+        assert w90_inputs["bands_kpoints"].value is None
+        assert not wg.outputs["interpolated_bands"]._links
 
     def test_parallelization_reaches_wannier_and_pw2wannier_steps(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
