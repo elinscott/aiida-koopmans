@@ -363,6 +363,28 @@ def bands_data(array):
     return bands
 
 
+def count_pw_bands_runs(wg):
+    """Count the graph's pw steps that declare ``calculation = 'bands'``.
+
+    Counting tasks *named* ``bands`` is vacuous: aiida-workgraph uniquifies
+    colliding task names, so a duplicated run shows up as ``bands1`` and
+    the name count stays at 1. The declared ``CONTROL.calculation`` on the
+    step's own ``pw`` namespace cannot be disguised that way.
+    """
+    count = 0
+    for task_ in wg.tasks:
+        try:
+            parameters = task_.inputs["pw"]["parameters"].value
+        except (AttributeError, KeyError, TypeError):
+            continue
+        if parameters is None:
+            continue
+        parameters = parameters.get_dict() if hasattr(parameters, "get_dict") else dict(parameters)
+        if parameters.get("CONTROL", {}).get("calculation") == "bands":
+            count += 1
+    return count
+
+
 def assert_graph_roundtrips(wg):
     """Assert a built WorkGraph survives ``to_dict`` -> ``from_dict``.
 

@@ -124,10 +124,14 @@ def add_bands_step(
     A plain graph-assembly helper, not a task: it must be called inside a
     ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
     surrounding graph (``call_link_label`` ``bands``). The step is seeded
-    from the caller's nscf protocol overrides — so e.g. ``nbnd`` and the
-    cutoffs stay consistent with the nscf — with the calculation type forced
-    on top, and reads the density from ``scf_remote_folder``. Returns the
-    step's outputs (``output_band`` holds the eigenvalues along the path).
+    from ``nscf_overrides`` (the caller's nscf-shaped protocol override
+    dict) with the calculation type forced on top, and reads the density
+    from ``scf_remote_folder``. The run computes only what the seed states:
+    in particular ``nbnd`` must be in it, or pw.x defaults to roughly the
+    nelec/2 occupied bands — a caller whose nscf resolves its band count
+    outside its overrides (e.g. inside a workchain builder) injects the
+    resolved value into the seed. Returns the step's outputs
+    (``output_band`` holds the eigenvalues along the path).
     """
     # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL

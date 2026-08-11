@@ -12,7 +12,11 @@ import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.workgraphs.wannier90 import Wannierize
-from tests.fixtures import assert_graph_roundtrips, si_external_projector_tables
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    count_pw_bands_runs,
+    si_external_projector_tables,
+)
 
 
 class TestWannierizeGraphBuild:
@@ -98,7 +102,7 @@ class TestBandInterpolation:
             fake_cutoffs_family, silicon_structure, wannier_codes, bands_kpoints=labelled_kpath
         )
         names = [t.name for t in wg.tasks]
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("projwfc") == 1
 
         bands_task = wg.tasks["bands"]
@@ -107,6 +111,16 @@ class TestBandInterpolation:
         assert params["CONTROL"]["calculation"] == "bands"
         links = bands_task.inputs["pw"]["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["Wannier90WorkChain"]
+
+        # The workchain builder resolves ``nbnd`` internally, so the bands
+        # run must be handed the resolved value explicitly — without it
+        # pw.x computes only the occupied bands and the reference curve
+        # stops at the valence top.
+        nscf_params = (
+            wg.tasks["Wannier90WorkChain"].inputs["nscf"]["pw"]["parameters"].value.get_dict()
+        )
+        assert nscf_params["SYSTEM"]["nbnd"] is not None
+        assert params["SYSTEM"]["nbnd"] == nscf_params["SYSTEM"]["nbnd"]
 
         links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]

@@ -24,6 +24,7 @@ from tests.fixtures import (
     assert_graph_roundtrips,
     automatic_block,
     bands_data,
+    count_pw_bands_runs,
     explicit_block,
     si_external_projector_tables,
 )
@@ -202,7 +203,7 @@ class TestBlockWannierizeGraphBuild:
             assert "interpolated_bands" in {socket._name for socket in entry}
 
         names = [t.name for t in wg.tasks]
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("projwfc") == 1
         bands_task = wg.tasks["bands"]
         assert bands_task.inputs["kpoints"].value.uuid == labelled_kpath.uuid
@@ -250,7 +251,7 @@ class TestBlockWannierizeGraphBuild:
             interpolation_kpoints=labelled_kpath,
         )
         names = [t.name for t in wg.tasks]
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert "projwfc" not in names
         assert wg.outputs["bands"]["output_band"]._links
         assert not wg.outputs["projwfc"]["Dos"]._links
@@ -619,7 +620,7 @@ class TestSplitMode:
             codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
         )
         names = [t.name for t in wg.tasks]
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("projwfc") == 1
         links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
@@ -649,7 +650,7 @@ class TestSplitMode:
             num_occ_bands=4,
         )
         names = [t.name for t in wg.tasks]
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("detect_band_groups") == 1
         assert "wannierize_split_block_1" in names
         detect_task = wg.tasks["detect_band_groups"]

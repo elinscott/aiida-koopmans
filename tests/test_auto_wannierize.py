@@ -27,7 +27,12 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
     merge_split_block_products,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from tests.fixtures import assert_graph_roundtrips, bands_data, explicit_block
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    bands_data,
+    count_pw_bands_runs,
+    explicit_block,
+)
 
 # ----------------------------------------------------------------------
 # Pure helpers
@@ -236,7 +241,7 @@ class TestTopLevelGraphBuild:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("scf_nscf") == 1
-        assert names.count("bands") == 1
+        assert count_pw_bands_runs(wg) == 1
         assert names.count("detect_band_groups") == 1
         # Nested graph tasks are named by their call_link_label.
         n_block_tasks = sum(1 for name in names if name.startswith("wannierize_split_block"))

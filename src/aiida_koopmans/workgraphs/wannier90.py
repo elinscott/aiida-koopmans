@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Any, NotRequired, TypedDict
 
 import numpy as np
@@ -429,12 +430,27 @@ def Wannierize(
     # their k-points one-to-one. ``kpoint_path`` is symbolic (wannier90
     # discretizes it itself), so only ``bands_kpoints`` can feed the run.
     if bands_kpoints is not None:
+        # The run must compute every band the Wannierisation reads, but the
+        # workchain builder resolves ``nbnd`` internally (num_bands plus
+        # exclusions) rather than through the caller's overrides — without
+        # the copy below pw.x would default to the ~nelec/2 occupied bands
+        # and the reference curve would stop at the valence top. Lift the
+        # resolved value off the built nscf, on top of a deep copy of the
+        # caller's seed (the injection must not leak into ``overrides``).
+        bands_seed: dict[str, Any] = copy.deepcopy(dict((overrides or {}).get("nscf") or {}))
+        nscf_pw = data.get("nscf", {}).get("pw")
+        if nscf_pw is not None and nscf_pw.get("parameters") is not None:
+            nbnd = nscf_pw["parameters"].get_dict().get("SYSTEM", {}).get("nbnd")
+            if nbnd is not None:
+                bands_seed.setdefault("pw", {}).setdefault("parameters", {}).setdefault(
+                    "SYSTEM", {}
+                )["nbnd"] = nbnd
         bands_step = add_bands_step(
             code=codes["pw"],
             structure=structure,
             bands_kpoints=bands_kpoints,
             scf_remote_folder=outputs["scf"]["remote_folder"],
-            nscf_overrides=(overrides or {}).get("nscf"),
+            nscf_overrides=bands_seed,
             pseudo_family=pseudo_family,
             protocol=protocol,
             electronic_type=electronic_type,
