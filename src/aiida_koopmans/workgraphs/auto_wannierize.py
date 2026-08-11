@@ -31,8 +31,6 @@ parent's gauge products, so a parent's disentanglement matrix would be
 dropped on the floor rather than carried into the sub-blocks.
 """
 
-from __future__ import annotations
-
 import io
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -42,6 +40,7 @@ from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
@@ -51,18 +50,35 @@ from aiida_koopmans.projections import (
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlock,
     WannierizeBlockOutputs,
     WannierizeOverrides,
 )
+from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
     merge_wannier_u_file_contents,
 )
-from aiida_koopmans.workgraphs.wannier90 import require_path_labels
+from aiida_koopmans.workgraphs.wannier90 import (
+    Pw2Wannier90Code,
+    Wannier90Code,
+    require_path_labels,
+)
+
+
+class SplitBlockCodes(TypedDict):
+    """Codes for the wannierize-and-split path (:func:`WannierizeAndSplitBlock`)."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wannierjl: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to split Wannier function blocks by parallel transport."),
+    ]
+
 
 Wannier90CalcStep = task(Wannier90Calculation)
 
@@ -346,7 +362,7 @@ class RewannierizeSplitOutputs(TypedDict):
 
 @task.graph
 def RewannierizeSplitBlocks(
-    codes: Codes,
+    w90_code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
     parent_parameters: orm.Dict,
@@ -402,7 +418,7 @@ def RewannierizeSplitBlocks(
             parameters["bands_plot"] = True
             path_inputs["bands_kpoints"] = interpolation_kpoints
         rewannierized = Wannier90CalcStep(
-            code=codes["wannier90"],
+            code=w90_code,
             structure=structure,
             parameters=parameters,
             kpoints=kpoints,
@@ -449,7 +465,7 @@ def RewannierizeSplitBlocks(
 
 @task.graph
 def WannierizeAndSplitBlock(
-    codes: Codes,
+    codes: SplitBlockCodes,
     structure: orm.StructureData,
     block: ProjectionBlock,
     groups: list[list[int]],
@@ -513,7 +529,11 @@ def WannierizeAndSplitBlock(
     overrides = overrides or {}
 
     whole = WannierizeBlock(
-        codes=codes,
+        codes={
+            "pw": codes["pw"],
+            "pw2wannier90": codes["pw2wannier90"],
+            "wannier90": codes["wannier90"],
+        },
         structure=structure,
         block=block,
         projection_type=block["projection_type"],
@@ -585,7 +605,7 @@ def WannierizeAndSplitBlock(
     # them, so the parent run's resolved parameters are the trustworthy
     # source for the sub-block settings.
     rewannierized = RewannierizeSplitBlocks(
-        codes=codes,
+        w90_code=codes["wannier90"],
         structure=structure,
         split_blocks=split["blocks"],
         parent_parameters=whole["wannier90_parameters"],

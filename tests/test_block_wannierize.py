@@ -176,18 +176,18 @@ class TestBlockWannierizeGraphBuild:
             ]
 
     def test_interpolation_kpoints_reach_every_block(
-        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
         """The interpolation path feeds every per-block graph.
 
         Each ``blocks`` entry then declares the ``interpolated_bands``
         socket the per-block wannier90 populates. The same path also adds
         the pw.x quality-check ``bands`` run off the internal scf, and —
-        ``wannier_codes`` carrying a projwfc code — the chained ``projwfc``
+        ``pdos_codes`` carrying a projwfc code — the chained ``projwfc``
         step off that run's scratch; both output namespaces link.
         """
         wg = WannierizeBlocks.build(
-            codes=wannier_codes,
+            codes=pdos_codes,
             structure=silicon_structure,
             blocks=_silicon_blocks(),
             kpoints=kmesh,
@@ -219,14 +219,14 @@ class TestBlockWannierizeGraphBuild:
         assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
 
-    def test_no_interpolation_kpoints_feeds_no_block(self, wannier_codes, silicon_structure, kmesh):
+    def test_no_interpolation_kpoints_feeds_no_block(self, pdos_codes, silicon_structure, kmesh):
         """Negative control: absent a path, no per-block graph receives one.
 
         The quality-check ``bands`` run and its projwfc step hinge on the
-        path too, so neither task appears even though ``wannier_codes``
+        path too, so neither task appears even though ``pdos_codes``
         carries a projwfc code.
         """
-        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        wg = _build(pdos_codes, silicon_structure, _silicon_blocks(), kmesh)
         block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
         assert len(block_tasks) == 2
         for task_ in block_tasks:
@@ -241,9 +241,8 @@ class TestBlockWannierizeGraphBuild:
         self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
         """Without a projwfc code the quality-check bands run still happens."""
-        codes = {name: code for name, code in wannier_codes.items() if name != "projwfc"}
         wg = WannierizeBlocks.build(
-            codes=codes,
+            codes=wannier_codes,
             structure=silicon_structure,
             blocks=_silicon_blocks(),
             kpoints=kmesh,
@@ -257,11 +256,11 @@ class TestBlockWannierizeGraphBuild:
         assert not wg.outputs["projwfc"]["Dos"]._links
 
     def test_parallelization_reaches_the_quality_check_steps(
-        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
         """The pw entry lands on the bands run, the projwfc entry on projwfc."""
         wg = WannierizeBlocks.build(
-            codes=wannier_codes,
+            codes=pdos_codes,
             structure=silicon_structure,
             blocks=_silicon_blocks(),
             kpoints=kmesh,
@@ -276,7 +275,7 @@ class TestBlockWannierizeGraphBuild:
         assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
 
     def test_external_scratch_skips_the_quality_check(
-        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, nscf_remote
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, nscf_remote
     ):
         """No internal scf, no density for the bands run; interpolation still threads.
 
@@ -286,7 +285,7 @@ class TestBlockWannierizeGraphBuild:
         keeps the path.
         """
         wg = WannierizeBlocks.build(
-            codes=wannier_codes,
+            codes=pdos_codes,
             structure=silicon_structure,
             blocks=_silicon_blocks(),
             kpoints=kmesh,
@@ -456,7 +455,7 @@ class TestSplitMode:
         self, wannier_codes, silicon_structure, kmesh, kpath
     ):
         """The detected groups are split with Wannier.jl, so its code is required."""
-        with pytest.raises(ValueError, match="wannierjl"):
+        with pytest.raises(ValueError, match="Split mode requires a `wannierjl` code"):
             self._build_split(wannier_codes, silicon_structure, kmesh, kpath)
 
     def test_split_with_external_scratch_raises(
@@ -607,7 +606,7 @@ class TestSplitMode:
         assert_graph_roundtrips(plain)
 
     def test_split_reuses_the_detection_run_for_the_projected_dos(
-        self, auto_codes, wannier_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+        self, auto_codes, pdos_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
         """With a projwfc code, split mode chains projwfc off the detection run.
 
@@ -615,7 +614,7 @@ class TestSplitMode:
         exactly one pw.x ``bands`` step exists and the projwfc step reads
         its scratch — a second run along the same path would be pure waste.
         """
-        codes = {**auto_codes, "projwfc": wannier_codes["projwfc"]}
+        codes = {**auto_codes, "projwfc": pdos_codes["projwfc"]}
         wg = self._build_split(
             codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
         )

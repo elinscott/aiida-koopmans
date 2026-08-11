@@ -47,8 +47,10 @@ graph body: it depends on ``aiida-wannierjl``, which the plain mode must not
 require.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -61,6 +63,7 @@ from aiida_wannier90_workflows.utils.workflows.builder.projections import (
 )
 from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -78,18 +81,52 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
-from aiida_koopmans.workgraphs import Codes, unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf, add_bands_step
+from aiida_koopmans.workgraphs import unwrap_enum
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, add_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
 )
 from aiida_koopmans.workgraphs.wannier90 import (
+    ProjwfcCode,
     ProjwfcOutputs,
+    Pw2Wannier90Code,
+    Wannier90Code,
     Wannier90Step,
     add_projwfc_step,
     require_path_labels,
 )
+
+
+class WannierizeBlockCodes(TypedDict):
+    """Codes for one block's wannierization (:func:`WannierizeBlock`)."""
+
+    # The upstream ``Wannier90WorkChain`` builder cannot assemble its inputs
+    # without a pw code, even though this graph discards the scf / nscf
+    # namespaces and runs no pw.x itself. This member can be dropped once the
+    # upstream builder no longer demands a pw code for discarded namespaces.
+    pw: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to set up the block's Wannierization; no pw.x calculation runs."),
+    ]
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+
+
+class WannierizeBlocksCodes(TypedDict):
+    """Codes for :func:`WannierizeBlocks`."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wannierjl: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed for threshold-based splitting of bands into blocks."),
+        ]
+    ]
+    projwfc: NotRequired[ProjwfcCode]
+
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
 # retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
@@ -724,7 +761,7 @@ def _apply_block_disentanglement(
 
 @task.graph
 def WannierizeBlock(
-    codes: Codes,
+    codes: WannierizeBlockCodes,
     structure: orm.StructureData,
     block: ProjectionBlock,
     projection_type: WannierProjectionType,
@@ -1076,7 +1113,7 @@ def _reject_inputs_an_external_scratch_ignores(
 
 
 def _resolve_split_mode(
-    codes: Codes,
+    codes: WannierizeBlocksCodes,
     blocks: list[ProjectionBlock],
     mp_grid: list[int] | None,
     nscf_remote_folder: orm.RemoteData | None,
@@ -1160,7 +1197,7 @@ def _resolve_split_mode(
 
 
 def _quality_check_steps(
-    codes: Codes,
+    codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
     split: bool,
     bands_kpoints: orm.KpointsData | None,
@@ -1188,7 +1225,7 @@ def _quality_check_steps(
     if quality_path is None:
         return None, None
     bands_step = add_bands_step(
-        code=codes["pw"],
+        pw_code=codes["pw"],
         structure=structure,
         bands_kpoints=quality_path,
         scf_remote_folder=scf_remote_folder,
@@ -1206,7 +1243,7 @@ def _quality_check_steps(
     projwfc_outputs = None
     if "projwfc" in codes:
         projwfc_outputs = add_projwfc_step(
-            code=codes["projwfc"],
+            projwfc_code=codes["projwfc"],
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
@@ -1228,7 +1265,7 @@ def _wire_quality_check_outputs(
 
 @task.graph
 def WannierizeBlocks(
-    codes: Codes,
+    codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
     blocks: list[ProjectionBlock],
     kpoints: orm.KpointsData,
@@ -1282,11 +1319,11 @@ def WannierizeBlocks(
     are collected unconditionally.
 
     Args:
-        codes: code instances. Required keys: ``pw``, ``wannier90``,
-            ``pw2wannier90``. A ``projwfc`` code requests the projected DOS:
-            whenever the quality-check ``bands`` run exists, a projwfc.x
-            step runs off its scratch and the ``projwfc`` output namespace
-            is populated.
+        codes: code instances (:class:`WannierizeBlocksCodes`); ``wannierjl``
+            only in split mode. A ``projwfc`` code requests the projected
+            DOS: whenever the quality-check ``bands`` run exists, a
+            projwfc.x step runs off its scratch and the ``projwfc`` output
+            namespace is populated.
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
@@ -1421,7 +1458,7 @@ def WannierizeBlocks(
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
         scf_nscf = RunScfNscf(
-            code=codes["pw"],
+            pw_code=codes["pw"],
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1499,7 +1536,14 @@ def WannierizeBlocks(
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
             wannierized = WannierizeAndSplitBlock(
-                codes=codes,
+                # The split graph's namespace declares exactly its four codes;
+                # the guard above guarantees ``wannierjl`` is present here.
+                codes={
+                    "pw": codes["pw"],
+                    "pw2wannier90": codes["pw2wannier90"],
+                    "wannier90": codes["wannier90"],
+                    "wannierjl": codes["wannierjl"],
+                },
                 structure=structure,
                 block=block,
                 groups=detect.result,
@@ -1521,7 +1565,11 @@ def WannierizeBlocks(
             )
         else:
             wannierized = WannierizeBlock(
-                codes=codes,
+                codes={
+                    "pw": codes["pw"],
+                    "pw2wannier90": codes["pw2wannier90"],
+                    "wannier90": codes["wannier90"],
+                },
                 structure=structure,
                 block=block,
                 projection_type=block["projection_type"],

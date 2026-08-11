@@ -37,6 +37,7 @@ from tests.fixtures import (  # noqa: F401
     ozone_pseudos,
     ozone_real_pseudos,
     ozone_structure,
+    pdos_codes,
     periodic_ozone_structure,
     ph_codes,
     pw_code,

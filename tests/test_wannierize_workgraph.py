@@ -88,18 +88,18 @@ class TestBandInterpolation:
         assert_graph_roundtrips(wg)
 
     def test_bands_kpoints_add_the_quality_check_and_projected_dos(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+        self, fake_cutoffs_family, silicon_structure, pdos_codes, labelled_kpath
     ):
         """The explicit path adds one pw.x bands run and one projwfc step.
 
         pw.x samples the same explicit k-list off the workchain's scf
         scratch, so the interpolated and computed bands share their
-        k-points one-to-one; projwfc — ``wannier_codes`` carrying its code
+        k-points one-to-one; projwfc — ``pdos_codes`` carrying its code
         — reads the bands run's scratch, so the projections resolve along
         the path.
         """
         wg = self._build(
-            fake_cutoffs_family, silicon_structure, wannier_codes, bands_kpoints=labelled_kpath
+            fake_cutoffs_family, silicon_structure, pdos_codes, bands_kpoints=labelled_kpath
         )
         names = [t.name for t in wg.tasks]
         assert count_pw_bands_runs(wg) == 1
@@ -155,7 +155,7 @@ class TestBandInterpolation:
         assert_graph_roundtrips(wg)
 
     def test_no_path_leaves_interpolation_off(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes
+        self, fake_cutoffs_family, silicon_structure, pdos_codes
     ):
         """Negative control: without a path the parameters carry no ``bands_plot``.
 
@@ -163,7 +163,7 @@ class TestBandInterpolation:
         projwfc code or not: the ``projwfc`` output namespace falls back to
         the wrapped workchain's own (SCDM-only) namespace.
         """
-        wg = self._build(fake_cutoffs_family, silicon_structure, wannier_codes)
+        wg = self._build(fake_cutoffs_family, silicon_structure, pdos_codes)
         inputs = self._w90_inputs(wg)
         assert "bands_plot" not in inputs["parameters"].value.get_dict()
         assert inputs["bands_kpoints"].value is None

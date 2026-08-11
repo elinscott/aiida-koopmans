@@ -499,7 +499,6 @@ def mlwf_codes(aiida_localhost):
         "pw": _code("mlwf-pw", "quantumespresso.pw"),
         "wannier90": _code("mlwf-w90", "wannier90.wannier90"),
         "pw2wannier90": _code("mlwf-p2w", "quantumespresso.pw2wannier90"),
-        "projwfc": _code("mlwf-pjw", "quantumespresso.projwfc"),
         "wann2kcp": _code("mlwf-w2k", "koopmans.wann2kcp"),
         "merge_evc": _code("mlwf-merge", "koopmans.merge_evc"),
     }
@@ -507,10 +506,10 @@ def mlwf_codes(aiida_localhost):
 
 @pytest.fixture
 def wannier_codes(aiida_localhost):
-    """Return a ``Codes`` dict of stand-in InstalledCode nodes for wannierisation graphs.
+    """Return a codes dict of stand-in InstalledCode nodes for wannierisation graphs.
 
     The codes never execute (construction-only tests); they exist only so the
-    ``Codes`` input namespace is populated with real ``AbstractCode`` nodes,
+    codes input namespace is populated with real ``AbstractCode`` nodes,
     which the builder and namespace validators require.
     """
     from aiida.common.exceptions import NotExistent
@@ -531,15 +530,32 @@ def wannier_codes(aiida_localhost):
         "pw": _code("bw-pw", "quantumespresso.pw"),
         "wannier90": _code("bw-w90", "wannier90.wannier90"),
         "pw2wannier90": _code("bw-p2w", "quantumespresso.pw2wannier90"),
-        "projwfc": _code("bw-pjw", "quantumespresso.projwfc"),
     }
 
 
 @pytest.fixture
-def dfpt_codes(aiida_localhost):
-    """Return a ``Codes`` dict of stand-in nodes for the kcw.x graphs.
+def pdos_codes(wannier_codes, aiida_localhost):
+    """Extend the wannierization codes with a projwfc code for the projected-DOS flows."""
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
 
-    Like ``wannier_codes`` but with kcw.x in place of projwfc.x; the codes
+    try:
+        projwfc = InstalledCode.collection.get(label="bw-pjw")
+    except NotExistent:
+        projwfc = InstalledCode(
+            label="bw-pjw",
+            computer=aiida_localhost,
+            filepath_executable="/bin/true",
+            default_calc_job_plugin="quantumespresso.projwfc",
+        ).store()
+    return {**wannier_codes, "projwfc": projwfc}
+
+
+@pytest.fixture
+def dfpt_codes(aiida_localhost):
+    """Return a codes dict of stand-in nodes for the kcw.x graphs.
+
+    Like ``wannier_codes`` but with kcw.x alongside; the codes
     never execute.
     """
     from aiida.common.exceptions import NotExistent
@@ -566,7 +582,7 @@ def dfpt_codes(aiida_localhost):
 
 @pytest.fixture
 def ph_codes(aiida_localhost):
-    """Return a ``Codes`` dict of stand-in nodes for the dielectric chain.
+    """Return a codes dict of stand-in nodes for the dielectric chain.
 
     Like ``dfpt_codes`` but with ph.x alongside; the codes never execute.
     """

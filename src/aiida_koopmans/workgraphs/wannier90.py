@@ -1,9 +1,11 @@
 """Workgraphs that wrap aiida-wannier90-workflows workchains."""
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 import copy
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -19,6 +21,7 @@ from aiida_wannier90_workflows.common.types import (
 from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wannier90WorkChain
 from aiida_wannier90_workflows.workflows.base.projwfc import ProjwfcBaseWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -27,14 +30,44 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import Codes, enforce_step_calculation, unwrap_enum
+from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
 # existing ``from ...wannier90 import PwOutputs`` call sites keep working.
-from aiida_koopmans.workgraphs.pw import PwOutputs, add_bands_step
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, add_bands_step
 
 __all__ = ["PwOutputs"]
+
+#: Shared annotations for the codes every wannierization workflow wires.
+Pw2Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute the overlap and projection matrices for Wannierization."),
+]
+Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute Wannier functions."),
+]
+ProjwfcCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute projected densities of states."),
+]
+
+
+class WannierizeCodes(TypedDict):
+    """Codes for :func:`Wannierize` and :func:`OptimizeWannierization`.
+
+    Shared because both workflows' upstream builders wire the same
+    scf / nscf / pw2wannier90 / wannier90 steps.
+    """
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    # The upstream builder also wires projwfc for SCDM projections and
+    # frozen_type: energy_auto; koopmans uses neither, so the projected-DOS
+    # runs are the only use a koopmans user meets.
+    projwfc: NotRequired[ProjwfcCode]
 
 
 class Wannier90Outputs(TypedDict):
@@ -108,7 +141,7 @@ ProjwfcBaseStep = task(ProjwfcBaseWorkChain)
 
 
 def add_projwfc_step(
-    code: orm.AbstractCode,
+    projwfc_code: orm.AbstractCode,
     parent_folder: orm.RemoteData,
     protocol: str | None = None,
     parallelization: ParallelizationDict | None = None,
@@ -126,7 +159,7 @@ def add_projwfc_step(
     # A graph input arrives as a wrapt proxy; hand the protocol lookup a
     # plain str.
     builder = ProjwfcBaseWorkChain.get_builder_from_protocol(
-        code=code, protocol=str(protocol) if protocol is not None else None
+        code=projwfc_code, protocol=str(protocol) if protocol is not None else None
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)
@@ -268,7 +301,7 @@ def _apply_kpoint_mesh(
 
 @task.graph
 def Wannierize(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -446,7 +479,7 @@ def Wannierize(
                     "SYSTEM", {}
                 )["nbnd"] = nbnd
         bands_step = add_bands_step(
-            code=codes["pw"],
+            pw_code=codes["pw"],
             structure=structure,
             bands_kpoints=bands_kpoints,
             scf_remote_folder=outputs["scf"]["remote_folder"],
@@ -463,7 +496,7 @@ def Wannierize(
         )
         if "projwfc" in codes:
             workflow_outputs["projwfc"] = add_projwfc_step(
-                code=codes["projwfc"],
+                projwfc_code=codes["projwfc"],
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,
@@ -489,7 +522,7 @@ class WannierOptimizeOutputs(TypedDict, total=False):
 
 @task.graph
 def OptimizeWannierization(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     reference_bands: orm.BandsData | None = None,
     bands_distance_threshold: float = 1e-2,
