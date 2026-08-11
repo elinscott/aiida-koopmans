@@ -30,6 +30,7 @@ from tests.fixtures import (  # noqa: F401
     kcp_code,
     kmesh,
     kpath,
+    labelled_kpath,
     mlwf_codes,
     nscf_remote,
     ozone_pseudo_family,

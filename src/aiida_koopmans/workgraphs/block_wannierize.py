@@ -84,7 +84,7 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
 )
-from aiida_koopmans.workgraphs.wannier90 import Wannier90Step
+from aiida_koopmans.workgraphs.wannier90 import Wannier90Step, require_path_labels
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
 # retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
@@ -494,6 +494,14 @@ class WannierizeBlockOutputs(TypedDict):
       producing run's Dict for a plainly-Wannierised block, the per-group
       parsed outputs concatenated in band order for a split one (whose
       merged Dict carries only the honestly mergeable keys).
+    * ``interpolated_bands`` -- the block's Wannier-interpolated band
+      structure along the caller's ``interpolation_kpoints``, threaded from
+      the wannier90 parser: the producing run's parse for a
+      plainly-Wannierised block, the per-group interpolated bands
+      concatenated in group order (the merged block-diagonal Hamiltonian's
+      own band structure) for a split one. Populated only when
+      ``interpolation_kpoints`` was given (wannier90 interpolates only
+      under ``bands_plot``).
 
     Populated on the plain route only, because on the split route no folder
     of the final gauge exists (the whole-block run's folders describe the
@@ -525,6 +533,7 @@ class WannierizeBlockOutputs(TypedDict):
     retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]
     wannier90_parameters: NotRequired[orm.Dict]
+    interpolated_bands: NotRequired[orm.BandsData]
 
 
 class CollectedWannierFunctions(TypedDict):
@@ -652,6 +661,41 @@ def emit_wannier90_parameters(parameters: orm.Dict) -> orm.Dict:
     return orm.Dict(parameters.get_dict())
 
 
+def _apply_block_disentanglement(
+    block: ProjectionBlock,
+    w90_params: dict[str, Any],
+    wannier90_overrides: dict[str, Any] | None,
+    nscf_bands: orm.BandsData | None,
+) -> None:
+    """Edit one block's merged ``.win`` set for its disentanglement, in place.
+
+    A block with extra bands (``num_bands > num_wann``) genuinely
+    disentangles, so give it wannier90's real default iteration budget (the
+    aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
+    freezes the initial projection subspace) and check its frozen window
+    against ``nscf_bands`` (:func:`validate_frozen_window`); a block with
+    ``num_bands == num_wann`` cannot disentangle, so strip the (globally
+    supplied) windows outright. ``w90_params`` must already carry the
+    block's ``num_wann`` / ``num_bands``.
+    """
+    num_bands, num_wann = int(w90_params["num_bands"]), int(w90_params["num_wann"])
+    if num_bands != num_wann:
+        if "dis_num_iter" not in (wannier90_overrides or {}):
+            w90_params["dis_num_iter"] = 5000
+        validate_frozen_window(str(block["label"]), w90_params, block["spin"], nscf_bands)
+        # ``w90_params`` at this point holds the full merge (protocol defaults
+        # plus the flat ``wannier90`` overrides), so any window the protocol
+        # itself set counts as a constraint too. On the production path this
+        # body runs daemon-side, where the warning lands in the worker log
+        # only; the user-visible copy is emitted pre-dispatch from
+        # :func:`WannierizeBlocks`.
+        if not _DISENTANGLEMENT_CONSTRAINT_KEYS.intersection(key.lower() for key in w90_params):
+            _warn_unconstrained_disentanglement(block["label"], num_bands, num_wann)
+    else:
+        for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
+            w90_params.pop(key, None)
+
+
 @task.graph
 def WannierizeBlock(
     codes: Codes,
@@ -668,6 +712,7 @@ def WannierizeBlock(
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
     nscf_bands: orm.BandsData | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     external_projectors_path: str | None = None,
     external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlockOutputs:
@@ -704,7 +749,14 @@ def WannierizeBlock(
       excludes by default;
     * checks a disentangling block's frozen window against ``nscf_bands`` and
       rejects one that would freeze more bands than the block Wannierises,
-      which wannier90 refuses (:func:`validate_frozen_window`).
+      which wannier90 refuses (:func:`validate_frozen_window`);
+    * when ``interpolation_kpoints`` (a labelled explicit-path
+      ``KpointsData``) is given, sets ``bands_plot = True`` and feeds the
+      path to the wannier90 ``bands_kpoints`` input, so the run interpolates
+      its band structure along it and the parsed ``interpolated_bands``
+      rides out as an output. The path renders as an ``explicit_kpath``
+      block, which needs wannier90 4.0 or newer (releases up to 3.1.0
+      reject it).
     """
     validate_projection_type(projection_type)
     validate_external_projector_inputs(
@@ -758,29 +810,7 @@ def WannierizeBlock(
         # A block that excludes nothing must not inherit an exclusion the
         # protocol machinery may have seeded.
         w90_params.pop("exclude_bands", None)
-    # Per-block disentanglement handling: a block with extra bands genuinely
-    # disentangles, so give it wannier90's real default iteration budget (the
-    # aiida-wannier90-workflows protocol pins ``dis_num_iter: 0``, which
-    # freezes the initial projection subspace); a block with
-    # num_bands == num_wann cannot disentangle, so strip the (globally
-    # supplied) windows outright.
-    if w90_kwargs["num_bands"] != w90_kwargs["num_wann"]:
-        if "dis_num_iter" not in (wannier90 or {}):
-            w90_params["dis_num_iter"] = 5000
-        validate_frozen_window(str(block["label"]), w90_params, block["spin"], nscf_bands)
-        # ``w90_params`` at this point holds the full merge (protocol defaults
-        # plus the flat ``wannier90`` overrides), so any window the protocol
-        # itself set counts as a constraint too. On the production path this
-        # body runs daemon-side, where the warning lands in the worker log
-        # only; the user-visible copy is emitted pre-dispatch from
-        # :func:`WannierizeBlocks`.
-        if not _DISENTANGLEMENT_CONSTRAINT_KEYS.intersection(key.lower() for key in w90_params):
-            _warn_unconstrained_disentanglement(
-                block["label"], w90_kwargs["num_bands"], w90_kwargs["num_wann"]
-            )
-    else:
-        for key in ("dis_win_min", "dis_win_max", "dis_froz_min", "dis_froz_max"):
-            w90_params.pop(key, None)
+    _apply_block_disentanglement(block, w90_params, wannier90, nscf_bands)
     # ``write_hr`` is set by the retrieve_hamiltonian override above; pin it
     # explicitly so a stripped-down override dict can't silently drop it.
     # ``write_u_matrices`` / ``write_xyz`` produce the U matrices and Wannier
@@ -798,6 +828,14 @@ def WannierizeBlock(
         w90_params["mp_grid"] = mp_grid
     else:
         w90_params.pop("mp_grid", None)
+    # Wannier band interpolation: wannier90 writes ``aiida_band.dat`` (which
+    # the parser turns into ``interpolated_bands``) only under ``bands_plot``,
+    # and the calculation validator requires the path alongside it, so the
+    # pair travels together.
+    if interpolation_kpoints is not None:
+        require_path_labels(interpolation_kpoints, "interpolation_kpoints")
+        w90_params["bands_plot"] = True
+        w90["bands_kpoints"] = interpolation_kpoints
     # Route the merged parameters through a task so the same node both feeds
     # the wannier90 step and rides out as the ``wannier90_parameters``
     # output (a graph output must be a task socket).
@@ -849,7 +887,7 @@ def WannierizeBlock(
         metadata={"call_link_label": "extract_wannier_output_files"},
     )
 
-    return WannierizeBlockOutputs(
+    block_outputs = WannierizeBlockOutputs(
         u_file=output_files["u_file"],
         hr_file=output_files["hr_file"],
         centres_file=output_files["centres_file"],
@@ -859,6 +897,9 @@ def WannierizeBlock(
         output_parameters=outputs["wannier90"]["output_parameters"],
         wannier90_parameters=w90_parameters,
     )
+    if interpolation_kpoints is not None:
+        block_outputs["interpolated_bands"] = outputs["wannier90"]["interpolated_bands"]
+    return block_outputs
 
 
 @task
@@ -1019,6 +1060,7 @@ def _resolve_split_mode(
     wjl_options: dict[str, Any] | None,
     subblock_wannier90_options: dict[str, Any] | None,
     cubic_pw2wannier90_options: dict[str, Any] | None,
+    interpolation_kpoints: orm.KpointsData | None,
 ) -> bool:
     """Decide split-vs-plain for :func:`WannierizeBlocks` and validate the inputs.
 
@@ -1027,9 +1069,11 @@ def _resolve_split_mode(
     discovered at runtime (an automatic-projections block — no
     ``projections`` key). ``bands_kpoints`` is a requirement of split mode,
     not its trigger. Plain mode rejects split-only knobs rather than
-    silently ignore them; every violation raises a ``ValueError`` naming
-    the gap.
+    silently ignore them; every violation raises naming the gap.
+    ``interpolation_kpoints`` rides on both routes and only its labels are
+    checked here.
     """
+    require_path_labels(interpolation_kpoints, "interpolation_kpoints")
     split = split_threshold is not None or any("projections" not in block for block in blocks)
     if not split:
         split_only = {
@@ -1111,6 +1155,7 @@ def WannierizeBlocks(
     wjl_options: dict[str, Any] | None = None,
     subblock_wannier90_options: dict[str, Any] | None = None,
     cubic_pw2wannier90_options: dict[str, Any] | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     external_projectors_path: str | None = None,
     external_projectors: dict[str, Any] | None = None,
 ) -> WannierizeBlocksOutputs:
@@ -1209,6 +1254,15 @@ def WannierizeBlocks(
             ``metadata.options`` for the per-group re-wannierisation
             ``Wannier90Calculation`` (defaults to single-machine resources;
             that CalcJob has no resources default of its own).
+        interpolation_kpoints: a labelled explicit-path ``KpointsData``
+            along which every block's wannier90 interpolates its band
+            structure; each ``blocks`` entry then populates
+            ``interpolated_bands`` with its final gauge's interpolation
+            (see :class:`WannierizeBlockOutputs`). In split mode the path
+            reaches both the whole-block run and every per-group re-run
+            (:func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`).
+            Distinct from the split-mode ``bands_kpoints``, which feeds
+            the pw.x detection run.
         external_projectors_path / external_projectors: the projector
             directory (one ``<element>.dat`` per element, on the
             pw2wannier90 code's computer) and the per-element orbital
@@ -1245,6 +1299,7 @@ def WannierizeBlocks(
         wjl_options=wjl_options,
         subblock_wannier90_options=subblock_wannier90_options,
         cubic_pw2wannier90_options=cubic_pw2wannier90_options,
+        interpolation_kpoints=interpolation_kpoints,
     )
 
     # --- shared scf + nscf (run once, or reuse the caller's scratch) ---
@@ -1349,6 +1404,7 @@ def WannierizeBlocks(
                 wjl_options=wjl_options,
                 wannier90_options=subblock_wannier90_options,
                 pw2wannier90_options=cubic_pw2wannier90_options,
+                interpolation_kpoints=interpolation_kpoints,
                 **external_kwargs,
                 metadata={"call_link_label": f"wannierize_split_{block['label']}"},
             )
@@ -1368,6 +1424,7 @@ def WannierizeBlocks(
                 spin_type=spin_type,
                 parallelization=parallelization,
                 nscf_bands=block_bands,
+                interpolation_kpoints=interpolation_kpoints,
                 **external_kwargs,
                 metadata={"call_link_label": f"wannierize_{block['label']}"},
             )
