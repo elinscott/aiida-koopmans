@@ -40,7 +40,7 @@ CASES = {
     "WannierizeBlocks": (
         "aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks",
         {"pw", "pw2wannier90", "wannier90"},
-        {"wannierjl"},
+        {"wannierjl", "projwfc"},
     ),
     "WannierizeBlock": (
         "aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock",

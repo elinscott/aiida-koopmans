@@ -12,7 +12,11 @@ import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
 from aiida_koopmans.workgraphs.wannier90 import Wannierize
-from tests.fixtures import assert_graph_roundtrips, si_external_projector_tables
+from tests.fixtures import (
+    assert_graph_roundtrips,
+    count_pw_bands_runs,
+    si_external_projector_tables,
+)
 
 
 class TestWannierizeGraphBuild:
@@ -83,10 +87,59 @@ class TestBandInterpolation:
         assert inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
         assert_graph_roundtrips(wg)
 
+    def test_bands_kpoints_add_the_quality_check_and_projected_dos(
+        self, fake_cutoffs_family, silicon_structure, pdos_codes, labelled_kpath
+    ):
+        """The explicit path adds one pw.x bands run and one projwfc step.
+
+        pw.x samples the same explicit k-list off the workchain's scf
+        scratch, so the interpolated and computed bands share their
+        k-points one-to-one; projwfc — ``pdos_codes`` carrying its code
+        — reads the bands run's scratch, so the projections resolve along
+        the path.
+        """
+        wg = self._build(
+            fake_cutoffs_family, silicon_structure, pdos_codes, bands_kpoints=labelled_kpath
+        )
+        names = [t.name for t in wg.tasks]
+        assert count_pw_bands_runs(wg) == 1
+        assert names.count("projwfc") == 1
+
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["kpoints"].value.uuid == labelled_kpath.uuid
+        params = bands_task.inputs["pw"]["parameters"].value.get_dict()
+        assert params["CONTROL"]["calculation"] == "bands"
+        links = bands_task.inputs["pw"]["parent_folder"]._links
+        assert [link.from_task.name for link in links] == ["Wannier90WorkChain"]
+
+        # The workchain builder resolves ``nbnd`` internally, so the bands
+        # run must be handed the resolved value explicitly — without it
+        # pw.x computes only the occupied bands and the reference curve
+        # stops at the valence top.
+        nscf_params = (
+            wg.tasks["Wannier90WorkChain"].inputs["nscf"]["pw"]["parameters"].value.get_dict()
+        )
+        assert nscf_params["SYSTEM"]["nbnd"] is not None
+        assert params["SYSTEM"]["nbnd"] == nscf_params["SYSTEM"]["nbnd"]
+
+        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        assert [link.from_task.name for link in links] == ["bands"]
+        assert wg.outputs["bands"]["output_band"]._links
+        # The chained step displaces the workchain's own (SCDM-only)
+        # projwfc namespace as the graph output's source.
+        links = wg.outputs["projwfc"]["Dos"]._links
+        assert [link.from_task.name for link in links] == ["projwfc"]
+        assert_graph_roundtrips(wg)
+
     def test_kpoint_path_sets_bands_plot(
         self, fake_cutoffs_family, silicon_structure, wannier_codes
     ):
-        """The Dict form of the path also switches ``bands_plot`` on."""
+        """The Dict form of the path also switches ``bands_plot`` on.
+
+        It stays symbolic (wannier90 discretizes it itself), so no pw.x
+        quality-check run can sample it: the ``bands`` / ``projwfc`` steps
+        stay out.
+        """
         path = {
             "path": [["GAMMA", "X"]],
             "point_coords": {"GAMMA": [0.0, 0.0, 0.0], "X": [0.5, 0.0, 0.0]},
@@ -96,17 +149,74 @@ class TestBandInterpolation:
         assert inputs["parameters"].value.get_dict()["bands_plot"] is True
         value = inputs["kpoint_path"].value
         assert (value.get_dict() if hasattr(value, "get_dict") else dict(value)) == path
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
         assert_graph_roundtrips(wg)
 
     def test_no_path_leaves_interpolation_off(
-        self, fake_cutoffs_family, silicon_structure, wannier_codes
+        self, fake_cutoffs_family, silicon_structure, pdos_codes
     ):
-        """Negative control: without a path the parameters carry no ``bands_plot``."""
-        wg = self._build(fake_cutoffs_family, silicon_structure, wannier_codes)
+        """Negative control: without a path the parameters carry no ``bands_plot``.
+
+        No path also means no quality-check bands run and no projected DOS,
+        projwfc code or not: the ``projwfc`` output namespace falls back to
+        the wrapped workchain's own (SCDM-only) namespace.
+        """
+        wg = self._build(fake_cutoffs_family, silicon_structure, pdos_codes)
         inputs = self._w90_inputs(wg)
         assert "bands_plot" not in inputs["parameters"].value.get_dict()
         assert inputs["bands_kpoints"].value is None
         assert inputs["kpoint_path"].value is None
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
+        assert not wg.outputs["bands"]["output_band"]._links
+        links = wg.outputs["projwfc"]["Dos"]._links
+        assert [link.from_task.name for link in links] == ["Wannier90WorkChain"]
+
+
+class TestProjectedDosGate:
+    """The PP_PSWFC capability gate both wannierize graphs consult."""
+
+    def test_capable_family_passes_silently(
+        self, fake_cutoffs_family, silicon_structure, aiida_profile
+    ):
+        import warnings as warnings_module
+
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with warnings_module.catch_warnings(record=True) as caught:
+            warnings_module.simplefilter("always")
+            assert projected_dos_supported(fake_cutoffs_family.label, silicon_structure) is True
+        assert not [w for w in caught if "projected DOS" in str(w.message)]
+
+    def test_family_without_pswfc_warns_and_skips(
+        self, fake_family_without_pswfc, silicon_structure, aiida_profile
+    ):
+        """A pseudo promising no atomic wavefunctions names itself in the warning."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match=r"pseudopotentials for Si have no `PP_PSWFC`"):
+            supported = projected_dos_supported(fake_family_without_pswfc.label, silicon_structure)
+        assert supported is False
+
+    def test_unreadable_upf_warns_and_skips(
+        self, fake_family_unreadable_upf, silicon_structure, aiida_profile
+    ):
+        """A header the reader cannot parse skips the pDOS instead of failing."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match=r"UPF files for Si could not be parsed"):
+            supported = projected_dos_supported(fake_family_unreadable_upf.label, silicon_structure)
+        assert supported is False
+
+    def test_no_family_warns_and_skips(self, silicon_structure, aiida_profile):
+        """Without a family label there is nothing to check, so the pDOS skips."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match="No pseudopotential family"):
+            assert projected_dos_supported(None, silicon_structure) is False
 
 
 class TestKpointMesh:

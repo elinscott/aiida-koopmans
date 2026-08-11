@@ -1,5 +1,6 @@
 """Workgraphs that wrap aiida-quantumespresso.pw workchains."""
 
+import copy
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
@@ -120,6 +121,58 @@ def assemble_pw_base_step(
         merge_parallelization_into_inputs(data["pw"], parallelization, "pw")
     data.setdefault("metadata", {})["call_link_label"] = call_link_label
     return PwBaseStep(**data)
+
+
+def run_bands_step(
+    pw_code: orm.AbstractCode,
+    structure: orm.StructureData,
+    bands_kpoints: orm.KpointsData,
+    scf_remote_folder: orm.RemoteData,
+    nscf_overrides: dict[str, Any] | None = None,
+    pseudo_family: str | None = None,
+    protocol: str | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    parallelization: ParallelizationDict | None = None,
+) -> Any:
+    """Assemble a pw.x ``bands`` step along ``bands_kpoints`` off an scf density.
+
+    A plain graph-assembly helper, not a task: it must be called inside a
+    ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
+    surrounding graph (``call_link_label`` ``bands``). The step is seeded
+    from ``nscf_overrides`` (the caller's nscf-shaped protocol override
+    dict) with the calculation type forced on top, and reads the density
+    from ``scf_remote_folder``. The run computes only what the seed states:
+    in particular ``nbnd`` must be in it, or pw.x defaults to roughly the
+    nelec/2 occupied bands — a caller whose nscf resolves its band count
+    outside its overrides (e.g. inside a workchain builder) injects the
+    resolved value into the seed. Returns the step's outputs
+    (``output_band`` holds the eigenvalues along the path).
+    """
+    # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
+    # provenance-tagged proxies; the family label ends up bound as an SQL
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+
+    # Deep-copy the seed: the shared assembly stamps this step's calculation
+    # type into the overrides, which must never leak into the caller's nscf
+    # override through shared nested dicts.
+    bands_overrides = copy.deepcopy(dict(nscf_overrides or {}))
+    # A calculation type riding along in the seed is residue, not a conflict.
+    bands_overrides.get("pw", {}).get("parameters", {}).get("CONTROL", {}).pop("calculation", None)
+    if pseudo_family is not None:
+        bands_overrides.setdefault("pseudo_family", pseudo_family)
+    return assemble_pw_base_step(
+        pw_code,
+        structure,
+        calculation="bands",
+        call_link_label="bands",
+        overrides=bands_overrides,
+        protocol=protocol,
+        electronic_type=electronic_type,
+        kpoints=bands_kpoints,
+        parent_folder=scf_remote_folder,
+        parallelization=parallelization,
+    )
 
 
 @task.graph
