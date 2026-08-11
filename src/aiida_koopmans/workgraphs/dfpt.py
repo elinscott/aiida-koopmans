@@ -905,7 +905,7 @@ def SinglepointDFPTWorkflow(
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
-    from aiida_koopmans.workgraphs.utils.codes import get
+    from aiida_koopmans.workgraphs.utils.codes import get, missing_codes_error
 
     overrides = overrides or {}
     collinear = spin == SpinType.COLLINEAR
@@ -949,7 +949,10 @@ def SinglepointDFPTWorkflow(
         # forcing — it is an independent ground state, but on the same mesh as
         # the chain's own.
         if "ph" not in codes:
-            raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
+            # ``ph`` is ``NotRequired`` (its need follows ``eps_inf``), so
+            # ``check_before_run`` cannot report it; raise the same
+            # structured error it would.
+            raise missing_codes_error(DfptCodes, ["ph"])
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         ph_code = get(key="ph", metadata={"call_link_label": "get_ph_code"}, **codes).result

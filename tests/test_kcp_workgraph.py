@@ -107,10 +107,13 @@ class TestValidateScope:
 
     @pytest.mark.parametrize("absent", ["pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc"])
     def test_wannier_init_missing_code_member_raises(self, periodic_ozone_structure, absent):
-        # A codes dict without a Wannier-route member counts as missing
-        # ``codes`` outright — the error names the full code set.
+        # A Wannier-route member is ``NotRequired`` (its need follows
+        # ``init_orbitals``), invisible to ``check_before_run`` — the guard
+        # raises the same structured report the socket layer would.
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         codes = {name: obj for name, obj in self.WANNIER_CODES.items() if name != absent}
-        with pytest.raises(ValueError, match=r"\['codes'\].*merge_evc codes"):
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=VariationalOrbitalType.MLWFS,
@@ -121,6 +124,32 @@ class TestValidateScope:
                 kpoints=object(),
                 codes=codes,
             )
+        entries = excinfo.value.missing
+        assert [entry.socket_path for entry in entries] == [f"graph_inputs.codes.{absent}"]
+        assert entries[0].identifier == "workgraph.code"
+        assert (entries[0].help or "").startswith("Needed ")
+
+    def test_wannier_init_missing_codes_are_listed_at_once(self, periodic_ozone_structure):
+        # With none of the Wannier-route members present, one raise names
+        # them all — no one-at-a-time discovery.
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            _validate_scope(
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                fix_spin_contamination=False,
+                structure=periodic_ozone_structure,
+                blocks=[object()],
+                kgrid=[2, 2, 2],
+                kpoints=object(),
+                codes={"kcp": object()},
+            )
+        assert [entry.socket_path for entry in excinfo.value.missing] == [
+            f"graph_inputs.codes.{member}"
+            for member in ("merge_evc", "pw", "pw2wannier90", "wann2kcp", "wannier90")
+        ]
+        assert all((entry.help or "").startswith("Needed ") for entry in excinfo.value.missing)
 
     def test_wannier_init_with_all_inputs_passes(self, periodic_ozone_structure):
         _validate_scope(

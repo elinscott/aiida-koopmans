@@ -158,9 +158,11 @@ class TestSinglepointDFPTAutoEps:
         assert "dielectric" not in [t.name for t in wg.tasks]
 
     def test_auto_without_ph_code_raises(self, ph_codes, silicon_structure, kmesh):
-        """eps_inf='auto' without codes['ph'] fails at build time."""
+        """eps_inf='auto' without codes['ph'] fails at build with the structured report."""
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         codes = {key: value for key, value in ph_codes.items() if key != "ph"}
-        with pytest.raises(ValueError, match=r"codes\['ph'\]"):
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
             SinglepointDFPTWorkflow.build(
                 codes=codes,
                 structure=silicon_structure,
@@ -169,3 +171,4 @@ class TestSinglepointDFPTAutoEps:
                 pseudo_family="SSSP/1.3/PBE/efficiency",
                 eps_inf="auto",
             )
+        assert [entry.socket_path for entry in excinfo.value.missing] == ["graph_inputs.codes.ph"]

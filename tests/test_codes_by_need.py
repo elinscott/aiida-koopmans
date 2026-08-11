@@ -259,19 +259,24 @@ class TestUndeclaredCodesAreRejected:
 class TestConditionOnGuards:
     """The build-time guards own the settings-conditional needs.
 
-    A conditional code's socket is optional, so when the setting that needs
-    it is on, the workflow's own guard raises at build — the socket layer
-    cannot see the setting.
+    A conditional code's socket is optional, so the socket layer cannot
+    see the setting that needs it; the workflow's own guard raises at
+    build instead — as the same structured ``MissingRequiredInputsError``
+    the socket layer gives for a required member
+    (``utils.codes.missing_codes_error``), so consumers translate both
+    identically.
     """
 
     def test_eps_auto_without_ph_raises(
         self, dfpt_codes, silicon_structure, kmesh, kpath, aiida_profile
     ):
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
         from tests.fixtures import explicit_block
 
         block = explicit_block("occ", range(1, 5), projections=["Si:sp3"])
-        with pytest.raises(ValueError, match=r"eps_inf='auto' requires a ph\.x code"):
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
             SinglepointDFPTWorkflow.build(
                 codes=dfpt_codes,
                 structure=silicon_structure,
@@ -281,6 +286,10 @@ class TestConditionOnGuards:
                 pseudo_family="SSSP/1.3/PBE/efficiency",
                 eps_inf="auto",
             )
+        entries = excinfo.value.missing
+        assert [entry.socket_path for entry in entries] == ["graph_inputs.codes.ph"]
+        assert entries[0].identifier == "workgraph.code"
+        assert (entries[0].help or "").startswith("Needed ")
 
 
 class TestEagerBuildMissingCodes:

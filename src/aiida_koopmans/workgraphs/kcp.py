@@ -2813,22 +2813,29 @@ def _validate_scope(
                 f"init_orbitals={init_orbitals!r} requires a periodic structure — "
                 "Wannierisation is only defined for extended systems."
             )
-        wannier_members = ("pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc")
-        has_wannier_codes = codes is not None and all(member in codes for member in wannier_members)
         required = {
             "blocks": blocks,
             "kgrid": kgrid,
             "kpoints": kpoints,
-            "codes": codes if has_wannier_codes else None,
         }
         missing = sorted(name for name, value in required.items() if value is None)
         if missing:
             raise ValueError(
                 f"init_orbitals={init_orbitals!r} needs the wannierisation inputs "
-                f"{missing} (projection blocks, the Monkhorst-Pack grid, the "
-                "explicit k-mesh, and the pw/wannier90/pw2wannier90/wann2kcp/"
-                "merge_evc codes)."
+                f"{missing} (projection blocks, the Monkhorst-Pack grid, and the "
+                "explicit k-mesh)."
             )
+        wannier_members = ("pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc")
+        missing_codes = [
+            member for member in wannier_members if codes is None or member not in codes
+        ]
+        if missing_codes:
+            # The Wannier-route members are ``NotRequired`` (their need
+            # follows ``init_orbitals``), so ``check_before_run`` cannot
+            # report them; raise the same structured error it would.
+            from aiida_koopmans.workgraphs.utils.codes import missing_codes_error
+
+            raise missing_codes_error(DscfCodes, missing_codes)
     elif init_orbitals != VariationalOrbitalType.KOHN_SHAM:
         raise NotImplementedError(
             f"init_orbitals={init_orbitals!r} not yet supported. Supported: "

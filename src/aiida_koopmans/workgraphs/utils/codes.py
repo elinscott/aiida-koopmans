@@ -1,7 +1,11 @@
 """Deferred access to the members of a workflow's ``codes`` namespace."""
 
+import typing
+from collections.abc import Iterable
+
 from aiida import orm
 from aiida_workgraph import task
+from aiida_workgraph.errors import MissingInput, MissingRequiredInputsError
 
 
 @task.workfunction()
@@ -26,3 +30,30 @@ def get(key: str, **mapping) -> orm.AbstractCode:
     ``get(key="pw", metadata={"call_link_label": "get_pw_code"}, **codes)``.
     """
     return mapping[key.value]
+
+
+def missing_codes_error(codes_spec: type, members: Iterable[str]) -> MissingRequiredInputsError:
+    """Build the structured error for settings-conditional codes a guard finds absent.
+
+    A ``NotRequired`` member's need follows a setting, so
+    ``check_before_run`` cannot report its absence; the workflow's own
+    guard raises this instead, shaped exactly like the socket layer's
+    report — one ``graph_inputs.codes.<member>`` entry per missing member,
+    carrying the help declared on the ``codes_spec`` TypedDict annotation.
+    """
+    hints = typing.get_type_hints(codes_spec, include_extras=True)
+    entries = []
+    for member in members:
+        hint = hints[member]
+        if typing.get_origin(hint) is typing.NotRequired:
+            (hint,) = typing.get_args(hint)
+        help_text = next(
+            (
+                str(meta.help)
+                for meta in getattr(hint, "__metadata__", ())
+                if getattr(meta, "help", None)
+            ),
+            None,
+        )
+        entries.append(MissingInput(f"graph_inputs.codes.{member}", "workgraph.code", help_text))
+    return MissingRequiredInputsError(entries)
