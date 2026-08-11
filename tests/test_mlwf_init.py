@@ -122,7 +122,11 @@ class TestCheckWannierInitialization:
         bands = BandsData()
         bands.set_kpoints(np.zeros((1, 3)))
         bands.set_array("bands", np.zeros((2, 2, 1, 3)))
-        bands.set_array("occupations", np.ones((2, 2, 1, 3)))
+        # Mixed occupations: an all-occupied array would trip the pre-existing
+        # no-empty-bands error before the rank check, masking what this pins.
+        occupations = np.ones((2, 2, 1, 3))
+        occupations[..., -1] = 0.0
+        bands.set_array("occupations", occupations)
         with pytest.raises(ValueError, match="band array has shape"):
             _run_check(bands=bands)
 
