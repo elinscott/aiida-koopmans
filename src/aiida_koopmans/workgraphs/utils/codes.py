@@ -23,13 +23,14 @@ def get(key: str, **mapping) -> orm.AbstractCode:
     ``Code`` node, which calcfunction-style processes (including
     ``aiida_pythonjob.PyFunction``) reject under provenance rules —
     workfunctions may *select* existing nodes. Two side-effects of the
-    process-function machinery shape the signature: ``key`` arrives as an
-    ``orm.Str`` (hence ``.value``), and the mapping must be the variadic
+    process-function machinery shape the signature: ``key`` is annotated
+    ``str`` for callers but arrives as an ``orm.Str`` at run time (hence
+    the ``getattr``), and the mapping must be the variadic
     ``**mapping`` — a declared ``dict`` parameter would be serialized into
     an ``orm.Dict``, which rejects ``Code`` nodes. Call as
     ``get(key="pw", metadata={"call_link_label": "get_pw_code"}, **codes)``.
     """
-    return mapping[key.value]
+    return mapping[getattr(key, "value", key)]
 
 
 def missing_codes_error(codes_spec: type, members: Iterable[str]) -> MissingRequiredInputsError:
