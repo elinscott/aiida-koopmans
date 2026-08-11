@@ -104,7 +104,7 @@ def test_power_spectrum_dataset_workflow_fans_out_per_block(
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": [0.5]}}
 
     wg = PowerSpectrumDatasetWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=blocks,
         merge_groups=merge_groups,
@@ -162,7 +162,7 @@ def test_power_spectrum_dataset_workflow_threads_nnkp_udis_spin(
     }
 
     wg = PowerSpectrumDatasetWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
         merge_groups=merge_groups,
@@ -215,7 +215,7 @@ def test_power_spectrum_dataset_builds_without_parallelization(
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
     wg = PowerSpectrumDatasetWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
         merge_groups=merge_groups,
@@ -241,7 +241,7 @@ def test_power_spectrum_dataset_nspin1_omits_spin_component(
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
     wg = PowerSpectrumDatasetWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
         merge_groups=merge_groups,
@@ -273,7 +273,7 @@ def test_power_spectrum_dataset_drops_npool_but_keeps_ranks(
     alphas = {"filled": {"none": [0.1]}, "empty": {"none": []}}
 
     wg = PowerSpectrumDatasetWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations=block_wannierizations,
         merge_groups=merge_groups,
@@ -473,7 +473,7 @@ def test_descriptor_workflow_fans_out_and_gathers_rows(
     nscf = orm.RemoteData(computer=code.computer, remote_path=str(tmp_path)).store()
 
     wg = PowerSpectrumDescriptorWorkflow.build(
-        code=code,
+        pw2wannier90_code=code,
         nscf_remote_folder=nscf,
         block_wannierizations={label: block_wannierization(label) for label in ("occ", "emp")},
         merge_groups=occ_emp_merge_groups(),

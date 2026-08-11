@@ -59,7 +59,7 @@ class TestRunScfNscfEnforcement:
         from aiida_koopmans.workgraphs.pw import RunScfNscf
 
         wg = RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kmesh,
@@ -75,7 +75,7 @@ class TestRunScfNscfEnforcement:
 
         with pytest.raises(ValueError, match=r"'nscf' step"):
             RunScfNscf.build(
-                code=pw_code,
+                pw_code=pw_code,
                 structure=silicon_structure,
                 pseudo_family=fake_cutoffs_family.label,
                 nscf_kpoints=kmesh,
@@ -98,7 +98,7 @@ class TestRunScfNscfEnforcement:
             pw_module, "enforce_step_calculation", lambda params, step, expected: params
         )
         wg = pw_module.RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kmesh,
@@ -115,7 +115,7 @@ class TestRunPwBandsEnforcement:
         from aiida_koopmans.workgraphs.pw import RunPwBands
 
         wg = RunPwBands.build(
-            code=pw_code,
+            codes={"pw": pw_code},
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             bands_kpoints=kmesh,
@@ -132,7 +132,7 @@ class TestRunPwBandsEnforcement:
 
         with pytest.raises(ValueError, match=r"'bands' step"):
             RunPwBands.build(
-                code=pw_code,
+                codes={"pw": pw_code},
                 structure=silicon_structure,
                 pseudo_family=fake_cutoffs_family.label,
                 bands_kpoints=kmesh,
@@ -150,13 +150,20 @@ class TestWannierizeEnforcement:
     """
 
     def _builder(self, wannier_codes, structure, pseudo_family, nscf_override):
+        from aiida_quantumespresso.common.types import ElectronicType
+        from aiida_wannier90_workflows.common.types import WannierProjectionType
         from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 
+        # Pin the projection / electronic types the ``Wannierize`` chain
+        # defaults to; upstream's own default (SCDM on a metal) would demand
+        # a projwfc code the chain's code set does not carry.
         return Wannier90WorkChain.get_builder_from_protocol(
             codes=wannier_codes,
             structure=structure,
             pseudo_family=pseudo_family,
             overrides={"nscf": nscf_override},
+            electronic_type=ElectronicType.INSULATOR,
+            projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,
         )
 
     def test_k2_shaped_nscf_override_lands_as_nscf(

@@ -27,34 +27,54 @@ the ``dft_init`` save automatically, so only the ``evc_occupied{n}.dat``
 pair needs explicit re-staging).
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
     WannierizeOverrides,
 )
-from aiida_koopmans.workgraphs.folding import FoldToSupercell, enumerate_fold_targets
+from aiida_koopmans.workgraphs.folding import (
+    FoldToSupercell,
+    MergeEvcCode,
+    Wann2kcpCode,
+    enumerate_fold_targets,
+)
 from aiida_koopmans.workgraphs.kcp import (
     KcpStep,
     UpfData,
     build_dft_parameters,
     kcp_base_inputs,
 )
+from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.supercell import supercell_size
 from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
+from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+
+
+class MlwfInitCodes(TypedDict):
+    """Codes for the Wannier-seeded kcp.x initialisation (:func:`MlwfInitialization`)."""
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    wann2kcp: Wann2kcpCode
+    merge_evc: MergeEvcCode
+    kcp: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to initialize the variational orbitals from Wannier functions."),
+    ]
+
 
 # Consistency-check thresholds for the initialisation.
 _GAP_RELATIVE_TOLERANCE = 2.0e-2
@@ -241,7 +261,7 @@ def _build_dft_init_from_wannier_parameters(base, *, nbnd: int) -> dict[str, Any
 @task.graph
 def MlwfInitialization(
     *,
-    codes: Codes,
+    codes: MlwfInitCodes,
     structure: orm.StructureData,
     supercell: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
@@ -266,9 +286,8 @@ def MlwfInitialization(
     """Initialise the variational orbitals from (projected) Wannier functions.
 
     Args:
-        codes: code instances; required keys ``pw``, ``wannier90``,
-            ``pw2wannier90``, ``wann2kcp``, ``merge_evc``, ``kcp``
-            (``projwfc`` only for projection types that need it).
+        codes: code instances (:class:`MlwfInitCodes`); every member is
+            wired.
         structure: the *primitive* periodic cell — the wannierisation runs
             here.
         supercell: the ``diag(kgrid)`` repeat of ``structure`` — the kcp.x
@@ -316,7 +335,11 @@ def MlwfInitialization(
 
     explicit_kpoints = get_explicit_kpoints(kpoints)
     wannierize = WannierizeBlocks(
-        codes=codes,
+        codes={
+            "pw": codes["pw"],
+            "pw2wannier90": codes["pw2wannier90"],
+            "wannier90": codes["wannier90"],
+        },
         structure=structure,
         blocks=blocks,
         kpoints=explicit_kpoints,
@@ -335,7 +358,7 @@ def MlwfInitialization(
 
     # --- B2: fold + merge into supercell kcp.x wavefunctions ---
     fold = FoldToSupercell(
-        codes=codes,
+        codes={"wann2kcp": codes["wann2kcp"], "merge_evc": codes["merge_evc"]},
         blocks=blocks,
         merge_groups=merge_groups,
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],

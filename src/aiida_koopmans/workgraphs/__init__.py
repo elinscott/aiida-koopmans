@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum
-from typing import Any, TypedDict
+from typing import Any
 
 from aiida import orm
 
@@ -31,22 +31,6 @@ def unwrap_enum[EnumT: Enum](value: Any, enum_cls: type[EnumT]) -> EnumT | None:
     if value is None:
         return None
     return enum_cls(getattr(value, "value", value))
-
-
-class Codes(TypedDict, total=False):
-    """Code instances used across koopmans workgraphs."""
-
-    pw: orm.AbstractCode
-    pw2wannier90: orm.AbstractCode
-    wannier90: orm.AbstractCode
-    projwfc: orm.AbstractCode
-    dos: orm.AbstractCode
-    kcp: orm.AbstractCode
-    kcw: orm.AbstractCode
-    ph: orm.AbstractCode
-    wann2kcp: orm.AbstractCode
-    merge_evc: orm.AbstractCode
-    wannierjl: orm.AbstractCode
 
 
 def inject_pseudo_family(

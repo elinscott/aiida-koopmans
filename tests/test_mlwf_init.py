@@ -251,7 +251,6 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
         wg = KoopmansDSCFWorkflow.build(
-            code=kcp_code,
             structure=periodic_ozone_structure,
             pseudo_family=ozone_pseudo_family,
             ecutwfc=65.0,
@@ -260,7 +259,7 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
             nspin=2,
             correction=Correction.KI,
             init_orbitals=VariationalOrbitalType.MLWFS,
-            codes=mlwf_codes,
+            codes={**mlwf_codes, "kcp": kcp_code},
             blocks=_ozone_blocks(),
             kgrid=[2, 1, 1],
             kpoints=kmesh,

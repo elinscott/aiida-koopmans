@@ -213,7 +213,7 @@ class TestRunScfNscfOccupations:
     @staticmethod
     def _build(fake_cutoffs_family, silicon_structure, kmesh, pw_code, **kwargs):
         return RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kmesh,

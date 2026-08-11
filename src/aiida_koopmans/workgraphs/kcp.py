@@ -19,8 +19,10 @@ Spin-symmetrisation (``fix_spin_contamination=True``) is not yet supported
 and is rejected at build time.
 """
 
-from __future__ import annotations
-
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
 from dataclasses import dataclass, replace
 from typing import Annotated, Any, NotRequired, TypedDict, cast
 
@@ -29,6 +31,7 @@ from aiida import orm
 from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
@@ -47,7 +50,6 @@ from aiida_koopmans.variational_orbitals import (
     VariationalOrbitalType,
     map_key_for,
 )
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -88,6 +90,34 @@ class KIFinalOutputs(TypedDict):
     lambdas: np.ndarray
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
+
+
+#: Annotation for the DSCF codes only the periodic Wannier route consumes.
+WannierRouteCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to initialize the variational orbitals as Wannier functions."),
+]
+
+
+class DscfCodes(TypedDict):
+    """Codes for :func:`KoopmansDSCFWorkflow` and the trajectory workflow.
+
+    ``kcp`` runs every DSCF step; the remaining members exist only for the
+    periodic Wannier-initialised route
+    (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+    """
+
+    kcp: Annotated[
+        orm.AbstractCode,
+        SocketMeta(
+            help="Needed to perform explicitly orbital-density-dependent functional calculations."
+        ),
+    ]
+    pw: NotRequired[WannierRouteCode]
+    pw2wannier90: NotRequired[WannierRouteCode]
+    wannier90: NotRequired[WannierRouteCode]
+    wann2kcp: NotRequired[WannierRouteCode]
+    merge_evc: NotRequired[WannierRouteCode]
 
 
 class KoopmansDSCFOutputs(TypedDict):
@@ -440,7 +470,7 @@ def wire_descriptor_rows(
                 "descriptor='self_hartree' if no such code is available."
             )
         slots = PowerSpectrumDescriptorWorkflow(
-            code=pw2wannier90_code,
+            pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
             block_wannierizations=block_wannierizations,
             merge_groups=merge_groups,
@@ -949,7 +979,7 @@ def build_empty_iter_source(
 
 @task.graph
 def InitializeOrbitals(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     nelec: int,
@@ -1010,7 +1040,7 @@ def InitializeOrbitals(
         parameters = recursive_merge(parameters, overrides)
 
     inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         parameters,
         pseudos,
@@ -1029,7 +1059,7 @@ def InitializeOrbitals(
 
 @task.graph
 def KoopmansDSCFWorkflow(
-    code: orm.AbstractCode,
+    codes: DscfCodes,
     structure: orm.StructureData,
     pseudo_family: str,
     ecutwfc: float,
@@ -1051,7 +1081,6 @@ def KoopmansDSCFWorkflow(
     decompose_parameters: dict | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
-    codes: Codes | None = None,
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -1111,8 +1140,9 @@ def KoopmansDSCFWorkflow(
       extensive inputs (``nbnd``, ``tot_magnetization``, and — via the
       supercell structure — the electron counts) scaled by
       ``prod(kgrid)``. This route
-      additionally requires ``codes`` (pw / wannier90 / pw2wannier90 /
-      wann2kcp / merge_evc), ``blocks`` (projection blocks with
+      additionally requires the Wannier-route ``codes`` members (pw /
+      wannier90 / pw2wannier90 / wann2kcp / merge_evc), ``blocks``
+      (projection blocks with
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
@@ -1120,6 +1150,9 @@ def KoopmansDSCFWorkflow(
     deferred; ``_validate_scope`` rejects that path.
     """
     validate_parallelization(parallelization)
+
+    # Every kcp.x step below wires the same code; bind it once.
+    kcp_code = codes["kcp"]
 
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
@@ -1173,8 +1206,8 @@ def KoopmansDSCFWorkflow(
 
     # For the periodic Wannier route every kcp.x step runs on the Γ-point
     # supercell; the extensive inputs scale by the primitive-cell count.
-    # ``_validate_scope`` guarantees ``kgrid`` and ``codes`` are set on
-    # this route.
+    # ``_validate_scope`` guarantees ``kgrid`` and the Wannier-route
+    # ``codes`` members are set on this route.
     if wannier_init:
         ncells = supercell_size(cast("list[int]", kgrid))
         run_structure = primitive_to_supercell(
@@ -1225,7 +1258,14 @@ def KoopmansDSCFWorkflow(
     merge_groups = None
     if wannier_init:
         init = MlwfInitialization(
-            codes={**cast("dict", codes), "kcp": code},
+            codes={
+                "pw": codes["pw"],
+                "pw2wannier90": codes["pw2wannier90"],
+                "wannier90": codes["wannier90"],
+                "wann2kcp": codes["wann2kcp"],
+                "merge_evc": codes["merge_evc"],
+                "kcp": codes["kcp"],
+            },
             structure=structure,
             supercell=run_structure,
             pseudos=pseudos,
@@ -1259,7 +1299,7 @@ def KoopmansDSCFWorkflow(
         # nspin=2 from-scratch run: the up/down channels are independent,
         # with no pre-symmetrisation.
         dft = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1288,7 +1328,7 @@ def KoopmansDSCFWorkflow(
         #    save; this is the ``remote_folder`` consumed by the
         #    downstream ComputeScreeningParameters.
         dft_nspin1 = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1307,7 +1347,7 @@ def KoopmansDSCFWorkflow(
         )
 
         dft_nspin2_dummy = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1336,7 +1376,7 @@ def KoopmansDSCFWorkflow(
         )
 
         dft = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1362,7 +1402,7 @@ def KoopmansDSCFWorkflow(
     if calculate_alpha:
         if predict_only:
             screening = PredictScreeningParameters(
-                code=code,
+                kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
                 ecutwfc=ecutwfc,
@@ -1394,7 +1434,7 @@ def KoopmansDSCFWorkflow(
             )
         else:
             screening = ComputeScreeningParameters(
-                code=code,
+                kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
                 ecutwfc=ecutwfc,
@@ -1462,7 +1502,7 @@ def KoopmansDSCFWorkflow(
     # the converged DSCF screening parameters, or the injected ones.
     # ------------------------------------------------------------------
     ki_final = RunFinalKI(
-        code=code,
+        kcp_code=kcp_code,
         structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1503,7 +1543,7 @@ def KoopmansDSCFWorkflow(
     _run_predicted_final_ki(
         outputs,
         ml_test=ml_test,
-        code=code,
+        kcp_code=kcp_code,
         run_structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1544,7 +1584,7 @@ def _run_predicted_final_ki(
     outputs: KoopmansDSCFOutputs,
     *,
     ml_test: bool,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     run_structure: Any,
     pseudos: Any,
     ecutwfc: float,
@@ -1616,7 +1656,7 @@ def _run_predicted_final_ki(
         metadata={"call_link_label": "predict_alphas"},
     )
     ki_final_ml = RunFinalKI(
-        code=code,
+        kcp_code=kcp_code,
         structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1645,7 +1685,7 @@ def _run_predicted_final_ki(
 @task.graph
 def RunFinalKI(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -1714,7 +1754,7 @@ def RunFinalKI(
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
     final_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         ki_parameters,
         pseudos,
@@ -1737,7 +1777,7 @@ def RunFinalKI(
 
 @task.graph
 def ComputeFilledOrbitalScreeningParameter(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -1799,7 +1839,7 @@ def ComputeFilledOrbitalScreeningParameter(
         parameters = recursive_merge(parameters, overrides)
 
     inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         parameters,
         pseudos,
@@ -1833,7 +1873,7 @@ def ComputeFilledOrbitalScreeningParameter(
 
 @task.graph
 def ComputeEmptyOrbitalScreeningParameter(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     dummy_parameters: dict,
@@ -1895,7 +1935,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     if dummy_overrides:
         dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
     dummy_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         dummy_parameters,
         pseudos,
@@ -1914,7 +1954,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     # ``build_kcp_inputs`` skips the overlay socket when the dict is
     # empty.
     pz_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         pz_parameters,
         pseudos,
@@ -1929,7 +1969,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
     n_plus_1_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         n_plus_1_parameters,
         pseudos,
@@ -1973,7 +2013,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 @task.graph
 def ComputeOrbitalScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2017,7 +2057,7 @@ def ComputeOrbitalScreeningParameters(
     filled_errors: dict[str, Any] = {}
     for key, item in filled_items.items():
         filled_out = ComputeFilledOrbitalScreeningParameter(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             ecutwfc=base.ecutwfc,
@@ -2056,7 +2096,7 @@ def ComputeOrbitalScreeningParameters(
     empty_errors: dict[str, Any] = {}
     for key, empty_item in empty_items.items():
         empty_out = ComputeEmptyOrbitalScreeningParameter(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             dummy_parameters=empty_item["dummy_parameters"],
@@ -2116,7 +2156,7 @@ def ComputeOrbitalScreeningParameters(
 @task.graph
 def ScreeningIteration(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2170,7 +2210,7 @@ def ScreeningIteration(
     """
     trial = KcpStep(
         **_trial_kcp_inputs(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             base=base,
@@ -2209,7 +2249,7 @@ def ScreeningIteration(
     # is concrete — the scatter is then a native ``for`` loop, the gather
     # a plain dict of per-orbital sockets.
     per_orbital = ComputeOrbitalScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2255,7 +2295,7 @@ def ScreeningIteration(
 @task.graph
 def RefineScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2304,7 +2344,7 @@ def RefineScreeningParameters(
         )
 
     iteration = ScreeningIteration(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2326,7 +2366,7 @@ def RefineScreeningParameters(
     )
 
     remainder = RefineScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2363,7 +2403,7 @@ def RefineScreeningParameters(
 @task.graph
 def ComputeScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -2497,7 +2537,7 @@ def ComputeScreeningParameters(
     # ``_add_kipz_orbdep``.
     # ------------------------------------------------------------------
     iter_1 = ScreeningIteration(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2536,7 +2576,7 @@ def ComputeScreeningParameters(
         }
 
     refinement = RefineScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2573,7 +2613,7 @@ def ComputeScreeningParameters(
 @task.graph
 def PredictScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -2661,7 +2701,7 @@ def PredictScreeningParameters(
 
     trial = KcpStep(
         **_trial_kcp_inputs(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             base=base,
@@ -2730,15 +2770,15 @@ def _validate_scope(
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
-    codes: Codes | None = None,
+    codes: DscfCodes | None = None,
 ) -> None:
     """Fail fast on inputs the workflow cannot honour yet.
 
     Two initialisation routes are supported: molecular Kohn-Sham
     (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
     (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
-    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` /
-    ``codes``). Everything else raises.
+    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` and the
+    Wannier-route members of ``codes``). Everything else raises.
     """
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
@@ -2766,7 +2806,14 @@ def _validate_scope(
                 f"init_orbitals={init_orbitals!r} requires a periodic structure — "
                 "Wannierisation is only defined for extended systems."
             )
-        required = {"blocks": blocks, "kgrid": kgrid, "kpoints": kpoints, "codes": codes}
+        wannier_members = ("pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc")
+        has_wannier_codes = codes is not None and all(member in codes for member in wannier_members)
+        required = {
+            "blocks": blocks,
+            "kgrid": kgrid,
+            "kpoints": kpoints,
+            "codes": codes if has_wannier_codes else None,
+        }
         missing = sorted(name for name, value in required.items() if value is None)
         if missing:
             raise ValueError(
@@ -3543,7 +3590,7 @@ def _model_replaces_refinement(*, ml_model: dict | None, ml_test: bool) -> bool:
 
 def _trial_kcp_inputs(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: dict[str, UpfData],
     base: KcpBaseInputs,
@@ -3578,7 +3625,7 @@ def _trial_kcp_inputs(
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
     return build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         ki_parameters,
         pseudos,

@@ -9,15 +9,14 @@ the Koopmans DFPT screen step and the Gygi-Baldereschi / Makov-Payne
 corrections consume.
 """
 
-from __future__ import annotations
-
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.ph.base import PhBaseWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -26,7 +25,17 @@ from aiida_koopmans.parallelization import (
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs import pin_kpoints
-from aiida_koopmans.workgraphs.pw import PwBaseStep
+from aiida_koopmans.workgraphs.pw import PwBaseStep, PwCode
+
+
+class DielectricCodes(TypedDict):
+    """Codes for :func:`DielectricTask`."""
+
+    pw: PwCode
+    ph: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute the dielectric constant."),
+    ]
 
 
 class DielectricConstant(TypedDict):
@@ -68,8 +77,7 @@ def extract_dielectric_constant(ph_parameters: dict) -> DielectricConstant:
 
 @task.graph
 def DielectricTask(
-    pw_code: orm.AbstractCode,
-    ph_code: orm.AbstractCode,
+    codes: DielectricCodes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -85,8 +93,8 @@ def DielectricTask(
     response, so the phonon protocol's q-mesh is bypassed.
 
     Args:
-        pw_code: Code configured for the quantumespresso.pw plugin.
-        ph_code: Code configured for the quantumespresso.ph plugin.
+        codes: Code instances; ``codes["pw"]`` runs the scf and
+            ``codes["ph"]`` the ph.x response.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label. If not specified, the protocol
             default is used.
@@ -130,7 +138,7 @@ def DielectricTask(
     # metallic (smeared) ground states, and the dielectric tensor is only
     # defined for insulators.
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=pw_code,
+        code=codes["pw"],
         structure=structure,
         protocol=protocol,
         overrides=scf_overrides,
@@ -152,7 +160,7 @@ def DielectricTask(
     merge_parallelization_into_overrides(ph_overrides, parallelization, [(("ph",), "ph")])
 
     ph_builder = PhBaseWorkChain.get_builder_from_protocol(
-        code=ph_code,
+        code=codes["ph"],
         protocol=protocol,
         overrides=ph_overrides,
     )

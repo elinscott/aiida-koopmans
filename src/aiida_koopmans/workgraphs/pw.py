@@ -1,14 +1,13 @@
 """Workgraphs that wrap aiida-quantumespresso.pw workchains."""
 
-from __future__ import annotations
-
-from typing import Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -57,12 +56,28 @@ class ScfNscfOutputs(TypedDict):
     nscf_output_kpoints: NotRequired[orm.KpointsData]
 
 
+#: Annotation for the pw.x code as the workflows that run scf + nscf wire it.
+PwCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute DFT ground state properties."),
+]
+
+
+class PwBandsCodes(TypedDict):
+    """Codes for :func:`RunPwBands`."""
+
+    pw: Annotated[
+        orm.AbstractCode,
+        SocketMeta(help="Needed to compute the DFT ground state and band structure."),
+    ]
+
+
 PwBaseStep = task(PwBaseWorkChain)
 PwBandsStep = task(PwBandsWorkChain)
 
 
 def assemble_pw_base_step(
-    code: orm.AbstractCode,
+    pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     *,
     calculation: str,
@@ -90,7 +105,7 @@ def assemble_pw_base_step(
         calculation,
     )
     builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=code,
+        code=pw_code,
         structure=structure,
         protocol=protocol,
         overrides=overrides,
@@ -109,7 +124,7 @@ def assemble_pw_base_step(
 
 @task.graph
 def RunPwBands(
-    code: orm.AbstractCode,
+    codes: PwBandsCodes,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -121,11 +136,11 @@ def RunPwBands(
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
     This task wraps PwBandsWorkChain and uses get_builder_from_protocol to
-    construct the inputs from a simplified set of arguments (code, structure,
+    construct the inputs from a simplified set of arguments (codes, structure,
     protocol, overrides, parallelization).
 
     Args:
-        code: The Code instance configured for the quantumespresso.pw plugin.
+        codes: Code instances; ``codes["pw"]`` runs both the scf and bands steps.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
@@ -158,7 +173,7 @@ def RunPwBands(
     )
 
     builder = PwBandsWorkChain.get_builder_from_protocol(
-        code=code,
+        code=codes["pw"],
         structure=structure,
         protocol=protocol,
         overrides=overrides,
@@ -198,7 +213,7 @@ def RunPwBands(
 
 @task.graph
 def RunScfNscf(
-    code: orm.AbstractCode,
+    pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -219,7 +234,7 @@ def RunScfNscf(
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
 
     Args:
-        code: The Code instance configured for the quantumespresso.pw plugin.
+        pw_code: The Code instance configured for the quantumespresso.pw plugin.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
@@ -253,7 +268,7 @@ def RunScfNscf(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
     scf_outputs = assemble_pw_base_step(
-        code,
+        pw_code,
         structure,
         calculation="scf",
         call_link_label="scf",
@@ -267,7 +282,7 @@ def RunScfNscf(
     # replace the protocol's distance-derived one — a wannierisation nscf
     # runs on the full grid in the downstream wannier90's k-order.
     nscf_outputs = assemble_pw_base_step(
-        code,
+        pw_code,
         structure,
         calculation="nscf",
         call_link_label="nscf",
