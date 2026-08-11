@@ -140,8 +140,13 @@ def check_wannier_initialization(
 
     The PW HOMO / LUMO are recomputed from the nscf eigenvalues +
     occupations (aiida-quantumespresso does not expose them as scalars);
-    both codes report energies in eV so the comparison is direct. Raises
-    ``ValueError`` on violation; returns the compared numbers otherwise.
+    both codes report energies in eV so the comparison is direct. The band
+    array is ``(nkpoints, nbands)``, or ``(nspin, nkpoints, nbands)`` on a
+    collinear run — there the HOMO / LUMO are extrema over *both* spin
+    channels, the same cross-channel pair kcp.x prints as its
+    ``homo_energy`` / ``lumo_energy`` (MAX / MIN over the two channels in
+    ``electrons.f90``). Any other rank is refused. Raises ``ValueError``
+    on violation; returns the compared numbers otherwise.
 
     ``nscf_output_parameters`` is accepted (and recorded in provenance)
     even though the gap comes from the bands array — it ties the check to
@@ -149,6 +154,12 @@ def check_wannier_initialization(
     """
     del nscf_output_parameters  # provenance-only input for now
     bands = nscf_bands.get_bands()
+    if bands.ndim not in (2, 3):
+        raise ValueError(
+            f"The nscf band array has shape {bands.shape}; expected "
+            "(nkpoints, nbands) or (nspin, nkpoints, nbands) for the "
+            "gap-consistency check."
+        )
     try:
         occupations = nscf_bands.get_array("occupations")
     except KeyError as exc:
