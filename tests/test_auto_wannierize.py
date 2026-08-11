@@ -501,7 +501,7 @@ class TestRewannierizeSplitBlocksBuild:
             "block_1": FolderData().store(),
         }
         wg = RewannierizeSplitBlocks.build(
-            codes=auto_codes,
+            w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
@@ -563,7 +563,7 @@ class TestRewannierizeSplitBlocksBuild:
             "block_1": FolderData().store(),
         }
         wg = RewannierizeSplitBlocks.build(
-            codes=auto_codes,
+            w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),

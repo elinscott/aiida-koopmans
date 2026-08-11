@@ -37,21 +37,37 @@ contract — every folded manifold file is a ``merged_file`` node under its
 final kcp.x name, which ``KcpCalculation.read_wavefunctions`` stages as-is.
 """
 
-from __future__ import annotations
-
 from typing import Annotated, Any, TypedDict, cast
 
 from aiida import orm
 from aiida_workgraph import dynamic, task
+from aiida_workgraph.socket_spec import SocketMeta
 
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
 from aiida_koopmans.parallelization import ParallelizationDict, merge_parallelization_into_inputs
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import MergeGroup, merge_dest_filename
+
+#: Shared annotations for the fold-to-supercell codes.
+Wann2kcpCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to convert Wannier functions to the supercell representation."),
+]
+MergeEvcCode = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to merge the folded wavefunctions."),
+]
+
+
+class FoldingCodes(TypedDict):
+    """Codes for :func:`FoldToSupercell`."""
+
+    wann2kcp: Wann2kcpCode
+    merge_evc: MergeEvcCode
+
 
 Wann2kcpTask = task(Wann2kcpCalculation)
 MergeEvcTask = task(MergeEvcCalculation)
@@ -147,7 +163,7 @@ def enumerate_fold_targets(
 
 @task.graph
 def FoldToSupercell(
-    codes: Codes,
+    codes: FoldingCodes,
     blocks: list[ProjectionBlock],
     merge_groups: list[MergeGroup],
     nscf_remote_folder: orm.RemoteData,
@@ -160,7 +176,7 @@ def FoldToSupercell(
     """Convert per-block Wannier orbitals into merged supercell kcp.x files.
 
     Args:
-        codes: code instances; required keys ``wann2kcp`` and ``merge_evc``.
+        codes: code instances (:class:`FoldingCodes`).
         blocks: the projection blocks, in the same order they were
             Wannierised.
         merge_groups: the per-(manifold, spin) grouping of ``blocks`` from

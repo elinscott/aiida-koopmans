@@ -325,8 +325,12 @@ def validate_projection_block(block: ProjectionBlock) -> None:
 def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> None:
     """Reject a block layout that breaks the band-to-Wannier-function match.
 
-    ``blocks`` is every block a route Wannierises. Two rules, each checked
-    per spin channel since the channels are independent orderings:
+    ``blocks`` is every block a route Wannierises. Labels must be unique
+    across the whole list: a label keys the block's products wherever
+    they enter a dynamic namespace, so a repeated label would let one
+    block's products silently stand in for another's. Two further rules,
+    each checked per spin channel since the channels are independent
+    orderings:
 
     * blocks ascend: each block's bands must start above the highest
       Wannier-function band of the block before it;
@@ -335,10 +339,25 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
       the bands every block above it reads.
 
     Under these rules the indices :func:`get_wannier_indices` returns
-    are exactly the block's own band indices. An out-of-order layout can
-    only come from the block derivation and raises ``ValueError``; a lower
-    block that disentangles raises :class:`BlockDisentanglementError`.
+    are exactly the block's own band indices. A repeated label or an
+    out-of-order layout can only come from the block derivation and
+    raises ``ValueError``; a lower block that disentangles raises
+    :class:`BlockDisentanglementError`.
     """
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for block in blocks:
+        label = block["label"]
+        if label in seen and label not in duplicates:
+            duplicates.append(label)
+        seen.add(label)
+    if duplicates:
+        raise ValueError(
+            f"Duplicate projection-block label(s) {', '.join(map(repr, duplicates))}. "
+            "Labels key each block's products, so every block must carry its "
+            "own. This indicates a bug in the block derivation; please "
+            "report it."
+        )
     by_spin: dict[SpinChannel, list[ProjectionBlock]] = {}
     for block in blocks:
         by_spin.setdefault(SpinChannel(block["spin"]), []).append(block)

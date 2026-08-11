@@ -53,12 +53,12 @@ from aiida_koopmans.parallelization import (
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital, VariationalOrbitalType
-from aiida_koopmans.workgraphs import Codes
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.kcp import (
+    DscfCodes,
     KoopmansDSCFOutputs,
     KoopmansDSCFOverrides,
     KoopmansDSCFWorkflow,
@@ -500,7 +500,7 @@ def require_wannier_route_inputs(
 
 def fan_out_block_descriptors(
     *,
-    code: orm.AbstractCode,
+    pw2wannier90_code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannierizations: dict,
     merge_groups: list,
@@ -533,7 +533,7 @@ def fan_out_block_descriptors(
             label = block["label"]
             products = extract_decompose_inputs(block_wannierizations[label]["retrieved"])
             decompose_inputs: dict[str, Any] = {
-                "code": code,
+                "code": pw2wannier90_code,
                 "parent_folder": nscf_remote_folder,
                 "nnkp": block_wannierizations[label]["nnkp_file"],
                 "u_mat": products["u_mat"],
@@ -579,7 +579,7 @@ def fan_out_block_descriptors(
 
 @task.graph
 def PowerSpectrumDatasetWorkflow(
-    code: orm.AbstractCode,
+    pw2wannier90_code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     merge_groups: list,
@@ -604,7 +604,7 @@ def PowerSpectrumDatasetWorkflow(
     """
     dataset = align_block_descriptors(
         block_descriptors=fan_out_block_descriptors(
-            code=code,
+            pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
             block_wannierizations=block_wannierizations,
             merge_groups=merge_groups,
@@ -650,7 +650,7 @@ def gather_block_descriptor_slots(
 
 @task.graph
 def PowerSpectrumDescriptorWorkflow(
-    code: orm.AbstractCode,
+    pw2wannier90_code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     merge_groups: list,
@@ -667,7 +667,7 @@ def PowerSpectrumDescriptorWorkflow(
     """
     slots = gather_block_descriptor_slots(
         block_descriptors=fan_out_block_descriptors(
-            code=code,
+            pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
             block_wannierizations=block_wannierizations,
             merge_groups=merge_groups,
@@ -795,7 +795,7 @@ def wire_snapshot_dataset(
     """
     if descriptor == MLDescriptor.POWER_SPECTRUM:
         return PowerSpectrumDatasetWorkflow(
-            code=pw2wannier90_code,
+            pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=dscf["nscf_remote_folder"],
             block_wannierizations=dscf["block_wannierizations"],
             merge_groups=dscf["merge_groups"],
@@ -809,7 +809,7 @@ def wire_snapshot_dataset(
 
 @task.graph
 def TrajectoryWorkflow(
-    code: orm.AbstractCode,
+    codes: DscfCodes,
     snapshots: Annotated[dict, dynamic(orm.StructureData)],
     pseudo_family: str,
     ecutwfc: float,
@@ -824,7 +824,6 @@ def TrajectoryWorkflow(
     initial_alpha: float = 0.6,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
-    codes: Codes | None = None,
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -906,7 +905,6 @@ def TrajectoryWorkflow(
     # validates them upstream (letters, digits and underscores only).
     for label, structure in snapshots.items():
         dscf = KoopmansDSCFWorkflow(
-            code=code,
             structure=structure,
             pseudo_family=pseudo_family,
             ecutwfc=ecutwfc,

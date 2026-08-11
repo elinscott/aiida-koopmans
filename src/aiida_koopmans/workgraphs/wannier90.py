@@ -1,8 +1,10 @@
 """Workgraphs that wrap aiida-wannier90-workflows workchains."""
 
-from __future__ import annotations
-
-from typing import Any, NotRequired, TypedDict
+# No ``from __future__ import annotations`` in this module: stringified
+# annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
+# (python/cpython#97727), which the dispatcher reads off the Codes
+# TypedDicts.
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -17,6 +19,7 @@ from aiida_wannier90_workflows.common.types import (
 )
 from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wannier90WorkChain
 from aiida_workgraph import task
+from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
 from aiida_koopmans.parallelization import (
@@ -24,14 +27,45 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_existing_namespaces,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import Codes, enforce_step_calculation, unwrap_enum
+from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
 # existing ``from ...wannier90 import PwOutputs`` call sites keep working.
-from aiida_koopmans.workgraphs.pw import PwOutputs
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
 
 __all__ = ["PwOutputs"]
+
+#: Shared annotations for the codes every wannierization workflow wires.
+Pw2Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute the overlap and projection matrices for Wannierization."),
+]
+Wannier90Code = Annotated[
+    orm.AbstractCode,
+    SocketMeta(help="Needed to compute Wannier functions."),
+]
+
+
+class WannierizeCodes(TypedDict):
+    """Codes for :func:`Wannierize` and :func:`OptimizeWannierization`.
+
+    Shared because both workflows' upstream builders wire the same
+    scf / nscf / pw2wannier90 / wannier90 steps.
+    """
+
+    pw: PwCode
+    pw2wannier90: Pw2Wannier90Code
+    wannier90: Wannier90Code
+    # The upstream builder also wires projwfc for SCDM projections and
+    # frozen_type: energy_auto; koopmans uses neither, so the projected-DOS
+    # runs are the only use a koopmans user meets.
+    projwfc: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed to compute projected densities of states."),
+        ]
+    ]
 
 
 class Wannier90Outputs(TypedDict):
@@ -207,7 +241,7 @@ def _apply_kpoint_mesh(
 
 @task.graph
 def Wannierize(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
@@ -376,7 +410,7 @@ class WannierOptimizeOutputs(TypedDict, total=False):
 
 @task.graph
 def OptimizeWannierization(
-    codes: Codes,
+    codes: WannierizeCodes,
     structure: orm.StructureData,
     reference_bands: orm.BandsData | None = None,
     bands_distance_threshold: float = 1e-2,

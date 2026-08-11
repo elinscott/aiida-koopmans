@@ -303,6 +303,36 @@ class TestValidateProjectionBlockSequence:
         with pytest.raises(ValueError, match="'occ_down'"):
             validate_projection_block_sequence(blocks)
 
+    def test_rejects_a_repeated_label(self):
+        """An otherwise-valid layout with a repeated label is rejected, naming it.
+
+        The label is the join key wherever per-block products are keyed
+        into a dynamic namespace; two blocks sharing one would collapse
+        there silently, last writer winning.
+        """
+        blocks = [
+            _explicit("occ", range(1, 5), filled=True),
+            _explicit("occ", range(5, 9), filled=False),
+        ]
+        with pytest.raises(
+            ValueError, match=r"Duplicate projection-block label\(s\) 'occ'"
+        ) as excinfo:
+            validate_projection_block_sequence(blocks)
+        assert not isinstance(excinfo.value, ProjectionBlockError)
+
+    def test_rejects_a_label_repeated_across_spin_channels(self):
+        """Uniqueness holds across the whole list, not per spin channel.
+
+        The label-keyed namespaces hold both channels' products, so a
+        per-channel check would pass the very collision that matters.
+        """
+        blocks = [
+            _explicit("occ", range(1, 5), spin=SpinChannel.UP, filled=True),
+            _explicit("occ", range(1, 5), spin=SpinChannel.DOWN, filled=True),
+        ]
+        with pytest.raises(ValueError, match=r"Duplicate projection-block label\(s\) 'occ'"):
+            validate_projection_block_sequence(blocks)
+
     def test_a_lone_block_may_disentangle(self):
         validate_projection_block_sequence([_explicit("block_1", range(1, 5), num_bands=10)])
 
