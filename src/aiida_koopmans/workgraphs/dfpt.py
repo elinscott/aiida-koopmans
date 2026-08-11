@@ -905,7 +905,7 @@ def SinglepointDFPTWorkflow(
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
-    from aiida_koopmans.workgraphs.utils.codes import get, missing_codes_error
+    from aiida_koopmans.workgraphs.utils.codes import get_code
 
     overrides = overrides or {}
     collinear = spin == SpinType.COLLINEAR
@@ -914,14 +914,10 @@ def SinglepointDFPTWorkflow(
     # subscript on a missing member would be a bare KeyError instead of the
     # structured missing-inputs report. ``ph`` is settings-conditional and
     # resolved inside the ``eps_inf == "auto"`` branch.
-    pw_code = get(key="pw", metadata={"call_link_label": "get_pw_code"}, **codes).result
-    pw2wannier90_code = get(
-        key="pw2wannier90", metadata={"call_link_label": "get_pw2wannier90_code"}, **codes
-    ).result
-    wannier90_code = get(
-        key="wannier90", metadata={"call_link_label": "get_wannier90_code"}, **codes
-    ).result
-    kcw_code = get(key="kcw", metadata={"call_link_label": "get_kcw_code"}, **codes).result
+    pw_code = get_code(codes, "pw")
+    pw2wannier90_code = get_code(codes, "pw2wannier90")
+    wannier90_code = get_code(codes, "wannier90")
+    kcw_code = get_code(codes, "kcw")
 
     # Dynamic-namespace output keys must be plain strings, and the channel
     # bookkeeping below rests on the keys naming real spin channels.
@@ -948,14 +944,12 @@ def SinglepointDFPTWorkflow(
         # needed for a ground-state response) and none of the kcw spin
         # forcing — it is an independent ground state, but on the same mesh as
         # the chain's own.
-        if "ph" not in codes:
-            # ``ph`` is ``NotRequired`` (its need follows ``eps_inf``), so
-            # ``check_before_run`` cannot report it; raise the same
-            # structured error it would.
-            raise missing_codes_error(DfptCodes, ["ph"])
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
-        ph_code = get(key="ph", metadata={"call_link_label": "get_ph_code"}, **codes).result
+        # ``ph`` is ``NotRequired`` (its need follows ``eps_inf``), so
+        # ``check_before_run`` cannot report it absent; ``get_code`` raises
+        # the same structured error itself, from the ``codes_spec`` check.
+        ph_code = get_code(codes, "ph", codes_spec=DfptCodes)
         dielectric = DielectricTask(
             codes={"pw": pw_code, "ph": ph_code},
             structure=structure,

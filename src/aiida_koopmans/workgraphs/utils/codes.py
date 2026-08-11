@@ -58,3 +58,19 @@ def missing_codes_error(codes_spec: type, members: Iterable[str]) -> MissingRequ
         )
         entries.append(MissingInput(f"graph_inputs.codes.{member}", "workgraph.code", help_text))
     return MissingRequiredInputsError(entries)
+
+
+def get_code(codes: typing.Any, member: str, *, codes_spec: type | None = None) -> orm.AbstractCode:
+    """Return one member's code, named for provenance.
+
+    Bakes in the ``get_<member>_code`` call_link_label every call site
+    otherwise spelled out by hand. Pass ``codes_spec`` (the workflow's
+    ``codes`` TypedDict) for a settings-conditional member: its socket is
+    ``NotRequired``, so ``check_before_run`` never reports its absence, and
+    the deferred :func:`get` task's own run-time ``KeyError`` fails that
+    task without ``wg.run()`` itself raising — so an absent member is
+    checked here instead, raising the same structured error at build time.
+    """
+    if codes_spec is not None and member not in codes:
+        raise missing_codes_error(codes_spec, [member])
+    return get(key=member, metadata={"call_link_label": f"get_{member}_code"}, **codes).result

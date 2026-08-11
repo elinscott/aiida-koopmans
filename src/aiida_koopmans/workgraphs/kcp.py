@@ -1157,7 +1157,7 @@ def KoopmansDSCFWorkflow(
         scale_extensive,
         supercell_size,
     )
-    from aiida_koopmans.workgraphs.utils.codes import get
+    from aiida_koopmans.workgraphs.utils.codes import get_code
 
     _validate_scope(
         correction=correction,
@@ -1191,7 +1191,7 @@ def KoopmansDSCFWorkflow(
     # the member access (see ``utils.codes.get``): a build-time subscript
     # on a missing member would be a bare KeyError instead of the
     # structured missing-inputs report.
-    kcp_code = get(key="kcp", metadata={"call_link_label": "get_kcp_code"}, **codes).result
+    kcp_code = get_code(codes, "kcp")
 
     dft_overrides = overrides.get("dft") if overrides else None
     wannier_init = init_orbitals in (
@@ -1264,11 +1264,7 @@ def KoopmansDSCFWorkflow(
         init = MlwfInitialization(
             codes={
                 **{
-                    member: get(
-                        key=member,
-                        metadata={"call_link_label": f"get_{member}_code"},
-                        **codes,
-                    ).result
+                    member: get_code(codes, member)
                     for member in ("pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc")
                 },
                 "kcp": kcp_code,
