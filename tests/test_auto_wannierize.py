@@ -293,7 +293,9 @@ class TestTopLevelGraphBuild:
 class TestPerBlockGraphBuild:
     """Eager per-block builds: the deferred body runs with concrete groups."""
 
-    def _build(self, codes, structure, kpoints, nscf_scratch, block, groups, pseudo_family):
+    def _build(
+        self, codes, structure, kpoints, nscf_scratch, block, groups, pseudo_family, **kwargs
+    ):
         return WannierizeAndSplitBlock.build(
             codes=codes,
             structure=structure,
@@ -303,6 +305,7 @@ class TestPerBlockGraphBuild:
             kpoints=kpoints,
             mp_grid=[2, 2, 2],
             pseudo_family=pseudo_family,
+            **kwargs,
         )
 
     def test_single_group_skips_the_split(
@@ -331,7 +334,7 @@ class TestPerBlockGraphBuild:
         # route's branches).
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
             assert wg.outputs[name]._links, name
-        for name in ("retrieved", "remote_folder"):
+        for name in ("retrieved", "remote_folder", "interpolated_bands"):
             assert not wg.outputs[name]._links, name
         assert_graph_roundtrips(wg)
 
@@ -381,11 +384,80 @@ class TestPerBlockGraphBuild:
         assert links[0].from_task.name == "wannierize_whole_block"
 
         # The merged trio and the merged parsed Dict feed the outputs; the
-        # plain-route-only folder keys stay unpopulated on the split route.
+        # plain-route-only folder keys stay unpopulated on the split route,
+        # as does ``interpolated_bands`` with no path given.
         for name in ("u_file", "hr_file", "centres_file", "nnkp_file", "output_parameters"):
             assert wg.outputs[name]._links, name
-        for name in ("retrieved", "remote_folder"):
+        for name in ("retrieved", "remote_folder", "interpolated_bands"):
             assert not wg.outputs[name]._links, name
+        assert wg.tasks["wannierize_whole_block"].inputs["interpolation_kpoints"].value is None
+        assert_graph_roundtrips(wg)
+
+    def test_interpolation_kpoints_thread_through_the_split_branch(
+        self,
+        auto_codes,
+        silicon_structure,
+        kmesh,
+        nscf_scratch,
+        fake_cutoffs_family,
+        labelled_kpath,
+    ):
+        """The path reaches the pre-split run and the per-group re-runs.
+
+        The whole-block (pre-split) wannier90 interpolates along it, the
+        nested re-Wannierisation receives it for the per-group runs, and
+        the entry's ``interpolated_bands`` rides from the merged per-group
+        result — the final gauge. The pre-split interpolation stays on the
+        nested ``wannierize_whole_block`` graph's own output.
+        """
+        block = explicit_block("block_1", range(1, 9), ["Si: sp3", "Si: sp3"])
+        wg = self._build(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+        )
+        whole = wg.tasks["wannierize_whole_block"]
+        assert whole.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
+        rewann = wg.tasks["rewannierize_split_blocks"]
+        assert rewann.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
+        links = wg.outputs["interpolated_bands"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "rewannierize_split_blocks"
+        assert_graph_roundtrips(wg)
+
+    def test_single_group_interpolated_bands_come_from_the_whole_block(
+        self,
+        auto_codes,
+        silicon_structure,
+        kmesh,
+        nscf_scratch,
+        fake_cutoffs_family,
+        labelled_kpath,
+    ):
+        """An unsplit block's gauge is final, so its own interpolation rides out."""
+        block = explicit_block("block_2", range(5, 9), ["Si: sp3"])
+        wg = self._build(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+        )
+        assert (
+            wg.tasks["wannierize_whole_block"].inputs["interpolation_kpoints"].value.uuid
+            == labelled_kpath.uuid
+        )
+        links = wg.outputs["interpolated_bands"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "wannierize_whole_block"
         assert_graph_roundtrips(wg)
 
     def test_groups_are_rebased_for_offset_blocks(
@@ -462,8 +534,56 @@ class TestRewannierizeSplitBlocksBuild:
             assert params["conv_tol"] == 4.0e-7
             assert params["conv_window"] == 3
             assert not any(key.startswith("dis_") for key in params)
+            # Negative control: with no interpolation path the re-runs
+            # interpolate nothing.
+            assert "bands_plot" not in params
+            assert w90_task.inputs["bands_kpoints"].value is None
             folder = w90_task.inputs["local_input_folder"].value
             assert folder.uuid == split_blocks[f"block_{i}"].uuid
+        assert "merge_interpolated_bands" not in names
+        assert not wg.outputs["interpolated_bands"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_interpolation_kpoints_switch_each_subblock_to_bands_plot(
+        self, auto_codes, silicon_structure, kmesh, aiida_profile, labelled_kpath
+    ):
+        """Every per-group re-run interpolates along the caller's path.
+
+        The path and ``bands_plot`` land together on each sub-block run
+        (the calculation validator refuses either alone), and the per-group
+        results feed the merge whose output rides out as
+        ``interpolated_bands``.
+        """
+        from aiida.orm import Dict, FolderData
+
+        from aiida_koopmans.workgraphs.auto_wannierize import RewannierizeSplitBlocks
+
+        split_blocks = {
+            "block_0": FolderData().store(),
+            "block_1": FolderData().store(),
+        }
+        wg = RewannierizeSplitBlocks.build(
+            codes=auto_codes,
+            structure=silicon_structure,
+            split_blocks=split_blocks,
+            parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
+            group_sizes=[4, 4],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            interpolation_kpoints=labelled_kpath,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("merge_interpolated_bands") == 1
+        w90_tasks = [t for t in wg.tasks if t.name.startswith("wannier90_split_block")]
+        assert len(w90_tasks) == 2
+        for w90_task in w90_tasks:
+            params = w90_task.inputs["parameters"].value
+            params = params.get_dict() if hasattr(params, "get_dict") else dict(params)
+            assert params["bands_plot"] is True
+            assert w90_task.inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        links = wg.outputs["interpolated_bands"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "merge_interpolated_bands"
         assert_graph_roundtrips(wg)
 
 
@@ -653,6 +773,58 @@ class TestMergeSplitBlockProducts:
         )
         assert len(centres) == 4  # 2 + 2 concatenated
         assert len(atom_back) == 1
+
+
+class TestMergeInterpolatedBands:
+    """Per-group interpolated bands concatenate block-wide in group order."""
+
+    @staticmethod
+    def _bands(eigenvalues, labels=None):
+        from aiida.orm import BandsData, KpointsData
+
+        eigenvalues = np.asarray(eigenvalues, dtype=float)
+        kpts = KpointsData()
+        kpts.set_kpoints(
+            [[i / eigenvalues.shape[0], 0.0, 0.0] for i in range(eigenvalues.shape[0])],
+            labels=labels,
+        )
+        bands = BandsData()
+        bands.set_kpointsdata(kpts)
+        bands.set_bands(eigenvalues, units="eV")
+        return bands
+
+    def test_group_order_concatenation_keeps_the_path(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_interpolated_bands
+
+        labels = [(0, "GAMMA"), (2, "X")]
+        merged = merge_interpolated_bands._callable(
+            b00=self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels),
+            b01=self._bands([[5.0], [5.1], [5.2]], labels=labels),
+        )
+        np.testing.assert_allclose(
+            merged.get_bands(), [[1.0, 2.0, 5.0], [1.1, 2.1, 5.1], [1.2, 2.2, 5.2]]
+        )
+        assert merged.labels == labels
+        assert merged.units == "eV"
+
+    def test_swapped_group_keys_swap_the_band_order(self, aiida_profile):
+        """Negative control: the keys, not insertion order, define the order."""
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_interpolated_bands
+
+        merged = merge_interpolated_bands._callable(
+            b01=self._bands([[1.0], [1.1]]),
+            b00=self._bands([[5.0], [5.1]]),
+        )
+        np.testing.assert_allclose(merged.get_bands(), [[5.0, 1.0], [5.1, 1.1]])
+
+    def test_mismatched_k_paths_raise(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_interpolated_bands
+
+        with pytest.raises(ValueError, match="k-path"):
+            merge_interpolated_bands._callable(
+                b00=self._bands([[1.0], [1.1]]),
+                b01=self._bands([[5.0], [5.1], [5.2]]),
+            )
 
 
 class TestPlainOptions:
