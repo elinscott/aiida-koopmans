@@ -52,7 +52,7 @@ require.
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 import warnings
-from typing import Annotated, Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
@@ -82,7 +82,7 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, add_bands_step
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
@@ -93,8 +93,8 @@ from aiida_koopmans.workgraphs.wannier90 import (
     Pw2Wannier90Code,
     Wannier90Code,
     Wannier90Step,
-    add_projwfc_step,
     require_path_labels,
+    run_projwfc_step,
 )
 
 
@@ -593,20 +593,8 @@ class CollectedWannierFunctions(TypedDict):
     spreads: list
 
 
-class _WannierizeBlocksRequiredOutputs(TypedDict):
-    """The always-declared half of :class:`WannierizeBlocksOutputs`."""
-
-    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
-    centres: list
-    spreads: list
-
-
-class WannierizeBlocksOutputs(_WannierizeBlocksRequiredOutputs, total=False):
+class WannierizeBlocksOutputs(TypedDict):
     """Outputs of :func:`WannierizeBlocks`.
-
-    The input-dependent sockets sit in this ``total=False`` half (a
-    ``NotRequired`` graph output whose source socket is annotated fails the
-    socket type check).
 
     * ``blocks`` -- a dynamic namespace keyed by block label; every entry is
       the uniform :class:`WannierizeBlockOutputs` set, identical across
@@ -649,11 +637,14 @@ class WannierizeBlocksOutputs(_WannierizeBlocksRequiredOutputs, total=False):
       ``is`` (see :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`).
     """
 
-    nscf: PwOutputs
-    bands: PwOutputs
-    projwfc: ProjwfcOutputs
-    groups: list[list[int]]
-    orbitals: list[VariationalOrbital]
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    centres: list
+    spreads: list
+    nscf: NotRequired[PwOutputs]
+    bands: NotRequired[PwOutputs]
+    projwfc: NotRequired[ProjwfcOutputs]
+    groups: NotRequired[list[list[int]]]
+    orbitals: NotRequired[list[VariationalOrbital]]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
@@ -1196,13 +1187,13 @@ def _resolve_split_mode(
     return True
 
 
-def _quality_check_steps(
+def _run_explicit_bands_and_dos_steps(
     codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
     split: bool,
     bands_kpoints: orm.KpointsData | None,
     interpolation_kpoints: orm.KpointsData | None,
-    scf_remote_folder: Any,
+    scf_remote_folder: orm.RemoteData,
     nscf_overrides: dict[str, Any] | None,
     pseudo_family: str | None,
     protocol: str | None,
@@ -1219,12 +1210,12 @@ def _quality_check_steps(
     (``output_band`` holds the eigenvalues the detection and the quality
     comparison read) and — when ``codes`` carries a ``projwfc`` code — the
     chained projected-DOS namespace off the run's scratch
-    (:func:`~aiida_koopmans.workgraphs.wannier90.add_projwfc_step`).
+    (:func:`~aiida_koopmans.workgraphs.wannier90.run_projwfc_step`).
     """
     quality_path = bands_kpoints if split else interpolation_kpoints
     if quality_path is None:
         return None, None
-    bands_step = add_bands_step(
+    bands_step = run_bands_step(
         pw_code=codes["pw"],
         structure=structure,
         bands_kpoints=quality_path,
@@ -1242,13 +1233,44 @@ def _quality_check_steps(
     )
     projwfc_outputs = None
     if "projwfc" in codes:
-        projwfc_outputs = add_projwfc_step(
+        projwfc_outputs = run_projwfc_step(
             projwfc_code=codes["projwfc"],
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
         )
     return bands_outputs, projwfc_outputs
+
+
+def _detect_split_groups(
+    bands_outputs: PwOutputs | None,
+    num_occ_bands: int | None,
+    split_threshold: float | None,
+    num_bands_total: int,
+) -> Any:
+    """Run the band-group detection off the quality-check run's eigenvalues.
+
+    The split machinery depends on aiida-wannierjl, so its import lives
+    here, reached only on the split route; the import direction
+    (auto_wannierize imports this module at module level, this helper
+    imports auto_wannierize lazily) avoids the cycle.
+    """
+    from aiida_koopmans.workgraphs.auto_wannierize import detect_band_groups
+
+    if bands_outputs is None:
+        raise ValueError(
+            "The split-mode group detection reads the quality-check bands run, "
+            "which requires `bands_kpoints`; the split-mode validation should "
+            "have rejected this build."
+        )
+    # The detection is restricted to the Wannierised manifold — the extra
+    # disentanglement bands above it must not influence the grouping.
+    return detect_band_groups(
+        bands=bands_outputs["output_band"],
+        num_occ_bands=num_occ_bands,
+        threshold=split_threshold,
+        num_bands_total=num_bands_total,
+    )
 
 
 def _wire_quality_check_outputs(
@@ -1487,7 +1509,7 @@ def WannierizeBlocks(
         # One run serves both purposes when split mode's detection path
         # doubles as the interpolation path (how the koopmans dispatcher
         # wires it).
-        bands_outputs, projwfc_outputs = _quality_check_steps(
+        bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
             codes=codes,
             structure=structure,
             split=split,
@@ -1501,20 +1523,10 @@ def WannierizeBlocks(
             parallelization=parallelization,
         )
         if split:
-            # The split machinery depends on aiida-wannierjl, so it is
-            # imported only on this branch; the import direction
-            # (auto_wannierize imports this module at module level, this
-            # body imports auto_wannierize lazily) avoids the cycle.
-            from aiida_koopmans.workgraphs.auto_wannierize import detect_band_groups
-
-            # The detection is restricted to the Wannierised manifold — the
-            # extra disentanglement bands above it must not influence the
-            # grouping. Split mode requires ``bands_kpoints``, so the
-            # quality-check run always exists here (hence the cast).
-            detect = detect_band_groups(
-                bands=cast("PwOutputs", bands_outputs)["output_band"],
-                num_occ_bands=num_occ_bands,
-                threshold=split_threshold,
+            detect = _detect_split_groups(
+                bands_outputs,
+                num_occ_bands,
+                split_threshold,
                 num_bands_total=sum(int(block["num_wann"]) for block in blocks),
             )
 

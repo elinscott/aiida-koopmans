@@ -35,7 +35,7 @@ from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
 # existing ``from ...wannier90 import PwOutputs`` call sites keep working.
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, add_bands_step
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, run_bands_step
 
 __all__ = ["PwOutputs"]
 
@@ -103,23 +103,11 @@ class ProjwfcOutputs(TypedDict, total=False):
     bands: orm.BandsData
 
 
-class _WannierWorkflowRequiredOutputs(TypedDict):
-    """The always-declared half of :class:`WannierWorkflowOutputs`."""
-
-    scf: PwOutputs
-    nscf: PwOutputs
-    wannier90: Wannier90Outputs
-    wannier90_up: Wannier90Outputs
-    wannier90_down: Wannier90Outputs
-    projwfc: ProjwfcOutputs
-
-
-class WannierWorkflowOutputs(_WannierWorkflowRequiredOutputs, total=False):
+class WannierWorkflowOutputs(TypedDict):
     """Output types for Wannier90 workgraph tasks.
 
     The workchain namespaces are forwarded whole. Two sockets depend on the
-    inputs (optional via the ``total=False`` half — a ``NotRequired`` graph
-    output whose source socket is annotated fails the socket type check):
+    inputs:
 
     * ``bands`` -- the pw.x ``bands`` quality-check run along the caller's
       ``bands_kpoints``, off the scf density: the explicit eigenvalues the
@@ -128,11 +116,17 @@ class WannierWorkflowOutputs(_WannierWorkflowRequiredOutputs, total=False):
       k-list for pw.x to sample, so it drives the interpolation only).
     * ``projwfc`` -- with a ``projwfc`` code in ``codes`` and the bands run
       present, the projected DOS computed off that run's scratch
-      (:func:`add_projwfc_step`); otherwise the wrapped workchain's own
+      (:func:`run_projwfc_step`); otherwise the wrapped workchain's own
       ``projwfc`` namespace (populated only by its SCDM machinery).
     """
 
-    bands: PwOutputs
+    scf: PwOutputs
+    nscf: PwOutputs
+    wannier90: Wannier90Outputs
+    wannier90_up: Wannier90Outputs
+    wannier90_down: Wannier90Outputs
+    projwfc: ProjwfcOutputs
+    bands: NotRequired[PwOutputs]
 
 
 Wannier90Step = task(Wannier90WorkChain)
@@ -140,7 +134,7 @@ Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
 ProjwfcBaseStep = task(ProjwfcBaseWorkChain)
 
 
-def add_projwfc_step(
+def run_projwfc_step(
     projwfc_code: orm.AbstractCode,
     parent_folder: orm.RemoteData,
     protocol: str | None = None,
@@ -478,7 +472,7 @@ def Wannierize(
                 bands_seed.setdefault("pw", {}).setdefault("parameters", {}).setdefault(
                     "SYSTEM", {}
                 )["nbnd"] = nbnd
-        bands_step = add_bands_step(
+        bands_step = run_bands_step(
             pw_code=codes["pw"],
             structure=structure,
             bands_kpoints=bands_kpoints,
@@ -495,7 +489,7 @@ def Wannierize(
             output_band=bands_step["output_band"],
         )
         if "projwfc" in codes:
-            workflow_outputs["projwfc"] = add_projwfc_step(
+            workflow_outputs["projwfc"] = run_projwfc_step(
                 projwfc_code=codes["projwfc"],
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,

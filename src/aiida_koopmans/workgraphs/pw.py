@@ -123,7 +123,7 @@ def assemble_pw_base_step(
     return PwBaseStep(**data)
 
 
-def add_bands_step(
+def run_bands_step(
     pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     bands_kpoints: orm.KpointsData,

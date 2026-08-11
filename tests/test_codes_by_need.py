@@ -40,8 +40,6 @@ CASES = {
     "WannierizeBlocks": (
         "aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks",
         {"pw", "pw2wannier90", "wannier90"},
-        # wannierjl only in split mode; projwfc requests the projected DOS
-        # off the quality-check bands run.
         {"wannierjl", "projwfc"},
     ),
     "WannierizeBlock": (
