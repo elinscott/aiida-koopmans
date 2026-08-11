@@ -49,6 +49,7 @@ from aiida_koopmans.parallelization import ParallelizationDict, merge_paralleliz
 from aiida_koopmans.projections import ProjectionBlock
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
+from aiida_koopmans.workgraphs.utils.codes import get
 from aiida_koopmans.workgraphs.utils.wannier_merge import MergeGroup, merge_dest_filename
 
 #: Shared annotations for the fold-to-supercell codes.
@@ -200,6 +201,16 @@ def FoldToSupercell(
     The per-block fan-out is a native ``for`` loop in this deferred body
     (the documented dynamic scatter-gather; see ``block_wannierize.py``).
     """
+    # Deferred member access (see ``utils.codes.get``): a build-time
+    # subscript on a missing member would be a bare KeyError instead of the
+    # structured missing-inputs report.
+    wann2kcp_code = get(
+        key="wann2kcp", metadata={"call_link_label": "get_wann2kcp_code"}, **codes
+    ).result
+    merge_evc_code = get(
+        key="merge_evc", metadata={"call_link_label": "get_merge_evc_code"}, **codes
+    ).result
+
     # --- per-block wann2kcp.x fan-out ---
     w2k_outputs: dict[str, Any] = {}
     for block in blocks:
@@ -222,7 +233,7 @@ def FoldToSupercell(
         )
 
         w2k_inputs: dict[str, Any] = {
-            "code": codes["wann2kcp"],
+            "code": wann2kcp_code,
             "parameters": parameters,
             "parent_folder": nscf_remote_folder,
             "nnkp_file": block_wannier[label]["nnkp_file"],
@@ -245,7 +256,7 @@ def FoldToSupercell(
             for i, b in enumerate(group["blocks"])
         }
         merge_inputs: dict[str, Any] = {
-            "code": codes["merge_evc"],
+            "code": merge_evc_code,
             "kgrid": list(kgrid),
             "dest_filename": f"{target['stem']}.dat",
             "source_files": source_files,

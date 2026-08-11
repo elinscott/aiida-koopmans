@@ -313,3 +313,55 @@ class TestWannierOverridesThreading:
         )
         overrides = wg.tasks["wannierize"].inputs["overrides"]["wannier90"].value
         assert overrides["dis_froz_max"] == 1.0
+
+
+class TestEagerBuildMissingCodes:
+    """A missing required code builds eagerly and is reported at run start.
+
+    The body defers ``codes`` member access through
+    ``workgraphs.utils.codes.get`` (interim for node-graph#169's ``ref()``),
+    so ``check_before_run`` reports the unset socket instead of the build
+    dying on a bare ``KeyError``.
+    """
+
+    def test_missing_kcp_surfaces_at_run(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh
+    ):
+        from aiida.orm import List
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+
+        def _build(codes):
+            return MlwfInitialization.build(
+                codes=codes,
+                structure=periodic_ozone_structure,
+                supercell=supercell,
+                pseudos=ozone_real_pseudos,
+                blocks=_ozone_blocks(),
+                kpoints=kmesh,
+                kgrid=[2, 1, 1],
+                nelec=36,
+                nelup=18,
+                neldw=18,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=20,
+                pseudo_family="unused-here",
+            )
+
+        # ``mlwf_codes`` carries the Wannier-route members only; kcp.x is absent.
+        wg = _build(mlwf_codes)
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.run()
+        entries = [entry for entry in excinfo.value.missing if ".codes." in entry.socket_path]
+        assert [entry.socket_path for entry in entries] == ["graph_inputs.codes.kcp"]
+        assert (entries[0].help or "").startswith("Needed ")
+
+        # Control: with kcp.x supplied, the codes namespace is clean.
+        try:
+            _build({**mlwf_codes, "kcp": mlwf_codes["pw"]}).check_before_run()
+        except MissingRequiredInputsError as exc:
+            assert not [entry for entry in exc.missing if ".codes." in entry.socket_path]

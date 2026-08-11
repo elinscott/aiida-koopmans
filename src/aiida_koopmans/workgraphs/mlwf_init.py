@@ -58,6 +58,7 @@ from aiida_koopmans.workgraphs.kcp import (
 )
 from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.supercell import supercell_size
+from aiida_koopmans.workgraphs.utils.codes import get
 from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
 from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
 
@@ -313,6 +314,14 @@ def MlwfInitialization(
         parallelization: Per-code parallelization mapping (keyed by code name);
             threaded to the wannierize, folding, and kcp.x steps.
     """
+    # Deferred member access (see ``utils.codes.get``): a build-time
+    # subscript on a missing member would be a bare KeyError instead of the
+    # structured missing-inputs report.
+    member_codes = {
+        member: get(key=member, metadata={"call_link_label": f"get_{member}_code"}, **codes).result
+        for member in ("pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "kcp")
+    }
+
     # Merge groups are defined by *primitive* occupation counts (the blocks
     # carry primitive band indices); the supercell counts divide back down
     # by the number of primitive cells.
@@ -336,9 +345,9 @@ def MlwfInitialization(
     explicit_kpoints = get_explicit_kpoints(kpoints)
     wannierize = WannierizeBlocks(
         codes={
-            "pw": codes["pw"],
-            "pw2wannier90": codes["pw2wannier90"],
-            "wannier90": codes["wannier90"],
+            "pw": member_codes["pw"],
+            "pw2wannier90": member_codes["pw2wannier90"],
+            "wannier90": member_codes["wannier90"],
         },
         structure=structure,
         blocks=blocks,
@@ -358,7 +367,7 @@ def MlwfInitialization(
 
     # --- B2: fold + merge into supercell kcp.x wavefunctions ---
     fold = FoldToSupercell(
-        codes={"wann2kcp": codes["wann2kcp"], "merge_evc": codes["merge_evc"]},
+        codes={"wann2kcp": member_codes["wann2kcp"], "merge_evc": member_codes["merge_evc"]},
         blocks=blocks,
         merge_groups=merge_groups,
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
@@ -382,7 +391,7 @@ def MlwfInitialization(
         ecutrho=ecutrho,
     )
     dummy_inputs = build_kcp_inputs(
-        codes["kcp"],
+        member_codes["kcp"],
         supercell,
         _build_dft_dummy_parameters(base),
         pseudos,
@@ -399,7 +408,7 @@ def MlwfInitialization(
         for target in enumerate_fold_targets(merge_groups, spin_polarized)
     }
     init_inputs = build_kcp_inputs(
-        codes["kcp"],
+        member_codes["kcp"],
         supercell,
         _build_dft_init_from_wannier_parameters(base, nbnd=nbnd),
         pseudos,

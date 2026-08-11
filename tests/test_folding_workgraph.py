@@ -165,3 +165,45 @@ class TestFoldToSupercellGraphBuild:
         assert extract_names == [f"extract_{b['label']}" for b in blocks]
         assert len(merge_names) == n_merges
         assert names.count("map_zone") == 0
+
+
+class TestEagerBuildMissingCodes:
+    """A missing required code builds eagerly and is reported at run start.
+
+    The body defers ``codes`` member access through
+    ``workgraphs.utils.codes.get`` (interim for node-graph#169's ``ref()``),
+    so ``check_before_run`` reports the unset socket instead of the build
+    dying on a bare ``KeyError``.
+    """
+
+    def test_missing_merge_evc_surfaces_at_run(self, fold_codes, aiida_localhost):
+        from aiida.orm import RemoteData
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        blocks = _spinless_blocks()
+        groups = group_blocks_to_merge(blocks, {SpinChannel.NONE: 4})
+
+        def _build(codes):
+            return FoldToSupercell.build(
+                codes=codes,
+                blocks=blocks,
+                merge_groups=groups,
+                nscf_remote_folder=RemoteData(
+                    computer=aiida_localhost, remote_path="/fake/nscf"
+                ).store(),
+                block_wannier=_fake_block_wannier(blocks, aiida_localhost),
+                kgrid=[2, 2, 2],
+            )
+
+        wg = _build({"wann2kcp": fold_codes["wann2kcp"]})
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.run()
+        entries = [entry for entry in excinfo.value.missing if ".codes." in entry.socket_path]
+        assert [entry.socket_path for entry in entries] == ["graph_inputs.codes.merge_evc"]
+        assert (entries[0].help or "").startswith("Needed ")
+
+        # Control: with both codes supplied, the codes namespace is clean.
+        try:
+            _build(fold_codes).check_before_run()
+        except MissingRequiredInputsError as exc:
+            assert not [entry for entry in exc.missing if ".codes." in entry.socket_path]

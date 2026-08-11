@@ -137,6 +137,10 @@ def DielectricTask(
     # Fixed occupations: ph.x rejects the electric-field perturbation for
     # metallic (smeared) ground states, and the dielectric tensor is only
     # defined for insulators.
+    # Build-time subscripts, deliberately: both
+    # ``get_builder_from_protocol`` calls run in this eager body and need
+    # real Code nodes, so these accesses cannot defer through
+    # ``utils.codes.get`` (node-graph#169).
     scf_builder = PwBaseWorkChain.get_builder_from_protocol(
         code=codes["pw"],
         structure=structure,

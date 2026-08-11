@@ -905,8 +905,23 @@ def SinglepointDFPTWorkflow(
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
+    from aiida_koopmans.workgraphs.utils.codes import get
+
     overrides = overrides or {}
     collinear = spin == SpinType.COLLINEAR
+
+    # Deferred member access (see ``utils.codes.get``): a build-time
+    # subscript on a missing member would be a bare KeyError instead of the
+    # structured missing-inputs report. ``ph`` is settings-conditional and
+    # resolved inside the ``eps_inf == "auto"`` branch.
+    pw_code = get(key="pw", metadata={"call_link_label": "get_pw_code"}, **codes).result
+    pw2wannier90_code = get(
+        key="pw2wannier90", metadata={"call_link_label": "get_pw2wannier90_code"}, **codes
+    ).result
+    wannier90_code = get(
+        key="wannier90", metadata={"call_link_label": "get_wannier90_code"}, **codes
+    ).result
+    kcw_code = get(key="kcw", metadata={"call_link_label": "get_kcw_code"}, **codes).result
 
     # Dynamic-namespace output keys must be plain strings, and the channel
     # bookkeeping below rests on the keys naming real spin channels.
@@ -937,8 +952,9 @@ def SinglepointDFPTWorkflow(
             raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
+        ph_code = get(key="ph", metadata={"call_link_label": "get_ph_code"}, **codes).result
         dielectric = DielectricTask(
-            codes={"pw": codes["pw"], "ph": codes["ph"]},
+            codes={"pw": pw_code, "ph": ph_code},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -992,7 +1008,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=codes["pw"],
+        pw_code=pw_code,
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1022,9 +1038,9 @@ def SinglepointDFPTWorkflow(
         # same list, exactly the order kcw.x counts ``SCREEN.i_orb`` in.
         wannierized = WannierizeBlocks(
             codes={
-                "pw": codes["pw"],
-                "pw2wannier90": codes["pw2wannier90"],
-                "wannier90": codes["wannier90"],
+                "pw": pw_code,
+                "pw2wannier90": pw2wannier90_code,
+                "wannier90": wannier90_code,
             },
             structure=structure,
             blocks=occ_blocks + emp_blocks,
@@ -1044,7 +1060,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": codes["kcw"],
+            "kcw_code": kcw_code,
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],

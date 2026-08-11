@@ -94,6 +94,9 @@ def RunPdos(
         [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")],
     )
 
+    # Build-time subscripts, deliberately: ``get_builder_from_protocol``
+    # runs in this eager body and needs real Code nodes, so these accesses
+    # cannot defer through ``utils.codes.get`` (node-graph#169).
     builder = PdosWorkChain.get_builder_from_protocol(
         pw_code=codes["pw"],
         dos_code=codes["dos"],

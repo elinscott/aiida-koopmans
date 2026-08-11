@@ -172,6 +172,9 @@ def RunPwBands(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("bands", "pw"), "pw")]
     )
 
+    # Build-time subscript, deliberately: ``get_builder_from_protocol``
+    # runs in this eager body and needs a real Code node, so this access
+    # cannot defer through ``utils.codes.get`` (node-graph#169).
     builder = PwBandsWorkChain.get_builder_from_protocol(
         code=codes["pw"],
         structure=structure,

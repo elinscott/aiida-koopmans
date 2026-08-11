@@ -10,6 +10,15 @@ workflow (deferred-task shape, where no graph body runs before the check), the
 metadata on the sockets themselves, the serialization round-trip, and the
 build-time guards that cover the settings-conditional needs the socket
 layer cannot express.
+
+The eager path holds too: graph bodies defer ``codes`` member access
+through ``workgraphs.utils.codes.get`` (interim for node-graph#169's
+``ref()``), so an eager ``.build()`` with a missing required code succeeds
+and the run start reports ``graph_inputs.codes.<member>``
+(``TestEagerBuildMissingCodes`` here and in the folding / mlwf-init test
+modules). The one exception: bodies whose ``get_builder_from_protocol``
+runs at build time keep real build-time subscripts (``RunPwBands``,
+``DielectricTask``, ``RunPdos``, and the wannierize routes).
 """
 
 from importlib import import_module
@@ -272,3 +281,157 @@ class TestConditionOnGuards:
                 pseudo_family="SSSP/1.3/PBE/efficiency",
                 eps_inf="auto",
             )
+
+
+class TestEagerBuildMissingCodes:
+    """An eager build with a missing required code builds; the run refuses.
+
+    The graph bodies defer ``codes`` member access through
+    ``workgraphs.utils.codes.get`` (interim for node-graph#169's ``ref()``),
+    so a missing member no longer dies as a bare ``KeyError`` at build time:
+    ``check_before_run`` — the first thing ``wg.run()`` / ``submit()`` do —
+    reports the unset ``graph_inputs.codes.<member>`` socket instead. Each
+    test's control is the same build with the member supplied, whose codes
+    namespace reports nothing.
+    """
+
+    def test_dfpt_missing_kcw_surfaces_at_run(
+        self, dfpt_codes, silicon_structure, kmesh, kpath, aiida_profile
+    ):
+        from aiida_workgraph import WorkGraph
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
+        from tests.fixtures import explicit_block
+
+        def _build(codes):
+            return SinglepointDFPTWorkflow.build(
+                codes=codes,
+                structure=silicon_structure,
+                manifolds={
+                    "none": {"occ": [explicit_block("occ", range(1, 5), projections=["Si:sp3"])]}
+                },
+                kpoints=kmesh,
+                bands_kpoints=kpath,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                eps_inf=11.7,
+            )
+
+        wg = _build({member: code for member, code in dfpt_codes.items() if member != "kcw"})
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.run()
+        entries = [entry for entry in excinfo.value.missing if ".codes." in entry.socket_path]
+        assert [entry.socket_path for entry in entries] == ["graph_inputs.codes.kcw"]
+        assert entries[0].identifier == "workgraph.code"
+        assert (entries[0].help or "").startswith("Needed ")
+
+        # The report survives the to_dict/from_dict the daemon performs.
+        restored = WorkGraph.from_dict(wg.to_dict())
+        assert [entry.socket_path for entry in _missing_code_entries(restored)] == [
+            "graph_inputs.codes.kcw"
+        ]
+
+        # Control: the same build with kcw supplied reports no codes entry.
+        assert _missing_code_entries(_build(dfpt_codes)) == []
+
+    def test_dscf_missing_kcp_surfaces_at_run(
+        self, pw_code, kcp_code, ozone_structure, ozone_pseudo_family, aiida_profile
+    ):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        def _build(codes):
+            return KoopmansDSCFWorkflow.build(
+                codes=codes,
+                structure=ozone_structure,
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+            )
+
+        # A configured pw.x rides along (pass-everything); kcp.x is absent.
+        wg = _build({"pw": pw_code})
+        entries = _missing_code_entries(wg)
+        assert [entry.socket_path for entry in entries] == ["graph_inputs.codes.kcp"]
+        assert (entries[0].help or "").startswith("Needed ")
+
+        assert _missing_code_entries(_build({"pw": pw_code, "kcp": kcp_code})) == []
+
+    def test_trajectory_missing_kcp_surfaces_at_run(
+        self, pw_code, kcp_code, ozone_structure, ozone_pseudo_family, aiida_profile
+    ):
+        from aiida_koopmans.workgraphs.ml import TrajectoryWorkflow
+
+        def _build(codes):
+            return TrajectoryWorkflow.build(
+                codes=codes,
+                snapshots={"snapshot_1": ozone_structure},
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+            )
+
+        wg = _build({"pw": pw_code})
+        entries = _missing_code_entries(wg)
+        assert entries, "missing kcp.x was not reported"
+        assert {entry.socket_path.rsplit(".codes.", 1)[-1] for entry in entries} == {"kcp"}
+        assert all((entry.help or "").startswith("Needed ") for entry in entries)
+
+        assert _missing_code_entries(_build({"pw": pw_code, "kcp": kcp_code})) == []
+
+
+class TestDeferredCodeAccess:
+    """Contract of ``workgraphs.utils.codes.get`` itself."""
+
+    @staticmethod
+    def _toy_graph(deferred: bool):
+        """Build a two-member toy graph, with deferred or build-time access."""
+        from typing import Annotated, TypedDict
+
+        from aiida import orm
+        from aiida_workgraph import task
+        from aiida_workgraph.socket_spec import SocketMeta
+
+        from aiida_koopmans.workgraphs.utils.codes import get
+
+        class ToyCodes(TypedDict):
+            pw: Annotated[orm.AbstractCode, SocketMeta(help="Needed for the toy pw.")]
+            kcw: Annotated[orm.AbstractCode, SocketMeta(help="Needed for the toy kcw.")]
+
+        class ToyOutputs(TypedDict):
+            pw: orm.AbstractCode
+            kcw: orm.AbstractCode
+
+        @task.graph
+        def ToyGraph(codes: ToyCodes) -> ToyOutputs:  # noqa: N802 — graph names are PascalCase
+            if deferred:
+                pw = get(key="pw", metadata={"call_link_label": "get_pw_code"}, **codes).result
+                kcw = get(key="kcw", metadata={"call_link_label": "get_kcw_code"}, **codes).result
+            else:
+                pw, kcw = codes["pw"], codes["kcw"]
+            return ToyOutputs(pw=pw, kcw=kcw)
+
+        return ToyGraph
+
+    def test_get_selects_the_stored_code_at_run_time(self, pw_code, kcp_code, aiida_profile):
+        """The workfunction passes the stored nodes through unchanged.
+
+        None of the workflow tests execute a ``get`` task (their runs stop at
+        ``check_before_run``), so this is the one place its runtime behaviour
+        — a workfunction selecting an already-stored ``Code`` node — is pinned.
+        """
+        wg = self._toy_graph(deferred=True).build(codes={"pw": pw_code, "kcw": kcp_code})
+        results = wg.run()
+        assert results["pw"].uuid == pw_code.uuid
+        assert results["kcw"].uuid == kcp_code.uuid
+
+    def test_build_time_subscript_is_a_bare_keyerror(self, pw_code, aiida_profile):
+        """Negative control: without ``get`` the build dies unstructured.
+
+        This is the failure mode the conversion removes — were a workflow
+        body to subscript ``codes`` again, its missing-code test would die
+        here instead of reporting the socket.
+        """
+        with pytest.raises(KeyError, match="kcw"):
+            self._toy_graph(deferred=False).build(codes={"pw": pw_code})

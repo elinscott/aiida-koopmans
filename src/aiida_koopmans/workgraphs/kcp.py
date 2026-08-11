@@ -1151,15 +1151,13 @@ def KoopmansDSCFWorkflow(
     """
     validate_parallelization(parallelization)
 
-    # Every kcp.x step below wires the same code; bind it once.
-    kcp_code = codes["kcp"]
-
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
         primitive_to_supercell,
         scale_extensive,
         supercell_size,
     )
+    from aiida_koopmans.workgraphs.utils.codes import get
 
     _validate_scope(
         correction=correction,
@@ -1188,6 +1186,12 @@ def KoopmansDSCFWorkflow(
         spin_polarized=spin_polarized,
     )
     predict_only = _model_replaces_refinement(ml_model=ml_model, ml_test=ml_test)
+
+    # Every kcp.x step below wires the same code; bind it once, deferring
+    # the member access (see ``utils.codes.get``): a build-time subscript
+    # on a missing member would be a bare KeyError instead of the
+    # structured missing-inputs report.
+    kcp_code = get(key="kcp", metadata={"call_link_label": "get_kcp_code"}, **codes).result
 
     dft_overrides = overrides.get("dft") if overrides else None
     wannier_init = init_orbitals in (
@@ -1259,12 +1263,15 @@ def KoopmansDSCFWorkflow(
     if wannier_init:
         init = MlwfInitialization(
             codes={
-                "pw": codes["pw"],
-                "pw2wannier90": codes["pw2wannier90"],
-                "wannier90": codes["wannier90"],
-                "wann2kcp": codes["wann2kcp"],
-                "merge_evc": codes["merge_evc"],
-                "kcp": codes["kcp"],
+                **{
+                    member: get(
+                        key=member,
+                        metadata={"call_link_label": f"get_{member}_code"},
+                        **codes,
+                    ).result
+                    for member in ("pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc")
+                },
+                "kcp": kcp_code,
             },
             structure=structure,
             supercell=run_structure,
