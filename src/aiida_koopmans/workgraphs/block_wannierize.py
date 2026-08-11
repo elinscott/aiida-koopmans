@@ -93,6 +93,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     Pw2Wannier90Code,
     Wannier90Code,
     Wannier90Step,
+    projected_dos_supported,
     require_path_labels,
     run_projwfc_step,
 )
@@ -618,7 +619,10 @@ class WannierizeBlocksOutputs(TypedDict):
     * ``projwfc`` -- the projected DOS computed off the ``bands`` run's
       scratch (:class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`,
       projections resolved along the path). Present exactly when the
-      ``bands`` run exists and ``codes`` carries a ``projwfc`` code.
+      ``bands`` run exists, ``codes`` carries a ``projwfc`` code, and
+      every pseudo carries ``PP_PSWFC`` atomic wavefunctions
+      (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
+      which skips with a warning otherwise).
     * ``groups`` -- split mode only: the detected 1-indexed band groups
       (global indices).
     * ``orbitals`` -- one
@@ -1208,8 +1212,11 @@ def _run_explicit_bands_and_dos_steps(
     ``interpolation_kpoints``; without a path nothing is assembled.
     Returns the bands run as a ready-to-wire :class:`PwOutputs` namespace
     (``output_band`` holds the eigenvalues the detection and the quality
-    comparison read) and — when ``codes`` carries a ``projwfc`` code — the
-    chained projected-DOS namespace off the run's scratch
+    comparison read) and — when ``codes`` carries a ``projwfc`` code and
+    every pseudo carries ``PP_PSWFC`` atomic wavefunctions
+    (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
+    which skips with a warning otherwise) — the chained projected-DOS
+    namespace off the run's scratch
     (:func:`~aiida_koopmans.workgraphs.wannier90.run_projwfc_step`).
     """
     quality_path = bands_kpoints if split else interpolation_kpoints
@@ -1232,7 +1239,7 @@ def _run_explicit_bands_and_dos_steps(
         output_band=bands_step["output_band"],
     )
     projwfc_outputs = None
-    if "projwfc" in codes:
+    if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
         projwfc_outputs = run_projwfc_step(
             projwfc_code=codes["projwfc"],
             parent_folder=bands_step["remote_folder"],
@@ -1345,7 +1352,9 @@ def WannierizeBlocks(
             only in split mode. A ``projwfc`` code requests the projected
             DOS: whenever the quality-check ``bands`` run exists, a
             projwfc.x step runs off its scratch and the ``projwfc`` output
-            namespace is populated.
+            namespace is populated — unless a pseudo carries no
+            ``PP_PSWFC`` atomic wavefunctions, which skips the step with
+            a warning.
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds

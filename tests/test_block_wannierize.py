@@ -274,6 +274,40 @@ class TestBlockWannierizeGraphBuild:
         projwfc = wg.tasks["projwfc"].inputs["projwfc"]
         assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
 
+    def test_incapable_pseudos_skip_only_the_projected_dos(
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_family_without_pswfc
+    ):
+        """Pseudos without atomic wavefunctions drop the pDOS, not the bands run."""
+        with pytest.warns(UserWarning, match="PP_PSWFC"):
+            wg = WannierizeBlocks.build(
+                codes=pdos_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family=fake_family_without_pswfc.label,
+                interpolation_kpoints=labelled_kpath,
+            )
+        assert count_pw_bands_runs(wg) == 1
+        names = [t.name for t in wg.tasks]
+        assert "projwfc" not in names
+        assert not wg.outputs["projwfc"]["Dos"]._links
+
+    def test_unreadable_pseudo_skips_only_the_projected_dos(
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_family_unreadable_upf
+    ):
+        """A UPF the header reader cannot parse skips the pDOS, never errors."""
+        with pytest.warns(UserWarning, match="could not be parsed"):
+            wg = WannierizeBlocks.build(
+                codes=pdos_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family=fake_family_unreadable_upf.label,
+                interpolation_kpoints=labelled_kpath,
+            )
+        assert count_pw_bands_runs(wg) == 1
+        assert "projwfc" not in [t.name for t in wg.tasks]
+
     def test_external_scratch_skips_the_quality_check(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, nscf_remote
     ):

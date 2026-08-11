@@ -106,19 +106,28 @@ def generate_upf_data(aiida_profile):
 
     from aiida_pseudo.data.pseudo.upf import UpfData
 
-    def _generate_upf_data(element: str, z_valence: float = 6.0) -> UpfData:
+    def _generate_upf_data(
+        element: str, z_valence: float = 6.0, number_of_wfc: int | None = 2
+    ) -> UpfData:
         # Shaped for the line-based block extractors in
         # aiida-wannier90-workflows' pseudo utilities: ``<PP_HEADER`` and its
         # ``/>`` sit on their own lines (sharing a line with the ``<UPF>``
         # root tag loses the attributes), ``has_so`` is required, and
         # ``PP_PSWFC`` provides an s+p valence so projection counting works.
+        # ``number_of_wfc`` is what the projected-DOS gate reads; ``None``
+        # omits the attribute and the ``PP_PSWFC`` block (a pseudo without
+        # atomic wavefunctions).
+        wfc_attribute = "" if number_of_wfc is None else f'number_of_wfc="{number_of_wfc}"\n'
+        pswfc_block = (
+            ""
+            if number_of_wfc is None
+            else '<PP_PSWFC>\n<PP_CHI.1 l="0"/>\n<PP_CHI.2 l="1"/>\n</PP_PSWFC>\n'
+        )
         content = (
             f'<UPF version="2.0.1">\n'
             f'<PP_HEADER\nelement="{element}"\n'
-            f'z_valence="{z_valence}"\nhas_so="F"\n/>\n'
-            f"<PP_PSWFC>\n"
-            f'<PP_CHI.1 l="0"/>\n<PP_CHI.2 l="1"/>\n'
-            f"</PP_PSWFC>\n"
+            f'z_valence="{z_valence}"\nhas_so="F"\n{wfc_attribute}/>\n'
+            f"{pswfc_block}"
             f"</UPF>\n"
         )
         stream = io.BytesIO(content.encode("utf-8"))
@@ -190,10 +199,17 @@ def fake_cutoffs_family(aiida_profile, generate_upf_data):
     build time: the protocol machinery only accepts SSSP / PseudoDojo /
     cutoffs families — a plain ``PseudoPotentialFamily`` is not found.
     """
+    return install_cutoffs_family(
+        "FAKE/CUTOFFS/PBE/SR",
+        [generate_upf_data(element, z_valence=z) for element, z in (("Si", 4.0), ("O", 6.0))],
+    )
+
+
+def install_cutoffs_family(label, pseudos):
+    """Install (or fetch) a ``CutoffsPseudoPotentialFamily`` over ``pseudos``."""
     from aiida.common.exceptions import NotExistent
     from aiida_pseudo.groups.family import CutoffsPseudoPotentialFamily
 
-    label = "FAKE/CUTOFFS/PBE/SR"
     try:
         return CutoffsPseudoPotentialFamily.collection.get(label=label)
     except NotExistent:
@@ -201,16 +217,43 @@ def fake_cutoffs_family(aiida_profile, generate_upf_data):
 
     family = CutoffsPseudoPotentialFamily(label=label)
     family.store()
-    pseudos = [
-        generate_upf_data(element, z_valence=z_valence).store()
-        for element, z_valence in (("Si", 4.0), ("O", 6.0))
-    ]
-    family.add_nodes(pseudos)
+    family.add_nodes([pseudo.store() for pseudo in pseudos])
     family.set_cutoffs(
-        {element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for element in ("Si", "O")},
+        {pseudo.element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for pseudo in pseudos},
         stringency="normal",
     )
     return family
+
+
+@pytest.fixture
+def fake_family_without_pswfc(aiida_profile, generate_upf_data):
+    """Install a cutoffs family whose pseudos carry no ``PP_PSWFC`` block."""
+    return install_cutoffs_family(
+        "FAKE/NOPSWFC/PBE/SR",
+        [
+            generate_upf_data(element, z_valence=z, number_of_wfc=None)
+            for element, z in (("Si", 4.0), ("O", 6.0))
+        ],
+    )
+
+
+@pytest.fixture
+def fake_family_unreadable_upf(aiida_profile):
+    """Install a cutoffs family whose Si UPF header upf-tools cannot parse.
+
+    The ``PP_HEADER`` element never closes, so the header-only reader
+    raises; aiida-pseudo's own regex-based element / z_valence extraction
+    still succeeds, so the node stores and the family installs.
+    """
+    import io
+
+    from aiida_pseudo.data.pseudo.upf import UpfData
+
+    content = (
+        '<UPF version="2.0.1">\n<PP_HEADER\nelement="Si"\nz_valence="4.0"\nhas_so="F"\n</UPF>\n'
+    )
+    upf = UpfData(io.BytesIO(content.encode("utf-8")), filename="Si.upf")
+    return install_cutoffs_family("FAKE/BROKEN/PBE/SR", [upf])
 
 
 @pytest.fixture

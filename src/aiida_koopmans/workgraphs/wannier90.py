@@ -5,6 +5,7 @@
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 import copy
+import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
@@ -114,10 +115,12 @@ class WannierWorkflowOutputs(TypedDict):
       Wannier interpolation is judged against. Populated only when
       ``bands_kpoints`` was given (``kpoint_path`` carries no explicit
       k-list for pw.x to sample, so it drives the interpolation only).
-    * ``projwfc`` -- with a ``projwfc`` code in ``codes`` and the bands run
-      present, the projected DOS computed off that run's scratch
-      (:func:`run_projwfc_step`); otherwise the wrapped workchain's own
-      ``projwfc`` namespace (populated only by its SCDM machinery).
+    * ``projwfc`` -- with a ``projwfc`` code in ``codes``, the bands run
+      present, and every pseudo carrying ``PP_PSWFC`` atomic wavefunctions
+      (:func:`projected_dos_supported`), the projected DOS computed off
+      that run's scratch (:func:`run_projwfc_step`); otherwise the wrapped
+      workchain's own ``projwfc`` namespace (populated only by its SCDM
+      machinery).
     """
 
     scf: PwOutputs
@@ -132,6 +135,69 @@ class WannierWorkflowOutputs(TypedDict):
 Wannier90Step = task(Wannier90WorkChain)
 Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
 ProjwfcBaseStep = task(ProjwfcBaseWorkChain)
+
+
+def projected_dos_supported(pseudo_family: str | None, structure: orm.StructureData) -> bool:
+    """Decide whether the projected DOS can run for this family and structure.
+
+    projwfc.x projects the bands run's eigenstates onto the
+    pseudopotentials' ``PP_PSWFC`` atomic wavefunctions, so every pseudo
+    the family resolves for ``structure`` must report ``number_of_wfc > 0``
+    in its UPF header (a header omitting the attribute promises none). Any
+    pseudo reporting none, or whose header cannot be read, skips the
+    projected DOS with a :class:`UserWarning` naming the pseudos — never an
+    error: the projected DOS is a side analysis, and no failure of this
+    gate may abort the Wannierization itself. Without a family label there
+    is nothing to check against, so that case is skipped the same way.
+    """
+    # Header-only read: the gate must not depend on the UPF body parsing,
+    # and the import stays function-local so this module imports without
+    # upf-tools' numeric dependency chain.
+    from upf_tools import header_from_str
+
+    from aiida_koopmans.utils.pseudos import resolve_pseudo_family
+
+    if pseudo_family is None:
+        warnings.warn(
+            "No pseudopotential family was named, so whether the pseudos carry "
+            "`PP_PSWFC` atomic wavefunctions cannot be checked. Skipping the "
+            "projected DOS calculation.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return False
+
+    # A graph input arrives as a wrapt proxy; the group loader binds the
+    # label as an SQL parameter, which needs a plain str.
+    pseudos = resolve_pseudo_family(str(pseudo_family), structure)
+    without_pswfc: list[str] = []
+    unreadable: list[str] = []
+    for kind, upf in sorted(pseudos.items()):
+        try:
+            header = header_from_str(upf.get_content("r"))
+            capable = int(header.get("number_of_wfc") or 0) > 0
+        except Exception:
+            unreadable.append(kind)
+            continue
+        if not capable:
+            without_pswfc.append(kind)
+
+    if unreadable:
+        warnings.warn(
+            f"The UPF files for {', '.join(unreadable)} could not be parsed, so whether "
+            "they carry `PP_PSWFC` atomic wavefunctions is unknown. Skipping the "
+            "projected DOS calculation.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if without_pswfc:
+        warnings.warn(
+            f"The pseudopotentials for {', '.join(without_pswfc)} have no `PP_PSWFC` "
+            "block, so a projected DOS calculation is not possible. Skipping it.",
+            UserWarning,
+            stacklevel=2,
+        )
+    return not (unreadable or without_pswfc)
 
 
 def run_projwfc_step(
@@ -334,7 +400,9 @@ def Wannierize(
         codes: Dictionary mapping code names to Code instances. Required keys:
             'pw', 'pw2wannier90', 'wannier90'. Optional: 'projwfc' — with
             ``bands_kpoints`` given it computes the projected DOS off the
-            quality-check bands run (the ``projwfc`` output namespace).
+            quality-check bands run (the ``projwfc`` output namespace),
+            skipped with a warning when a pseudo carries no ``PP_PSWFC``
+            atomic wavefunctions (:func:`projected_dos_supported`).
         structure: The StructureData instance to use.
         protocol: Protocol to use. If not specified, the default will be used.
         overrides: Optional dictionary of inputs to override protocol defaults.
@@ -488,7 +556,7 @@ def Wannierize(
             output_parameters=bands_step["output_parameters"],
             output_band=bands_step["output_band"],
         )
-        if "projwfc" in codes:
+        if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
             workflow_outputs["projwfc"] = run_projwfc_step(
                 projwfc_code=codes["projwfc"],
                 parent_folder=bands_step["remote_folder"],

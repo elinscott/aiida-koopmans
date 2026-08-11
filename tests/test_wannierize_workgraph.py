@@ -176,6 +176,49 @@ class TestBandInterpolation:
         assert [link.from_task.name for link in links] == ["Wannier90WorkChain"]
 
 
+class TestProjectedDosGate:
+    """The PP_PSWFC capability gate both wannierize graphs consult."""
+
+    def test_capable_family_passes_silently(
+        self, fake_cutoffs_family, silicon_structure, aiida_profile
+    ):
+        import warnings as warnings_module
+
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with warnings_module.catch_warnings(record=True) as caught:
+            warnings_module.simplefilter("always")
+            assert projected_dos_supported(fake_cutoffs_family.label, silicon_structure) is True
+        assert not [w for w in caught if "projected DOS" in str(w.message)]
+
+    def test_family_without_pswfc_warns_and_skips(
+        self, fake_family_without_pswfc, silicon_structure, aiida_profile
+    ):
+        """A pseudo promising no atomic wavefunctions names itself in the warning."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match=r"pseudopotentials for Si have no `PP_PSWFC`"):
+            supported = projected_dos_supported(fake_family_without_pswfc.label, silicon_structure)
+        assert supported is False
+
+    def test_unreadable_upf_warns_and_skips(
+        self, fake_family_unreadable_upf, silicon_structure, aiida_profile
+    ):
+        """A header the reader cannot parse skips the pDOS instead of failing."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match=r"UPF files for Si could not be parsed"):
+            supported = projected_dos_supported(fake_family_unreadable_upf.label, silicon_structure)
+        assert supported is False
+
+    def test_no_family_warns_and_skips(self, silicon_structure, aiida_profile):
+        """Without a family label there is nothing to check, so the pDOS skips."""
+        from aiida_koopmans.workgraphs.wannier90 import projected_dos_supported
+
+        with pytest.warns(UserWarning, match="No pseudopotential family"):
+            assert projected_dos_supported(None, silicon_structure) is False
+
+
 class TestKpointMesh:
     """The caller's Brillouin-zone sampling replaces the protocol's."""
 

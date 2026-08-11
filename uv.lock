@@ -79,9 +79,13 @@ dependencies = [
     { name = "aiida-quantumespresso" },
     { name = "aiida-wannier90" },
     { name = "aiida-wannier90-workflows" },
+    { name = "aiida-wannierjl" },
     { name = "aiida-workgraph" },
     { name = "node-graph" },
+    { name = "pydantic" },
     { name = "pydantic-espresso" },
+    { name = "upf-tools" },
+    { name = "wannier90-input" },
 ]
 
 [package.optional-dependencies]
@@ -100,17 +104,21 @@ pre-commit = [
 requires-dist = [
     { name = "aiida-core", specifier = ">=2.8,<3" },
     { name = "aiida-quantumespresso", specifier = ">=4.16.0" },
-    { name = "aiida-wannier90", specifier = ">=2.2.0" },
+    { name = "aiida-wannier90", git = "https://github.com/aiidateam/aiida-wannier90?rev=5b9436943fa04643ed44c7f6fd48b361e5470ef4" },
     { name = "aiida-wannier90-workflows", editable = "../aiida-wannier90-workflows" },
+    { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
     { name = "node-graph", editable = "../node-graph" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-espresso", specifier = ">=0.0.1" },
     { name = "sphinx", marker = "extra == 'docs'" },
     { name = "sphinxcontrib-contentui", marker = "extra == 'docs'" },
     { name = "sphinxcontrib-details-directive", marker = "extra == 'docs'" },
+    { name = "upf-tools", editable = "../upf-tools" },
+    { name = "wannier90-input", specifier = ">=0.0.2" },
 ]
 provides-extras = ["docs", "pre-commit"]
 
@@ -180,13 +188,9 @@ wheels = [
 [[package]]
 name = "aiida-wannier90"
 version = "2.2.0"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/aiidateam/aiida-wannier90?rev=5b9436943fa04643ed44c7f6fd48b361e5470ef4#5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
 dependencies = [
     { name = "aiida-core" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/39/a7/31dcf3ed9cc465578f396ffd265668a0c767a5b18093b50358cac388b6b1/aiida_wannier90-2.2.0.tar.gz", hash = "sha256:f75ce0c37f2a0c4d286cb5ff9c71c34784dece233b40f80f900e69d1e781ba28", size = 31408, upload-time = "2024-05-10T12:24:07.251Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3e/84/5be07fe43040400442e4698a938a11d576411514cc788a67ce4a899a015b/aiida_wannier90-2.2.0-py3-none-any.whl", hash = "sha256:31139c3f67ea3155d3f3fd6cc9e5cacbe0c39c82aba27bf66b2861896b73b595", size = 41561, upload-time = "2024-05-10T12:24:05.669Z" },
 ]
 
 [[package]]
@@ -236,6 +240,26 @@ requires-dist = [
     { name = "upf-tools", marker = "extra == 'dev'", specifier = "~=0.1" },
 ]
 provides-extras = ["analysis", "dev", "docs", "optimization", "pre-commit", "tests"]
+
+[[package]]
+name = "aiida-wannierjl"
+source = { editable = "../aiida-wannierjl" }
+dependencies = [
+    { name = "aiida-core" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiida-core", specifier = ">=2.7.1,<3" },
+    { name = "aiida-quantumespresso", marker = "extra == 'workflows'", specifier = ">=4.6" },
+    { name = "aiida-workgraph", marker = "extra == 'workflows'", specifier = ">=0.8,<0.9" },
+    { name = "furo", marker = "extra == 'docs'" },
+    { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
+    { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
+    { name = "sphinx", marker = "extra == 'docs'" },
+    { name = "sphinxcontrib-details-directive", marker = "extra == 'docs'" },
+]
+provides-extras = ["docs", "pre-commit", "workflows"]
 
 [[package]]
 name = "aiida-workgraph"
@@ -769,6 +793,15 @@ wheels = [
 ]
 
 [[package]]
+name = "defusedxml"
+version = "0.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/d5/c66da9b79e5bdb124974bfe172b4daf3c984ebd9c2a06e2b8a4dc7331c72/defusedxml-0.7.1.tar.gz", hash = "sha256:1bb3032db185915b62d7c6209c5a8792be6a32ab2fedacc84e01b52c51aa3e69", size = 75520, upload-time = "2021-03-08T10:59:26.269Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl", hash = "sha256:a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61", size = 25604, upload-time = "2021-03-08T10:59:24.45Z" },
+]
+
+[[package]]
 name = "deprecation"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -928,6 +961,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a7/b2/4140c69c6a66432916b26158687e821ba631a4c9273c474343badf84d3ba/future-1.0.0.tar.gz", hash = "sha256:bd2968309307861edae1458a4f8a4f3598c03be43b97521076aebf5d94c07b05", size = 1228490, upload-time = "2024-02-21T11:52:38.461Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/da/71/ae30dadffc90b9006d77af76b393cb9dfbfc9629f339fc1574a1c52e6806/future-1.0.0-py3-none-any.whl", hash = "sha256:929292d34f5872e70396626ef385ec22355a1fae8ad29e1a734c3e43f9fbc216", size = 491326, upload-time = "2024-02-21T11:52:35.956Z" },
+]
+
+[[package]]
+name = "github3-py"
+version = "4.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "python-dateutil" },
+    { name = "requests" },
+    { name = "uritemplate" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/89/91/603bcaf8cd1b3927de64bf56c3a8915f6653ea7281919140c5bcff2bfe7b/github3.py-4.0.1.tar.gz", hash = "sha256:30d571076753efc389edc7f9aaef338a4fcb24b54d8968d5f39b1342f45ddd36", size = 36214038, upload-time = "2023-04-26T17:56:37.677Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/ad/2394d4fb542574678b0ba342daf734d4d811768da3c2ee0c84d509dcb26c/github3.py-4.0.1-py3-none-any.whl", hash = "sha256:a89af7de25650612d1da2f0609622bcdeb07ee8a45a1c06b2d16a05e4234e753", size = 151800, upload-time = "2023-04-26T17:56:25.015Z" },
 ]
 
 [[package]]
@@ -1306,6 +1354,27 @@ wheels = [
 ]
 
 [[package]]
+name = "more-click"
+version = "0.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/74/52/dc524f10307c472f3ee83ceef5cc3c3c1d987f9554c90cf34616bdcb2ca9/more_click-0.1.3.tar.gz", hash = "sha256:c170987d37334278169fe3b9b388f1fcd9fc96439579354fd7c537537a182128", size = 11793, upload-time = "2025-10-21T15:28:23.531Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/c8/62a253fdb3f66529ed0d7f0e4703fdb44cc8745610f199e173550d8f85eb/more_click-0.1.3-py3-none-any.whl", hash = "sha256:12f0f3da94c84d39daaaec08e9503df8877f493812f8ebc3f0713081da48d282", size = 12052, upload-time = "2025-10-21T15:28:22.456Z" },
+]
+
+[[package]]
+name = "more-itertools"
+version = "11.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/1d/f4da6f02cdffe04d6362210b807146a26044c88d839208aec273bb0d9184/more_itertools-11.1.0.tar.gz", hash = "sha256:48e8f4d9e7e5878571ecf6f2b4e57634f93cd474cc8cfbd2376f2d11b396e30d", size = 145772, upload-time = "2026-05-22T14:14:29.909Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/3d/1087453384dbde46a8c7f9356eead2c58be8a7bf156bca40243377c85715/more_itertools-11.1.0-py3-none-any.whl", hash = "sha256:4b65538ae22f6fed0ce4874efd317463a7489796a0939fa66824dd542125a192", size = 72226, upload-time = "2026-05-22T14:14:28.824Z" },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1485,6 +1554,23 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ee/90/e314a32b1c11a2ffe818ddad3a57b50b4b6e1b6c487192eb50cdef0415d0/numpy-2.5.1-cp313-cp313-win32.whl", hash = "sha256:4b4ff1608417eb7a59da7b967bbb798cacfe071d2caf526a24281cd562072ed9", size = 6063885, upload-time = "2026-07-04T17:07:00.14Z" },
     { url = "https://files.pythonhosted.org/packages/10/70/800b3fca480af32df9e8ea9f3d4a0c8feb4b32d7f195d174eabbda4829ad/numpy-2.5.1-cp313-cp313-win_amd64.whl", hash = "sha256:6c3fe51bc6a16453d452997053454f309e8e0ed7b42d6b361ce4ac8c32913d74", size = 12425674, upload-time = "2026-07-04T17:07:02.387Z" },
     { url = "https://files.pythonhosted.org/packages/8b/0b/196350c122f50f6ca56846f2d71efd5e0d24b7b2e07355e019b2e2c7a11e/numpy-2.5.1-cp313-cp313-win_arm64.whl", hash = "sha256:f7feb014281029e628ba2d5a007407443b06e418b6fe451d1e2adcbc8eba0107", size = 10350256, upload-time = "2026-07-04T17:07:04.878Z" },
+]
+
+[[package]]
+name = "oncvpsp-tools"
+version = "0.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "matplotlib" },
+    { name = "more-click" },
+    { name = "more-itertools" },
+    { name = "numpy" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/8e/7391b71b12f24bc330384e93737ef8bdf911c75f903c5dc61eb95aa45f73/oncvpsp_tools-0.0.4.tar.gz", hash = "sha256:be3b591517e04d3e3af88db7851423b6e40aa1cd86afa688c477032657967fc2", size = 1524096, upload-time = "2026-08-10T15:49:47.008Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d8/13/7811a4997ae1ff3f4cfbbe1cb46de81094ff00228ebbdbcfc5321744b9fd/oncvpsp_tools-0.0.4-py3-none-any.whl", hash = "sha256:7b1cce45f6f60bef7467ab67b11854f2b1bff7272a947de845f3e9656a2fbb7e", size = 2030416, upload-time = "2026-08-10T15:49:44.767Z" },
 ]
 
 [[package]]
@@ -2038,6 +2124,20 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b0/77/a5b8c569bf593b0140bde72ea885a803b82086995367bf2037de0159d924/pygments-2.19.2.tar.gz", hash = "sha256:636cb2477cec7f8952536970bc533bc43743542f70392ae026374600add5b887", size = 4968631, upload-time = "2025-06-21T13:39:12.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c7/21/705964c7812476f378728bdf590ca4b771ec72385c533964653c68e86bdc/pygments-2.19.2-py3-none-any.whl", hash = "sha256:86540386c03d588bb81d44bc3928634ff26449851e99741617ecb9037ee5ec0b", size = 1225217, upload-time = "2025-06-21T13:39:07.939Z" },
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/81/58d0ac84e1ef3a3843791d6954d94c0b33d526c75eeb1efbce9d0a4c4077/pyjwt-2.13.0.tar.gz", hash = "sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423", size = 107515, upload-time = "2026-05-21T19:54:36.618Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl", hash = "sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728", size = 31274, upload-time = "2026-05-21T19:54:35.362Z" },
+]
+
+[package.optional-dependencies]
+crypto = [
+    { name = "cryptography" },
 ]
 
 [[package]]
@@ -2747,6 +2847,48 @@ wheels = [
 ]
 
 [[package]]
+name = "upf-tools"
+version = "0.2.1.dev0"
+source = { editable = "../upf-tools" }
+dependencies = [
+    { name = "click" },
+    { name = "defusedxml" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "oncvpsp-tools" },
+    { name = "packaging" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click" },
+    { name = "coverage", marker = "extra == 'tests'" },
+    { name = "defusedxml" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "oncvpsp-tools" },
+    { name = "packaging" },
+    { name = "pydantic" },
+    { name = "pytest", marker = "extra == 'tests'" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = "<7.0" },
+    { name = "sphinx-autodoc-typehints", marker = "extra == 'docs'" },
+    { name = "sphinx-automodapi", marker = "extra == 'docs'" },
+    { name = "sphinx-click", marker = "extra == 'docs'" },
+    { name = "sphinx-rtd-theme", marker = "extra == 'docs'" },
+]
+provides-extras = ["tests", "docs"]
+
+[[package]]
+name = "uritemplate"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/60/f174043244c5306c9988380d2cb10009f91563fc4b31293d27e17201af56/uritemplate-4.2.0.tar.gz", hash = "sha256:480c2ed180878955863323eea31b0ede668795de182617fef9c6ca09e6ec9d0e", size = 33267, upload-time = "2025-06-02T15:12:06.318Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/99/3ae339466c9183ea5b8ae87b34c0b897eda475d2aec2307cae60e5cd4f29/uritemplate-4.2.0-py3-none-any.whl", hash = "sha256:962201ba1c4edcab02e60f9a0d3821e82dfc5d2d6662a21abd533879bdb8a686", size = 11488, upload-time = "2025-06-02T15:12:03.405Z" },
+]
+
+[[package]]
 name = "urllib3"
 version = "2.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2768,6 +2910,26 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/aa/92/58199fe10049f9703c2666e809c4f686c54ef0a68b0f6afccf518c0b1eb9/virtualenv-21.2.0.tar.gz", hash = "sha256:1720dc3a62ef5b443092e3f499228599045d7fea4c79199770499df8becf9098", size = 5840618, upload-time = "2026-03-09T17:24:38.013Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c6/59/7d02447a55b2e55755011a647479041bc92a82e143f96a8195cb33bd0a1c/virtualenv-21.2.0-py3-none-any.whl", hash = "sha256:1bd755b504931164a5a496d217c014d098426cddc79363ad66ac78125f9d908f", size = 5825084, upload-time = "2026-03-09T17:24:35.378Z" },
+]
+
+[[package]]
+name = "wannier90-input"
+version = "0.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "defusedxml" },
+    { name = "github3-py" },
+    { name = "more-click" },
+    { name = "more-itertools" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "tqdm" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/61/98/9e1b6641da2fb6000a7c3aee7c2b49966d642a321a5661ff9488fbcf159f/wannier90_input-0.0.2.tar.gz", hash = "sha256:f91a6feddb2c5d3ce7edff62a29e701d46e30e12047a5531ce049c03d8e8731e", size = 2334980, upload-time = "2026-07-14T11:54:49.074Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/00/9b13d51cea8ba20d1d84c1d1fb43463e40f960c89947382293db09aba724/wannier90_input-0.0.2-py3-none-any.whl", hash = "sha256:e617368f12e374cc2e76da3de0f6317d9510b4f0dec7ac5302cca790e65fafc9", size = 3112530, upload-time = "2026-07-14T11:54:46.712Z" },
 ]
 
 [[package]]
