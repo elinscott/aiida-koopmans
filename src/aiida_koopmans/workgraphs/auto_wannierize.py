@@ -411,7 +411,7 @@ class RewannierizeSplitOutputs(TypedDict):
 
 @task.graph
 def RewannierizeSplitBlocks(
-    code: orm.AbstractCode,
+    w90_code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
     parent_parameters: orm.Dict,
@@ -467,7 +467,7 @@ def RewannierizeSplitBlocks(
             parameters["bands_plot"] = True
             path_inputs["bands_kpoints"] = interpolation_kpoints
         rewannierized = Wannier90CalcStep(
-            code=code,
+            code=w90_code,
             structure=structure,
             parameters=parameters,
             kpoints=kpoints,
@@ -654,7 +654,7 @@ def WannierizeAndSplitBlock(
     # them, so the parent run's resolved parameters are the trustworthy
     # source for the sub-block settings.
     rewannierized = RewannierizeSplitBlocks(
-        code=codes["wannier90"],
+        w90_code=codes["wannier90"],
         structure=structure,
         split_blocks=split["blocks"],
         parent_parameters=whole["wannier90_parameters"],

@@ -487,7 +487,7 @@ def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.Fold
 
 @task.graph
 def RunDFPT(
-    code: orm.AbstractCode,
+    kcw_code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     occ_labels: list,
@@ -510,7 +510,7 @@ def RunDFPT(
     """Run the kcw.x chain off provided wannierization outputs.
 
     Args:
-        code: the kcw.x code; it runs every step of the chain.
+        kcw_code: the kcw.x code; it runs every step.
         nscf_remote_folder: scratch of the pw.x **nscf** run the Wannier
             functions were built on (kcw.x re-reads its wavefunctions). Must
             be an ``nspin = 2`` run even for closed-shell systems -- the DFPT
@@ -618,7 +618,7 @@ def RunDFPT(
     )["wannier_files"]
 
     wann2kc_inputs: dict[str, Any] = {
-        "code": code,
+        "code": kcw_code,
         "parameters": {"CONTROL": control, "WANNIER": wannier},
         "parent_folder": nscf_remote_folder,
         "wannier_files": wannier_files,
@@ -669,7 +669,7 @@ def RunDFPT(
             metadata={"call_link_label": "assign_orbital_groups"},
         )
         grouped = GroupedKcwScreening(
-            code=code,
+            code=kcw_code,
             control=control,
             wannier=wannier,
             screen_namelist=screen_namelist,
@@ -684,7 +684,7 @@ def RunDFPT(
         # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
         screen_namelist["check_spread"] = bool(check_spread)
         screen_inputs: dict[str, Any] = {
-            "code": code,
+            "code": kcw_code,
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
             "parent_folder": wann2kc["remote_folder"],
             "wannier_files": wannier_files,
@@ -703,7 +703,7 @@ def RunDFPT(
         "on_site_only": False,
     }
     ham_inputs: dict[str, Any] = {
-        "code": code,
+        "code": kcw_code,
         "parameters": {"CONTROL": control, "WANNIER": wannier, "HAM": ham_namelist},
         "parent_folder": wann2kc["remote_folder"],
         "wannier_files": wannier_files,
@@ -1039,7 +1039,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "code": codes["kcw"],
+            "kcw_code": codes["kcw"],
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],
