@@ -470,7 +470,7 @@ def wire_descriptor_rows(
                 "descriptor='self_hartree' if no such code is available."
             )
         slots = PowerSpectrumDescriptorWorkflow(
-            code=pw2wannier90_code,
+            pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
             block_wannierizations=block_wannierizations,
             merge_groups=merge_groups,
@@ -979,7 +979,7 @@ def build_empty_iter_source(
 
 @task.graph
 def InitializeOrbitals(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     nelec: int,
@@ -1040,7 +1040,7 @@ def InitializeOrbitals(
         parameters = recursive_merge(parameters, overrides)
 
     inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         parameters,
         pseudos,
@@ -1152,7 +1152,7 @@ def KoopmansDSCFWorkflow(
     validate_parallelization(parallelization)
 
     # Every kcp.x step below wires the same code; bind it once.
-    code = codes["kcp"]
+    kcp_code = codes["kcp"]
 
     from aiida_koopmans.workgraphs.mlwf_init import MlwfInitialization
     from aiida_koopmans.workgraphs.supercell import (
@@ -1299,7 +1299,7 @@ def KoopmansDSCFWorkflow(
         # nspin=2 from-scratch run: the up/down channels are independent,
         # with no pre-symmetrisation.
         dft = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1328,7 +1328,7 @@ def KoopmansDSCFWorkflow(
         #    save; this is the ``remote_folder`` consumed by the
         #    downstream ComputeScreeningParameters.
         dft_nspin1 = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1347,7 +1347,7 @@ def KoopmansDSCFWorkflow(
         )
 
         dft_nspin2_dummy = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1376,7 +1376,7 @@ def KoopmansDSCFWorkflow(
         )
 
         dft = InitializeOrbitals(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             nelec=nelec,
@@ -1402,7 +1402,7 @@ def KoopmansDSCFWorkflow(
     if calculate_alpha:
         if predict_only:
             screening = PredictScreeningParameters(
-                code=code,
+                kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
                 ecutwfc=ecutwfc,
@@ -1434,7 +1434,7 @@ def KoopmansDSCFWorkflow(
             )
         else:
             screening = ComputeScreeningParameters(
-                code=code,
+                kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
                 ecutwfc=ecutwfc,
@@ -1502,7 +1502,7 @@ def KoopmansDSCFWorkflow(
     # the converged DSCF screening parameters, or the injected ones.
     # ------------------------------------------------------------------
     ki_final = RunFinalKI(
-        code=code,
+        kcp_code=kcp_code,
         structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1543,7 +1543,7 @@ def KoopmansDSCFWorkflow(
     _run_predicted_final_ki(
         outputs,
         ml_test=ml_test,
-        code=code,
+        kcp_code=kcp_code,
         run_structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1584,7 +1584,7 @@ def _run_predicted_final_ki(
     outputs: KoopmansDSCFOutputs,
     *,
     ml_test: bool,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     run_structure: Any,
     pseudos: Any,
     ecutwfc: float,
@@ -1656,7 +1656,7 @@ def _run_predicted_final_ki(
         metadata={"call_link_label": "predict_alphas"},
     )
     ki_final_ml = RunFinalKI(
-        code=code,
+        kcp_code=kcp_code,
         structure=run_structure,
         pseudos=pseudos,
         ecutwfc=ecutwfc,
@@ -1685,7 +1685,7 @@ def _run_predicted_final_ki(
 @task.graph
 def RunFinalKI(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -1754,7 +1754,7 @@ def RunFinalKI(
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
     final_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         ki_parameters,
         pseudos,
@@ -1777,7 +1777,7 @@ def RunFinalKI(
 
 @task.graph
 def ComputeFilledOrbitalScreeningParameter(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -1839,7 +1839,7 @@ def ComputeFilledOrbitalScreeningParameter(
         parameters = recursive_merge(parameters, overrides)
 
     inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         parameters,
         pseudos,
@@ -1873,7 +1873,7 @@ def ComputeFilledOrbitalScreeningParameter(
 
 @task.graph
 def ComputeEmptyOrbitalScreeningParameter(
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     dummy_parameters: dict,
@@ -1935,7 +1935,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     if dummy_overrides:
         dummy_parameters = recursive_merge(dummy_parameters, dummy_overrides)
     dummy_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         dummy_parameters,
         pseudos,
@@ -1954,7 +1954,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     # ``build_kcp_inputs`` skips the overlay socket when the dict is
     # empty.
     pz_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         pz_parameters,
         pseudos,
@@ -1969,7 +1969,7 @@ def ComputeEmptyOrbitalScreeningParameter(
     if n_plus_1_overrides:
         n_plus_1_parameters = recursive_merge(n_plus_1_parameters, n_plus_1_overrides)
     n_plus_1_inputs = build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         n_plus_1_parameters,
         pseudos,
@@ -2013,7 +2013,7 @@ def ComputeEmptyOrbitalScreeningParameter(
 @task.graph
 def ComputeOrbitalScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2057,7 +2057,7 @@ def ComputeOrbitalScreeningParameters(
     filled_errors: dict[str, Any] = {}
     for key, item in filled_items.items():
         filled_out = ComputeFilledOrbitalScreeningParameter(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             ecutwfc=base.ecutwfc,
@@ -2096,7 +2096,7 @@ def ComputeOrbitalScreeningParameters(
     empty_errors: dict[str, Any] = {}
     for key, empty_item in empty_items.items():
         empty_out = ComputeEmptyOrbitalScreeningParameter(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             dummy_parameters=empty_item["dummy_parameters"],
@@ -2156,7 +2156,7 @@ def ComputeOrbitalScreeningParameters(
 @task.graph
 def ScreeningIteration(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2210,7 +2210,7 @@ def ScreeningIteration(
     """
     trial = KcpStep(
         **_trial_kcp_inputs(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             base=base,
@@ -2249,7 +2249,7 @@ def ScreeningIteration(
     # is concrete — the scatter is then a native ``for`` loop, the gather
     # a plain dict of per-orbital sockets.
     per_orbital = ComputeOrbitalScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2295,7 +2295,7 @@ def ScreeningIteration(
 @task.graph
 def RefineScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     base: KcpBaseInputs,
@@ -2344,7 +2344,7 @@ def RefineScreeningParameters(
         )
 
     iteration = ScreeningIteration(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2366,7 +2366,7 @@ def RefineScreeningParameters(
     )
 
     remainder = RefineScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2403,7 +2403,7 @@ def RefineScreeningParameters(
 @task.graph
 def ComputeScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -2537,7 +2537,7 @@ def ComputeScreeningParameters(
     # ``_add_kipz_orbdep``.
     # ------------------------------------------------------------------
     iter_1 = ScreeningIteration(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2576,7 +2576,7 @@ def ComputeScreeningParameters(
         }
 
     refinement = RefineScreeningParameters(
-        code=code,
+        kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
         base=base,
@@ -2613,7 +2613,7 @@ def ComputeScreeningParameters(
 @task.graph
 def PredictScreeningParameters(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: Annotated[dict, dynamic(UpfData)],
     ecutwfc: float,
@@ -2701,7 +2701,7 @@ def PredictScreeningParameters(
 
     trial = KcpStep(
         **_trial_kcp_inputs(
-            code=code,
+            kcp_code=kcp_code,
             structure=structure,
             pseudos=pseudos,
             base=base,
@@ -3590,7 +3590,7 @@ def _model_replaces_refinement(*, ml_model: dict | None, ml_test: bool) -> bool:
 
 def _trial_kcp_inputs(
     *,
-    code: orm.AbstractCode,
+    kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudos: dict[str, UpfData],
     base: KcpBaseInputs,
@@ -3625,7 +3625,7 @@ def _trial_kcp_inputs(
         ki_parameters = recursive_merge(ki_parameters, ki_overrides)
 
     return build_kcp_inputs(
-        code,
+        kcp_code,
         structure,
         ki_parameters,
         pseudos,

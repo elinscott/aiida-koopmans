@@ -922,7 +922,7 @@ class TestGroupedKcwScreeningBuild:
         from aiida_koopmans.workgraphs.dfpt import GroupedKcwScreening
 
         return GroupedKcwScreening.build(
-            code=dfpt_codes["kcw"],
+            kcw_code=dfpt_codes["kcw"],
             control={"kcw_iverbosity": 1},
             wannier={"seedname": "aiida"},
             screen_namelist={"tr2": 1.0e-18},

@@ -1353,7 +1353,7 @@ def WannierizeBlocks(
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
         scf_nscf = RunScfNscf(
-            code=codes["pw"],
+            pw_code=codes["pw"],
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1388,7 +1388,7 @@ def WannierizeBlocks(
             )
 
             bands_outputs = add_bands_step(
-                code=codes["pw"],
+                pw_code=codes["pw"],
                 structure=structure,
                 bands_kpoints=bands_kpoints,
                 scf_remote_folder=scf_nscf["scf_remote_folder"],

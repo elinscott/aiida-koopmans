@@ -220,7 +220,7 @@ class GroupedKcwScreeningOutputs(TypedDict):
 @task.graph
 def GroupedKcwScreening(
     *,
-    code: orm.AbstractCode,
+    kcw_code: orm.AbstractCode,
     control: dict,
     wannier: dict,
     screen_namelist: dict,
@@ -265,7 +265,7 @@ def GroupedKcwScreening(
             "check_spread": False,
         }
         screen_inputs: dict[str, Any] = {
-            "code": code,
+            "code": kcw_code,
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": namelist},
             "parent_folder": parent_folder,
             "wannier_files": wannier_files,
@@ -674,7 +674,7 @@ def RunDFPT(
             metadata={"call_link_label": "assign_orbital_groups"},
         )
         grouped = GroupedKcwScreening(
-            code=kcw_code,
+            kcw_code=kcw_code,
             control=control,
             wannier=wannier,
             screen_namelist=screen_namelist,
@@ -992,7 +992,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        code=codes["pw"],
+        pw_code=codes["pw"],
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,

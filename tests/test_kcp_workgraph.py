@@ -1073,7 +1073,7 @@ class TestKoopmansDSCFGraphBuild:
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
         sub_wg = ComputeScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             ecutwfc=65.0,
@@ -1109,7 +1109,7 @@ class TestKoopmansDSCFGraphBuild:
         from aiida_koopmans.workgraphs.kcp import kcp_base_inputs
 
         iter_wg = ScreeningIteration.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             base=kcp_base_inputs(
@@ -1205,7 +1205,7 @@ class TestKoopmansDSCFGraphBuild:
             }
 
         return ComputeOrbitalScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             base=kcp_base_inputs(
@@ -1284,7 +1284,7 @@ class TestKoopmansDSCFGraphBuild:
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
         sub_wg = ComputeScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             ecutwfc=65.0,
@@ -1336,7 +1336,7 @@ class TestKoopmansDSCFGraphBuild:
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
         sub_wg = ComputeScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             ecutwfc=65.0,
@@ -1741,7 +1741,7 @@ class TestKoopmansDSCFGraphBuild:
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
         sub_wg = ComputeScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             ecutwfc=65.0,
@@ -1809,7 +1809,7 @@ class TestKoopmansDSCFGraphBuild:
 
         with pytest.raises(ValueError, match=r"has 8 entries but .* 9 filled"):
             RunFinalKI.build(
-                code=kcp_code,
+                kcp_code=kcp_code,
                 structure=ozone_structure,
                 pseudos=pseudos,
                 ecutwfc=65.0,
@@ -1885,7 +1885,7 @@ class TestKoopmansDSCFGraphBuild:
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
         sub_wg = PredictScreeningParameters.build(
-            code=kcp_code,
+            kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
             ecutwfc=65.0,
@@ -2053,7 +2053,7 @@ class TestSkipModeFinalKIMatchesFirstTrialKI:
 
     def _numeric_args(self, structure, code, pseudos):
         return {
-            "code": code,
+            "kcp_code": code,
             "structure": structure,
             "pseudos": pseudos,
             "ecutwfc": 65.0,
@@ -2525,7 +2525,7 @@ class TestPredictTrialMatchesComputeTrial:
     """
 
     FORWARDED: ClassVar[list[str]] = [
-        "code",
+        "kcp_code",
         "structure",
         "pseudos",
         "base",
@@ -2590,7 +2590,7 @@ class TestPredictTrialMatchesComputeTrial:
         evc2 = orm.SinglefileData.from_string("evc2", filename="evc_occupied2.dat").store()
 
         common = {
-            "code": kcp_code,
+            "kcp_code": kcp_code,
             "structure": ozone_structure,
             "pseudos": pseudos,
             "ecutwfc": 65.0,
@@ -2846,7 +2846,7 @@ class TestPowerSpectrumPredictionGraph:
             .one()[0]
         )
         inputs = {
-            "code": kcp_code,
+            "kcp_code": kcp_code,
             "structure": ozone_structure,
             "pseudos": family.get_pseudos(structure=ozone_structure),
             "ecutwfc": 65.0,

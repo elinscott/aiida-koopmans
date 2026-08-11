@@ -77,7 +77,7 @@ PwBandsStep = task(PwBandsWorkChain)
 
 
 def assemble_pw_base_step(
-    code: orm.AbstractCode,
+    pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     *,
     calculation: str,
@@ -105,7 +105,7 @@ def assemble_pw_base_step(
         calculation,
     )
     builder = PwBaseWorkChain.get_builder_from_protocol(
-        code=code,
+        code=pw_code,
         structure=structure,
         protocol=protocol,
         overrides=overrides,
@@ -213,7 +213,7 @@ def RunPwBands(
 
 @task.graph
 def RunScfNscf(
-    code: orm.AbstractCode,
+    pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -234,7 +234,7 @@ def RunScfNscf(
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
 
     Args:
-        code: The Code instance configured for the quantumespresso.pw plugin.
+        pw_code: The Code instance configured for the quantumespresso.pw plugin.
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
@@ -268,7 +268,7 @@ def RunScfNscf(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
     scf_outputs = assemble_pw_base_step(
-        code,
+        pw_code,
         structure,
         calculation="scf",
         call_link_label="scf",
@@ -282,7 +282,7 @@ def RunScfNscf(
     # replace the protocol's distance-derived one — a wannierisation nscf
     # runs on the full grid in the downstream wannier90's k-order.
     nscf_outputs = assemble_pw_base_step(
-        code,
+        pw_code,
         structure,
         calculation="nscf",
         call_link_label="nscf",

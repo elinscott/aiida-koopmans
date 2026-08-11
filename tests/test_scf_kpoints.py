@@ -44,7 +44,7 @@ class TestRunScfNscf:
         from aiida_koopmans.workgraphs.pw import RunScfNscf
 
         wg = RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             scf_kpoints=kmesh,
@@ -72,7 +72,7 @@ class TestRunScfNscf:
         from aiida_koopmans.workgraphs.pw import RunScfNscf
 
         wg = RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kpath,

@@ -142,7 +142,7 @@ def _plain_options(options: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def add_bands_step(
-    code: orm.AbstractCode,
+    pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     bands_kpoints: orm.KpointsData,
     scf_remote_folder: orm.RemoteData,
@@ -176,7 +176,7 @@ def add_bands_step(
     if pseudo_family is not None:
         bands_overrides.setdefault("pseudo_family", pseudo_family)
     return assemble_pw_base_step(
-        code,
+        pw_code,
         structure,
         calculation="bands",
         call_link_label="bands",

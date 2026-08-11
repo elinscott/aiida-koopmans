@@ -59,7 +59,7 @@ class TestRunScfNscfEnforcement:
         from aiida_koopmans.workgraphs.pw import RunScfNscf
 
         wg = RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kmesh,
@@ -75,7 +75,7 @@ class TestRunScfNscfEnforcement:
 
         with pytest.raises(ValueError, match=r"'nscf' step"):
             RunScfNscf.build(
-                code=pw_code,
+                pw_code=pw_code,
                 structure=silicon_structure,
                 pseudo_family=fake_cutoffs_family.label,
                 nscf_kpoints=kmesh,
@@ -98,7 +98,7 @@ class TestRunScfNscfEnforcement:
             pw_module, "enforce_step_calculation", lambda params, step, expected: params
         )
         wg = pw_module.RunScfNscf.build(
-            code=pw_code,
+            pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             nscf_kpoints=kmesh,
