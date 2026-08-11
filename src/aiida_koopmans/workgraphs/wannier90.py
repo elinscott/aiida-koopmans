@@ -82,6 +82,21 @@ Wannier90Step = task(Wannier90WorkChain)
 Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
 
 
+def require_path_labels(kpoints: orm.KpointsData | None, name: str) -> None:
+    """Reject an explicit bands path whose k-points carry no labels.
+
+    The upstream ``Wannier90Calculation`` validator requires labels on
+    ``bands_kpoints``; without this check the failure only surfaces at
+    calculation submission, after the scf and nscf steps have already run.
+    """
+    if kpoints is not None and kpoints.labels is None:
+        raise ValueError(
+            f"`{name}` must carry k-point labels (set them with "
+            "`kpoints.labels = [(index, 'LABEL'), ...]`): wannier90 needs "
+            "them to annotate the interpolated band structure."
+        )
+
+
 def _finalize_wannier_builder(
     builder: Any,
     *,
@@ -99,19 +114,36 @@ def _finalize_wannier_builder(
     ``projector_rotation``, and reduce the builder to the plain-dict inputs
     the wrapped task expects.
 
+    A path wired here also sets ``bands_plot = True`` in the wannier90
+    parameters: wannier90 interpolates its band structure (and writes the
+    ``_band.dat`` the parser turns into ``interpolated_bands``) only under
+    that keyword, and ``Wannier90WorkChain`` never sets it itself.
+
+    ``bands_kpoints`` renders as an ``explicit_kpath`` block, which needs
+    wannier90 4.0 or newer (releases up to 3.1.0 reject it).
+    ``kpoint_path`` writes the portable ``kpoint_path`` block instead.
+
     ``set_bands_kpoints`` distinguishes the two callers: the plain builder
     assigns ``bands_kpoints`` onto ``builder.wannier90.wannier90`` here,
     whereas the optimize builder passes it to ``get_builder_from_protocol``
-    upstream and only needs it for the mutual-exclusion check.
+    upstream — whose ``Wannier90BandsWorkChain`` machinery wires the path
+    and ``bands_plot`` at runtime — and only needs it here for the
+    mutual-exclusion check.
     """
     if kpoint_path is not None and bands_kpoints is not None:
         raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
+    require_path_labels(bands_kpoints, "bands_kpoints")
 
     if kpoint_path is not None:
         builder.wannier90.wannier90.kpoint_path = kpoint_path
 
     if set_bands_kpoints and bands_kpoints is not None:
         builder.wannier90.wannier90.bands_kpoints = bands_kpoints
+
+    if kpoint_path is not None or (set_bands_kpoints and bands_kpoints is not None):
+        parameters = builder.wannier90.wannier90.parameters.get_dict()
+        parameters["bands_plot"] = True
+        builder.wannier90.wannier90.parameters = orm.Dict(parameters)
 
     if projector_rotation is not None:
         builder.projector_rotation = projector_rotation
@@ -236,6 +268,13 @@ def Wannierize(
         retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
         retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.
         print_summary: If True, print a summary of key input parameters.
+        kpoint_path: k-path Dict (``path`` label pairs + ``point_coords``)
+            along which wannier90 interpolates its band structure; also sets
+            ``bands_plot = True``, without which wannier90 interpolates
+            nothing.
+        bands_kpoints: the same path as a labelled explicit ``KpointsData``;
+            mutually exclusive with ``kpoint_path``, and likewise sets
+            ``bands_plot = True``.
         kpoints: the explicit k-point list the nscf and wannier90 share.
             Unset leaves both on the protocol's ``kpoints_distance``-derived
             mesh. Requires ``mp_grid``.
