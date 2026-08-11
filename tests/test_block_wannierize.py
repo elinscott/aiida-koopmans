@@ -175,19 +175,22 @@ class TestBlockWannierizeGraphBuild:
             ]
 
     def test_interpolation_kpoints_reach_every_block(
-        self, wannier_codes, silicon_structure, kmesh, labelled_kpath
+        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
         """The interpolation path feeds every per-block graph.
 
         Each ``blocks`` entry then declares the ``interpolated_bands``
-        socket the per-block wannier90 populates.
+        socket the per-block wannier90 populates. The same path also adds
+        the pw.x quality-check ``bands`` run off the internal scf, and —
+        ``wannier_codes`` carrying a projwfc code — the chained ``projwfc``
+        step off that run's scratch; both output namespaces link.
         """
         wg = WannierizeBlocks.build(
             codes=wannier_codes,
             structure=silicon_structure,
             blocks=_silicon_blocks(),
             kpoints=kmesh,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            pseudo_family=fake_cutoffs_family.label,
             interpolation_kpoints=labelled_kpath,
         )
         block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
@@ -197,15 +200,104 @@ class TestBlockWannierizeGraphBuild:
         for label in ("block_1", "block_2"):
             entry = wg.outputs["blocks"][label]
             assert "interpolated_bands" in {socket._name for socket in entry}
+
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert names.count("projwfc") == 1
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["kpoints"].value.uuid == labelled_kpath.uuid
+        assert (
+            bands_task.inputs["pw"]["parameters"].value.get_dict()["CONTROL"]["calculation"]
+            == "bands"
+        )
+        # projwfc reads the bands run's scratch, so its projections resolve
+        # along the path.
+        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        assert [link.from_task.name for link in links] == ["bands"]
+        assert wg.outputs["bands"]["output_band"]._links
+        assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
 
     def test_no_interpolation_kpoints_feeds_no_block(self, wannier_codes, silicon_structure, kmesh):
-        """Negative control: absent a path, no per-block graph receives one."""
+        """Negative control: absent a path, no per-block graph receives one.
+
+        The quality-check ``bands`` run and its projwfc step hinge on the
+        path too, so neither task appears even though ``wannier_codes``
+        carries a projwfc code.
+        """
         wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
         block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
         assert len(block_tasks) == 2
         for task_ in block_tasks:
             assert task_.inputs["interpolation_kpoints"].value is None
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
+        assert not wg.outputs["bands"]["output_band"]._links
+        assert not wg.outputs["projwfc"]["Dos"]._links
+
+    def test_interpolation_without_projwfc_code_runs_bands_only(
+        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+    ):
+        """Without a projwfc code the quality-check bands run still happens."""
+        codes = {name: code for name, code in wannier_codes.items() if name != "projwfc"}
+        wg = WannierizeBlocks.build(
+            codes=codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert "projwfc" not in names
+        assert wg.outputs["bands"]["output_band"]._links
+        assert not wg.outputs["projwfc"]["Dos"]._links
+
+    def test_parallelization_reaches_the_quality_check_steps(
+        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+    ):
+        """The pw entry lands on the bands run, the projwfc entry on projwfc."""
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+            parallelization={"pw": {"ntasks": 3, "npool": 2}, "projwfc": {"ntasks": 2}},
+        )
+        bands_pw = wg.tasks["bands"].inputs["pw"]
+        assert bands_pw["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 3
+        assert bands_pw["settings"].value["cmdline"] == ["-npool", "2"]
+        projwfc = wg.tasks["projwfc"].inputs["projwfc"]
+        assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
+
+    def test_external_scratch_skips_the_quality_check(
+        self, wannier_codes, silicon_structure, kmesh, labelled_kpath, nscf_remote
+    ):
+        """No internal scf, no density for the bands run; interpolation still threads.
+
+        The quality-check run needs the scf density, which an external nscf
+        scratch does not carry, so the ``bands`` / ``projwfc`` steps stay
+        out while the per-block wannier90 interpolation (nscf-scratch only)
+        keeps the path.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+            interpolation_kpoints=labelled_kpath,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
+        for task_ in (t for t in wg.tasks if t.name.startswith("wannierize_block")):
+            assert task_.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
 
     def test_unlabelled_interpolation_kpoints_raise_at_build(
         self, wannier_codes, silicon_structure, kmesh
@@ -479,6 +571,8 @@ class TestSplitMode:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("collect_wannier_functions") == 1
+        # ``auto_codes`` carries no projwfc code, so no projected DOS runs.
+        assert "projwfc" not in names
         # Each entry receives its whole products namespace through a single
         # handle link (per-key links into a dynamic entry do not survive the
         # run-start round-trip), so the link sits on the entry itself.
@@ -487,7 +581,8 @@ class TestSplitMode:
             assert {socket._name for socket in entry} == expected_entry
             assert entry._links, label
         assert wg.outputs["nscf"]["remote_folder"]._links
-        for populated in ("bands", "groups", "centres", "spreads"):
+        assert wg.outputs["bands"]["output_band"]._links
+        for populated in ("groups", "centres", "spreads"):
             assert wg.outputs[populated]._links, populated
         assert_graph_roundtrips(wg)
 
@@ -506,9 +601,30 @@ class TestSplitMode:
             assert entry._links, label
         assert plain.outputs["centres"]._links
         assert plain.outputs["spreads"]._links
-        assert not plain.outputs["bands"]._links
+        assert not plain.outputs["bands"]["output_band"]._links
         assert not plain.outputs["groups"]._links
         assert_graph_roundtrips(plain)
+
+    def test_split_reuses_the_detection_run_for_the_projected_dos(
+        self, auto_codes, wannier_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
+        """With a projwfc code, split mode chains projwfc off the detection run.
+
+        The detection bands run doubles as the quality-check run, so
+        exactly one pw.x ``bands`` step exists and the projwfc step reads
+        its scratch — a second run along the same path would be pure waste.
+        """
+        codes = {**auto_codes, "projwfc": wannier_codes["projwfc"]}
+        wg = self._build_split(
+            codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert names.count("projwfc") == 1
+        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        assert [link.from_task.name for link in links] == ["bands"]
+        assert wg.outputs["projwfc"]["Dos"]._links
+        assert_graph_roundtrips(wg)
 
     def test_automatic_block_split_topology(
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
@@ -541,7 +657,8 @@ class TestSplitMode:
         # threshold only the occupied/empty boundary splits it.
         assert detect_task.inputs["num_bands_total"].value == 8
         assert detect_task.inputs["threshold"].value is None
-        for populated in ("bands", "groups", "centres", "spreads"):
+        assert wg.outputs["bands"]["output_band"]._links
+        for populated in ("groups", "centres", "spreads"):
             assert wg.outputs[populated]._links, populated
         assert_graph_roundtrips(wg)
 

@@ -50,7 +50,7 @@ require.
 from __future__ import annotations
 
 import warnings
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -79,12 +79,17 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import Codes, unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwOutputs, RunScfNscf, add_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
 )
-from aiida_koopmans.workgraphs.wannier90 import Wannier90Step, require_path_labels
+from aiida_koopmans.workgraphs.wannier90 import (
+    ProjwfcOutputs,
+    Wannier90Step,
+    add_projwfc_step,
+    require_path_labels,
+)
 
 # ``aiida.chk`` is the only wannier90 product upstream excludes from its
 # retrieve-everything default: ``_DEFAULT_RETRIEVE_SUFFIXES`` in
@@ -551,8 +556,20 @@ class CollectedWannierFunctions(TypedDict):
     spreads: list
 
 
-class WannierizeBlocksOutputs(TypedDict):
+class _WannierizeBlocksRequiredOutputs(TypedDict):
+    """The always-declared half of :class:`WannierizeBlocksOutputs`."""
+
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    centres: list
+    spreads: list
+
+
+class WannierizeBlocksOutputs(_WannierizeBlocksRequiredOutputs, total=False):
     """Outputs of :func:`WannierizeBlocks`.
+
+    The input-dependent sockets sit in this ``total=False`` half (a
+    ``NotRequired`` graph output whose source socket is annotated fails the
+    socket type check).
 
     * ``blocks`` -- a dynamic namespace keyed by block label; every entry is
       the uniform :class:`WannierizeBlockOutputs` set, identical across
@@ -565,9 +582,20 @@ class WannierizeBlocksOutputs(TypedDict):
       can read ``nscf["remote_folder"]`` (the nscf scratch every block was
       built on). Absent when the caller supplied its own
       ``nscf_remote_folder`` and the internal scf + nscf was skipped.
-    * ``bands`` / ``groups`` -- split mode only: the pw.x ``bands``-run
-      eigenvalues the grouping was detected on, and the detected 1-indexed
-      band groups (global indices).
+    * ``bands`` -- the pw.x ``bands`` run along the input k-path, off the
+      internal scf density, as a :class:`PwOutputs` namespace
+      (``output_band`` holds the explicit eigenvalues the Wannier
+      interpolation is judged against). One run serves both modes: split
+      mode always runs it along ``bands_kpoints`` (the group detection
+      reads its eigenvalues), plain mode runs it along
+      ``interpolation_kpoints`` when given. Absent with an external
+      ``nscf_remote_folder``, which carries no scf density to run it from.
+    * ``projwfc`` -- the projected DOS computed off the ``bands`` run's
+      scratch (:class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`,
+      projections resolved along the path). Present exactly when the
+      ``bands`` run exists and ``codes`` carries a ``projwfc`` code.
+    * ``groups`` -- split mode only: the detected 1-indexed band groups
+      (global indices).
     * ``orbitals`` -- one
       :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`
       per Wannier function in per-channel iwann order (occupied ascending
@@ -584,13 +612,11 @@ class WannierizeBlocksOutputs(TypedDict):
       ``is`` (see :class:`~aiida_koopmans.variational_orbitals.VariationalOrbital`).
     """
 
-    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
-    centres: list
-    spreads: list
-    nscf: NotRequired[PwOutputs]
-    bands: NotRequired[orm.BandsData]
-    groups: NotRequired[list[list[int]]]
-    orbitals: NotRequired[list[VariationalOrbital]]
+    nscf: PwOutputs
+    bands: PwOutputs
+    projwfc: ProjwfcOutputs
+    groups: list[list[int]]
+    orbitals: list[VariationalOrbital]
 
 
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
@@ -1133,6 +1159,73 @@ def _resolve_split_mode(
     return True
 
 
+def _quality_check_steps(
+    codes: Codes,
+    structure: orm.StructureData,
+    split: bool,
+    bands_kpoints: orm.KpointsData | None,
+    interpolation_kpoints: orm.KpointsData | None,
+    scf_remote_folder: Any,
+    nscf_overrides: dict[str, Any] | None,
+    pseudo_family: str | None,
+    protocol: str | None,
+    electronic_type: ElectronicType,
+    parallelization: ParallelizationDict | None,
+) -> tuple[PwOutputs | None, ProjwfcOutputs | None]:
+    """Assemble the pw.x quality-check bands run and its projwfc step.
+
+    A plain graph-assembly helper: it must be called inside a
+    ``@task.graph`` body. Split mode samples ``bands_kpoints`` (the
+    detection run doubles as the quality check), plain mode
+    ``interpolation_kpoints``; without a path nothing is assembled.
+    Returns the bands run as a ready-to-wire :class:`PwOutputs` namespace
+    (``output_band`` holds the eigenvalues the detection and the quality
+    comparison read) and — when ``codes`` carries a ``projwfc`` code — the
+    chained projected-DOS namespace off the run's scratch
+    (:func:`~aiida_koopmans.workgraphs.wannier90.add_projwfc_step`).
+    """
+    quality_path = bands_kpoints if split else interpolation_kpoints
+    if quality_path is None:
+        return None, None
+    bands_step = add_bands_step(
+        code=codes["pw"],
+        structure=structure,
+        bands_kpoints=quality_path,
+        scf_remote_folder=scf_remote_folder,
+        nscf_overrides=nscf_overrides,
+        pseudo_family=pseudo_family,
+        protocol=protocol,
+        electronic_type=electronic_type,
+        parallelization=parallelization,
+    )
+    bands_outputs = PwOutputs(
+        remote_folder=bands_step["remote_folder"],
+        output_parameters=bands_step["output_parameters"],
+        output_band=bands_step["output_band"],
+    )
+    projwfc_outputs = None
+    if "projwfc" in codes:
+        projwfc_outputs = add_projwfc_step(
+            code=codes["projwfc"],
+            parent_folder=bands_step["remote_folder"],
+            protocol=protocol,
+            parallelization=parallelization,
+        )
+    return bands_outputs, projwfc_outputs
+
+
+def _wire_quality_check_outputs(
+    outputs: WannierizeBlocksOutputs,
+    bands_outputs: PwOutputs | None,
+    projwfc_outputs: ProjwfcOutputs | None,
+) -> None:
+    """Wire the quality-check namespaces into ``outputs`` when their steps ran."""
+    if bands_outputs is not None:
+        outputs["bands"] = bands_outputs
+    if projwfc_outputs is not None:
+        outputs["projwfc"] = projwfc_outputs
+
+
 @task.graph
 def WannierizeBlocks(
     codes: Codes,
@@ -1190,8 +1283,10 @@ def WannierizeBlocks(
 
     Args:
         codes: code instances. Required keys: ``pw``, ``wannier90``,
-            ``pw2wannier90``; ``projwfc`` is accepted but unused by the
-            supported projection types (:data:`SUPPORTED_PROJECTION_TYPES`).
+            ``pw2wannier90``. A ``projwfc`` code requests the projected DOS:
+            whenever the quality-check ``bands`` run exists, a projwfc.x
+            step runs off its scratch and the ``projwfc`` output namespace
+            is populated.
         structure: the periodic ``StructureData``.
         blocks: the resolved projection blocks, in band order (the unified
             outputs concatenate in this order); occupied and empty manifolds
@@ -1261,8 +1356,11 @@ def WannierizeBlocks(
             (see :class:`WannierizeBlockOutputs`). In split mode the path
             reaches both the whole-block run and every per-group re-run
             (:func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`).
-            Distinct from the split-mode ``bands_kpoints``, which feeds
-            the pw.x detection run.
+            In plain mode it also triggers the pw.x quality-check ``bands``
+            run along the same path (which needs the internal scf, so an
+            external ``nscf_remote_folder`` leaves it out). Distinct from
+            the split-mode ``bands_kpoints``, which feeds the pw.x
+            detection run.
         external_projectors_path / external_projectors: the projector
             directory (one ``<element>.dat`` per element, on the
             pw2wannier90 code's computer) and the per-element orbital
@@ -1273,11 +1371,12 @@ def WannierizeBlocks(
 
     Returns:
         A :class:`WannierizeBlocksOutputs`: the ``blocks`` namespace keyed by
-        block label, the unified ``centres`` / ``spreads`` (plain mode), the
-        ``bands`` / ``groups`` detection outputs (split mode), the
-        ``orbitals`` initial partition (only when every block carries a
-        ``filled`` stamp), and (only when the scf + nscf ran here) the
-        shared ``nscf`` outputs.
+        block label, the unified ``centres`` / ``spreads``, the ``bands``
+        quality-check run and its ``projwfc`` projected DOS (when they ran),
+        the ``groups`` detection output (split mode), the ``orbitals``
+        initial partition (only when every block carries a ``filled``
+        stamp), and (only when the scf + nscf ran here) the shared ``nscf``
+        outputs.
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
@@ -1303,7 +1402,13 @@ def WannierizeBlocks(
     )
 
     # --- shared scf + nscf (run once, or reuse the caller's scratch) ---
+    bands_outputs = None
+    projwfc_outputs = None
     if nscf_remote_folder is not None:
+        # No internal scf means no density for the quality-check bands run
+        # either: the ``bands`` / ``projwfc`` outputs stay absent, while the
+        # per-block Wannier interpolation (which reads only the nscf
+        # scratch) still runs.
         _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
@@ -1335,36 +1440,42 @@ def WannierizeBlocks(
         # the single source (the internal pair is skipped then).
         block_bands = nscf_bands if nscf_bands is not None else scf_nscf["nscf_output_band"]
 
-        # --- split mode: bands step + runtime group detection ---
-        # Nested under the internal scf + nscf on purpose: split mode
-        # rejects an external scratch, so the bands step always has this
-        # scf's remote folder. After validation ``bands_kpoints is not
-        # None`` is equivalent to ``split`` (the test also narrows the
-        # Optionals). The split machinery depends on aiida-wannierjl, so it
-        # is imported only on this branch; the import direction
-        # (auto_wannierize imports this module at module level, this body
-        # imports auto_wannierize lazily) avoids the cycle.
-        if bands_kpoints is not None:
-            from aiida_koopmans.workgraphs.auto_wannierize import (
-                add_bands_step,
-                detect_band_groups,
-            )
+        # --- quality-check / detection bands run (at most one per graph) ---
+        # Nested under the internal scf + nscf on purpose: the run reads
+        # this scf's remote folder (split mode rejects an external scratch,
+        # and plain mode skips the run without an internal scf). Split mode
+        # always runs it along ``bands_kpoints`` (required there); plain
+        # mode runs it along ``interpolation_kpoints`` when given, as the
+        # explicit eigenvalues the Wannier interpolation is judged against.
+        # One run serves both purposes when split mode's detection path
+        # doubles as the interpolation path (how the koopmans dispatcher
+        # wires it).
+        bands_outputs, projwfc_outputs = _quality_check_steps(
+            codes=codes,
+            structure=structure,
+            split=split,
+            bands_kpoints=bands_kpoints,
+            interpolation_kpoints=interpolation_kpoints,
+            scf_remote_folder=scf_nscf["scf_remote_folder"],
+            nscf_overrides=overrides.get("nscf"),
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            electronic_type=electronic_type,
+            parallelization=parallelization,
+        )
+        if split:
+            # The split machinery depends on aiida-wannierjl, so it is
+            # imported only on this branch; the import direction
+            # (auto_wannierize imports this module at module level, this
+            # body imports auto_wannierize lazily) avoids the cycle.
+            from aiida_koopmans.workgraphs.auto_wannierize import detect_band_groups
 
-            bands_outputs = add_bands_step(
-                code=codes["pw"],
-                structure=structure,
-                bands_kpoints=bands_kpoints,
-                scf_remote_folder=scf_nscf["scf_remote_folder"],
-                nscf_overrides=overrides.get("nscf"),
-                pseudo_family=pseudo_family,
-                protocol=protocol,
-                electronic_type=electronic_type,
-                parallelization=parallelization,
-            )
             # The detection is restricted to the Wannierised manifold — the
-            # extra disentanglement bands above it must not influence the grouping.
+            # extra disentanglement bands above it must not influence the
+            # grouping. Split mode requires ``bands_kpoints``, so the
+            # quality-check run always exists here (hence the cast).
             detect = detect_band_groups(
-                bands=bands_outputs["output_band"],
+                bands=cast("PwOutputs", bands_outputs)["output_band"],
                 num_occ_bands=num_occ_bands,
                 threshold=split_threshold,
                 num_bands_total=sum(int(block["num_wann"]) for block in blocks),
@@ -1444,8 +1555,8 @@ def WannierizeBlocks(
         spreads=collected["spreads"],
     )
     _maybe_emit_orbital_partition(outputs, blocks)
+    _wire_quality_check_outputs(outputs, bands_outputs, projwfc_outputs)
     if split:
-        outputs["bands"] = bands_outputs["output_band"]
         outputs["groups"] = detect.result
     if scf_nscf is not None:
         outputs["nscf"] = PwOutputs(
