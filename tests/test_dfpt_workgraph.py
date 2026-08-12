@@ -387,7 +387,9 @@ class TestRunDFPTMaterialization:
 
 
 class TestSinglepointDFPTBuild:
-    def test_occ_and_emp_manifolds(self, dfpt_codes, silicon_structure, kmesh, bands_path):
+    def test_occ_and_emp_manifolds(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
+    ):
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
@@ -399,7 +401,11 @@ class TestSinglepointDFPTBuild:
             },
             kpoints=kmesh,
             bands_kpoints=bands_path,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            # A real installed family: bands_kpoints unlocks WannierizeBlocks'
+            # quality-check bands run, which always evaluates
+            # projected_dos_supported(...) now (no "projwfc" in codes
+            # short-circuit) — that call resolves the family.
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf=11.7,
         )
         names = [t.name for t in wg.tasks]
@@ -453,14 +459,18 @@ class TestSinglepointDFPTBuild:
         assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
 
     def test_bands_kpoints_unlocks_the_wannierize_quality_check(
-        self, dfpt_codes, silicon_structure, kmesh, bands_path
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
     ):
         """A bands path threads through to WannierizeBlocks' quality check.
 
         The shared scf's scratch (not a fresh one) feeds the quality-check
         bands step, and its ``bands`` output reaches ``RunDFPT`` as
-        ``wannierize_bands``. No projwfc code was configured, so
-        ``RunDFPT``'s ``projwfc`` input stays unwired.
+        ``wannierize_bands``. No projwfc code was configured, but the
+        family supports the projected DOS
+        (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
+        the sole gate now), so ``RunDFPT``'s ``projwfc`` input still wires —
+        the missing code surfaces as a structural error only when the graph
+        actually runs.
         """
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
@@ -468,7 +478,7 @@ class TestSinglepointDFPTBuild:
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             bands_kpoints=bands_path,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            pseudo_family=fake_cutoffs_family.label,
         )
         wannierize_inputs = wg.tasks["wannierize"].inputs
         scf_links = wannierize_inputs["scf_remote_folder"]._links
@@ -478,7 +488,7 @@ class TestSinglepointDFPTBuild:
 
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert dfpt_inputs["wannierize_bands"]._links
-        assert not dfpt_inputs["projwfc"]._links
+        assert dfpt_inputs["projwfc"]._links
         assert_graph_roundtrips(wg)
 
     def test_no_bands_kpoints_skips_the_wannierize_quality_check(

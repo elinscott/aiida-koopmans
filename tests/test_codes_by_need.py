@@ -265,7 +265,7 @@ class TestConditionOnGuards:
     """
 
     def test_eps_auto_without_ph_raises(
-        self, dfpt_codes, silicon_structure, kmesh, kpath, aiida_profile
+        self, dfpt_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family, aiida_profile
     ):
         from aiida_workgraph.errors import MissingRequiredInputsError
 
@@ -279,7 +279,11 @@ class TestConditionOnGuards:
             manifolds={"none": {"occ": [block]}},
             kpoints=kmesh,
             bands_kpoints=kpath,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            # A real installed family, not a bare label: bands_kpoints
+            # unlocks WannierizeBlocks' quality-check bands run, which now
+            # always evaluates projected_dos_supported(...) (no "projwfc"
+            # in codes short-circuit) — that call resolves the family.
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf="auto",
         )
         with pytest.raises(MissingRequiredInputsError) as excinfo:
