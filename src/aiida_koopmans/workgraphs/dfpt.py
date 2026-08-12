@@ -974,27 +974,27 @@ def _seed_quality_check_nscf(
 def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
-    Copies every code :class:`WannierizeBlocksCodes` requires — read off its
-    own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
-    can never drift apart silently — from :class:`DfptCodes`, which declares
-    every one of them too. ``projwfc`` rides along when configured on the
-    caller's ``codes``; the graphs decide whether the projected DOS actually
-    runs. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
+    Wires every code :class:`WannierizeBlocksCodes` requires through
+    :class:`DfptCodes`' ``codes.ref()``: a member
+    :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes` never
+    declared is a build-time ``ValueError`` from ``ref()`` itself, naming
+    the missing member, rather than the bare ``KeyError`` a subscript would
+    raise. ``projwfc`` stays a membership check on ``codes`` rather than an
+    unconditional ``ref()``: this function's own caller
+    (:func:`_add_quality_check_dfpt_inputs`) tests
+    ``"projwfc" in wannierize_codes`` in the *same* eager scope — an
+    unresolved ``ref()`` is still a present dict value there, so an
+    unconditional ``ref()`` would make that membership test always true and
+    wire a projected-DOS input WannierizeBlocks never populates.
+    ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
     member, for split-mode) is out of scope here: the DFPT route never
     triggers a split.
     """
-    codes_map = dict(codes)
-    wannierize_codes: dict[str, Any] = {}
-    for name in WannierizeBlocksCodes.__required_keys__:
-        if name not in codes_map:
-            raise KeyError(
-                f"DfptCodes has no {name!r} member, but WannierizeBlocksCodes "
-                "requires it; SinglepointDFPTWorkflow cannot assemble its "
-                "per-channel WannierizeBlocks call without it."
-            )
-        wannierize_codes[name] = codes_map[name]
+    wannierize_codes: dict[str, Any] = {
+        name: codes.ref(name) for name in ("pw", "pw2wannier90", "wannier90")
+    }
     if "projwfc" in codes:
-        wannierize_codes["projwfc"] = codes["projwfc"]
+        wannierize_codes["projwfc"] = codes.ref("projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1153,12 +1153,10 @@ def SinglepointDFPTWorkflow(
         # needed for a ground-state response) and none of the kcw spin
         # forcing — it is an independent ground state, but on the same mesh as
         # the chain's own.
-        if "ph" not in codes:
-            raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            codes={"pw": codes["pw"], "ph": codes["ph"]},
+            codes={"pw": codes.ref("pw"), "ph": codes.ref("ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1212,7 +1210,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=codes["pw"],
+        pw_code=codes.ref("pw"),
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1268,7 +1266,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": codes["kcw"],
+            "kcw_code": codes.ref("kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],
