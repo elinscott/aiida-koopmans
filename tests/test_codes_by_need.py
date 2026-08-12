@@ -82,6 +82,11 @@ CASES = {
         {"pw", "dos", "projwfc"},
         set(),
     ),
+    "RunProjwfc": (
+        "aiida_koopmans.workgraphs.wannier90.RunProjwfc",
+        {"projwfc"},
+        set(),
+    ),
 }
 
 
@@ -100,6 +105,7 @@ TYPEDDICT_FOR = {
     "TrajectoryWorkflow": "DscfCodes",
     "SinglepointDFPTWorkflow": "DfptCodes",
     "RunPdos": "PdosCodes",
+    "RunProjwfc": "ProjwfcCodes",
 }
 
 

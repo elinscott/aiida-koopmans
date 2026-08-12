@@ -122,7 +122,10 @@ class TestBandInterpolation:
         assert nscf_params["SYSTEM"]["nbnd"] is not None
         assert params["SYSTEM"]["nbnd"] == nscf_params["SYSTEM"]["nbnd"]
 
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        # "projwfc" is now RunProjwfc, a nested graph task entered
+        # unconditionally on projected_dos_supported(...); parent_folder is
+        # its own top-level input, not nested under a projwfc CalcJob shape.
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["bands"]["output_band"]._links
         # The chained step displaces the workchain's own (SCDM-only)
@@ -130,6 +133,28 @@ class TestBandInterpolation:
         links = wg.outputs["projwfc"]["Dos"]._links
         assert [link.from_task.name for link in links] == ["projwfc"]
         assert_graph_roundtrips(wg)
+
+    def test_bands_kpoints_without_projwfc_code_needs_projwfc(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+    ):
+        """A missing projwfc code is a structural error, not a silent skip.
+
+        Entry into the projwfc step is decided by
+        ``projected_dos_supported(...)`` alone — ``fake_cutoffs_family``
+        supports it — so the step is wired regardless of whether
+        ``wannier_codes`` carries a ``projwfc`` code.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        wg = self._build(
+            fake_cutoffs_family, silicon_structure, wannier_codes, bands_kpoints=labelled_kpath
+        )
+        names = [t.name for t in wg.tasks]
+        assert "projwfc" in names
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".codes.projwfc") for path in missing)
 
     def test_kpoint_path_sets_bands_plot(
         self, fake_cutoffs_family, silicon_structure, wannier_codes
