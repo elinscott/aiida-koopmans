@@ -212,8 +212,9 @@ class TestBlockWannierizeGraphBuild:
             == "bands"
         )
         # projwfc reads the bands run's scratch, so its projections resolve
-        # along the path.
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        # along the path. "projwfc" is RunProjwfc, a nested graph task;
+        # parent_folder is its own top-level input.
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["bands"]["output_band"]._links
         assert wg.outputs["projwfc"]["Dos"]._links
@@ -237,10 +238,20 @@ class TestBlockWannierizeGraphBuild:
         assert not wg.outputs["bands"]["output_band"]._links
         assert not wg.outputs["projwfc"]["Dos"]._links
 
-    def test_interpolation_without_projwfc_code_runs_bands_only(
+    def test_interpolation_without_projwfc_code_runs_bands_and_needs_projwfc(
         self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
-        """Without a projwfc code the quality-check bands run still happens."""
+        """The quality-check bands run happens; a missing projwfc code is now loud.
+
+        Entry into the projwfc step is decided by
+        ``projected_dos_supported(...)`` alone — ``fake_cutoffs_family``
+        supports it — so the step is wired regardless of whether
+        ``wannier_codes`` carries a ``projwfc`` code. Its own required
+        socket then goes unfilled, caught structurally before ``run``
+        rather than silently skipped at build.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         wg = WannierizeBlocks.build(
             codes=wannier_codes,
             structure=silicon_structure,
@@ -251,14 +262,24 @@ class TestBlockWannierizeGraphBuild:
         )
         names = [t.name for t in wg.tasks]
         assert count_pw_bands_runs(wg) == 1
-        assert "projwfc" not in names
+        assert "projwfc" in names
         assert wg.outputs["bands"]["output_band"]._links
-        assert not wg.outputs["projwfc"]["Dos"]._links
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".codes.projwfc") for path in missing)
 
     def test_parallelization_reaches_the_quality_check_steps(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
-        """The pw entry lands on the bands run, the projwfc entry on projwfc."""
+        """The pw entry lands on the bands run; the whole mapping reaches projwfc.
+
+        "projwfc" is now RunProjwfc, a nested graph task: its own
+        ``projwfc.x`` ``metadata.options`` only exist once that graph
+        expands, so this checks the mapping arrives at the wrapper's own
+        ``parallelization`` input instead of the (now invisible) inner
+        CalcJob options.
+        """
         wg = WannierizeBlocks.build(
             codes=pdos_codes,
             structure=silicon_structure,
@@ -271,8 +292,8 @@ class TestBlockWannierizeGraphBuild:
         bands_pw = wg.tasks["bands"].inputs["pw"]
         assert bands_pw["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 3
         assert bands_pw["settings"].value["cmdline"] == ["-npool", "2"]
-        projwfc = wg.tasks["projwfc"].inputs["projwfc"]
-        assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
+        parallelization = wg.tasks["projwfc"].inputs["parallelization"].value
+        assert parallelization["projwfc"]["ntasks"] == 2
 
     def test_incapable_pseudos_skip_only_the_projected_dos(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_family_without_pswfc
@@ -577,11 +598,25 @@ class TestSplitMode:
             self._build_split(auto_codes, silicon_structure, kmesh, kpath, num_occ_bands=None)
 
     def test_split_without_wannierjl_code_raises(
-        self, wannier_codes, silicon_structure, kmesh, kpath
+        self, wannier_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
-        """The detected groups are split with Wannier.jl, so its code is required."""
-        with pytest.raises(ValueError, match="Split mode requires a `wannierjl` code"):
-            self._build_split(wannier_codes, silicon_structure, kmesh, kpath)
+        """The detected groups are split with Wannier.jl.
+
+        ``wannierjl`` is wired unconditionally into
+        ``WannierizeAndSplitBlock``'s own required socket, so a caller
+        without the code still builds — the framework's structural
+        missing-input check catches it before ``run``, naming the per-block
+        socket, not a build-time membership test on ``codes``.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        wg = self._build_split(
+            wannier_codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
+        )
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".codes.wannierjl") for path in missing)
 
     def test_split_with_external_scratch_raises(
         self, auto_codes, silicon_structure, kmesh, kpath, nscf_remote
@@ -696,8 +731,10 @@ class TestSplitMode:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("collect_wannier_functions") == 1
-        # ``auto_codes`` carries no projwfc code, so no projected DOS runs.
-        assert "projwfc" not in names
+        # ``auto_codes`` carries no projwfc code, but ``fake_cutoffs_family``
+        # supports the projected DOS, so the projwfc entry still runs — its
+        # own required code socket goes unfilled rather than gating entry.
+        assert "projwfc" in names
         # Each entry receives its whole products namespace through a single
         # handle link (per-key links into a dynamic entry do not survive the
         # run-start round-trip), so the link sits on the entry itself.
@@ -746,7 +783,7 @@ class TestSplitMode:
         names = [t.name for t in wg.tasks]
         assert count_pw_bands_runs(wg) == 1
         assert names.count("projwfc") == 1
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
