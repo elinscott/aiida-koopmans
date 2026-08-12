@@ -76,6 +76,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
+from node_graph import ref
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -975,14 +976,13 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
     Wires every code :class:`WannierizeBlocksCodes` requires through
-    :class:`DfptCodes`' ``codes.ref()``: a member
-    :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes` never
-    declared is a build-time ``ValueError`` from ``ref()`` itself, naming
-    the missing member, rather than the bare ``KeyError`` a subscript would
-    raise. ``projwfc`` stays a membership check on ``codes`` rather than an
-    unconditional ``ref()``: this function's own caller
-    (:func:`_add_quality_check_dfpt_inputs`) tests
-    ``"projwfc" in wannierize_codes`` in the *same* eager scope — an
+    :class:`DfptCodes`' ``ref()``: a member :class:`WannierizeBlocksCodes`
+    requires but :class:`DfptCodes` never declared is a build-time
+    ``ValueError`` from ``ref()`` itself, naming the missing member, rather
+    than the bare ``KeyError`` a subscript would raise. ``projwfc`` stays a
+    membership check on ``codes`` rather than an unconditional ``ref()``:
+    this function's own caller (:func:`_add_quality_check_dfpt_inputs`)
+    tests ``"projwfc" in wannierize_codes`` in the *same* eager scope — an
     unresolved ``ref()`` is still a present dict value there, so an
     unconditional ``ref()`` would make that membership test always true and
     wire a projected-DOS input WannierizeBlocks never populates.
@@ -991,10 +991,10 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     triggers a split.
     """
     wannierize_codes: dict[str, Any] = {
-        name: codes.ref(name) for name in ("pw", "pw2wannier90", "wannier90")
+        name: ref(codes, name) for name in ("pw", "pw2wannier90", "wannier90")
     }
     if "projwfc" in codes:
-        wannierize_codes["projwfc"] = codes.ref("projwfc")
+        wannierize_codes["projwfc"] = ref(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1156,7 +1156,7 @@ def SinglepointDFPTWorkflow(
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            codes={"pw": codes.ref("pw"), "ph": codes.ref("ph")},
+            codes={"pw": ref(codes, "pw"), "ph": ref(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1210,7 +1210,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=codes.ref("pw"),
+        pw_code=ref(codes, "pw"),
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1266,7 +1266,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": codes.ref("kcw"),
+            "kcw_code": ref(codes, "kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],
