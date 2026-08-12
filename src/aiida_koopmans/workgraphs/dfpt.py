@@ -85,6 +85,7 @@ from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
+    WannierizeBlocksCodes,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
@@ -931,27 +932,30 @@ def _seed_quality_check_nscf(
         wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
 
 
-def _wannierize_codes_for_channel(codes: DfptCodes) -> dict[str, Any]:
+def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
-    ``projwfc`` rides along when configured on the caller's ``codes`` — the
-    graphs decide whether the projected DOS actually runs.
+    Copies every code :class:`WannierizeBlocksCodes` requires — read off its
+    own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
+    can never drift apart silently — from :class:`DfptCodes`, which declares
+    every one of them too. ``projwfc`` rides along when configured on the
+    caller's ``codes``; the graphs decide whether the projected DOS actually
+    runs. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
+    member, for split-mode) is out of scope here: the DFPT route never
+    triggers a split.
     """
-    wannierize_codes: dict[str, Any] = {
-        "pw": codes["pw"],
-        "pw2wannier90": codes["pw2wannier90"],
-        "wannier90": codes["wannier90"],
-    }
+    codes_map = dict(codes)
+    wannierize_codes = {name: codes_map[name] for name in WannierizeBlocksCodes.__required_keys__}
     if "projwfc" in codes:
         wannierize_codes["projwfc"] = codes["projwfc"]
-    return wannierize_codes
+    return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
 def _add_quality_check_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     bands_kpoints: orm.KpointsData | None,
     wannierized: Any,
-    wannierize_codes: dict[str, Any],
+    wannierize_codes: WannierizeBlocksCodes,
 ) -> None:
     """Wire the quality-check ``bands`` / ``projwfc`` sockets into ``dfpt_inputs``, in place.
 
