@@ -84,15 +84,6 @@ class TestValidateScope:
                 structure=ozone_structure,
             )
 
-    WANNIER_CODES: ClassVar[dict] = {
-        "kcp": object(),
-        "pw": object(),
-        "wannier90": object(),
-        "pw2wannier90": object(),
-        "wann2kcp": object(),
-        "merge_evc": object(),
-    }
-
     @pytest.mark.parametrize("init_orbitals", ["mlwfs", "projwfs"])
     def test_wannier_init_missing_inputs_raises(self, periodic_ozone_structure, init_orbitals):
         with pytest.raises(ValueError, match=r"\['blocks', 'kgrid'\]"):
@@ -102,27 +93,13 @@ class TestValidateScope:
                 fix_spin_contamination=False,
                 structure=periodic_ozone_structure,
                 kpoints=object(),
-                codes=self.WANNIER_CODES,
-            )
-
-    @pytest.mark.parametrize("absent", ["pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc"])
-    def test_wannier_init_missing_code_member_raises(self, periodic_ozone_structure, absent):
-        # A codes dict without a Wannier-route member counts as missing
-        # ``codes`` outright — the error names the full code set.
-        codes = {name: obj for name, obj in self.WANNIER_CODES.items() if name != absent}
-        with pytest.raises(ValueError, match=r"\['codes'\].*merge_evc codes"):
-            _validate_scope(
-                correction=Correction.KI,
-                init_orbitals=VariationalOrbitalType.MLWFS,
-                fix_spin_contamination=False,
-                structure=periodic_ozone_structure,
-                blocks=[object()],
-                kgrid=[2, 2, 2],
-                kpoints=object(),
-                codes=codes,
             )
 
     def test_wannier_init_with_all_inputs_passes(self, periodic_ozone_structure):
+        # Does not validate the Wannier-route codes: that requirement lives
+        # on MlwfInitialization's own codes spec (see
+        # test_codes_by_need.py::TestConditionOnGuards for the structural
+        # missing-input coverage).
         _validate_scope(
             correction=Correction.KI,
             init_orbitals=VariationalOrbitalType.MLWFS,
@@ -131,7 +108,6 @@ class TestValidateScope:
             blocks=[object()],
             kgrid=[2, 2, 2],
             kpoints=object(),
-            codes=self.WANNIER_CODES,
         )
 
     def test_alpha_numsteps_no_longer_validated(self, ozone_structure):
