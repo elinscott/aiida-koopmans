@@ -33,6 +33,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
+from node_graph import ref
 
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
 from aiida_koopmans.parallelization import ParallelizationDict
@@ -336,9 +337,9 @@ def MlwfInitialization(
     explicit_kpoints = get_explicit_kpoints(kpoints)
     wannierize = WannierizeBlocks(
         codes={
-            "pw": codes["pw"],
-            "pw2wannier90": codes["pw2wannier90"],
-            "wannier90": codes["wannier90"],
+            "pw": ref(codes, "pw"),
+            "pw2wannier90": ref(codes, "pw2wannier90"),
+            "wannier90": ref(codes, "wannier90"),
         },
         structure=structure,
         blocks=blocks,
@@ -358,7 +359,7 @@ def MlwfInitialization(
 
     # --- B2: fold + merge into supercell kcp.x wavefunctions ---
     fold = FoldToSupercell(
-        codes={"wann2kcp": codes["wann2kcp"], "merge_evc": codes["merge_evc"]},
+        codes={"wann2kcp": ref(codes, "wann2kcp"), "merge_evc": ref(codes, "merge_evc")},
         blocks=blocks,
         merge_groups=merge_groups,
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
