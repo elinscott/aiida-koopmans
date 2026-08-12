@@ -976,25 +976,22 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
     Wires every code :class:`WannierizeBlocksCodes` requires through
-    :class:`DfptCodes`' ``ref()``: a member :class:`WannierizeBlocksCodes`
-    requires but :class:`DfptCodes` never declared is a build-time
-    ``ValueError`` from ``ref()`` itself, naming the missing member, rather
-    than the bare ``KeyError`` a subscript would raise. ``projwfc`` stays a
-    membership check on ``codes`` rather than an unconditional ``ref()``:
-    this function's own caller (:func:`_add_quality_check_dfpt_inputs`)
-    tests ``"projwfc" in wannierize_codes`` in the *same* eager scope — an
-    unresolved ``ref()`` is still a present dict value there, so an
-    unconditional ``ref()`` would make that membership test always true and
-    wire a projected-DOS input WannierizeBlocks never populates.
-    ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
-    member, for split-mode) is out of scope here: the DFPT route never
-    triggers a split.
+    :class:`DfptCodes`' ``ref()``, ``projwfc`` included: a member
+    :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes` never
+    declared is a build-time ``ValueError`` from ``ref()`` itself, naming
+    the missing member, rather than the bare ``KeyError`` a subscript would
+    raise. Whether the projected DOS actually runs is
+    :func:`WannierizeBlocks`' own entry decision
+    (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`);
+    a ``projwfc`` code missing here surfaces as that entered graph's
+    structural missing-input error, never a silent skip decided by presence
+    on ``codes``. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other
+    ``NotRequired`` member, for split-mode) is out of scope here: the DFPT
+    route never triggers a split.
     """
     wannierize_codes: dict[str, Any] = {
-        name: ref(codes, name) for name in ("pw", "pw2wannier90", "wannier90")
+        name: ref(codes, name) for name in ("pw", "pw2wannier90", "wannier90", "projwfc")
     }
-    if "projwfc" in codes:
-        wannierize_codes["projwfc"] = ref(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1026,15 +1023,16 @@ def _add_quality_check_dfpt_inputs(
 
     ``bands`` runs whenever a bands path was given (:func:`WannierizeBlocks`'
     own gate); subscripting its socket only then avoids wiring one the run
-    structurally never populates. ``projwfc`` additionally needs a
-    configured code *and* pseudos :func:`WannierizeBlocks` accepts for the
-    projected DOS (:func:`_projwfc_step_will_run`) — wiring it on the code's
-    presence alone would hand ``RunDFPT`` a socket with nothing behind it
-    whenever the pseudos are unsupported.
+    structurally never populates. ``projwfc`` mirrors
+    :func:`WannierizeBlocks`' own entry predicate
+    (:func:`_projwfc_step_will_run`) exactly — wiring it whenever the code
+    happens to be configured, rather than whenever the pseudos actually
+    support the projected DOS, would hand ``RunDFPT`` a socket with nothing
+    behind it.
     """
     if bands_kpoints is not None:
         dfpt_inputs["wannierize_bands"] = wannierized["bands"]
-        if "projwfc" in wannierize_codes and _projwfc_step_will_run(pseudo_family, structure):
+        if _projwfc_step_will_run(pseudo_family, structure):
             dfpt_inputs["projwfc"] = wannierized["projwfc"]
 
 
