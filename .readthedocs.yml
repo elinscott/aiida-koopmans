@@ -21,7 +21,9 @@ build:
     # environments, and a leftover sibling checkout makes `git clone` exit 128
     # ("destination path already exists") before Sphinx ever runs.
     - rm -rf ../aiida-workgraph && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
-    - rm -rf ../node-graph && git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
+    # Experiment pin: node-graph's ref() API only exists on patched-with-ref;
+    # unified back onto patched at graduation.
+    - rm -rf ../node-graph && git clone --depth 1 --branch patched-with-ref https://github.com/elinscott/node-graph ../node-graph
     - rm -rf ../aiida-wannier90-workflows && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
     - rm -rf ../aiida-wannierjl && git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - rm -rf ../upf-tools && git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
