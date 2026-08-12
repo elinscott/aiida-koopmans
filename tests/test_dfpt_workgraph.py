@@ -297,6 +297,86 @@ class TestKoopmansDFPTTaskBuild:
         assert "ham" in names
 
 
+class TestRunDFPTMaterialization:
+    """Materialize ``RunDFPT`` itself with resolved (non-socket) inputs.
+
+    ``.build()`` (used throughout this file otherwise) only exercises
+    ``RunDFPT`` at graph-*construction* time, where its inputs are still
+    socket references. A ``@task.graph`` body runs again, with its inputs
+    already resolved to plain values, whenever the workgraph is actually
+    materialized (submitted, or reconstructed via ``WorkGraph.from_dict``
+    for execution) — a distinct code path ``assert_graph_roundtrips``
+    (a ``to_dict``/``from_dict`` round trip of the *unmaterialized* graph)
+    does not exercise either. ``node_graph.utils.graph.materialize_graph``
+    is what the engine actually calls at that point; calling it directly
+    with real stored nodes reproduces exactly what a live run hits.
+
+    This caught a real bug: ``wannierize_bands`` / ``projwfc`` are
+    ``PwOutputs`` / ``ProjwfcOutputs`` namespaces whose ``output_parameters``
+    field is declared plain ``dict`` (not ``orm.Dict``) — at materialization
+    every ``dict``-typed field arrives fully deserialized, so echoing the
+    whole namespace straight into ``RunDFPT``'s own output failed with
+    ``Invalid graph return payload`` at ``outputs.wannierize_bands.output_parameters.<key>``
+    (a raw Python value where a socket was required). Fixed by
+    :func:`~aiida_koopmans.workgraphs.dfpt.emit_namespace_output_parameters`.
+    """
+
+    def test_wannierize_bands_and_projwfc_survive_materialization(
+        self, aiida_localhost, tmp_path, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        from aiida.orm import BandsData, Dict, KpointsData, ProjectionData, RemoteData, XyData
+        from aiida_workgraph import WorkGraph
+        from node_graph.utils.graph import materialize_graph
+
+        kpts = KpointsData()
+        kpts.set_kpoints([[0.0, 0.0, 0.0]])
+        bands = BandsData()
+        bands.set_kpointsdata(kpts)
+        bands.set_bands([[0.0, 1.0]])
+        bands.store()
+
+        # ``output_parameters`` needs a real pw.x-shaped key (``lkpoint_dir``
+        # is the one the live run actually tripped on) so the reproduction
+        # is exact, not just any dict.
+        wannierize_bands = {
+            "remote_folder": RemoteData(
+                computer=aiida_localhost, remote_path=str(tmp_path / "bands")
+            ).store(),
+            "output_parameters": Dict({"lkpoint_dir": False, "wall_time": "1.0s"}).store(),
+            "output_band": bands,
+        }
+        projwfc = {
+            "remote_folder": RemoteData(
+                computer=aiida_localhost, remote_path=str(tmp_path / "projwfc")
+            ).store(),
+            "output_parameters": Dict({"lkpoint_dir": False}).store(),
+            "Dos": XyData().store(),
+            "projections": ProjectionData().store(),
+            "bands": bands,
+        }
+
+        graph = materialize_graph(
+            RunDFPT._callable,
+            RunDFPT._inputs_spec,
+            RunDFPT._outputs_spec,
+            "dfpt_materialize",
+            WorkGraph,
+            args=(),
+            kwargs={
+                "kcw_code": dfpt_codes["kcw"],
+                "nscf_remote_folder": nscf_remote,
+                "block_wannier": {"occ": {"retrieved": occ_retrieved}},
+                "occ_labels": ["occ"],
+                "num_wann_occ": 4,
+                "num_wann_emp": 0,
+                "kgrid": [2, 2, 2],
+                "wannierize_bands": wannierize_bands,
+                "projwfc": projwfc,
+            },
+        )
+        assert graph is not None
+
+
 class TestSinglepointDFPTBuild:
     def test_occ_and_emp_manifolds(self, dfpt_codes, silicon_structure, kmesh, bands_path):
         wg = SinglepointDFPTWorkflow.build(

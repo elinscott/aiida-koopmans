@@ -58,8 +58,9 @@ Current limitations:
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
@@ -313,6 +314,23 @@ def alphas_from_guess(alpha_guess: list) -> list:
     return payloads).
     """
     return list(alpha_guess)
+
+
+@task
+def emit_namespace_output_parameters(output_parameters: dict) -> dict:
+    """Materialise a namespace's ``dict``-typed ``output_parameters``, as a task socket.
+
+    Same fix as :func:`alphas_from_guess`, for a namespace parameter's
+    ``output_parameters`` field (``dict``, e.g. :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`
+    or :class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`) rather than a
+    top-level ``list``: at this graph's own materialisation time it arrives
+    fully deserialized to a plain dict (every ``dict``-typed field in this
+    codebase does), so echoing it straight into a graph output fails the
+    "raw Python value" check. The namespace's other fields (``RemoteData``,
+    ``BandsData``, ...) stay socket-linked through materialisation and need
+    no rewrap.
+    """
+    return dict(output_parameters)
 
 
 class ChannelResults(TypedDict, total=False):
@@ -753,6 +771,24 @@ def RunDFPT(
     return outputs
 
 
+def _reexported_namespace[NamespaceT: Mapping[str, Any]](
+    namespace: NamespaceT, label: str
+) -> NamespaceT:
+    """Return ``namespace`` with its ``output_parameters`` field re-exported as a socket.
+
+    See :func:`emit_namespace_output_parameters`: every other field of the
+    namespace (``remote_folder``, ``output_band``, ...) stays socket-linked
+    through this graph's own materialisation and passes through unchanged.
+    """
+    rebuilt = dict(namespace)
+    if "output_parameters" in rebuilt:
+        rebuilt["output_parameters"] = emit_namespace_output_parameters(
+            output_parameters=rebuilt["output_parameters"],
+            metadata={"call_link_label": f"emit_{label}_output_parameters"},
+        ).result
+    return cast("NamespaceT", rebuilt)
+
+
 def _add_optional_band_outputs(
     outputs: ChannelResults,
     ham: Any,
@@ -764,15 +800,16 @@ def _add_optional_band_outputs(
 
     Each is present exactly when its own producing step ran: ``bands`` from
     the ham step's own interpolation (``do_bands``), ``wannierize_bands`` /
-    ``projwfc`` forwarded whole from the caller's
-    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` call.
+    ``projwfc`` forwarded from the caller's
+    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` call
+    (:func:`_reexported_namespace` fixes up the one field that needs it).
     """
     if do_bands:
         outputs["bands"] = ham["bands"]
     if wannierize_bands is not None:
-        outputs["wannierize_bands"] = wannierize_bands
+        outputs["wannierize_bands"] = _reexported_namespace(wannierize_bands, "wannierize_bands")
     if projwfc is not None:
-        outputs["projwfc"] = projwfc
+        outputs["projwfc"] = _reexported_namespace(projwfc, "projwfc")
 
 
 def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
