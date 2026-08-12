@@ -975,23 +975,25 @@ def _seed_quality_check_nscf(
 def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
-    Wires every code :class:`WannierizeBlocksCodes` requires through
-    :class:`DfptCodes`' ``ref()``, ``projwfc`` included: a member
-    :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes` never
-    declared is a build-time ``ValueError`` from ``ref()`` itself, naming
-    the missing member, rather than the bare ``KeyError`` a subscript would
-    raise. Whether the projected DOS actually runs is
-    :func:`WannierizeBlocks`' own entry decision
-    (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`);
-    a ``projwfc`` code missing here surfaces as that entered graph's
-    structural missing-input error, never a silent skip decided by presence
-    on ``codes``. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other
-    ``NotRequired`` member, for split-mode) is out of scope here: the DFPT
-    route never triggers a split.
+    Wires every code :class:`WannierizeBlocksCodes` requires — read off its
+    own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
+    can never drift apart silently — through :class:`DfptCodes`' ``ref()``:
+    a member :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes`
+    never declared is a build-time ``ValueError`` from ``ref()`` itself,
+    naming the missing member, rather than the bare ``KeyError`` a
+    subscript would raise. ``projwfc`` (:class:`WannierizeBlocksCodes`'
+    ``NotRequired`` member) rides along unconditionally too: whether the
+    projected DOS actually runs is :func:`WannierizeBlocks`' own entry
+    decision (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`),
+    never a silent skip decided by presence on ``codes``. ``wannierjl``
+    (:class:`WannierizeBlocksCodes`' other ``NotRequired`` member, for
+    split-mode) is out of scope here: the DFPT route never triggers a
+    split.
     """
     wannierize_codes: dict[str, Any] = {
-        name: ref(codes, name) for name in ("pw", "pw2wannier90", "wannier90", "projwfc")
+        name: ref(codes, name) for name in WannierizeBlocksCodes.__required_keys__
     }
+    wannierize_codes["projwfc"] = ref(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1015,7 +1017,6 @@ def _add_quality_check_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     bands_kpoints: orm.KpointsData | None,
     wannierized: Any,
-    wannierize_codes: WannierizeBlocksCodes,
     pseudo_family: str | None,
     structure: orm.StructureData,
 ) -> None:
@@ -1283,7 +1284,7 @@ def SinglepointDFPTWorkflow(
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
         _add_quality_check_dfpt_inputs(
-            dfpt_inputs, bands_kpoints, wannierized, wannierize_codes, pseudo_family, structure
+            dfpt_inputs, bands_kpoints, wannierized, pseudo_family, structure
         )
 
         if emp_blocks:
