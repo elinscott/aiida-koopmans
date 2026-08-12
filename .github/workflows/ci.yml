@@ -47,9 +47,7 @@ jobs:
       # Drop entries here (and the corresponding uv source) as they merge.
       run: |
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
-        # Experiment pin: node-graph's ref() API only exists on
-        # patched-with-ref; unified back onto patched at graduation.
-        git clone --depth 1 --branch patched-with-ref https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
@@ -89,9 +87,7 @@ jobs:
     - name: Clone fork dependencies next to the checkout
       run: |
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
-        # Experiment pin: node-graph's ref() API only exists on
-        # patched-with-ref; unified back onto patched at graduation.
-        git clone --depth 1 --branch patched-with-ref https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
@@ -137,9 +133,7 @@ jobs:
     - name: Clone fork dependencies next to the checkout
       run: |
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
-        # Experiment pin: node-graph's ref() API only exists on
-        # patched-with-ref; unified back onto patched at graduation.
-        git clone --depth 1 --branch patched-with-ref https://github.com/elinscott/node-graph ../node-graph
+        git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
