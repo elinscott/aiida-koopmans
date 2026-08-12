@@ -58,9 +58,19 @@ Current limitations:
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
+import warnings
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any, NotRequired, TypedDict, cast
+from typing import (
+    Annotated,
+    Any,
+    NotRequired,
+    TypedDict,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
@@ -107,6 +117,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     ProjwfcOutputs,
     Pw2Wannier90Code,
     Wannier90Code,
+    projected_dos_supported,
 )
 
 
@@ -318,20 +329,21 @@ def alphas_from_guess(alpha_guess: list) -> list:
 
 
 @task
-def emit_namespace_output_parameters(output_parameters: dict) -> dict:
-    """Materialise a namespace's ``dict``-typed ``output_parameters``, as a task socket.
+def emit_namespace_dict_field(value: dict) -> dict:
+    """Materialise one of a namespace's plain-``dict``-typed fields as a task socket.
 
     Same fix as :func:`alphas_from_guess`, for a namespace parameter's
-    ``output_parameters`` field (``dict``, e.g. :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`
-    or :class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`) rather than a
-    top-level ``list``: at this graph's own materialisation time it arrives
-    fully deserialized to a plain dict (every ``dict``-typed field in this
-    codebase does), so echoing it straight into a graph output fails the
-    "raw Python value" check. The namespace's other fields (``RemoteData``,
-    ``BandsData``, ...) stay socket-linked through materialisation and need
-    no rewrap.
+    ``dict``-typed field (e.g. ``output_parameters`` or
+    ``output_atomic_occupations`` on :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`
+    / :class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`) rather
+    than a top-level ``list``: at this graph's own materialisation time it
+    arrives fully deserialized to a plain dict (every ``dict``-typed field
+    in this codebase does), so echoing it straight into a graph output
+    fails the "raw Python value" check. The namespace's other fields
+    (``RemoteData``, ``BandsData``, ...) stay socket-linked through
+    materialisation and need no rewrap.
     """
-    return dict(output_parameters)
+    return dict(value)
 
 
 class ChannelResults(TypedDict, total=False):
@@ -772,20 +784,45 @@ def RunDFPT(
     return outputs
 
 
-def _reexported_namespace[NamespaceT: Mapping[str, Any]](
-    namespace: NamespaceT, label: str
-) -> NamespaceT:
-    """Return ``namespace`` with its ``output_parameters`` field re-exported as a socket.
+def _dict_typed_field_names(typeddict_cls: type) -> frozenset[str]:
+    """Return ``typeddict_cls``'s fields declared as plain ``dict``.
 
-    See :func:`emit_namespace_output_parameters`: every other field of the
-    namespace (``remote_folder``, ``output_band``, ...) stays socket-linked
-    through this graph's own materialisation and passes through unchanged.
+    Those are exactly the fields that, on a namespace of this type, arrive
+    fully deserialized (not as a socket) at this graph's own
+    materialisation time — see :func:`emit_namespace_dict_field` — so any of
+    them present on a namespace *instance* need routing through it before
+    the namespace can be re-exported as a graph output. Read off the
+    TypedDict's own declared hints rather than named by hand, so a new
+    ``dict``-typed field (this module already missed one once —
+    ``output_atomic_occupations``, pw.x DFT+U) is covered automatically.
+    """
+    hints = get_type_hints(typeddict_cls, include_extras=True)
+    names = set()
+    for name, hint in hints.items():
+        if get_origin(hint) is NotRequired:
+            hint = get_args(hint)[0]
+        if hint is dict:
+            names.add(name)
+    return frozenset(names)
+
+
+def _reexported_namespace[NamespaceT: Mapping[str, Any]](
+    namespace: NamespaceT, typeddict_cls: type, label: str
+) -> NamespaceT:
+    """Return ``namespace`` with its plain-``dict``-typed fields re-exported as sockets.
+
+    ``typeddict_cls`` is the namespace's own declared shape (e.g.
+    :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`); see
+    :func:`_dict_typed_field_names` / :func:`emit_namespace_dict_field`.
+    Every other field of the namespace (``remote_folder``, ``output_band``,
+    ...) stays socket-linked through this graph's own materialisation and
+    passes through unchanged.
     """
     rebuilt = dict(namespace)
-    if "output_parameters" in rebuilt:
-        rebuilt["output_parameters"] = emit_namespace_output_parameters(
-            output_parameters=rebuilt["output_parameters"],
-            metadata={"call_link_label": f"emit_{label}_output_parameters"},
+    for field in _dict_typed_field_names(typeddict_cls) & rebuilt.keys():
+        rebuilt[field] = emit_namespace_dict_field(
+            value=rebuilt[field],
+            metadata={"call_link_label": f"emit_{label}_{field}"},
         ).result
     return cast("NamespaceT", rebuilt)
 
@@ -803,14 +840,16 @@ def _add_optional_band_outputs(
     the ham step's own interpolation (``do_bands``), ``wannierize_bands`` /
     ``projwfc`` forwarded from the caller's
     :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` call
-    (:func:`_reexported_namespace` fixes up the one field that needs it).
+    (:func:`_reexported_namespace` fixes up the fields that need it).
     """
     if do_bands:
         outputs["bands"] = ham["bands"]
     if wannierize_bands is not None:
-        outputs["wannierize_bands"] = _reexported_namespace(wannierize_bands, "wannierize_bands")
+        outputs["wannierize_bands"] = _reexported_namespace(
+            wannierize_bands, PwOutputs, "wannierize_bands"
+        )
     if projwfc is not None:
-        outputs["projwfc"] = _reexported_namespace(projwfc, "projwfc")
+        outputs["projwfc"] = _reexported_namespace(projwfc, ProjwfcOutputs, "projwfc")
 
 
 def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
@@ -945,10 +984,34 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     triggers a split.
     """
     codes_map = dict(codes)
-    wannierize_codes = {name: codes_map[name] for name in WannierizeBlocksCodes.__required_keys__}
+    wannierize_codes: dict[str, Any] = {}
+    for name in WannierizeBlocksCodes.__required_keys__:
+        if name not in codes_map:
+            raise KeyError(
+                f"DfptCodes has no {name!r} member, but WannierizeBlocksCodes "
+                "requires it; SinglepointDFPTWorkflow cannot assemble its "
+                "per-channel WannierizeBlocks call without it."
+            )
+        wannierize_codes[name] = codes_map[name]
     if "projwfc" in codes:
         wannierize_codes["projwfc"] = codes["projwfc"]
     return cast("WannierizeBlocksCodes", wannierize_codes)
+
+
+def _projwfc_step_will_run(pseudo_family: str | None, structure: orm.StructureData) -> bool:
+    """Whether :func:`WannierizeBlocks`' own projwfc step actually runs.
+
+    Mirrors its gate (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`)
+    exactly — the wiring decision below and the inner step's decision must
+    share one predicate, or a caller with a configured ``projwfc`` code but
+    unsupported pseudos (no ``PP_PSWFC``, unreadable headers, or no
+    ``pseudo_family``) gets a ``projwfc`` socket wired to a step that never
+    ran. Suppresses the warning here: :func:`WannierizeBlocks` already emits
+    it once, for the user, when it makes the same call for real.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return projected_dos_supported(pseudo_family, structure)
 
 
 def _add_quality_check_dfpt_inputs(
@@ -956,16 +1019,22 @@ def _add_quality_check_dfpt_inputs(
     bands_kpoints: orm.KpointsData | None,
     wannierized: Any,
     wannierize_codes: WannierizeBlocksCodes,
+    pseudo_family: str | None,
+    structure: orm.StructureData,
 ) -> None:
     """Wire the quality-check ``bands`` / ``projwfc`` sockets into ``dfpt_inputs``, in place.
 
-    They only run when a bands path was given (:func:`WannierizeBlocks`'
-    own gate); subscripting their sockets only then avoids wiring a socket
-    the run structurally never populates.
+    ``bands`` runs whenever a bands path was given (:func:`WannierizeBlocks`'
+    own gate); subscripting its socket only then avoids wiring one the run
+    structurally never populates. ``projwfc`` additionally needs a
+    configured code *and* pseudos :func:`WannierizeBlocks` accepts for the
+    projected DOS (:func:`_projwfc_step_will_run`) — wiring it on the code's
+    presence alone would hand ``RunDFPT`` a socket with nothing behind it
+    whenever the pseudos are unsupported.
     """
     if bands_kpoints is not None:
         dfpt_inputs["wannierize_bands"] = wannierized["bands"]
-        if "projwfc" in wannierize_codes:
+        if "projwfc" in wannierize_codes and _projwfc_step_will_run(pseudo_family, structure):
             dfpt_inputs["projwfc"] = wannierized["projwfc"]
 
 
@@ -1217,7 +1286,9 @@ def SinglepointDFPTWorkflow(
             "parallelization": parallelization,
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
-        _add_quality_check_dfpt_inputs(dfpt_inputs, bands_kpoints, wannierized, wannierize_codes)
+        _add_quality_check_dfpt_inputs(
+            dfpt_inputs, bands_kpoints, wannierized, wannierize_codes, pseudo_family, structure
+        )
 
         if emp_blocks:
             num_wann_emp = sum(block["num_wann"] for block in emp_blocks)

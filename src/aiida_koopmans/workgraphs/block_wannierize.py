@@ -1092,13 +1092,15 @@ def _reject_inputs_an_external_scratch_ignores(
     overrides: WannierizeOverrides,
     scf_kpoints: orm.KpointsData | None,
     scf_remote_folder: orm.RemoteData | None,
+    interpolation_kpoints: orm.KpointsData | None,
 ) -> None:
     """Reject inputs to an scf that an external nscf scratch skips.
 
-    ``overrides["nscf"]`` is the one exception: paired with a
-    ``scf_remote_folder`` it seeds the quality-check bands step (its SYSTEM
-    parameters, e.g. ``nbnd``), so it is genuinely consumed then and only
-    rejected without one.
+    ``overrides["nscf"]`` is the one exception: paired with both
+    ``scf_remote_folder`` *and* ``interpolation_kpoints`` — the quality-check
+    bands step needs both to run at all — it seeds that step's SYSTEM
+    parameters (e.g. ``nbnd``), so it is genuinely consumed then and only
+    rejected when either is missing.
     """
     if "scf" in overrides:
         raise ValueError(
@@ -1106,12 +1108,12 @@ def _reject_inputs_an_external_scratch_ignores(
             "nscf_remote_folder; the internal scf + nscf is skipped, so "
             "they would be silently ignored."
         )
-    if "nscf" in overrides and scf_remote_folder is None:
+    if "nscf" in overrides and (scf_remote_folder is None or interpolation_kpoints is None):
         raise ValueError(
             "nscf overrides were given together with an external "
-            "nscf_remote_folder and no scf_remote_folder; with no "
-            "quality-check bands step to consume them (that step needs "
-            "scf_remote_folder), they would be silently ignored."
+            "nscf_remote_folder, but no quality-check bands step will run "
+            "to consume them (that step needs both scf_remote_folder and "
+            "interpolation_kpoints); they would be silently ignored."
         )
     if scf_kpoints is not None:
         raise ValueError(
@@ -1501,7 +1503,9 @@ def WannierizeBlocks(
         # scf scratch (``scf_remote_folder``), which lets the run happen off
         # it. The per-block Wannier interpolation (which reads only the nscf
         # scratch) runs either way.
-        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints, scf_remote_folder)
+        _reject_inputs_an_external_scratch_ignores(
+            overrides, scf_kpoints, scf_remote_folder, interpolation_kpoints
+        )
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
         block_bands = nscf_bands

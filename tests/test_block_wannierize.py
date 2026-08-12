@@ -486,6 +486,28 @@ class TestBlockWannierizeGraphBuild:
         assert "bands" not in names
         assert "projwfc" not in names
 
+    def test_scf_remote_folder_without_a_path_still_rejects_nscf_overrides(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote, scf_remote
+    ):
+        """``scf_remote_folder`` alone does not unlock ``overrides["nscf"]`` either.
+
+        Without ``interpolation_kpoints`` too, no quality-check bands step
+        runs to consume the nscf overrides (see the previous test): giving
+        them anyway would be silently ignored, exactly as without
+        ``scf_remote_folder`` at all.
+        """
+        with pytest.raises(ValueError, match="external"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                nscf_remote_folder=nscf_remote,
+                scf_remote_folder=scf_remote,
+                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
+            )
+
 
 # ----------------------------------------------------------------------
 # Split mode: loud validation and the unified-output gate
