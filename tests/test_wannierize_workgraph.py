@@ -40,6 +40,18 @@ class TestRunProjwfcGraphBuild:
         assert step.inputs["projwfc"]["parent_folder"].value.uuid == scf_remote.uuid
         assert_graph_roundtrips(wg)
 
+    def test_parallelization_reaches_the_projwfc_calcjob(self, pdos_codes, scf_remote):
+        """A ``projwfc`` parallelization entry threads through to the calcjob."""
+        wg = RunProjwfc.build(
+            codes={"projwfc": pdos_codes["projwfc"]},
+            parent_folder=scf_remote,
+            parallelization={"projwfc": {"ntasks": 2, "npool": 2, "pd": True}},
+        )
+        projwfc = wg.tasks["projwfc"].inputs["projwfc"]
+        resources = projwfc["metadata"]["options"]["resources"].value
+        assert resources["num_mpiprocs_per_machine"] == 2
+        assert projwfc["settings"].value["cmdline"] == ["-npool", "2", "-pd", "true"]
+
 
 class TestWannierizeGraphBuild:
     def test_full_graph_eager_builds(self, fake_cutoffs_family, silicon_structure, wannier_codes):
