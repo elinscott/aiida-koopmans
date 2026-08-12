@@ -58,8 +58,19 @@ Current limitations:
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
+import warnings
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import (
+    Annotated,
+    Any,
+    NotRequired,
+    TypedDict,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
@@ -84,10 +95,11 @@ from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
+    WannierizeBlocksCodes,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
-from aiida_koopmans.workgraphs.pw import PwCode, RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -100,7 +112,13 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     expand_alphas_by_group,
     spreads_metric_row,
 )
-from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+from aiida_koopmans.workgraphs.wannier90 import (
+    ProjwfcCode,
+    ProjwfcOutputs,
+    Pw2Wannier90Code,
+    Wannier90Code,
+    projected_dos_supported,
+)
 
 
 class DfptCodes(TypedDict):
@@ -122,6 +140,7 @@ class DfptCodes(TypedDict):
             SocketMeta(help="Needed if the dielectric constant is to be computed automatically."),
         ]
     ]
+    projwfc: NotRequired[ProjwfcCode]
 
 
 # kcw.x reads ``<seedname>_u.mat`` / ``<seedname>_emp_u.mat`` (etc.) from its
@@ -309,6 +328,24 @@ def alphas_from_guess(alpha_guess: list) -> list:
     return list(alpha_guess)
 
 
+@task
+def emit_namespace_dict_field(value: dict) -> dict:
+    """Materialise one of a namespace's plain-``dict``-typed fields as a task socket.
+
+    Same fix as :func:`alphas_from_guess`, for a namespace parameter's
+    ``dict``-typed field (e.g. ``output_parameters`` or
+    ``output_atomic_occupations`` on :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`
+    / :class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`) rather
+    than a top-level ``list``: at this graph's own materialisation time it
+    arrives fully deserialized to a plain dict (every ``dict``-typed field
+    in this codebase does), so echoing it straight into a graph output
+    fails the "raw Python value" check. The namespace's other fields
+    (``RemoteData``, ``BandsData``, ...) stay socket-linked through
+    materialisation and need no rewrap.
+    """
+    return dict(value)
+
+
 class ChannelResults(TypedDict, total=False):
     """Results of one kcw.x chain (one spin channel).
 
@@ -321,6 +358,12 @@ class ChannelResults(TypedDict, total=False):
       including the KS / KI eigenvalues on the k-grid.
     * ``bands`` -- interpolated Koopmans band structure (present only when a
       band path was supplied).
+    * ``wannierize_bands`` -- the pw.x quality-check DFT reference bands
+      along the same path, off the shared ground state (present only when a
+      band path was supplied; see :func:`RunDFPT`'s ``wannierize_bands``).
+    * ``projwfc`` -- the projected DOS computed off that quality-check run's
+      scratch (present when it ran and a projwfc code was configured; see
+      :func:`RunDFPT`'s ``projwfc``).
     * ``wann2kc_remote_folder`` -- the wann2kcw scratch, for chaining further
       kcw.x runs off the same conversion.
 
@@ -336,6 +379,8 @@ class ChannelResults(TypedDict, total=False):
     screen_parameters: dict
     ham_parameters: dict
     bands: orm.BandsData
+    wannierize_bands: PwOutputs
+    projwfc: ProjwfcOutputs
     wann2kc_remote_folder: orm.RemoteData
 
 
@@ -503,6 +548,8 @@ def RunDFPT(
     nbnd_emp: int | None = None,
     spreads: list | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    wannierize_bands: PwOutputs | None = None,
+    projwfc: ProjwfcOutputs | None = None,
     eps_inf: float | None = None,
     alpha_guess: list[float] | None = None,
     group_orbitals_tol: float | None = None,
@@ -553,6 +600,15 @@ def RunDFPT(
             ``num_wann_occ + num_wann_emp`` at runtime.
         bands_kpoints: explicit k-path; when given, the ham step interpolates
             the Koopmans Hamiltonian along it (``HAM.do_bands``).
+        wannierize_bands: the pw.x quality-check DFT reference bands along
+            the same path, forwarded whole from the caller's
+            :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+            call (its ``bands`` output) into this graph's own
+            ``wannierize_bands`` output; this graph runs no bands step of
+            its own.
+        projwfc: the projected DOS off that quality-check run's scratch,
+            forwarded the same way from ``WannierizeBlocks``' ``projwfc``
+            output into this graph's own ``projwfc`` output.
         eps_inf: macroscopic dielectric constant for the screen step's
             long-range corrections.
         alpha_guess: when given, skip the screen step and feed these alphas
@@ -724,9 +780,76 @@ def RunDFPT(
 
     outputs["alphas"] = alphas
     outputs["ham_parameters"] = ham["output_parameters"]
+    _add_optional_band_outputs(outputs, ham, do_bands, wannierize_bands, projwfc)
+    return outputs
+
+
+def _dict_typed_field_names(typeddict_cls: type) -> frozenset[str]:
+    """Return ``typeddict_cls``'s fields declared as plain ``dict``.
+
+    Those are exactly the fields that, on a namespace of this type, arrive
+    fully deserialized (not as a socket) at this graph's own
+    materialisation time — see :func:`emit_namespace_dict_field` — so any of
+    them present on a namespace *instance* need routing through it before
+    the namespace can be re-exported as a graph output. Read off the
+    TypedDict's own declared hints rather than named by hand, so a new
+    ``dict``-typed field (this module already missed one once —
+    ``output_atomic_occupations``, pw.x DFT+U) is covered automatically.
+    """
+    hints = get_type_hints(typeddict_cls, include_extras=True)
+    names = set()
+    for name, hint in hints.items():
+        if get_origin(hint) is NotRequired:
+            hint = get_args(hint)[0]
+        if hint is dict:
+            names.add(name)
+    return frozenset(names)
+
+
+def _reexported_namespace[NamespaceT: Mapping[str, Any]](
+    namespace: NamespaceT, typeddict_cls: type, label: str
+) -> NamespaceT:
+    """Return ``namespace`` with its plain-``dict``-typed fields re-exported as sockets.
+
+    ``typeddict_cls`` is the namespace's own declared shape (e.g.
+    :class:`~aiida_koopmans.workgraphs.pw.PwOutputs`); see
+    :func:`_dict_typed_field_names` / :func:`emit_namespace_dict_field`.
+    Every other field of the namespace (``remote_folder``, ``output_band``,
+    ...) stays socket-linked through this graph's own materialisation and
+    passes through unchanged.
+    """
+    rebuilt = dict(namespace)
+    for field in _dict_typed_field_names(typeddict_cls) & rebuilt.keys():
+        rebuilt[field] = emit_namespace_dict_field(
+            value=rebuilt[field],
+            metadata={"call_link_label": f"emit_{label}_{field}"},
+        ).result
+    return cast("NamespaceT", rebuilt)
+
+
+def _add_optional_band_outputs(
+    outputs: ChannelResults,
+    ham: Any,
+    do_bands: bool,
+    wannierize_bands: PwOutputs | None,
+    projwfc: ProjwfcOutputs | None,
+) -> None:
+    """Populate ``ChannelResults``' band / quality-check outputs, in place.
+
+    Each is present exactly when its own producing step ran: ``bands`` from
+    the ham step's own interpolation (``do_bands``), ``wannierize_bands`` /
+    ``projwfc`` forwarded from the caller's
+    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks` call
+    (:func:`_reexported_namespace` fixes up the fields that need it).
+    """
     if do_bands:
         outputs["bands"] = ham["bands"]
-    return outputs
+    if wannierize_bands is not None:
+        outputs["wannierize_bands"] = _reexported_namespace(
+            wannierize_bands, PwOutputs, "wannierize_bands"
+        )
+    if projwfc is not None:
+        outputs["projwfc"] = _reexported_namespace(projwfc, ProjwfcOutputs, "projwfc")
 
 
 def _pw_spin_system_defaults(spin: SpinType) -> dict[str, Any]:
@@ -830,6 +953,91 @@ def _manifold_wannier_overrides(
     return wannier_overrides
 
 
+def _seed_quality_check_nscf(
+    wannier_overrides: WannierizeOverrides,
+    bands_kpoints: orm.KpointsData | None,
+    scf_nscf_overrides: dict[str, Any],
+) -> None:
+    """Seed the quality-check bands step's SYSTEM parameters, in place.
+
+    A bands path unlocks the quality-check bands step in
+    :func:`WannierizeBlocks` (paired with the shared scf,
+    :func:`SinglepointDFPTWorkflow`'s own ``scf_remote_folder``): the same
+    nscf overrides (``nbnd``, in particular) that seeded the shared nscf
+    seed that step's SYSTEM parameters too, so it reads the full set of
+    Wannierised bands rather than pw.x's default occupied-only count.
+    """
+    if bands_kpoints is not None:
+        wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
+
+
+def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
+    """Return one channel's :func:`WannierizeBlocks` codes namespace.
+
+    Copies every code :class:`WannierizeBlocksCodes` requires — read off its
+    own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
+    can never drift apart silently — from :class:`DfptCodes`, which declares
+    every one of them too. ``projwfc`` rides along when configured on the
+    caller's ``codes``; the graphs decide whether the projected DOS actually
+    runs. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
+    member, for split-mode) is out of scope here: the DFPT route never
+    triggers a split.
+    """
+    codes_map = dict(codes)
+    wannierize_codes: dict[str, Any] = {}
+    for name in WannierizeBlocksCodes.__required_keys__:
+        if name not in codes_map:
+            raise KeyError(
+                f"DfptCodes has no {name!r} member, but WannierizeBlocksCodes "
+                "requires it; SinglepointDFPTWorkflow cannot assemble its "
+                "per-channel WannierizeBlocks call without it."
+            )
+        wannierize_codes[name] = codes_map[name]
+    if "projwfc" in codes:
+        wannierize_codes["projwfc"] = codes["projwfc"]
+    return cast("WannierizeBlocksCodes", wannierize_codes)
+
+
+def _projwfc_step_will_run(pseudo_family: str | None, structure: orm.StructureData) -> bool:
+    """Whether :func:`WannierizeBlocks`' own projwfc step actually runs.
+
+    Mirrors its gate (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`)
+    exactly — the wiring decision below and the inner step's decision must
+    share one predicate, or a caller with a configured ``projwfc`` code but
+    unsupported pseudos (no ``PP_PSWFC``, unreadable headers, or no
+    ``pseudo_family``) gets a ``projwfc`` socket wired to a step that never
+    ran. Suppresses the warning here: :func:`WannierizeBlocks` already emits
+    it once, for the user, when it makes the same call for real.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return projected_dos_supported(pseudo_family, structure)
+
+
+def _add_quality_check_dfpt_inputs(
+    dfpt_inputs: dict[str, Any],
+    bands_kpoints: orm.KpointsData | None,
+    wannierized: Any,
+    wannierize_codes: WannierizeBlocksCodes,
+    pseudo_family: str | None,
+    structure: orm.StructureData,
+) -> None:
+    """Wire the quality-check ``bands`` / ``projwfc`` sockets into ``dfpt_inputs``, in place.
+
+    ``bands`` runs whenever a bands path was given (:func:`WannierizeBlocks`'
+    own gate); subscripting its socket only then avoids wiring one the run
+    structurally never populates. ``projwfc`` additionally needs a
+    configured code *and* pseudos :func:`WannierizeBlocks` accepts for the
+    projected DOS (:func:`_projwfc_step_will_run`) — wiring it on the code's
+    presence alone would hand ``RunDFPT`` a socket with nothing behind it
+    whenever the pseudos are unsupported.
+    """
+    if bands_kpoints is not None:
+        dfpt_inputs["wannierize_bands"] = wannierized["bands"]
+        if "projwfc" in wannierize_codes and _projwfc_step_will_run(pseudo_family, structure):
+            dfpt_inputs["projwfc"] = wannierized["projwfc"]
+
+
 @task.graph
 def SinglepointDFPTWorkflow(
     codes: DfptCodes,
@@ -869,6 +1077,18 @@ def SinglepointDFPTWorkflow(
     channel (:func:`RunDFPT`). ``manifolds`` — a dict keyed by spin channel
     (:class:`SpinChannel` values as strings) with :class:`ManifoldBlocks`
     values — sets the channels:
+
+    ``bands_kpoints`` also reaches each channel's :func:`WannierizeBlocks`
+    call as its ``interpolation_kpoints`` (paired with the shared scf's
+    scratch, so the quality-check step runs off it rather than a fresh
+    scf): each channel's Wannierization then interpolates its own band
+    structure along the path and runs a pw.x quality-check ``bands`` run
+    (the explicit reference the interpolation is judged against), forwarded
+    into that channel's ``ChannelResults`` as ``wannierize_bands``. With a
+    ``projwfc`` code in ``codes``, a projected DOS off that run's scratch
+    rides along too (``ChannelResults.projwfc``) — unless a pseudo carries
+    no ``PP_PSWFC`` atomic wavefunctions, which skips it with a warning
+    (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`).
 
     * ``spin = NONE`` — ``manifolds = {"none": ...}``: one chain on the up
       channel of the closed-shell nspin=2 scratch.
@@ -1010,22 +1230,24 @@ def SinglepointDFPTWorkflow(
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
         wannier_overrides = _manifold_wannier_overrides(spin, channel, overrides)
+        _seed_quality_check_nscf(wannier_overrides, bands_kpoints, scf_nscf_overrides)
 
         occ_blocks = list(manifold["occ"])
         emp_blocks = list(manifold.get("emp") or [])
         alpha_guess = manifold.get("alpha_guess")
+
+        wannierize_codes = _wannierize_codes_for_channel(codes)
 
         # One WannierizeBlocks per channel, over the channel's blocks in band
         # order (occupied then empty). Fed the shared nscf scratch so its
         # internal scf + nscf is skipped — the ground state runs once across
         # channels. The unified ``spreads`` output is band-ordered by the
         # same list, exactly the order kcw.x counts ``SCREEN.i_orb`` in.
+        # ``scf_remote_folder`` alongside the shared ``nscf_remote_folder``
+        # still unlocks the quality-check bands / projected-DOS run: it
+        # reads the shared scf's density rather than running its own.
         wannierized = WannierizeBlocks(
-            codes={
-                "pw": codes["pw"],
-                "pw2wannier90": codes["pw2wannier90"],
-                "wannier90": codes["wannier90"],
-            },
+            codes=wannierize_codes,
             structure=structure,
             blocks=occ_blocks + emp_blocks,
             kpoints=explicit_kpoints,
@@ -1034,7 +1256,9 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides=wannier_overrides,
             nscf_remote_folder=nscf_remote_folder,
+            scf_remote_folder=scf_nscf["scf_remote_folder"],
             nscf_bands=scf_nscf["nscf_output_band"],
+            interpolation_kpoints=bands_kpoints,
             parallelization=parallelization,
             metadata={"call_link_label": f"wannierize{suffix}"},
         )
@@ -1062,6 +1286,9 @@ def SinglepointDFPTWorkflow(
             "parallelization": parallelization,
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
+        _add_quality_check_dfpt_inputs(
+            dfpt_inputs, bands_kpoints, wannierized, wannierize_codes, pseudo_family, structure
+        )
 
         if emp_blocks:
             num_wann_emp = sum(block["num_wann"] for block in emp_blocks)

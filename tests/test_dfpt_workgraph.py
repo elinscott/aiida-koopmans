@@ -297,6 +297,95 @@ class TestKoopmansDFPTTaskBuild:
         assert "ham" in names
 
 
+class TestRunDFPTMaterialization:
+    """Materialize ``RunDFPT`` itself with resolved (non-socket) inputs.
+
+    ``.build()`` (used throughout this file otherwise) only exercises
+    ``RunDFPT`` at graph-*construction* time, where its inputs are still
+    socket references. A ``@task.graph`` body runs again, with its inputs
+    already resolved to plain values, whenever the workgraph is actually
+    materialized (submitted, or reconstructed via ``WorkGraph.from_dict``
+    for execution) — a distinct code path ``assert_graph_roundtrips``
+    (a ``to_dict``/``from_dict`` round trip of the *unmaterialized* graph)
+    does not exercise either. ``node_graph.utils.graph.materialize_graph``
+    is what the engine actually calls at that point; calling it directly
+    with real stored nodes reproduces exactly what a live run hits.
+
+    This caught a real bug: ``wannierize_bands`` / ``projwfc`` are
+    ``PwOutputs`` / ``ProjwfcOutputs`` namespaces whose ``output_parameters``
+    field (and, for ``PwOutputs``, ``output_atomic_occupations`` — pw.x
+    DFT+U) is declared plain ``dict`` (not ``orm.Dict``) — at materialization
+    every ``dict``-typed field arrives fully deserialized, so echoing the
+    whole namespace straight into ``RunDFPT``'s own output failed with
+    ``Invalid graph return payload`` at ``outputs.wannierize_bands.output_parameters.<key>``
+    (a raw Python value where a socket was required). Fixed by
+    :func:`~aiida_koopmans.workgraphs.dfpt.emit_namespace_dict_field`, applied
+    to every ``dict``-typed field :func:`~aiida_koopmans.workgraphs.dfpt._dict_typed_field_names`
+    reads off each namespace's own TypedDict — not hard-coded to
+    ``output_parameters`` alone, which would have missed
+    ``output_atomic_occupations`` the same way the original bug missed both.
+    """
+
+    def test_wannierize_bands_and_projwfc_survive_materialization(
+        self, aiida_localhost, tmp_path, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        from aiida.orm import BandsData, Dict, KpointsData, ProjectionData, RemoteData, XyData
+        from aiida_workgraph import WorkGraph
+        from node_graph.utils.graph import materialize_graph
+
+        kpts = KpointsData()
+        kpts.set_kpoints([[0.0, 0.0, 0.0]])
+        bands = BandsData()
+        bands.set_kpointsdata(kpts)
+        bands.set_bands([[0.0, 1.0]])
+        bands.store()
+
+        # ``output_parameters`` needs a real pw.x-shaped key (``lkpoint_dir``
+        # is the one the live run actually tripped on) so the reproduction
+        # is exact, not just any dict. ``output_atomic_occupations`` (DFT+U)
+        # is a second, independent dict-typed field on the same namespace,
+        # not populated by the current quality-check bands run, but exactly
+        # the shape a caller with Hubbard corrections would supply.
+        wannierize_bands = {
+            "remote_folder": RemoteData(
+                computer=aiida_localhost, remote_path=str(tmp_path / "bands")
+            ).store(),
+            "output_parameters": Dict({"lkpoint_dir": False, "wall_time": "1.0s"}).store(),
+            "output_atomic_occupations": Dict({"atom_1": {"3d": 1.5}}).store(),
+            "output_band": bands,
+        }
+        projwfc = {
+            "remote_folder": RemoteData(
+                computer=aiida_localhost, remote_path=str(tmp_path / "projwfc")
+            ).store(),
+            "output_parameters": Dict({"lkpoint_dir": False}).store(),
+            "Dos": XyData().store(),
+            "projections": ProjectionData().store(),
+            "bands": bands,
+        }
+
+        graph = materialize_graph(
+            RunDFPT._callable,
+            RunDFPT._inputs_spec,
+            RunDFPT._outputs_spec,
+            "dfpt_materialize",
+            WorkGraph,
+            args=(),
+            kwargs={
+                "kcw_code": dfpt_codes["kcw"],
+                "nscf_remote_folder": nscf_remote,
+                "block_wannier": {"occ": {"retrieved": occ_retrieved}},
+                "occ_labels": ["occ"],
+                "num_wann_occ": 4,
+                "num_wann_emp": 0,
+                "kgrid": [2, 2, 2],
+                "wannierize_bands": wannierize_bands,
+                "projwfc": projwfc,
+            },
+        )
+        assert graph is not None
+
+
 class TestSinglepointDFPTBuild:
     def test_occ_and_emp_manifolds(self, dfpt_codes, silicon_structure, kmesh, bands_path):
         wg = SinglepointDFPTWorkflow.build(
@@ -362,6 +451,101 @@ class TestSinglepointDFPTBuild:
         # manifold label lists it partitions by in its deferred body.
         assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
         assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
+
+    def test_bands_kpoints_unlocks_the_wannierize_quality_check(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path
+    ):
+        """A bands path threads through to WannierizeBlocks' quality check.
+
+        The shared scf's scratch (not a fresh one) feeds the quality-check
+        bands step, and its ``bands`` output reaches ``RunDFPT`` as
+        ``wannierize_bands``. No projwfc code was configured, so
+        ``RunDFPT``'s ``projwfc`` input stays unwired.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        wannierize_inputs = wg.tasks["wannierize"].inputs
+        scf_links = wannierize_inputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in scf_links] == ["scf_nscf"]
+        interp_links = wannierize_inputs["interpolation_kpoints"]._links
+        assert [link.from_socket._name for link in interp_links] == ["bands_kpoints"]
+
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert dfpt_inputs["wannierize_bands"]._links
+        assert not dfpt_inputs["projwfc"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_no_bands_kpoints_skips_the_wannierize_quality_check(
+        self, dfpt_codes, silicon_structure, kmesh
+    ):
+        """Negative control: without a bands path, no quality-check wiring exists.
+
+        ``scf_remote_folder`` is still handed to ``WannierizeBlocks`` (it is
+        cheap and unconditional), but with no ``interpolation_kpoints`` the
+        quality check itself never runs, so ``RunDFPT`` gets no
+        ``wannierize_bands``.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        wannierize_inputs = wg.tasks["wannierize"].inputs
+        assert not wannierize_inputs["interpolation_kpoints"]._links
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert not dfpt_inputs["wannierize_bands"]._links
+        assert not dfpt_inputs["projwfc"]._links
+
+    def test_projwfc_code_chains_the_projected_dos_into_each_channel(
+        self, dfpt_pdos_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
+    ):
+        """A projwfc code, over pseudos it supports, reaches WannierizeBlocks and RunDFPT."""
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_pdos_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        codes_socket = wg.tasks["wannierize"].inputs["codes"]["projwfc"]
+        assert [link.from_socket._name for link in codes_socket._links] == ["projwfc"]
+        assert wg.tasks["dfpt"].inputs["projwfc"]._links
+
+    def test_incapable_pseudos_leave_dfpt_projwfc_unwired(
+        self, dfpt_pdos_codes, silicon_structure, kmesh, bands_path, fake_family_without_pswfc
+    ):
+        """A configured projwfc code over pseudos it does not support wires nothing.
+
+        Mirrors :func:`WannierizeBlocks`' own gate
+        (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`):
+        wiring ``RunDFPT``'s ``projwfc`` input on the code's presence alone
+        — without checking the pseudos too — would hand it a socket the
+        inner projwfc step never populates. No warning is asserted here:
+        this construction-level ``.build()`` never executes WannierizeBlocks'
+        own (nested, nested-graph-deferred) body, so only this gate's own
+        (deliberately silent) check runs.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_pdos_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family=fake_family_without_pswfc.label,
+        )
+        assert not wg.tasks["dfpt"].inputs["projwfc"]._links
+        # The quality-check bands run is unaffected: it does not depend on
+        # the pseudos' atomic wavefunctions.
+        assert wg.tasks["dfpt"].inputs["wannierize_bands"]._links
 
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(

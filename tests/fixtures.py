@@ -483,6 +483,14 @@ def nscf_remote(aiida_localhost, tmp_path):
 
 
 @pytest.fixture
+def scf_remote(aiida_localhost, tmp_path):
+    """Return a stand-in scf scratch ``RemoteData`` (never read; construction-only)."""
+    from aiida.orm import RemoteData
+
+    return RemoteData(computer=aiida_localhost, remote_path=str(tmp_path / "scf")).store()
+
+
+@pytest.fixture
 def kcp_code(aiida_local_code_factory):
     """Return a mock ``koopmans.kcp`` code backed by the ``true`` executable."""
     return aiida_local_code_factory(executable="true", entry_point="koopmans.kcp")
@@ -621,6 +629,24 @@ def dfpt_codes(aiida_localhost):
         "pw2wannier90": _code("dfpt-p2w", "quantumespresso.pw2wannier90"),
         "kcw": _code("dfpt-kcw", "koopmans.kcw_wann2kc"),
     }
+
+
+@pytest.fixture
+def dfpt_pdos_codes(dfpt_codes, aiida_localhost):
+    """Extend ``dfpt_codes`` with a projwfc code for the projected-DOS flows."""
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    try:
+        projwfc = InstalledCode.collection.get(label="dfpt-pjw")
+    except NotExistent:
+        projwfc = InstalledCode(
+            label="dfpt-pjw",
+            computer=aiida_localhost,
+            filepath_executable="/bin/true",
+            default_calc_job_plugin="quantumespresso.projwfc",
+        ).store()
+    return {**dfpt_codes, "projwfc": projwfc}
 
 
 @pytest.fixture
