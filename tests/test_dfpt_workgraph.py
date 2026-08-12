@@ -363,6 +363,74 @@ class TestSinglepointDFPTBuild:
         assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
         assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
 
+    def test_bands_kpoints_unlocks_the_wannierize_quality_check(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path
+    ):
+        """A bands path threads through to WannierizeBlocks' quality check.
+
+        The shared scf's scratch (not a fresh one) feeds the quality-check
+        bands step, and its ``bands`` output reaches ``RunDFPT`` as
+        ``wannierize_bands``. No projwfc code was configured, so
+        ``RunDFPT``'s ``projwfc`` input stays unwired.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        wannierize_inputs = wg.tasks["wannierize"].inputs
+        scf_links = wannierize_inputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in scf_links] == ["scf_nscf"]
+        interp_links = wannierize_inputs["interpolation_kpoints"]._links
+        assert [link.from_socket._name for link in interp_links] == ["bands_kpoints"]
+
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert dfpt_inputs["wannierize_bands"]._links
+        assert not dfpt_inputs["projwfc"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_no_bands_kpoints_skips_the_wannierize_quality_check(
+        self, dfpt_codes, silicon_structure, kmesh
+    ):
+        """Negative control: without a bands path, no quality-check wiring exists.
+
+        ``scf_remote_folder`` is still handed to ``WannierizeBlocks`` (it is
+        cheap and unconditional), but with no ``interpolation_kpoints`` the
+        quality check itself never runs, so ``RunDFPT`` gets no
+        ``wannierize_bands``.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        wannierize_inputs = wg.tasks["wannierize"].inputs
+        assert not wannierize_inputs["interpolation_kpoints"]._links
+        dfpt_inputs = wg.tasks["dfpt"].inputs
+        assert not dfpt_inputs["wannierize_bands"]._links
+        assert not dfpt_inputs["projwfc"]._links
+
+    def test_projwfc_code_chains_the_projected_dos_into_each_channel(
+        self, dfpt_pdos_codes, silicon_structure, kmesh, bands_path
+    ):
+        """A configured projwfc code reaches WannierizeBlocks and RunDFPT."""
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_pdos_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+        codes_socket = wg.tasks["wannierize"].inputs["codes"]["projwfc"]
+        assert [link.from_socket._name for link in codes_socket._links] == ["projwfc"]
+        assert wg.tasks["dfpt"].inputs["projwfc"]._links
+
     def test_occ_only(self, dfpt_codes, silicon_structure, kmesh):
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,

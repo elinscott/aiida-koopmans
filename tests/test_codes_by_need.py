@@ -75,7 +75,7 @@ CASES = {
     "SinglepointDFPTWorkflow": (
         "aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow",
         {"pw", "pw2wannier90", "wannier90", "kcw"},
-        {"ph"},
+        {"ph", "projwfc"},
     ),
     "RunPdos": (
         "aiida_koopmans.workgraphs.pdos.RunPdos",

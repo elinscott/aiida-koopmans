@@ -417,6 +417,75 @@ class TestBlockWannierizeGraphBuild:
                 overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 70.0}}}}},
             )
 
+    def test_external_scratch_rejects_nscf_overrides_without_scf_remote_folder(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    ):
+        """Without ``scf_remote_folder`` no step reads ``overrides["nscf"]``."""
+        with pytest.raises(ValueError, match="external"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                nscf_remote_folder=nscf_remote,
+                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
+            )
+
+    def test_scf_remote_folder_unlocks_the_quality_check(
+        self,
+        pdos_codes,
+        silicon_structure,
+        kmesh,
+        labelled_kpath,
+        nscf_remote,
+        scf_remote,
+        fake_cutoffs_family,
+    ):
+        """Paired with ``scf_remote_folder``, an external nscf still gets the quality check.
+
+        The bands / projwfc steps read the given ``scf_remote_folder``
+        rather than an internal scf (there is none), and ``overrides["nscf"]``
+        is consumed as the bands step's SYSTEM seed rather than rejected.
+        """
+        wg = WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            nscf_remote_folder=nscf_remote,
+            scf_remote_folder=scf_remote,
+            interpolation_kpoints=labelled_kpath,
+            overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
+        )
+        names = [t.name for t in wg.tasks]
+        assert "scf_nscf" not in names
+        assert count_pw_bands_runs(wg) == 1
+        assert names.count("projwfc") == 1
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid
+        assert bands_task.inputs["pw"]["parameters"].value.get_dict()["SYSTEM"]["nbnd"] == 12
+        assert wg.outputs["bands"]["output_band"]._links
+        assert wg.outputs["projwfc"]["Dos"]._links
+
+    def test_scf_remote_folder_without_interpolation_kpoints_stays_quiet(
+        self, pdos_codes, silicon_structure, kmesh, nscf_remote, scf_remote
+    ):
+        """``scf_remote_folder`` alone does not run the quality check; the path does."""
+        wg = WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+            scf_remote_folder=scf_remote,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
+
 
 # ----------------------------------------------------------------------
 # Split mode: loud validation and the unified-output gate

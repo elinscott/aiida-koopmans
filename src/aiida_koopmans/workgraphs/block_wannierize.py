@@ -1091,13 +1091,27 @@ def _maybe_emit_orbital_partition(
 def _reject_inputs_an_external_scratch_ignores(
     overrides: WannierizeOverrides,
     scf_kpoints: orm.KpointsData | None,
+    scf_remote_folder: orm.RemoteData | None,
 ) -> None:
-    """Reject inputs to an scf that an external nscf scratch skips."""
-    if "scf" in overrides or "nscf" in overrides:
+    """Reject inputs to an scf that an external nscf scratch skips.
+
+    ``overrides["nscf"]`` is the one exception: paired with a
+    ``scf_remote_folder`` it seeds the quality-check bands step (its SYSTEM
+    parameters, e.g. ``nbnd``), so it is genuinely consumed then and only
+    rejected without one.
+    """
+    if "scf" in overrides:
         raise ValueError(
-            "scf/nscf overrides were given together with an external "
+            "scf overrides were given together with an external "
             "nscf_remote_folder; the internal scf + nscf is skipped, so "
             "they would be silently ignored."
+        )
+    if "nscf" in overrides and scf_remote_folder is None:
+        raise ValueError(
+            "nscf overrides were given together with an external "
+            "nscf_remote_folder and no scf_remote_folder; with no "
+            "quality-check bands step to consume them (that step needs "
+            "scf_remote_folder), they would be silently ignored."
         )
     if scf_kpoints is not None:
         raise ValueError(
@@ -1307,6 +1321,7 @@ def WannierizeBlocks(
     spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
     nscf_remote_folder: orm.RemoteData | None = None,
+    scf_remote_folder: orm.RemoteData | None = None,
     nscf_bands: orm.BandsData | None = None,
     split_threshold: float | None = None,
     bands_kpoints: orm.KpointsData | None = None,
@@ -1389,7 +1404,15 @@ def WannierizeBlocks(
             ``WannierizeBlocks`` calls (e.g. one per spin channel) routes
             through here without rerunning the ground state. Incompatible
             with split mode, which needs the internal scf's density for its
-            bands step.
+            bands step. Without ``scf_remote_folder`` alongside it, the
+            quality-check ``bands`` / ``projwfc`` outputs stay absent (no
+            scf density to run the quality-check off).
+        scf_remote_folder: paired with ``nscf_remote_folder``, the matching
+            scf scratch — its density is what the quality-check ``bands``
+            step reads. Lets a caller who shares one scf + nscf across
+            several ``WannierizeBlocks`` calls still get the quality check
+            on each, off the one scf run. Ignored (and irrelevant) when the
+            internal scf + nscf runs instead.
         nscf_bands: the nscf eigenvalues. A disentangling block's frozen
             window is checked against them, so a ``dis_froz_max`` that would
             freeze more bands than the block Wannierises is rejected here
@@ -1473,14 +1496,29 @@ def WannierizeBlocks(
     bands_outputs = None
     projwfc_outputs = None
     if nscf_remote_folder is not None:
-        # No internal scf means no density for the quality-check bands run
-        # either: the ``bands`` / ``projwfc`` outputs stay absent, while the
-        # per-block Wannier interpolation (which reads only the nscf
-        # scratch) still runs.
-        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
+        # No internal scf normally means no density for the quality-check
+        # bands run either — unless the caller also hands over the matching
+        # scf scratch (``scf_remote_folder``), which lets the run happen off
+        # it. The per-block Wannier interpolation (which reads only the nscf
+        # scratch) runs either way.
+        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints, scf_remote_folder)
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
         block_bands = nscf_bands
+        if scf_remote_folder is not None:
+            bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
+                codes=codes,
+                structure=structure,
+                split=False,
+                bands_kpoints=None,
+                interpolation_kpoints=interpolation_kpoints,
+                scf_remote_folder=scf_remote_folder,
+                nscf_overrides=overrides.get("nscf"),
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                electronic_type=electronic_type,
+                parallelization=parallelization,
+            )
     else:
         scf_nscf_overrides: dict[str, Any] = {}
         if "scf" in overrides:
