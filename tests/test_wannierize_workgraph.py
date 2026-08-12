@@ -11,12 +11,34 @@ from __future__ import annotations
 import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from aiida_koopmans.workgraphs.wannier90 import RunProjwfc, Wannierize
 from tests.fixtures import (
     assert_graph_roundtrips,
     count_pw_bands_runs,
     si_external_projector_tables,
 )
+
+
+class TestRunProjwfcGraphBuild:
+    """Construction-level test of ``RunProjwfc`` entered directly.
+
+    Every other test reaches ``RunProjwfc`` only as a nested task inside
+    ``Wannierize``/``WannierizeBlocks``, whose own body is deferred to run
+    time — so this is the only construction-level test that actually
+    executes ``run_projwfc_step``'s body (the ``ProjwfcBaseWorkChain``
+    builder assembly).
+    """
+
+    def test_graph_wires_the_projwfc_step(self, pdos_codes, scf_remote):
+        wg = RunProjwfc.build(
+            codes={"projwfc": pdos_codes["projwfc"]},
+            parent_folder=scf_remote,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "projwfc" in names
+        step = wg.tasks["projwfc"]
+        assert step.inputs["projwfc"]["parent_folder"].value.uuid == scf_remote.uuid
+        assert_graph_roundtrips(wg)
 
 
 class TestWannierizeGraphBuild:
