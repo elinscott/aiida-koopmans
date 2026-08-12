@@ -248,27 +248,34 @@ class TestUndeclaredCodesAreRejected:
 
 
 class TestConditionOnGuards:
-    """The build-time guards own the settings-conditional needs.
+    """The socket layer owns the settings-conditional needs via ``ref()``.
 
-    A conditional code's socket is optional, so when the setting that needs
-    it is on, the workflow's own guard raises at build — the socket layer
-    cannot see the setting.
+    A conditional code's socket is optional, so building with the setting
+    that needs it on no longer raises: ``ref()`` wires the referenced
+    ``codes['ph']`` member whether or not it was provided, leaving the
+    nested :class:`DielectricTask`'s own required ``ph`` socket unfilled.
+    ``check_before_run`` (what ``run`` calls first) is what raises, naming
+    the nested socket path.
     """
 
     def test_eps_auto_without_ph_raises(
         self, dfpt_codes, silicon_structure, kmesh, kpath, aiida_profile
     ):
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
         from tests.fixtures import explicit_block
 
         block = explicit_block("occ", range(1, 5), projections=["Si:sp3"])
-        with pytest.raises(ValueError, match=r"eps_inf='auto' requires a ph\.x code"):
-            SinglepointDFPTWorkflow.build(
-                codes=dfpt_codes,
-                structure=silicon_structure,
-                manifolds={"none": {"occ": [block]}},
-                kpoints=kmesh,
-                bands_kpoints=kpath,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                eps_inf="auto",
-            )
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [block]}},
+            kpoints=kmesh,
+            bands_kpoints=kpath,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        assert "dielectric.codes.ph" in {entry.socket_path for entry in excinfo.value.missing}
