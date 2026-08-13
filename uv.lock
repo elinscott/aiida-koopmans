@@ -103,7 +103,7 @@ pre-commit = [
 [package.metadata]
 requires-dist = [
     { name = "aiida-core", specifier = ">=2.8,<3" },
-    { name = "aiida-quantumespresso", specifier = ">=4.16.0" },
+    { name = "aiida-quantumespresso", editable = "../aiida-quantumespresso" },
     { name = "aiida-wannier90", git = "https://github.com/aiidateam/aiida-wannier90?rev=5b9436943fa04643ed44c7f6fd48b361e5470ef4" },
     { name = "aiida-wannier90-workflows", editable = "../aiida-wannier90-workflows" },
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
@@ -153,8 +153,7 @@ wheels = [
 
 [[package]]
 name = "aiida-quantumespresso"
-version = "4.16.0"
-source = { registry = "https://pypi.org/simple" }
+source = { editable = "../aiida-quantumespresso" }
 dependencies = [
     { name = "aiida-core", extra = ["atomic-tools"] },
     { name = "aiida-pseudo" },
@@ -167,10 +166,36 @@ dependencies = [
     { name = "qe-tools" },
     { name = "xmlschema" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/10/7f/3cf6713e25f2722623ebce08654cee92cdae0110eee992d8d83e757ffc13/aiida_quantumespresso-4.16.0.tar.gz", hash = "sha256:ee429f382a3daba54cc65b1a1257d554a00214c93d66b85faef0817a11b39c42", size = 766645, upload-time = "2025-11-18T05:52:03.623Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/b4/0a2496be94257ef2296e74eb97522931ba69cc79becfa05751c060dcbef4/aiida_quantumespresso-4.16.0-py3-none-any.whl", hash = "sha256:89059b4c0c33d5ee7ddb85c542b4a60f6ce128572d482ae6c735844c1e11e10d", size = 866696, upload-time = "2025-11-18T05:52:01.631Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "aiida-core", extras = ["atomic-tools"], specifier = "~=2.8" },
+    { name = "aiida-pseudo", specifier = ">=1.7.2,<2" },
+    { name = "click", specifier = "~=8.0" },
+    { name = "importlib-resources" },
+    { name = "jsonschema" },
+    { name = "myst-parser", marker = "extra == 'docs'", specifier = "~=3.0.0" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pgtest", marker = "extra == 'tests'", specifier = "~=1.3" },
+    { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = ">=4.3.0" },
+    { name = "pydantic", specifier = "~=2.0" },
+    { name = "pytest", marker = "extra == 'tests'", specifier = "~=8.4" },
+    { name = "pytest-regressions", marker = "extra == 'tests'", specifier = "~=2.8" },
+    { name = "qe-tools", specifier = "~=2.0" },
+    { name = "sphinx", marker = "extra == 'docs'", specifier = "~=6.2.1" },
+    { name = "sphinx-autoapi", marker = "extra == 'docs'", specifier = "~=3.0.0" },
+    { name = "sphinx-book-theme", marker = "extra == 'docs'", specifier = "~=1.0.1" },
+    { name = "sphinx-click", marker = "extra == 'docs'", specifier = "~=4.4.0" },
+    { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = "~=0.5.2" },
+    { name = "sphinx-design", marker = "extra == 'docs'", specifier = "~=0.4.1" },
+    { name = "sphinxcontrib-details-directive", marker = "extra == 'docs'", specifier = "~=0.1.0" },
+    { name = "xmlschema", specifier = "~=2.0" },
 ]
+provides-extras = ["docs", "pre-commit", "tests"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "aiida-quantumespresso", extras = ["docs", "tests", "pre-commit"] }]
 
 [[package]]
 name = "aiida-shell"

@@ -203,6 +203,12 @@ upf-tools = { path = "../upf-tools", editable = true }
 aiida-wannierjl = { path = "../aiida-wannierjl", editable = true }
 aiida-wannier90-workflows = { path = "../aiida-wannier90-workflows", editable = true }
 node-graph = { path = "../node-graph", editable = true }
+# `PwBaseWorkChain.get_builder_from_protocol` otherwise refuses any pseudo
+# family that cannot recommend cutoffs, even when the caller's overrides
+# supply both explicitly (see block_wannierize.py's nested Wannier90
+# builder). The fix is upstream-PR'd and lives on the fork's `patched`
+# branch, same as koopmans2's dependency on it.
+aiida-quantumespresso = { path = "../aiida-quantumespresso", editable = true }
 # aiida-wannier90 was quarantined on PyPI (the simple index lists no files);
 # install the v2.2.0 release from GitHub, pinned to the immutable sha that
 # matches a pre-quarantine local clone, until the releases reappear.
