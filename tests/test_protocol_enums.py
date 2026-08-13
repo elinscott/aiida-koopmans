@@ -16,7 +16,7 @@ from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.pw import RunPwBands, RunScfNscf
 from aiida_koopmans.workgraphs.wannier90 import OptimizeWannierization, Wannierize
 from tests.fixtures import explicit_block
 
@@ -245,3 +245,61 @@ class TestRunScfNscfOccupations:
         )
         _assert_smeared(_system(wg.tasks["scf"], "pw"))
         _assert_smeared(_system(wg.tasks["nscf"], "pw"))
+
+
+class TestRunPwBandsOccupations:
+    """``RunPwBands`` honours ``electronic_type`` on both of its steps.
+
+    ``PwBandsWorkChain.get_builder_from_protocol`` only forwards
+    ``electronic_type`` to its scf/bands sub-builders via ``**kwargs``; the
+    default here must reach both without ``RunPwBands`` naming the keyword
+    explicitly at the call site.
+    """
+
+    @staticmethod
+    def _build(fake_cutoffs_family, silicon_structure, kmesh, pw_code, **kwargs):
+        return RunPwBands.build(
+            codes={"pw": pw_code},
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kmesh,
+            **kwargs,
+        )
+
+    def test_default_insulator_fixes_both_steps(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        """No ``electronic_type`` given: the declared ``INSULATOR`` default fires."""
+        wg = self._build(fake_cutoffs_family, silicon_structure, kmesh, pw_code)
+        task = wg.tasks["PwBandsWorkChain"]
+        _assert_fixed(_system(task, "scf", "pw"))
+        _assert_fixed(_system(task, "bands", "pw"))
+
+    def test_proxied_insulator_fixes_both_steps(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        wg = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            kmesh,
+            pw_code,
+            electronic_type=TaggedValue(ElectronicType.INSULATOR),
+        )
+        task = wg.tasks["PwBandsWorkChain"]
+        _assert_fixed(_system(task, "scf", "pw"))
+        _assert_fixed(_system(task, "bands", "pw"))
+
+    def test_proxied_metal_still_smears(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        """A metallic run keeps the protocol's smearing — the fix is not a blanket override."""
+        wg = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            kmesh,
+            pw_code,
+            electronic_type=TaggedValue(ElectronicType.METAL),
+        )
+        task = wg.tasks["PwBandsWorkChain"]
+        _assert_smeared(_system(task, "scf", "pw"))
+        _assert_smeared(_system(task, "bands", "pw"))
