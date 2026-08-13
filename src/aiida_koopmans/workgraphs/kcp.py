@@ -32,6 +32,7 @@ from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
+from node_graph import reference
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
@@ -1169,7 +1170,6 @@ def KoopmansDSCFWorkflow(
         blocks=blocks,
         kgrid=kgrid,
         kpoints=kpoints,
-        codes=codes,
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
@@ -1258,13 +1258,16 @@ def KoopmansDSCFWorkflow(
     merge_groups = None
     if wannier_init:
         init = MlwfInitialization(
+            # Wired unconditionally: MlwfInitialization's own MlwfInitCodes
+            # requires all six, so a missing Wannier-route code surfaces
+            # there as the framework's structural missing-input error.
             codes={
-                "pw": codes["pw"],
-                "pw2wannier90": codes["pw2wannier90"],
-                "wannier90": codes["wannier90"],
-                "wann2kcp": codes["wann2kcp"],
-                "merge_evc": codes["merge_evc"],
-                "kcp": codes["kcp"],
+                "pw": reference(codes, "pw"),
+                "pw2wannier90": reference(codes, "pw2wannier90"),
+                "wannier90": reference(codes, "wannier90"),
+                "wann2kcp": reference(codes, "wann2kcp"),
+                "merge_evc": reference(codes, "merge_evc"),
+                "kcp": reference(codes, "kcp"),
             },
             structure=structure,
             supercell=run_structure,
@@ -2770,15 +2773,19 @@ def _validate_scope(
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
-    codes: DscfCodes | None = None,
 ) -> None:
     """Fail fast on inputs the workflow cannot honour yet.
 
     Two initialisation routes are supported: molecular Kohn-Sham
     (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
     (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
-    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints`` and the
-    Wannier-route members of ``codes``). Everything else raises.
+    the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints``).
+    Everything else raises. Does not validate the Wannier-route ``codes``
+    members: that requirement lives on
+    :func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`'s own
+    ``codes`` spec, which the Wannier-init route enters unconditionally —
+    a missing member surfaces there as the framework's structural
+    missing-input error.
     """
     supported = {Correction.KI, Correction.KIPZ}
     if correction not in supported:
@@ -2806,21 +2813,17 @@ def _validate_scope(
                 f"init_orbitals={init_orbitals!r} requires a periodic structure — "
                 "Wannierisation is only defined for extended systems."
             )
-        wannier_members = ("pw", "wannier90", "pw2wannier90", "wann2kcp", "merge_evc")
-        has_wannier_codes = codes is not None and all(member in codes for member in wannier_members)
         required = {
             "blocks": blocks,
             "kgrid": kgrid,
             "kpoints": kpoints,
-            "codes": codes if has_wannier_codes else None,
         }
         missing = sorted(name for name, value in required.items() if value is None)
         if missing:
             raise ValueError(
                 f"init_orbitals={init_orbitals!r} needs the wannierisation inputs "
-                f"{missing} (projection blocks, the Monkhorst-Pack grid, the "
-                "explicit k-mesh, and the pw/wannier90/pw2wannier90/wann2kcp/"
-                "merge_evc codes)."
+                f"{missing} (projection blocks, the Monkhorst-Pack grid, and the "
+                "explicit k-mesh)."
             )
     elif init_orbitals != VariationalOrbitalType.KOHN_SHAM:
         raise NotImplementedError(

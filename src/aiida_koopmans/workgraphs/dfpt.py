@@ -76,6 +76,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
+from node_graph import reference
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -974,27 +975,25 @@ def _seed_quality_check_nscf(
 def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
-    Copies every code :class:`WannierizeBlocksCodes` requires — read off its
+    Wires every code :class:`WannierizeBlocksCodes` requires — read off its
     own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
-    can never drift apart silently — from :class:`DfptCodes`, which declares
-    every one of them too. ``projwfc`` rides along when configured on the
-    caller's ``codes``; the graphs decide whether the projected DOS actually
-    runs. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
-    member, for split-mode) is out of scope here: the DFPT route never
-    triggers a split.
+    can never drift apart silently — through :class:`DfptCodes`' ``reference()``:
+    a member :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes`
+    never declared is a build-time ``ValueError`` from ``reference()`` itself,
+    naming the missing member, rather than the bare ``KeyError`` a
+    subscript would raise. ``projwfc`` (:class:`WannierizeBlocksCodes`'
+    ``NotRequired`` member) rides along unconditionally too: whether the
+    projected DOS actually runs is :func:`WannierizeBlocks`' own entry
+    decision (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`),
+    never a silent skip decided by presence on ``codes``. ``wannierjl``
+    (:class:`WannierizeBlocksCodes`' other ``NotRequired`` member, for
+    split-mode) is out of scope here: the DFPT route never triggers a
+    split.
     """
-    codes_map = dict(codes)
-    wannierize_codes: dict[str, Any] = {}
-    for name in WannierizeBlocksCodes.__required_keys__:
-        if name not in codes_map:
-            raise KeyError(
-                f"DfptCodes has no {name!r} member, but WannierizeBlocksCodes "
-                "requires it; SinglepointDFPTWorkflow cannot assemble its "
-                "per-channel WannierizeBlocks call without it."
-            )
-        wannierize_codes[name] = codes_map[name]
-    if "projwfc" in codes:
-        wannierize_codes["projwfc"] = codes["projwfc"]
+    wannierize_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+    }
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1018,7 +1017,6 @@ def _add_quality_check_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     bands_kpoints: orm.KpointsData | None,
     wannierized: Any,
-    wannierize_codes: WannierizeBlocksCodes,
     pseudo_family: str | None,
     structure: orm.StructureData,
 ) -> None:
@@ -1026,15 +1024,16 @@ def _add_quality_check_dfpt_inputs(
 
     ``bands`` runs whenever a bands path was given (:func:`WannierizeBlocks`'
     own gate); subscripting its socket only then avoids wiring one the run
-    structurally never populates. ``projwfc`` additionally needs a
-    configured code *and* pseudos :func:`WannierizeBlocks` accepts for the
-    projected DOS (:func:`_projwfc_step_will_run`) — wiring it on the code's
-    presence alone would hand ``RunDFPT`` a socket with nothing behind it
-    whenever the pseudos are unsupported.
+    structurally never populates. ``projwfc`` mirrors
+    :func:`WannierizeBlocks`' own entry predicate
+    (:func:`_projwfc_step_will_run`) exactly — wiring it whenever the code
+    happens to be configured, rather than whenever the pseudos actually
+    support the projected DOS, would hand ``RunDFPT`` a socket with nothing
+    behind it.
     """
     if bands_kpoints is not None:
         dfpt_inputs["wannierize_bands"] = wannierized["bands"]
-        if "projwfc" in wannierize_codes and _projwfc_step_will_run(pseudo_family, structure):
+        if _projwfc_step_will_run(pseudo_family, structure):
             dfpt_inputs["projwfc"] = wannierized["projwfc"]
 
 
@@ -1153,12 +1152,10 @@ def SinglepointDFPTWorkflow(
         # needed for a ground-state response) and none of the kcw spin
         # forcing — it is an independent ground state, but on the same mesh as
         # the chain's own.
-        if "ph" not in codes:
-            raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            codes={"pw": codes["pw"], "ph": codes["ph"]},
+            codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1212,7 +1209,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=codes["pw"],
+        pw_code=reference(codes, "pw"),
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1268,7 +1265,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": codes["kcw"],
+            "kcw_code": reference(codes, "kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],
@@ -1287,7 +1284,7 @@ def SinglepointDFPTWorkflow(
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
         _add_quality_check_dfpt_inputs(
-            dfpt_inputs, bands_kpoints, wannierized, wannierize_codes, pseudo_family, structure
+            dfpt_inputs, bands_kpoints, wannierized, pseudo_family, structure
         )
 
         if emp_blocks:

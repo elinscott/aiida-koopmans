@@ -24,6 +24,7 @@ from aiida_wannier90_workflows.workflows.base.projwfc import ProjwfcBaseWorkChai
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -233,6 +234,30 @@ def run_projwfc_step(
         Dos=outputs["Dos"],
         projections=outputs["projections"],
         bands=outputs["bands"],
+    )
+
+
+@task.graph
+def RunProjwfc(
+    projwfc_code: ProjwfcCode,
+    parent_folder: orm.RemoteData,
+    protocol: str | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> ProjwfcOutputs:
+    """Run projwfc.x off a pw.x run's scratch, entered by its own required code.
+
+    ``projwfc_code`` is required, so a caller enters this graph
+    unconditionally whenever the projected DOS should run
+    (:func:`projected_dos_supported`) and wires the code with
+    ``reference()`` — a caller whose ``projwfc`` code is genuinely missing
+    gets the framework's structural missing-input error, not a membership
+    test on its own ``codes``.
+    """
+    return run_projwfc_step(
+        projwfc_code=projwfc_code,
+        parent_folder=parent_folder,
+        protocol=protocol,
+        parallelization=parallelization,
     )
 
 
@@ -556,12 +581,13 @@ def Wannierize(
             output_parameters=bands_step["output_parameters"],
             output_band=bands_step["output_band"],
         )
-        if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
-            workflow_outputs["projwfc"] = run_projwfc_step(
-                projwfc_code=codes["projwfc"],
+        if projected_dos_supported(pseudo_family, structure):
+            workflow_outputs["projwfc"] = RunProjwfc(
+                projwfc_code=reference(codes, "projwfc"),
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,
+                metadata={"call_link_label": "projwfc"},
             )
 
     return workflow_outputs

@@ -65,6 +65,7 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -91,11 +92,11 @@ from aiida_koopmans.workgraphs.wannier90 import (
     ProjwfcCode,
     ProjwfcOutputs,
     Pw2Wannier90Code,
+    RunProjwfc,
     Wannier90Code,
     Wannier90Step,
     projected_dos_supported,
     require_path_labels,
-    run_projwfc_step,
 )
 
 
@@ -1141,7 +1142,6 @@ def _reject_inputs_an_external_scratch_ignores(
 
 
 def _resolve_split_mode(
-    codes: WannierizeBlocksCodes,
     blocks: list[ProjectionBlock],
     mp_grid: list[int] | None,
     nscf_remote_folder: orm.RemoteData | None,
@@ -1162,7 +1162,10 @@ def _resolve_split_mode(
     not its trigger. Plain mode rejects split-only knobs rather than
     silently ignore them; every violation raises naming the gap.
     ``interpolation_kpoints`` rides on both routes and only its labels are
-    checked here.
+    checked here. Does not validate the ``wannierjl`` code: that
+    requirement lives on
+    :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`'s
+    own ``codes`` spec, which the split branch enters unconditionally.
     """
     require_path_labels(interpolation_kpoints, "interpolation_kpoints")
     split = split_threshold is not None or any("projections" not in block for block in blocks)
@@ -1191,11 +1194,6 @@ def _resolve_split_mode(
         raise ValueError(
             "Split mode requires `num_occ_bands`: the group detection always "
             "opens a group at the occupied/empty boundary."
-        )
-    if "wannierjl" not in codes:
-        raise ValueError(
-            "Split mode requires a `wannierjl` code: the detected groups are "
-            "split with Wannier.jl parallel transport."
         )
     if nscf_remote_folder is not None:
         raise ValueError(
@@ -1245,12 +1243,15 @@ def _run_explicit_bands_and_dos_steps(
     ``interpolation_kpoints``; without a path nothing is assembled.
     Returns the bands run as a ready-to-wire :class:`PwOutputs` namespace
     (``output_band`` holds the eigenvalues the detection and the quality
-    comparison read) and — when ``codes`` carries a ``projwfc`` code and
-    every pseudo carries ``PP_PSWFC`` atomic wavefunctions
+    comparison read) and — whenever every pseudo carries ``PP_PSWFC`` atomic
+    wavefunctions
     (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
     which skips with a warning otherwise) — the chained projected-DOS
     namespace off the run's scratch
-    (:func:`~aiida_koopmans.workgraphs.wannier90.run_projwfc_step`).
+    (:func:`~aiida_koopmans.workgraphs.wannier90.RunProjwfc`, entered
+    unconditionally on that predicate; a ``projwfc`` code missing from
+    ``codes`` then surfaces as that graph's own structural missing-input
+    error).
     """
     quality_path = bands_kpoints if split else interpolation_kpoints
     if quality_path is None:
@@ -1272,12 +1273,13 @@ def _run_explicit_bands_and_dos_steps(
         output_band=bands_step["output_band"],
     )
     projwfc_outputs = None
-    if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
-        projwfc_outputs = run_projwfc_step(
-            projwfc_code=codes["projwfc"],
+    if projected_dos_supported(pseudo_family, structure):
+        projwfc_outputs = RunProjwfc(
+            projwfc_code=reference(codes, "projwfc"),
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
+            metadata={"call_link_label": "projwfc"},
         )
     return bands_outputs, projwfc_outputs
 
@@ -1498,7 +1500,6 @@ def WannierizeBlocks(
     )
 
     split = _resolve_split_mode(
-        codes=codes,
         blocks=blocks,
         mp_grid=mp_grid,
         nscf_remote_folder=nscf_remote_folder,
@@ -1548,7 +1549,7 @@ def WannierizeBlocks(
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
         scf_nscf = RunScfNscf(
-            pw_code=codes["pw"],
+            pw_code=reference(codes, "pw"),
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1616,13 +1617,15 @@ def WannierizeBlocks(
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
             wannierized = WannierizeAndSplitBlock(
-                # The split graph's namespace declares exactly its four codes;
-                # the guard above guarantees ``wannierjl`` is present here.
+                # Wired unconditionally: WannierizeAndSplitBlock's own
+                # SplitBlockCodes requires all four, so a missing
+                # ``wannierjl`` surfaces there as the framework's structural
+                # missing-input error.
                 codes={
-                    "pw": codes["pw"],
-                    "pw2wannier90": codes["pw2wannier90"],
-                    "wannier90": codes["wannier90"],
-                    "wannierjl": codes["wannierjl"],
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
+                    "wannierjl": reference(codes, "wannierjl"),
                 },
                 structure=structure,
                 block=block,
@@ -1646,9 +1649,9 @@ def WannierizeBlocks(
         else:
             wannierized = WannierizeBlock(
                 codes={
-                    "pw": codes["pw"],
-                    "pw2wannier90": codes["pw2wannier90"],
-                    "wannier90": codes["wannier90"],
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
                 },
                 structure=structure,
                 block=block,

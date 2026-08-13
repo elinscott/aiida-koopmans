@@ -158,14 +158,24 @@ class TestSinglepointDFPTAutoEps:
         assert "dielectric" not in [t.name for t in wg.tasks]
 
     def test_auto_without_ph_code_raises(self, ph_codes, silicon_structure, kmesh):
-        """eps_inf='auto' without codes['ph'] fails at build time."""
+        """eps_inf='auto' without codes['ph'] builds, but fails the input check.
+
+        ``reference()`` wires ``codes['ph']`` into the nested dielectric chain
+        whether or not it was provided, so the missing code is no longer a
+        build-time ``ValueError`` — it surfaces as a ``MissingRequiredInputsError``
+        naming the nested socket, the same check ``run`` performs first.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         codes = {key: value for key, value in ph_codes.items() if key != "ph"}
-        with pytest.raises(ValueError, match=r"codes\['ph'\]"):
-            SinglepointDFPTWorkflow.build(
-                codes=codes,
-                structure=silicon_structure,
-                manifolds=_si_manifolds(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                eps_inf="auto",
-            )
+        wg = SinglepointDFPTWorkflow.build(
+            codes=codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        assert "dielectric.codes.ph" in {entry.socket_path for entry in excinfo.value.missing}
