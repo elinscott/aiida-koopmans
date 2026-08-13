@@ -1109,30 +1109,17 @@ def _maybe_emit_orbital_partition(
 def _reject_inputs_an_external_scratch_ignores(
     overrides: WannierizeOverrides,
     scf_kpoints: orm.KpointsData | None,
-    scf_remote_folder: orm.RemoteData | None,
-    interpolation_kpoints: orm.KpointsData | None,
 ) -> None:
-    """Reject inputs to an scf that an external nscf scratch skips.
+    """Reject an input to the internal scf that an external nscf scratch skips.
 
-    ``overrides["nscf"]`` is the one exception: paired with both
-    ``scf_remote_folder`` *and* ``interpolation_kpoints`` — the quality-check
-    bands step needs both to run at all — it seeds that step's SYSTEM
-    parameters (e.g. ``nbnd``), so it is genuinely consumed then and only
-    rejected when either is missing.
+    ``overrides["scf"]`` / ``overrides["nscf"]`` are not rejected here: an
+    external scratch skips the *internal* shared scf + nscf, but both
+    namespaces still reach every per-block :func:`WannierizeBlock` call
+    below (see :func:`_builder_overrides`) — the only way a pseudo family
+    that recommends no cutoffs can satisfy the nested
+    ``Wannier90WorkChain.get_builder_from_protocol`` call there. Only
+    ``scf_kpoints`` has no consumer left once the internal scf is skipped.
     """
-    if "scf" in overrides:
-        raise ValueError(
-            "scf overrides were given together with an external "
-            "nscf_remote_folder; the internal scf + nscf is skipped, so "
-            "they would be silently ignored."
-        )
-    if "nscf" in overrides and (scf_remote_folder is None or interpolation_kpoints is None):
-        raise ValueError(
-            "nscf overrides were given together with an external "
-            "nscf_remote_folder, but no quality-check bands step will run "
-            "to consume them (that step needs both scf_remote_folder and "
-            "interpolation_kpoints); they would be silently ignored."
-        )
     if scf_kpoints is not None:
         raise ValueError(
             "scf_kpoints was given together with an external "
@@ -1413,9 +1400,13 @@ def WannierizeBlocks(
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
             keys (``scf`` / ``nscf`` pw-protocol dicts feed
-            :func:`RunScfNscf`; ``wannier90`` / ``pw2wannier90``
-            flat keyword dicts feed every per-block wannier builder). Never
-            the upstream namespace-nested shape.
+            :func:`RunScfNscf` when the internal scf + nscf runs; with an
+            external ``nscf_remote_folder`` they instead reach every
+            per-block wannier builder's nested ``get_builder_from_protocol``
+            call, unused otherwise — see :func:`_builder_overrides`;
+            ``wannier90`` / ``pw2wannier90`` flat keyword dicts feed every
+            per-block wannier builder either way). Never the upstream
+            namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
         nscf_remote_folder: an existing nscf scratch to build every block
             on. When given, the internal scf + nscf is skipped (and the
@@ -1521,9 +1512,7 @@ def WannierizeBlocks(
         # scf scratch (``scf_remote_folder``), which lets the run happen off
         # it. The per-block Wannier interpolation (which reads only the nscf
         # scratch) runs either way.
-        _reject_inputs_an_external_scratch_ignores(
-            overrides, scf_kpoints, scf_remote_folder, interpolation_kpoints
-        )
+        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
         block_bands = nscf_bands
