@@ -3,6 +3,7 @@
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
+from aiida_quantumespresso.common.types import ElectronicType
 from aiida_quantumespresso.workflows.pdos import PdosWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
@@ -14,7 +15,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import inject_pseudo_family
+from aiida_koopmans.workgraphs import inject_pseudo_family, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwCode
 
 
@@ -56,6 +57,7 @@ def RunPdos(
     protocol: str | None = None,
     overrides: dict[str, Any] | None = None,
     parallelization: ParallelizationDict | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> PdosOutputs:
     """Run PdosWorkChain using the protocol-based builder pattern.
 
@@ -72,6 +74,9 @@ def RunPdos(
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` / ``projwfc`` entries feed the scf/nscf and projwfc.x
             steps (``metadata.options`` and ``-npool``).
+        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
+            Koopmans functionals treat insulators exclusively, and kcw.x
+            refuses non-fixed occupations outright.
 
     Returns:
         Dict with NSCF, DOS, and PROJWFC outputs.
@@ -101,6 +106,7 @@ def RunPdos(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
 
     data = get_dict_from_builder(builder)
