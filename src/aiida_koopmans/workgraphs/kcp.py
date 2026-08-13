@@ -32,7 +32,7 @@ from aiida_pseudo.data.pseudo.upf import UpfData
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
-from node_graph import ref
+from node_graph import reference
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
 from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
@@ -1262,12 +1262,12 @@ def KoopmansDSCFWorkflow(
             # requires all six, so a missing Wannier-route code surfaces
             # there as the framework's structural missing-input error.
             codes={
-                "pw": ref(codes, "pw"),
-                "pw2wannier90": ref(codes, "pw2wannier90"),
-                "wannier90": ref(codes, "wannier90"),
-                "wann2kcp": ref(codes, "wann2kcp"),
-                "merge_evc": ref(codes, "merge_evc"),
-                "kcp": ref(codes, "kcp"),
+                "pw": reference(codes, "pw"),
+                "pw2wannier90": reference(codes, "pw2wannier90"),
+                "wannier90": reference(codes, "wannier90"),
+                "wann2kcp": reference(codes, "wann2kcp"),
+                "merge_evc": reference(codes, "merge_evc"),
+                "kcp": reference(codes, "kcp"),
             },
             structure=structure,
             supercell=run_structure,

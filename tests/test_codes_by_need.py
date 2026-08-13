@@ -254,10 +254,10 @@ class TestUndeclaredCodesAreRejected:
 
 
 class TestConditionOnGuards:
-    """The socket layer owns the settings-conditional needs via ``ref()``.
+    """The socket layer owns the settings-conditional needs via ``reference()``.
 
     A conditional code's socket is optional, so building with the setting
-    that needs it on no longer raises: ``ref()`` wires the referenced
+    that needs it on no longer raises: ``reference()`` wires the referenced
     ``codes['ph']`` member whether or not it was provided, leaving the
     nested :class:`DielectricTask`'s own required ``ph`` socket unfilled.
     ``check_before_run`` (what ``run`` calls first) is what raises, naming

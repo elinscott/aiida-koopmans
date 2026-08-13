@@ -160,7 +160,7 @@ class TestSinglepointDFPTAutoEps:
     def test_auto_without_ph_code_raises(self, ph_codes, silicon_structure, kmesh):
         """eps_inf='auto' without codes['ph'] builds, but fails the input check.
 
-        ``ref()`` wires ``codes['ph']`` into the nested dielectric chain
+        ``reference()`` wires ``codes['ph']`` into the nested dielectric chain
         whether or not it was provided, so the missing code is no longer a
         build-time ``ValueError`` — it surfaces as a ``MissingRequiredInputsError``
         naming the nested socket, the same check ``run`` performs first.

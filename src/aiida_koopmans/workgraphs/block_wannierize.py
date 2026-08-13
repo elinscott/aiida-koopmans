@@ -65,7 +65,7 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
-from node_graph import ref
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -1258,7 +1258,7 @@ def _run_explicit_bands_and_dos_steps(
     projwfc_outputs = None
     if projected_dos_supported(pseudo_family, structure):
         projwfc_outputs = RunProjwfc(
-            codes={"projwfc": ref(codes, "projwfc")},
+            codes={"projwfc": reference(codes, "projwfc")},
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
@@ -1532,7 +1532,7 @@ def WannierizeBlocks(
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
         scf_nscf = RunScfNscf(
-            pw_code=ref(codes, "pw"),
+            pw_code=reference(codes, "pw"),
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1605,10 +1605,10 @@ def WannierizeBlocks(
                 # ``wannierjl`` surfaces there as the framework's structural
                 # missing-input error.
                 codes={
-                    "pw": ref(codes, "pw"),
-                    "pw2wannier90": ref(codes, "pw2wannier90"),
-                    "wannier90": ref(codes, "wannier90"),
-                    "wannierjl": ref(codes, "wannierjl"),
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
+                    "wannierjl": reference(codes, "wannierjl"),
                 },
                 structure=structure,
                 block=block,
@@ -1632,9 +1632,9 @@ def WannierizeBlocks(
         else:
             wannierized = WannierizeBlock(
                 codes={
-                    "pw": ref(codes, "pw"),
-                    "pw2wannier90": ref(codes, "pw2wannier90"),
-                    "wannier90": ref(codes, "wannier90"),
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
                 },
                 structure=structure,
                 block=block,

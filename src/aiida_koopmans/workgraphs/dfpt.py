@@ -76,7 +76,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
-from node_graph import ref
+from node_graph import reference
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -977,9 +977,9 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
 
     Wires every code :class:`WannierizeBlocksCodes` requires — read off its
     own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
-    can never drift apart silently — through :class:`DfptCodes`' ``ref()``:
+    can never drift apart silently — through :class:`DfptCodes`' ``reference()``:
     a member :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes`
-    never declared is a build-time ``ValueError`` from ``ref()`` itself,
+    never declared is a build-time ``ValueError`` from ``reference()`` itself,
     naming the missing member, rather than the bare ``KeyError`` a
     subscript would raise. ``projwfc`` (:class:`WannierizeBlocksCodes`'
     ``NotRequired`` member) rides along unconditionally too: whether the
@@ -991,9 +991,9 @@ def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     split.
     """
     wannierize_codes: dict[str, Any] = {
-        name: ref(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
     }
-    wannierize_codes["projwfc"] = ref(codes, "projwfc")
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1155,7 +1155,7 @@ def SinglepointDFPTWorkflow(
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            codes={"pw": ref(codes, "pw"), "ph": ref(codes, "ph")},
+            codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1209,7 +1209,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=ref(codes, "pw"),
+        pw_code=reference(codes, "pw"),
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1265,7 +1265,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": ref(codes, "kcw"),
+            "kcw_code": reference(codes, "kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],

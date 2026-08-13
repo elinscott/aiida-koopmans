@@ -24,7 +24,7 @@ from aiida_wannier90_workflows.workflows.base.projwfc import ProjwfcBaseWorkChai
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
-from node_graph import ref
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -255,7 +255,7 @@ def RunProjwfc(
     Wraps :func:`run_projwfc_step` behind a ``codes`` socket that requires
     ``projwfc``, so a caller enters this graph unconditionally whenever the
     projected DOS should run (:func:`projected_dos_supported`) and wires the
-    code with ``ref()`` — a caller whose ``projwfc`` code is genuinely
+    code with ``reference()`` — a caller whose ``projwfc`` code is genuinely
     missing gets the framework's structural missing-input error, not a
     membership test on its own ``codes``.
     """
@@ -589,7 +589,7 @@ def Wannierize(
         )
         if projected_dos_supported(pseudo_family, structure):
             workflow_outputs["projwfc"] = RunProjwfc(
-                codes={"projwfc": ref(codes, "projwfc")},
+                codes={"projwfc": reference(codes, "projwfc")},
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,

@@ -41,7 +41,7 @@ from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
-from node_graph import ref
+from node_graph import reference
 
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
@@ -556,9 +556,9 @@ def WannierizeAndSplitBlock(
 
     whole = WannierizeBlock(
         codes={
-            "pw": ref(codes, "pw"),
-            "pw2wannier90": ref(codes, "pw2wannier90"),
-            "wannier90": ref(codes, "wannier90"),
+            "pw": reference(codes, "pw"),
+            "pw2wannier90": reference(codes, "pw2wannier90"),
+            "wannier90": reference(codes, "wannier90"),
         },
         structure=structure,
         block=block,
@@ -612,13 +612,13 @@ def WannierizeAndSplitBlock(
     # from the pw2wannier90 scratch — so it serves as both parent folders.
     # The nscf scratch and pw2wannier90 code feed the cubic-stencil branch.
     split = split_wannierization(
-        wjl_code=ref(codes, "wannierjl"),
+        wjl_code=reference(codes, "wannierjl"),
         win_file=win_file,
         groups=wann_groups,
         wannier90_parent=whole["remote_folder"],
         pw2wannier90_parent=whole["remote_folder"],
         nscf_parent=nscf_remote_folder,
-        pw2wannier90_code=ref(codes, "pw2wannier90"),
+        pw2wannier90_code=reference(codes, "pw2wannier90"),
         wjl_options=wjl_options,
         pw2wannier90_options=pw2wannier90_options,
         metadata={"call_link_label": "split_wannierization"},
@@ -631,7 +631,7 @@ def WannierizeAndSplitBlock(
     # them, so the parent run's resolved parameters are the trustworthy
     # source for the sub-block settings.
     rewannierized = RewannierizeSplitBlocks(
-        w90_code=ref(codes, "wannier90"),
+        w90_code=reference(codes, "wannier90"),
         structure=structure,
         split_blocks=split["blocks"],
         parent_parameters=whole["wannier90_parameters"],
