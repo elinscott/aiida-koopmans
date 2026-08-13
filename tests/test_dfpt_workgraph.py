@@ -274,6 +274,47 @@ class TestKoopmansDFPTTaskBuild:
         assert ham.inputs["settings"].value == {"cmdline": ["-pd", "true"]}
         assert ham.inputs["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 8
 
+    def test_kcw_overrides_land_in_the_right_step_and_nowhere_else(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """A control/screen/ham override reaches only the steps that read that namelist.
+
+        ``control`` reaches every step (wann2kcw, screen, ham); ``screen``
+        only the screen step; ``ham`` only the ham step.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            kcw_overrides={
+                "control": {"lrpa": True},
+                "screen": {"tr2": 1.0e-16},
+                "ham": {"on_site_only": True},
+            },
+        )
+        wann2kc_params = wg.tasks["wann2kc"].inputs["parameters"].value
+        screen_params = wg.tasks["screen"].inputs["parameters"].value
+        ham_params = wg.tasks["ham"].inputs["parameters"].value
+
+        # The control override reaches every step.
+        assert wann2kc_params["CONTROL"]["lrpa"] is True
+        assert screen_params["CONTROL"]["lrpa"] is True
+        assert ham_params["CONTROL"]["lrpa"] is True
+
+        # The screen override reaches only the screen step.
+        assert screen_params["SCREEN"]["tr2"] == pytest.approx(1.0e-16)
+        assert "SCREEN" not in wann2kc_params
+        assert "SCREEN" not in ham_params
+
+        # The ham override reaches only the ham step.
+        assert ham_params["HAM"]["on_site_only"] is True
+        assert "HAM" not in wann2kc_params
+        assert "HAM" not in screen_params
+
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
