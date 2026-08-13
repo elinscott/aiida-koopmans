@@ -267,7 +267,7 @@ class TestBlockWannierizeGraphBuild:
         with pytest.raises(MissingRequiredInputsError) as excinfo:
             wg.check_before_run()
         missing = {entry.socket_path for entry in excinfo.value.missing}
-        assert any(path.endswith(".codes.projwfc") for path in missing)
+        assert any(path.endswith(".projwfc_code") for path in missing)
 
     def test_parallelization_reaches_the_quality_check_steps(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family

@@ -31,7 +31,7 @@ class TestRunProjwfcGraphBuild:
 
     def test_graph_wires_the_projwfc_step(self, pdos_codes, scf_remote):
         wg = RunProjwfc.build(
-            codes={"projwfc": pdos_codes["projwfc"]},
+            projwfc_code=pdos_codes["projwfc"],
             parent_folder=scf_remote,
         )
         names = [t.name for t in wg.tasks]
@@ -43,7 +43,7 @@ class TestRunProjwfcGraphBuild:
     def test_parallelization_reaches_the_projwfc_calcjob(self, pdos_codes, scf_remote):
         """A ``projwfc`` parallelization entry threads through to the calcjob."""
         wg = RunProjwfc.build(
-            codes={"projwfc": pdos_codes["projwfc"]},
+            projwfc_code=pdos_codes["projwfc"],
             parent_folder=scf_remote,
             parallelization={"projwfc": {"ntasks": 2, "npool": 2, "pd": True}},
         )
@@ -188,7 +188,7 @@ class TestBandInterpolation:
         with pytest.raises(MissingRequiredInputsError) as excinfo:
             wg.check_before_run()
         missing = {entry.socket_path for entry in excinfo.value.missing}
-        assert any(path.endswith(".codes.projwfc") for path in missing)
+        assert any(path.endswith(".projwfc_code") for path in missing)
 
     def test_kpoint_path_sets_bands_plot(
         self, fake_cutoffs_family, silicon_structure, wannier_codes

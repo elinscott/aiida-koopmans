@@ -1258,7 +1258,7 @@ def _run_explicit_bands_and_dos_steps(
     projwfc_outputs = None
     if projected_dos_supported(pseudo_family, structure):
         projwfc_outputs = RunProjwfc(
-            codes={"projwfc": reference(codes, "projwfc")},
+            projwfc_code=reference(codes, "projwfc"),
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,

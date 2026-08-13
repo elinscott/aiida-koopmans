@@ -237,30 +237,24 @@ def run_projwfc_step(
     )
 
 
-class ProjwfcCodes(TypedDict):
-    """Codes for :func:`RunProjwfc`."""
-
-    projwfc: ProjwfcCode
-
-
 @task.graph
 def RunProjwfc(
-    codes: ProjwfcCodes,
+    projwfc_code: ProjwfcCode,
     parent_folder: orm.RemoteData,
     protocol: str | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> ProjwfcOutputs:
     """Run projwfc.x off a pw.x run's scratch, entered by its own required code.
 
-    Wraps :func:`run_projwfc_step` behind a ``codes`` socket that requires
-    ``projwfc``, so a caller enters this graph unconditionally whenever the
-    projected DOS should run (:func:`projected_dos_supported`) and wires the
-    code with ``reference()`` — a caller whose ``projwfc`` code is genuinely
-    missing gets the framework's structural missing-input error, not a
-    membership test on its own ``codes``.
+    ``projwfc_code`` is required, so a caller enters this graph
+    unconditionally whenever the projected DOS should run
+    (:func:`projected_dos_supported`) and wires the code with
+    ``reference()`` — a caller whose ``projwfc`` code is genuinely missing
+    gets the framework's structural missing-input error, not a membership
+    test on its own ``codes``.
     """
     return run_projwfc_step(
-        projwfc_code=codes["projwfc"],
+        projwfc_code=projwfc_code,
         parent_folder=parent_folder,
         protocol=protocol,
         parallelization=parallelization,
@@ -589,7 +583,7 @@ def Wannierize(
         )
         if projected_dos_supported(pseudo_family, structure):
             workflow_outputs["projwfc"] = RunProjwfc(
-                codes={"projwfc": reference(codes, "projwfc")},
+                projwfc_code=reference(codes, "projwfc"),
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,
