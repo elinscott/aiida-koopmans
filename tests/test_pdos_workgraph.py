@@ -9,6 +9,7 @@ the aiida-quantumespresso ``PdosWorkChain.get_builder_from_protocol`` dropping
 from __future__ import annotations
 
 import pytest
+from aiida_quantumespresso.common.types import ElectronicType
 
 from aiida_koopmans.workgraphs.pdos import RunPdos
 
@@ -52,3 +53,47 @@ def test_projwfc_npool_and_pd_reach_the_projwfc_step(
     projwfc = tasks[0].inputs["projwfc"]
     assert projwfc["settings"].value["cmdline"] == ["-npool", "2", "-pd", "true"]
     assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 4
+
+
+def _system(task, *namespace):
+    """Return the SYSTEM namelist of a built task's ``<namespace...>.parameters``."""
+    node = task.inputs
+    for key in namespace:
+        node = node[key]
+    return node["parameters"].value.get_dict()["SYSTEM"]
+
+
+class TestRunPdosOccupations:
+    """``RunPdos`` honours ``electronic_type`` on its scf and nscf steps.
+
+    Like ``RunPwBands``, ``PdosWorkChain.get_builder_from_protocol`` only
+    forwards ``electronic_type`` to its sub-builders via ``**kwargs``.
+    """
+
+    def test_default_insulator_fixes_both_steps(
+        self, pdos_codes, silicon_structure, fake_cutoffs_family
+    ):
+        """No ``electronic_type`` given: the declared ``INSULATOR`` default fires."""
+        wg = RunPdos.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        task = wg.tasks["PdosWorkChain"]
+        system = _system(task, "scf", "pw")
+        assert system["occupations"] == "fixed"
+        assert "smearing" not in system
+        assert "degauss" not in system
+
+    def test_metal_still_smears(self, pdos_codes, silicon_structure, fake_cutoffs_family):
+        """A metallic run keeps the protocol's smearing — the fix is not a blanket override."""
+        wg = RunPdos.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            electronic_type=ElectronicType.METAL,
+        )
+        task = wg.tasks["PdosWorkChain"]
+        system = _system(task, "scf", "pw")
+        assert system["occupations"] == "smearing"
+        assert system["degauss"] > 0

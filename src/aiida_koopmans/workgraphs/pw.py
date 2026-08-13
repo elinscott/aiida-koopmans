@@ -185,6 +185,7 @@ def RunPwBands(
     parallelization: ParallelizationDict | None = None,
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfBandsOutputs:
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
@@ -208,6 +209,9 @@ def RunPwBands(
             is unaffected: it samples the path, not a mesh.
         bands_kpoints: Explicit KpointsData for the bands path. If provided,
             seekpath is bypassed entirely.
+        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
+            Koopmans functionals treat insulators exclusively, and kcw.x
+            refuses non-fixed occupations outright.
 
     Returns:
         Dict with scf_parameters and band_structure outputs.
@@ -230,6 +234,7 @@ def RunPwBands(
         structure=structure,
         protocol=protocol,
         overrides=overrides,
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
 
     data = get_dict_from_builder(builder)
