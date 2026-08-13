@@ -49,6 +49,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-quantumespresso ../aiida-quantumespresso
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
     - name: Set up Python ${{ matrix.python-version }}
@@ -89,6 +90,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-quantumespresso ../aiida-quantumespresso
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
     - name: Set up Python
@@ -135,6 +137,7 @@ jobs:
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
         git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
         git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+        git clone --depth 1 --branch patched https://github.com/elinscott/aiida-quantumespresso ../aiida-quantumespresso
         git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
         git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
     - name: Set up Python

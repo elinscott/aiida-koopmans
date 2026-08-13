@@ -661,10 +661,27 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
     namelist. Callers supply the flat :class:`WannierizeOverrides` and never
     touch this shape.
+
+    ``scf`` / ``nscf`` are already in upstream shape (they feed
+    :func:`~aiida_koopmans.workgraphs.pw.RunScfNscf` verbatim) and pass
+    through unwrapped: :meth:`Wannier90WorkChain.get_builder_from_protocol`
+    reads them at this same top-level key and forwards them into its own
+    nested ``PwBaseWorkChain.get_builder_from_protocol`` calls. Without this,
+    a pseudo family that recommends no cutoffs crashes that nested call even
+    when the caller's ``ecutwfc``/``ecutrho`` are sitting right there in
+    ``scf``/``nscf`` — :func:`WannierizeBlock` discards both namespaces
+    afterwards (it reuses the shared nscf scratch), so this is the only use
+    the cutoffs get.
     """
+    scf = overrides.get("scf")
+    nscf = overrides.get("nscf")
     wannier90 = overrides.get("wannier90")
     pw2wannier90 = overrides.get("pw2wannier90")
     builder_overrides: dict[str, Any] = {}
+    if scf:
+        builder_overrides["scf"] = scf
+    if nscf:
+        builder_overrides["nscf"] = nscf
     if wannier90:
         builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
     if pw2wannier90:

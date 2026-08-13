@@ -226,6 +226,39 @@ def install_cutoffs_family(label, pseudos):
 
 
 @pytest.fixture
+def fake_cutoffless_family(aiida_profile, generate_upf_data):
+    """Install a genuinely cutoff-less ``PseudoPotentialFamily`` (Si and O).
+
+    The base class ``aiida-pseudo install family`` installs, and the one
+    ``get_recommended_cutoffs`` is undefined on: unlike ``fake_cutoffs_family``
+    it carries no ``RecommendedCutoffMixin``, so a ``get_builder_from_protocol``
+    call that does not supply ``ecutwfc``/``ecutrho`` via ``overrides`` raises
+    "cannot recommend cutoffs" — the case a cutoffs-recommending fixture can
+    never exercise.
+    """
+    return install_family(
+        "FAKE/NOCUTOFFS/PBE/SR",
+        [generate_upf_data(element, z_valence=z) for element, z in (("Si", 4.0), ("O", 6.0))],
+    )
+
+
+def install_family(label, pseudos):
+    """Install (or fetch) a plain ``PseudoPotentialFamily`` over ``pseudos``."""
+    from aiida.common.exceptions import NotExistent
+    from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+    try:
+        return PseudoPotentialFamily.collection.get(label=label)
+    except NotExistent:
+        pass
+
+    family = PseudoPotentialFamily(label=label)
+    family.store()
+    family.add_nodes([pseudo.store() for pseudo in pseudos])
+    return family
+
+
+@pytest.fixture
 def fake_family_without_pswfc(aiida_profile, generate_upf_data):
     """Install a cutoffs family whose pseudos carry no ``PP_PSWFC`` block."""
     return install_cutoffs_family(

@@ -1305,6 +1305,39 @@ class TestWannierizeBlockBuild:
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
 
+    def test_cutoffless_family_needs_scf_nscf_cutoffs_threaded(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffless_family
+    ):
+        """A pseudo family that recommends no cutoffs must not crash the build.
+
+        ``fake_cutoffless_family`` carries no ``RecommendedCutoffMixin``, so
+        the nested ``Wannier90WorkChain.get_builder_from_protocol`` call
+        inside :func:`WannierizeBlock` raises "cannot recommend cutoffs"
+        unless the caller's ``ecutwfc``/``ecutrho`` reach it — even though
+        the block discards the nested ``scf``/``nscf`` namespaces once the
+        builder has been constructed (see
+        ``test_flat_overrides_reach_the_builder_namespaces`` above, which
+        uses a cutoffs-recommending family and so never exercises this path).
+        """
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffless_family.label,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+            mp_grid=[2, 2, 2],
+        )
+        assert self._w90_parameters(wg)["num_wann"] == 4
+
     def test_parameters_ride_an_explicit_socket(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
