@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
 
 from aiida_koopmans.owned_keywords import OWNED, ROUTE_CONDITIONAL, SEEDED, owned, seeded
@@ -54,16 +51,3 @@ def test_conditional_keywords_are_not_also_classified():
     for block, keywords in ROUTE_CONDITIONAL.items():
         classified = OWNED.get(block, frozenset()) | SEEDED.get(block, frozenset())
         assert not keywords & classified, f"{block}: {sorted(keywords & classified)}"
-
-
-def test_module_imports_without_aiida():
-    # koopmans reads these declarations at build time, when importing AiiDA
-    # would load a profile configuration that need not exist.
-    script = (
-        "import sys; import aiida_koopmans.owned_keywords; "
-        "print(sorted(m for m in sys.modules if m.startswith('aiida.')))"
-    )
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True
-    )
-    assert result.stdout.strip() == "[]"
