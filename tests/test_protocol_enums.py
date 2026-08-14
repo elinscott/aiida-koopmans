@@ -265,3 +265,74 @@ class TestRunPwBandsOccupations:
         task = wg.tasks["PwBandsWorkChain"]
         _assert_smeared(_system(task, "scf", "pw"))
         _assert_smeared(_system(task, "bands", "pw"))
+
+
+class TestRunPwBandsSpin:
+    """``RunPwBands`` honours ``spin_type`` on both of its steps.
+
+    Every regime is proxied, the form a graph input takes in production.
+    ``PwBandsWorkChain.get_builder_from_protocol`` forwards ``spin_type``
+    to its scf/bands sub-builders through ``**kwargs`` only, so a keyword
+    the caller never names cannot reach either step.
+    """
+
+    @staticmethod
+    def _system_pair(fake_cutoffs_family, silicon_structure, kmesh, pw_code, spin_type):
+        wg = RunPwBands.build(
+            codes={"pw": pw_code},
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kmesh,
+            spin_type=TaggedValue(spin_type),
+            # Fixed occupations under nspin = 2 need a magnetization.
+            overrides={
+                step: {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 0}}}}
+                for step in ("scf", "bands")
+            },
+        )
+        task = wg.tasks["PwBandsWorkChain"]
+        return _system(task, "scf", "pw"), _system(task, "bands", "pw")
+
+    def test_default_none_leaves_the_namelist_unpolarized(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        """Nothing given: neither spin keyword appears — the negative control."""
+        wg = RunPwBands.build(
+            codes={"pw": pw_code},
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kmesh,
+        )
+        for system in (
+            _system(wg.tasks["PwBandsWorkChain"], "scf", "pw"),
+            _system(wg.tasks["PwBandsWorkChain"], "bands", "pw"),
+        ):
+            assert "nspin" not in system
+            assert "noncolin" not in system
+            assert "starting_magnetization" not in system
+
+    def test_collinear_sets_nspin_on_both_steps(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.COLLINEAR
+        ):
+            assert system["nspin"] == 2
+            assert "noncolin" not in system
+
+    def test_non_collinear_sets_noncolin_without_spinorb(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.NON_COLLINEAR
+        ):
+            assert system["noncolin"] is True
+            assert system["nspin"] == 4
+            assert "lspinorb" not in system
+
+    def test_spin_orbit_adds_lspinorb(self, fake_cutoffs_family, silicon_structure, kmesh, pw_code):
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.SPIN_ORBIT
+        ):
+            assert system["noncolin"] is True
+            assert system["lspinorb"] is True
