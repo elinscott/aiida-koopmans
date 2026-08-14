@@ -58,6 +58,10 @@ OWNED: dict[str, frozenset[str]] = {
             "nspin",
             "noncolin",
             "lspinorb",
+            # The moment is stated once, as
+            # calculator_parameters.tot_magnetization, and every route that
+            # runs pw.x under nspin = 2 writes it from there.
+            "tot_magnetization",
         }
     ),
     "ph.INPUTPH": frozenset(
@@ -147,11 +151,8 @@ SEEDED: dict[str, frozenset[str]] = {
 #:
 #: * ``nosym`` / ``noinv``: forced on the DFPT chain's nscf, which must
 #:   sample the unreduced mesh wannier90 expects, and left alone on its scf.
-#: * ``tot_magnetization``: forced to zero under ``workflow.spin = 'none'``
-#:   (the DFPT scratch is nspin = 2 for a closed-shell system), and taken
-#:   from ``calculator_parameters.tot_magnetization`` otherwise.
 ROUTE_CONDITIONAL: dict[str, frozenset[str]] = {
-    "pw.SYSTEM": frozenset({"nosym", "noinv", "tot_magnetization"}),
+    "pw.SYSTEM": frozenset({"nosym", "noinv"}),
 }
 
 
