@@ -9,6 +9,10 @@ state one at all.
 A keyword is **seeded** when the route writes a starting value that the
 caller's own value replaces. Seeded keywords stay settable.
 
+A keyword is **route-conditional** when one route forces it and the others
+honour it. It keeps its input-file spelling for the routes that honour it,
+and ``koopmans`` refuses it at parse on the route that forces it.
+
 :func:`owned` and :func:`seeded` guard the route literals: a keyword that
 appears in one but is classified in neither raises, so a route cannot start
 forcing a keyword that ``koopmans`` still advertises as settable.
@@ -144,10 +148,11 @@ SEEDED: dict[str, frozenset[str]] = {
     ),
 }
 
-#: Keywords a route forces on one step while leaving them settable on
-#: another, so they are neither wholly owned nor merely seeded. Each is a
-#: known gap: the input file still advertises them, and stating one is
-#: honoured on some steps and silently discarded on others.
+#: Keywords one route forces and the others honour, so they are neither
+#: wholly owned nor merely seeded. They keep their input-file spelling, and
+#: ``koopmans`` refuses each on the route that forces it — see
+#: ``koopmans.input_file._route_conditional``, which raises if a keyword
+#: declared here has no such refusal.
 #:
 #: * ``nosym`` / ``noinv``: forced on the DFPT chain's nscf, which must
 #:   sample the unreduced mesh wannier90 expects, and left alone on its scf.
@@ -212,6 +217,8 @@ def _check(
         raise ValueError(
             f"the route {verb} {block} {', '.join(undeclared)}, which "
             f"aiida_koopmans.owned_keywords does not classify. Add each to OWNED "
-            f"(and to koopmans' reason map, which drops it from the input file) or "
-            f"to SEEDED (which leaves it settable)."
+            f"(and to koopmans' reason map, which drops it from the input file), to "
+            f"SEEDED (which leaves it settable), or — if another route honours it — "
+            f"to ROUTE_CONDITIONAL (and to koopmans' refusal map, which refuses it on "
+            f"this route alone)."
         )
