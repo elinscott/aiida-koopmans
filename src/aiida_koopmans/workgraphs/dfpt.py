@@ -1156,6 +1156,10 @@ def SinglepointDFPTWorkflow(
         scf_kpoints = kpoints
 
     if eps_inf == "auto":
+        # DielectricTask refuses the spinor regimes itself, but only when its
+        # body runs: called from inside this body it becomes a sub-graph task
+        # whose body is deferred, so its raise would land mid-run instead of at
+        # build. Refuse here, where the advice can also name ``eps_inf``.
         spin_regime = unwrap_enum(spin, SpinType) or SpinType.NONE
         if spin_regime in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
             raise NotImplementedError(
