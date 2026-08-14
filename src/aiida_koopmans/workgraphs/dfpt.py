@@ -954,22 +954,27 @@ def _manifold_wannier_overrides(
     return wannier_overrides
 
 
-def _seed_quality_check_nscf(
+def _seed_wannier_scf_nscf_overrides(
     wannier_overrides: WannierizeOverrides,
-    bands_kpoints: orm.KpointsData | None,
     scf_nscf_overrides: dict[str, Any],
 ) -> None:
-    """Seed the quality-check bands step's SYSTEM parameters, in place.
+    """Seed the flat wannier overrides with the shared scf and nscf overrides, in place.
 
-    A bands path unlocks the quality-check bands step in
-    :func:`WannierizeBlocks` (paired with the shared scf,
-    :func:`SinglepointDFPTWorkflow`'s own ``scf_remote_folder``): the same
-    nscf overrides (``nbnd``, in particular) that seeded the shared nscf
-    seed that step's SYSTEM parameters too, so it reads the full set of
-    Wannierised bands rather than pw.x's default occupied-only count.
+    Every per-block ``WannierizeBlock`` graph pops both namespaces before it
+    runs (each block reads the shared ``nscf_remote_folder`` instead), but
+    its nested ``Wannier90WorkChain.get_builder_from_protocol`` call still
+    reads them at construction time: a pseudo family that recommends no
+    cutoffs raises there unless the caller's ``ecutwfc``/``ecutrho`` reach it
+    through exactly these keys. That construction happens on every channel
+    regardless of whether the quality-check bands step runs, so both are
+    forwarded unconditionally — unlike :func:`WannierizeBlocks`' own
+    ``bands_kpoints``-gated wiring of that step. ``nscf`` additionally
+    carries ``nbnd``, which seeds that step's SYSTEM parameters (so it reads
+    the full set of Wannierised bands, not pw.x's default occupied-only
+    count) whenever it does run.
     """
-    if bands_kpoints is not None:
-        wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
+    wannier_overrides["scf"] = scf_nscf_overrides["scf"]
+    wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
 
 
 def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
@@ -1227,7 +1232,7 @@ def SinglepointDFPTWorkflow(
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
         wannier_overrides = _manifold_wannier_overrides(spin, channel, overrides)
-        _seed_quality_check_nscf(wannier_overrides, bands_kpoints, scf_nscf_overrides)
+        _seed_wannier_scf_nscf_overrides(wannier_overrides, scf_nscf_overrides)
 
         occ_blocks = list(manifold["occ"])
         emp_blocks = list(manifold.get("emp") or [])

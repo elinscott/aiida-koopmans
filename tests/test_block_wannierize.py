@@ -423,35 +423,33 @@ class TestBlockWannierizeGraphBuild:
         with pytest.raises(ValueError, match="uppermost block of its spin channel"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
-    def test_external_scratch_rejects_scf_nscf_overrides(
-        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    def test_external_scratch_still_forwards_scf_nscf_to_the_block_builders(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote, fake_cutoffless_family
     ):
-        """scf/nscf overrides would be silently ignored alongside an external scratch."""
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 70.0}}}}},
-            )
+        """``scf``/``nscf`` overrides reach every per-block builder, not just the internal scf+nscf.
 
-    def test_external_scratch_rejects_nscf_overrides_without_scf_remote_folder(
-        self, wannier_codes, silicon_structure, kmesh, nscf_remote
-    ):
-        """Without ``scf_remote_folder`` no step reads ``overrides["nscf"]``."""
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
-            )
+        An external ``nscf_remote_folder`` skips the *internal* shared scf +
+        nscf, but each block's nested ``Wannier90WorkChain.get_builder_from_protocol``
+        call still needs cutoffs when the family recommends none — the only
+        way the caller's ``ecutwfc``/``ecutrho`` can reach it. A build that
+        used to be rejected here now succeeds instead.
+        """
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffless_family.label,
+            nscf_remote_folder=nscf_remote,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+        )
+        names = [t.name for t in wg.tasks]
+        assert "scf_nscf" not in names
+        assert sum(1 for name in names if name.startswith("wannierize_block")) == 2
 
     def test_scf_remote_folder_unlocks_the_quality_check(
         self,
@@ -507,27 +505,30 @@ class TestBlockWannierizeGraphBuild:
         assert "bands" not in names
         assert "projwfc" not in names
 
-    def test_scf_remote_folder_without_a_path_still_rejects_nscf_overrides(
+    def test_scf_remote_folder_without_a_path_still_forwards_nscf_overrides(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote, scf_remote
     ):
-        """``scf_remote_folder`` alone does not unlock ``overrides["nscf"]`` either.
+        """``overrides["nscf"]`` builds even without a quality-check bands step to consume it.
 
         Without ``interpolation_kpoints`` too, no quality-check bands step
-        runs to consume the nscf overrides (see the previous test): giving
-        them anyway would be silently ignored, exactly as without
-        ``scf_remote_folder`` at all.
+        runs (see the previous test) — but ``overrides["nscf"]`` still
+        reaches every per-block builder's nested
+        ``Wannier90WorkChain.get_builder_from_protocol`` call (see
+        :func:`_builder_overrides`), so it is no longer rejected.
         """
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                scf_remote_folder=scf_remote,
-                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
-            )
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+            scf_remote_folder=scf_remote,
+            overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
+        )
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
 
 
 # ----------------------------------------------------------------------

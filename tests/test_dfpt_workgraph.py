@@ -514,6 +514,46 @@ class TestSinglepointDFPTBuild:
         assert not dfpt_inputs["wannierize_bands"]._links
         assert not dfpt_inputs["projwfc"]._links
 
+    @pytest.mark.parametrize("bands_kpoints_given", [True, False])
+    def test_cutoffless_family_needs_scf_and_nscf_cutoffs_threaded(
+        self,
+        dfpt_codes,
+        silicon_structure,
+        kmesh,
+        bands_path,
+        fake_cutoffless_family,
+        bands_kpoints_given,
+    ):
+        """Both the shared scf's and nscf's cutoffs reach the nested wannier builder.
+
+        ``WannierizeBlocks``' per-block ``Wannier90WorkChain.get_builder_from_protocol``
+        call asks ``fake_cutoffless_family`` for cutoffs it does not
+        recommend unless the caller's ``ecutwfc``/``ecutrho`` reach it
+        through ``overrides["scf"]``/``overrides["nscf"]`` — regardless of
+        whether a ``bands_kpoints`` path unlocks the quality-check bands
+        step, since that construction happens either way (issue #98).
+        """
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path if bands_kpoints_given else None,
+            pseudo_family=fake_cutoffless_family.label,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+        )
+        overrides = wg.tasks["wannierize"].inputs["overrides"]
+        scf = overrides["scf"].value
+        nscf = overrides["nscf"].value
+        assert scf["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 30.0
+        assert scf["pw"]["parameters"]["SYSTEM"]["ecutrho"] == 240.0
+        assert nscf["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 30.0
+        assert nscf["pw"]["parameters"]["SYSTEM"]["ecutrho"] == 240.0
+
     def test_projwfc_code_chains_the_projected_dos_into_each_channel(
         self, dfpt_pdos_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
     ):
