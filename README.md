@@ -14,7 +14,7 @@ AiiDA plugin for Koopmans spectral functional calculations with Quantum ESPRESSO
 **Workflow builders.** `@task.graph` functions that compose a Koopmans calculation out of upstream `aiida-quantumespresso` and `aiida-wannier90-workflows` workchains together with the steps only this plugin has:
 
 - **Ground state and spectra** — `RunScfNscf`, `RunPwBands`, `RunPdos`, and `DielectricTask`, which exposes the ph.x macroscopic dielectric constant that the screening step consumes.
-- **Wannierization** — `Wannierize` and `OptimizeWannierization` for a whole system; `WannierizeBlocks` to Wannierize each projection block off one shared nscf; `WannierizeAndSplitBlock` to split a block into energy-isolated groups at runtime, re-Wannierize each group, and merge the products back block-diagonally.
+- **Wannierization** — `Wannierize` for a whole system; `WannierizeBlocks` to Wannierize each projection block off one shared nscf; `WannierizeAndSplitBlock` to split a block into energy-isolated groups at runtime, re-Wannierize each group, and merge the products back block-diagonally.
 - **Screening parameters** — `SinglepointDFPTWorkflow` drives kcw.x through wann2kcw, screen, and ham; `KoopmansDSCFWorkflow` drives kcp.x through a DFT initialization, a trial KI, a per-orbital Delta-SCF refinement, and a final KI. The periodic Delta-SCF route reaches kcp.x through `MlwfInitialization` and `FoldToSupercell`.
 - **Postprocessing and surrogates** — `UnfoldAndInterpolateTask` interpolates Wannier bands onto a k-path; `TrajectoryWorkflow` trains or tests a machine-learned model of the screening parameters over a trajectory.
 

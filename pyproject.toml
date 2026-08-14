@@ -58,9 +58,6 @@ Source = "https://github.com/elinscott/aiida-koopmans"
 "koopmans.aiida_wannier90_workflows.common.types.WannierProjectionType" = "aiida.orm.nodes.data.enum:EnumData"
 "koopmans.aiida_wannier90_workflows.common.types.WannierDisentanglementType" = "aiida.orm.nodes.data.enum:EnumData"
 "koopmans.aiida_wannier90_workflows.common.types.WannierFrozenType" = "aiida.orm.nodes.data.enum:EnumData"
-"koopmans.aiida_wannier90_workflows.common.types.OptimizeStrategy" = "aiida.orm.nodes.data.enum:EnumData"
-"koopmans.aiida_wannier90_workflows.common.types.OptimizeMetric" = "aiida.orm.nodes.data.enum:EnumData"
-"koopmans.aiida_wannier90_workflows.common.types.OptimizeMuReference" = "aiida.orm.nodes.data.enum:EnumData"
 
 [project.entry-points."aiida.calculations"]
 "koopmans.kcp" = "aiida_koopmans.calculations.kcp:KcpCalculation"
