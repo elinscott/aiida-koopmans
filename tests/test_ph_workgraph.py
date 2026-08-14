@@ -9,6 +9,8 @@ introspect its task list / wiring. Also unit-tests the
 from __future__ import annotations
 
 import pytest
+from aiida_quantumespresso.common.types import SpinType
+from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 from aiida_koopmans.workgraphs.ph import DielectricTask, extract_dielectric_constant
@@ -79,6 +81,54 @@ class TestDielectricTaskBuild:
         inputph = wg.tasks["ph"].inputs["ph"]["parameters"].value.get_dict()["INPUTPH"]
         assert inputph["tr2_ph"] == pytest.approx(1.0e-14)
         assert inputph["epsil"] is True
+
+
+class TestDielectricTaskSpin:
+    """``spin_type`` reaches the ground state, or is refused before it is built."""
+
+    @staticmethod
+    def _build(ph_codes, silicon_structure, fake_cutoffs_family, **kwargs):
+        return DielectricTask.build(
+            codes={"pw": ph_codes["pw"], "ph": ph_codes["ph"]},
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            **kwargs,
+        )
+
+    def test_default_none_leaves_the_scf_unpolarized(
+        self, ph_codes, silicon_structure, fake_cutoffs_family
+    ):
+        """The negative control for the collinear case below."""
+        wg = self._build(ph_codes, silicon_structure, fake_cutoffs_family)
+        system = wg.tasks["scf"].inputs["pw"]["parameters"].value.get_dict()["SYSTEM"]
+        assert "nspin" not in system
+
+    def test_collinear_sets_nspin_on_the_scf(
+        self, ph_codes, silicon_structure, fake_cutoffs_family
+    ):
+        """A proxied member — the form a graph input takes — still reaches the namelist."""
+        wg = self._build(
+            ph_codes,
+            silicon_structure,
+            fake_cutoffs_family,
+            spin_type=TaggedValue(SpinType.COLLINEAR),
+            overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 0}}}}},
+        )
+        system = wg.tasks["scf"].inputs["pw"]["parameters"].value.get_dict()["SYSTEM"]
+        assert system["nspin"] == 2
+
+    @pytest.mark.parametrize("spin_type", [SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT])
+    def test_spinor_regimes_are_refused(
+        self, ph_codes, silicon_structure, fake_cutoffs_family, spin_type
+    ):
+        """ph.x has no electric-field perturbation for noncollinear magnetism."""
+        with pytest.raises(NotImplementedError, match="noncollinear magnetism"):
+            self._build(
+                ph_codes,
+                silicon_structure,
+                fake_cutoffs_family,
+                spin_type=TaggedValue(spin_type),
+            )
 
 
 def _si_manifolds():

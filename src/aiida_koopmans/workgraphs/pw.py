@@ -4,7 +4,7 @@ import copy
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
-from aiida_quantumespresso.common.types import ElectronicType
+from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -186,6 +186,7 @@ def RunPwBands(
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    spin_type: SpinType = SpinType.NONE,
 ) -> ScfBandsOutputs:
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
@@ -212,6 +213,13 @@ def RunPwBands(
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
+        spin_type: Spin regime for both steps. ``COLLINEAR`` sets
+            ``nspin = 2``; ``NON_COLLINEAR`` and ``SPIN_ORBIT`` set
+            ``noncolin = .true.`` (the latter adding ``lspinorb``), all with
+            a protocol ``starting_magnetization``. With the ``INSULATOR``
+            default, ``COLLINEAR`` also needs a ``tot_magnetization`` in
+            ``overrides``: pw.x rejects fixed occupations under LSDA without
+            one.
 
     Returns:
         Dict with scf_parameters and band_structure outputs.
@@ -235,6 +243,7 @@ def RunPwBands(
         protocol=protocol,
         overrides=overrides,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
     )
 
     data = get_dict_from_builder(builder)
