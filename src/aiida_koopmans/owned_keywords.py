@@ -39,8 +39,7 @@ OWNED: dict[str, frozenset[str]] = {
             "pseudo_dir",
             "outdir",
             "prefix",
-            # Every route reads eigenvalues out of the pw.x output, which
-            # only prints them all at high verbosity.
+            # Every route runs pw.x at verbosity = 'high'.
             "verbosity",
         }
     ),

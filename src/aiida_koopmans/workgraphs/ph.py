@@ -25,7 +25,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import pin_kpoints
+from aiida_koopmans.workgraphs import force_pw_verbosity, pin_kpoints
 from aiida_koopmans.workgraphs.pw import PwBaseStep, PwCode
 
 
@@ -147,6 +147,7 @@ def DielectricTask(
     )
     scf_builder.pop("clean_workdir", None)
     scf_data = get_dict_from_builder(scf_builder)
+    force_pw_verbosity(scf_data["pw"])
     pin_kpoints(scf_data, scf_kpoints)
     scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
     scf_outputs = PwBaseStep(**scf_data)
