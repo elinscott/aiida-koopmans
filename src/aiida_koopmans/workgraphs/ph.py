@@ -19,6 +19,7 @@ from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_overrides,
@@ -152,7 +153,7 @@ def DielectricTask(
 
     ph_defaults: dict[str, Any] = {
         "qpoints": [1, 1, 1],
-        "ph": {"parameters": {"INPUTPH": {"epsil": True, "trans": False}}},
+        "ph": {"parameters": {"INPUTPH": owned("ph.INPUTPH", {"epsil": True, "trans": False})}},
     }
     ph_overrides = recursive_merge(overrides.get("ph", {}), ph_defaults)
     # ph.x accepts -npool / -pd; QE only rejects ph pools for the
