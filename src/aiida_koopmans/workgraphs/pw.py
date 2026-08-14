@@ -86,6 +86,7 @@ def assemble_pw_base_step(
     overrides: dict[str, Any] | None = None,
     protocol: str | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    spin_type: SpinType = SpinType.NONE,
     kpoints: orm.KpointsData | None = None,
     parent_folder: Any = None,
     parallelization: ParallelizationDict | None = None,
@@ -98,6 +99,11 @@ def assemble_pw_base_step(
     ``kpoints`` when given, wire ``parent_folder``, and add the step to the
     surrounding graph under ``call_link_label``. A plain graph-assembly
     helper: it must be called inside a ``@task.graph`` body.
+
+    ``spin_type`` reaches the builder, which derives the spin keywords
+    (``nspin``, ``noncolin``, ``lspinorb``, ``starting_magnetization``)
+    from it. Under ``COLLINEAR`` with the ``INSULATOR`` default, pw.x also
+    needs a ``tot_magnetization`` in ``overrides``.
     """
     overrides = overrides or {}
     enforce_step_calculation(
@@ -111,6 +117,7 @@ def assemble_pw_base_step(
         protocol=protocol,
         overrides=overrides,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)
@@ -132,6 +139,7 @@ def run_bands_step(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    spin_type: SpinType = SpinType.NONE,
     parallelization: ParallelizationDict | None = None,
 ) -> Any:
     """Assemble a pw.x ``bands`` step along ``bands_kpoints`` off an scf density.
@@ -147,6 +155,9 @@ def run_bands_step(
     outside its overrides (e.g. inside a workchain builder) injects the
     resolved value into the seed. Returns the step's outputs
     (``output_band`` holds the eigenvalues along the path).
+
+    ``spin_type`` must match the run that produced ``scf_remote_folder``:
+    pw.x reads the charge density back channel by channel.
     """
     # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL
@@ -169,6 +180,7 @@ def run_bands_step(
         overrides=bands_overrides,
         protocol=protocol,
         electronic_type=electronic_type,
+        spin_type=spin_type,
         kpoints=bands_kpoints,
         parent_folder=scf_remote_folder,
         parallelization=parallelization,
@@ -288,6 +300,7 @@ def RunScfNscf(
     scf_kpoints: orm.KpointsData | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    spin_type: SpinType = SpinType.NONE,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
@@ -319,6 +332,12 @@ def RunScfNscf(
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
+        spin_type: Spin regime for both steps. ``COLLINEAR`` sets
+            ``nspin = 2``; ``NON_COLLINEAR`` and ``SPIN_ORBIT`` set
+            ``noncolin = .true.``, the latter adding ``lspinorb``. With the
+            ``INSULATOR`` default, ``COLLINEAR`` also needs a
+            ``tot_magnetization`` in ``overrides``: pw.x rejects fixed
+            occupations under LSDA without one.
 
     Returns:
         Dict with remote folders and retrieved data from both steps.
@@ -341,6 +360,7 @@ def RunScfNscf(
         overrides=overrides.setdefault("scf", {}),
         protocol=protocol,
         electronic_type=electronic_type,
+        spin_type=spin_type,
         kpoints=scf_kpoints,
     )
 
@@ -355,6 +375,7 @@ def RunScfNscf(
         overrides=overrides.setdefault("nscf", {}),
         protocol=protocol,
         electronic_type=electronic_type,
+        spin_type=spin_type,
         kpoints=nscf_kpoints,
         parent_folder=scf_outputs["remote_folder"],
     )
