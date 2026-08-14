@@ -215,11 +215,10 @@ def RunPwBands(
             refuses non-fixed occupations outright.
         spin_type: Spin regime for both steps. ``COLLINEAR`` sets
             ``nspin = 2``; ``NON_COLLINEAR`` and ``SPIN_ORBIT`` set
-            ``noncolin = .true.`` (the latter adding ``lspinorb``), all with
-            a protocol ``starting_magnetization``. With the ``INSULATOR``
-            default, ``COLLINEAR`` also needs a ``tot_magnetization`` in
-            ``overrides``: pw.x rejects fixed occupations under LSDA without
-            one.
+            ``noncolin = .true.``, the latter adding ``lspinorb``. With the
+            ``INSULATOR`` default, ``COLLINEAR`` also needs a
+            ``tot_magnetization`` in ``overrides``: pw.x rejects fixed
+            occupations under LSDA without one.
 
     Returns:
         Dict with scf_parameters and band_structure outputs.
