@@ -32,11 +32,6 @@ CASES = {
         {"pw", "pw2wannier90", "wannier90"},
         {"projwfc"},
     ),
-    "OptimizeWannierization": (
-        "aiida_koopmans.workgraphs.wannier90.OptimizeWannierization",
-        {"pw", "pw2wannier90", "wannier90"},
-        {"projwfc"},
-    ),
     "WannierizeBlocks": (
         "aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks",
         {"pw", "pw2wannier90", "wannier90"},
@@ -90,7 +85,6 @@ TYPEDDICT_FOR = {
     "RunPwBands": "PwBandsCodes",
     "DielectricTask": "DielectricCodes",
     "Wannierize": "WannierizeCodes",
-    "OptimizeWannierization": "WannierizeCodes",
     "WannierizeBlocks": "WannierizeBlocksCodes",
     "WannierizeBlock": "WannierizeBlockCodes",
     "WannierizeAndSplitBlock": "SplitBlockCodes",

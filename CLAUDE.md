@@ -42,7 +42,7 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 
 ## Current state
 
-- Workgraphs present: `RunPwBands`, `RunScfNscf` (`workgraphs/pw.py`), `RunPdos` (`workgraphs/pdos.py`), `Wannierize`, `OptimizeWannierization` (`workgraphs/wannier90.py`).
+- Workgraphs present: `RunPwBands`, `RunScfNscf` (`workgraphs/pw.py`), `RunPdos` (`workgraphs/pdos.py`), `Wannierize` (`workgraphs/wannier90.py`).
 - **Cleanup needed:** `calculations.py` (DiffCalculation), `parsers.py` (DiffParser), `data/__init__.py` (DiffParameters) are `aiida-plugin-cutter` template leftovers. Safe to delete once a real Koopmans CalcJob or Data type replaces them.
 - No Koopmans-specific Data types defined yet — `Band`/`Bands`/`ProjectionBlock` equivalents still live in legacy `koopmans/src/koopmans/`.
 - No ASE↔AiiDA conversion utilities here; those belong in `../koopmans2/src/koopmans/aiida/conversion.py`.
