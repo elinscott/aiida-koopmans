@@ -8,7 +8,6 @@ import copy
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
-import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import (
@@ -273,15 +272,13 @@ def _finalize_wannier_builder(
     *,
     kpoint_path: dict[str, Any] | None,
     bands_kpoints: orm.KpointsData | None,
-    projector_rotation: np.ndarray | None,
 ) -> dict[str, Any]:
-    """Apply the bands-path / projector-rotation wiring, then flatten to a dict.
+    """Apply the bands-path wiring, then flatten to a dict.
 
     ``Wannierize``'s finalisation tail: enforce that ``kpoint_path`` and
     ``bands_kpoints`` are mutually exclusive, wire the explicit bands path
-    onto the nested wannier90 builder, apply the optional
-    ``projector_rotation``, and reduce the builder to the plain-dict inputs
-    the wrapped task expects.
+    onto the nested wannier90 builder, and reduce the builder to the
+    plain-dict inputs the wrapped task expects.
 
     A path wired here also sets ``bands_plot = True`` in the wannier90
     parameters: wannier90 interpolates its band structure (and writes the
@@ -306,9 +303,6 @@ def _finalize_wannier_builder(
         parameters = builder.wannier90.wannier90.parameters.get_dict()
         parameters["bands_plot"] = True
         builder.wannier90.wannier90.parameters = orm.Dict(parameters)
-
-    if projector_rotation is not None:
-        builder.projector_rotation = projector_rotation
 
     data = get_dict_from_builder(builder)
 
@@ -389,17 +383,12 @@ def Wannierize(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
-    projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
     kpoints: orm.KpointsData | None = None,
     mp_grid: list[int] | None = None,
     scf_kpoints: orm.KpointsData | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
-
-    If ``projector_rotation`` is provided, the workchain will apply
-    ``A' = B @ A`` to the pw2wannier90 projection matrix before
-    wannier90 reads it.
 
     This task wraps Wannier90WorkChain and uses get_builder_from_protocol to
     construct the inputs from a simplified set of arguments.
@@ -496,7 +485,6 @@ def Wannierize(
         builder,
         kpoint_path=kpoint_path,
         bands_kpoints=bands_kpoints,
-        projector_rotation=projector_rotation,
     )
 
     _apply_kpoint_mesh(data, kpoints=kpoints, mp_grid=mp_grid, scf_kpoints=scf_kpoints)
