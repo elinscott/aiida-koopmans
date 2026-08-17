@@ -28,9 +28,13 @@ def si_ui_inputs(aiida_profile, si_reference):
     kpath.set_kpoints(np.array(si_reference["kpath_kpts"]))
     kpath.labels = [(0, "GAMMA"), (len(si_reference["kpath_kpts"]) - 1, "L")]
 
+    from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
+
+    centres = ui_helpers.parse_wout_centers((DATA_DIR / "wann.wout").read_text())
+
     return {
         "kc_ham_file": orm.SinglefileData(DATA_DIR / "kc_ham.dat"),
-        "wannier90_wout": orm.SinglefileData(DATA_DIR / "wann.wout"),
+        "centres": centres.tolist(),
         "structure": structure,
         "kpath": kpath,
         "kgrid": list(si_reference["kgrid"]),

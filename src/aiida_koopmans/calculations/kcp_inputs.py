@@ -108,6 +108,7 @@ def build_kcp_inputs(
     parent_folder_evcfixed: orm.RemoteData | None = None,
     variational_orbital_overlays: dict[str, str] | None = None,
     read_wavefunctions: dict[str, Any] | None = None,
+    settings: dict[str, Any] | None = None,
     name: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpStep(**inputs)``.
@@ -140,6 +141,10 @@ def build_kcp_inputs(
     copies each into its read ``K00001`` as ``<stem>.dat`` (the MLWF-init
     staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
     merge outputs).
+
+    ``settings`` feeds the CalcJob's ``settings`` port, whose
+    ``additional_retrieve_list`` names working-directory files to keep
+    beyond the stdout and CRASH defaults.
     """
     _autogenerate_nrb(structure, pseudos, parameters)
     inputs: dict[str, Any] = {
@@ -158,6 +163,8 @@ def build_kcp_inputs(
         inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
     if read_wavefunctions:
         inputs["read_wavefunctions"] = read_wavefunctions
+    if settings:
+        inputs["settings"] = orm.Dict(dict=settings)
     if name:
         inputs["metadata"] = {"call_link_label": name}
     merge_parallelization_into_inputs(inputs, parallelization, "kcp")
