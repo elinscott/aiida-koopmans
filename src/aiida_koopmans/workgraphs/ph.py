@@ -131,6 +131,12 @@ def DielectricTask(
     # ph.x aborts on `noncolin .and. domag` with an electric-field
     # perturbation, and the protocol seeds a nonzero starting_magnetization
     # under both spinor regimes, so domag is always true here.
+    #
+    # The refusal cannot move onto the annotation as
+    # `Literal[SpinType.NONE, SpinType.COLLINEAR]`: node-graph decides a link
+    # on the source socket's declared range, and `SinglepointDFPTWorkflow`
+    # wires its own `spin` — the whole enum — into this input, so a narrowed
+    # socket refuses `eps_inf='auto'` under every regime, 'none' included.
     spin = unwrap_enum(spin_type, SpinType) or SpinType.NONE
     if spin in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
         raise NotImplementedError(
