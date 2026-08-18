@@ -996,7 +996,6 @@ def InitializeOrbitals(
     outerloop: bool = True,
     parent_folder: orm.RemoteData | None = None,
     name: str = "dft_init",
-    display: str = "DFT initialization",
     overrides: KcpNamelistOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> DFTCPOutputs:
@@ -1019,8 +1018,6 @@ def InitializeOrbitals(
             to ``"dft_init"`` so the standard single-step path keeps its
             existing label; chained init callers should override this to
             disambiguate the three sub-steps.
-        display: how that calc is named for a reader. A chained init
-            caller names each sub-step the same way it names this graph.
 
     ``pseudos`` and the electron counts arrive as sockets resolved
     upstream by :func:`resolve_pseudo_family_task` and
@@ -1052,7 +1049,7 @@ def InitializeOrbitals(
         parallelization=parallelization,
         parent_folder=parent_folder,
         name=name,
-        display=display,
+        display="DFT initialization",
     )
     outputs = KcpStep(**inputs)
 
@@ -1354,7 +1351,6 @@ def KoopmansDSCFWorkflow(
             restart_mode="from_scratch",
             overrides=dft_overrides,
             parallelization=parallelization,
-            display="DFT initialization (nspin=1)",
             metadata={
                 "call_link_label": "dft_init_nspin1",
                 "label": "DFT initialization (nspin=1)",
@@ -1377,7 +1373,6 @@ def KoopmansDSCFWorkflow(
             restart_mode="from_scratch",
             overrides=dft_overrides,
             parallelization=parallelization,
-            display="DFT initialization (nspin=2, staging)",
             metadata={
                 "call_link_label": "dft_init_nspin2_dummy",
                 "label": "DFT initialization (nspin=2, staging)",
@@ -1411,7 +1406,6 @@ def KoopmansDSCFWorkflow(
             parent_folder=converted["remote_folder"],
             overrides=dft_overrides,
             parallelization=parallelization,
-            display="DFT initialization (nspin=2)",
             metadata={
                 "call_link_label": "dft_init_nspin2",
                 "label": "DFT initialization (nspin=2)",
