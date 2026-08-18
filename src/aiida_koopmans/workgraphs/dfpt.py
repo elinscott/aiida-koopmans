@@ -97,6 +97,7 @@ from aiida_koopmans.variational_orbitals import (
     display_name_for,
     map_key_for,
 )
+from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -1072,7 +1073,10 @@ def SinglepointDFPTWorkflow(
     ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
     (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
-    tensor feeds the screen step.
+    tensor feeds the screen step. That ground state runs in ``spin``'s own
+    regime, so a collinear chain's magnetization reaches it; ``spin``
+    ``NON_COLLINEAR`` / ``SPIN_ORBIT`` is refused, ph.x having no
+    electric-field perturbation for a noncollinear magnetic ground state.
 
     ``kpoints`` is the nscf mesh, and must be a Monkhorst-Pack mesh rather
     than an explicit list: the Wannier functions and kcw.x's
@@ -1159,11 +1163,23 @@ def SinglepointDFPTWorkflow(
         scf_kpoints = kpoints
 
     if eps_inf == "auto":
+        # DielectricTask refuses the spinor regimes itself, but only when its
+        # body runs: called from inside this body it becomes a sub-graph task
+        # whose body is deferred, so its raise would land mid-run instead of at
+        # build. Refuse here, where the advice can also name ``eps_inf``.
+        spin_regime = unwrap_enum(spin, SpinType) or SpinType.NONE
+        if spin_regime in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
+            raise NotImplementedError(
+                f"eps_inf='auto' cannot be computed for spin={spin_regime.value!r}: ph.x has no "
+                "electric-field perturbation for a noncollinear magnetic ground state. "
+                "Give eps_inf a number instead."
+            )
         # Run a scf + ph.x dielectric chain first and feed tr(eps)/3 into the
         # screen step. The dielectric scf drops ``nbnd`` (no empty bands are
-        # needed for a ground-state response) and none of the kcw spin
-        # forcing — it is an independent ground state, but on the same mesh as
-        # the chain's own.
+        # needed for a ground-state response) and none of kcw.x's own nspin=2
+        # requirement — it is an independent ground state, but described in the
+        # same spin regime and on the same mesh as the chain's own, since the
+        # overrides it inherits already state that regime's magnetization.
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
@@ -1174,6 +1190,7 @@ def SinglepointDFPTWorkflow(
             scf_kpoints=scf_kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
+            spin_type=spin,
             metadata={"call_link_label": "dielectric", "label": "Dielectric constant"},
         )
         eps_inf = dielectric["eps_inf"]
