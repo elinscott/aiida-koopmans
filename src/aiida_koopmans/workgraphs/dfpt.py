@@ -76,6 +76,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
+from node_graph import reference
 
 from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
@@ -92,6 +93,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
+from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
@@ -988,48 +990,51 @@ def _manifold_wannier_overrides(
     return wannier_overrides
 
 
-def _seed_quality_check_nscf(
+def _seed_wannier_scf_nscf_overrides(
     wannier_overrides: WannierizeOverrides,
-    bands_kpoints: orm.KpointsData | None,
     scf_nscf_overrides: dict[str, Any],
 ) -> None:
-    """Seed the quality-check bands step's SYSTEM parameters, in place.
+    """Seed the flat wannier overrides with the shared scf and nscf overrides, in place.
 
-    A bands path unlocks the quality-check bands step in
-    :func:`WannierizeBlocks` (paired with the shared scf,
-    :func:`SinglepointDFPTWorkflow`'s own ``scf_remote_folder``): the same
-    nscf overrides (``nbnd``, in particular) that seeded the shared nscf
-    seed that step's SYSTEM parameters too, so it reads the full set of
-    Wannierised bands rather than pw.x's default occupied-only count.
+    Every per-block ``WannierizeBlock`` graph pops both namespaces before it
+    runs (each block reads the shared ``nscf_remote_folder`` instead), but
+    its nested ``Wannier90WorkChain.get_builder_from_protocol`` call still
+    reads them at construction time: a pseudo family that recommends no
+    cutoffs raises there unless the caller's ``ecutwfc``/``ecutrho`` reach it
+    through exactly these keys. That construction happens on every channel
+    regardless of whether the quality-check bands step runs, so both are
+    forwarded unconditionally — unlike :func:`WannierizeBlocks`' own
+    ``bands_kpoints``-gated wiring of that step. ``nscf`` additionally
+    carries ``nbnd``, which seeds that step's SYSTEM parameters (so it reads
+    the full set of Wannierised bands, not pw.x's default occupied-only
+    count) whenever it does run.
     """
-    if bands_kpoints is not None:
-        wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
+    wannier_overrides["scf"] = scf_nscf_overrides["scf"]
+    wannier_overrides["nscf"] = scf_nscf_overrides["nscf"]
 
 
 def _wannierize_codes_for_channel(codes: DfptCodes) -> WannierizeBlocksCodes:
     """Return one channel's :func:`WannierizeBlocks` codes namespace.
 
-    Copies every code :class:`WannierizeBlocksCodes` requires — read off its
+    Wires every code :class:`WannierizeBlocksCodes` requires — read off its
     own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
-    can never drift apart silently — from :class:`DfptCodes`, which declares
-    every one of them too. ``projwfc`` rides along when configured on the
-    caller's ``codes``; the graphs decide whether the projected DOS actually
-    runs. ``wannierjl`` (:class:`WannierizeBlocksCodes`' other ``NotRequired``
-    member, for split-mode) is out of scope here: the DFPT route never
-    triggers a split.
+    can never drift apart silently — through :class:`DfptCodes`' ``reference()``:
+    a member :class:`WannierizeBlocksCodes` requires but :class:`DfptCodes`
+    never declared is a build-time ``ValueError`` from ``reference()`` itself,
+    naming the missing member, rather than the bare ``KeyError`` a
+    subscript would raise. ``projwfc`` (:class:`WannierizeBlocksCodes`'
+    ``NotRequired`` member) rides along unconditionally too: whether the
+    projected DOS actually runs is :func:`WannierizeBlocks`' own entry
+    decision (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`),
+    never a silent skip decided by presence on ``codes``. ``wannierjl``
+    (:class:`WannierizeBlocksCodes`' other ``NotRequired`` member, for
+    split-mode) is out of scope here: the DFPT route never triggers a
+    split.
     """
-    codes_map = dict(codes)
-    wannierize_codes: dict[str, Any] = {}
-    for name in WannierizeBlocksCodes.__required_keys__:
-        if name not in codes_map:
-            raise KeyError(
-                f"DfptCodes has no {name!r} member, but WannierizeBlocksCodes "
-                "requires it; SinglepointDFPTWorkflow cannot assemble its "
-                "per-channel WannierizeBlocks call without it."
-            )
-        wannierize_codes[name] = codes_map[name]
-    if "projwfc" in codes:
-        wannierize_codes["projwfc"] = codes["projwfc"]
+    wannierize_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+    }
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
@@ -1053,7 +1058,6 @@ def _add_quality_check_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     bands_kpoints: orm.KpointsData | None,
     wannierized: Any,
-    wannierize_codes: WannierizeBlocksCodes,
     pseudo_family: str | None,
     structure: orm.StructureData,
 ) -> None:
@@ -1061,15 +1065,16 @@ def _add_quality_check_dfpt_inputs(
 
     ``bands`` runs whenever a bands path was given (:func:`WannierizeBlocks`'
     own gate); subscripting its socket only then avoids wiring one the run
-    structurally never populates. ``projwfc`` additionally needs a
-    configured code *and* pseudos :func:`WannierizeBlocks` accepts for the
-    projected DOS (:func:`_projwfc_step_will_run`) — wiring it on the code's
-    presence alone would hand ``RunDFPT`` a socket with nothing behind it
-    whenever the pseudos are unsupported.
+    structurally never populates. ``projwfc`` mirrors
+    :func:`WannierizeBlocks`' own entry predicate
+    (:func:`_projwfc_step_will_run`) exactly — wiring it whenever the code
+    happens to be configured, rather than whenever the pseudos actually
+    support the projected DOS, would hand ``RunDFPT`` a socket with nothing
+    behind it.
     """
     if bands_kpoints is not None:
         dfpt_inputs["wannierize_bands"] = wannierized["bands"]
-        if "projwfc" in wannierize_codes and _projwfc_step_will_run(pseudo_family, structure):
+        if _projwfc_step_will_run(pseudo_family, structure):
             dfpt_inputs["projwfc"] = wannierized["projwfc"]
 
 
@@ -1097,7 +1102,10 @@ def SinglepointDFPTWorkflow(
     ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
     (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
     ``codes["ph"]``) runs first and the isotropic average of its dielectric
-    tensor feeds the screen step.
+    tensor feeds the screen step. That ground state runs in ``spin``'s own
+    regime, so a collinear chain's magnetization reaches it; ``spin``
+    ``NON_COLLINEAR`` / ``SPIN_ORBIT`` is refused, ph.x having no
+    electric-field perturbation for a noncollinear magnetic ground state.
 
     ``kpoints`` is the nscf mesh, and must be a Monkhorst-Pack mesh rather
     than an explicit list: the Wannier functions and kcw.x's
@@ -1188,23 +1196,34 @@ def SinglepointDFPTWorkflow(
         scf_kpoints = kpoints
 
     if eps_inf == "auto":
+        # DielectricTask refuses the spinor regimes itself, but only when its
+        # body runs: called from inside this body it becomes a sub-graph task
+        # whose body is deferred, so its raise would land mid-run instead of at
+        # build. Refuse here, where the advice can also name ``eps_inf``.
+        spin_regime = unwrap_enum(spin, SpinType) or SpinType.NONE
+        if spin_regime in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
+            raise NotImplementedError(
+                f"eps_inf='auto' cannot be computed for spin={spin_regime.value!r}: ph.x has no "
+                "electric-field perturbation for a noncollinear magnetic ground state. "
+                "Give eps_inf a number instead."
+            )
         # Run a scf + ph.x dielectric chain first and feed tr(eps)/3 into the
         # screen step. The dielectric scf drops ``nbnd`` (no empty bands are
-        # needed for a ground-state response) and none of the kcw spin
-        # forcing — it is an independent ground state, but on the same mesh as
-        # the chain's own.
-        if "ph" not in codes:
-            raise ValueError("eps_inf='auto' requires a ph.x code under codes['ph'].")
+        # needed for a ground-state response) and none of kcw.x's own nspin=2
+        # requirement — it is an independent ground state, but described in the
+        # same spin regime and on the same mesh as the chain's own, since the
+        # overrides it inherits already state that regime's magnetization.
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         dielectric = DielectricTask(
-            codes={"pw": codes["pw"], "ph": codes["ph"]},
+            codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
             scf_kpoints=scf_kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
+            spin_type=spin,
             metadata={"call_link_label": "dielectric"},
         )
         eps_inf = dielectric["eps_inf"]
@@ -1252,7 +1271,7 @@ def SinglepointDFPTWorkflow(
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
     scf_nscf = RunScfNscf(
-        pw_code=codes["pw"],
+        pw_code=reference(codes, "pw"),
         structure=structure,
         pseudo_family=pseudo_family,
         protocol=protocol,
@@ -1270,7 +1289,7 @@ def SinglepointDFPTWorkflow(
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
         wannier_overrides = _manifold_wannier_overrides(spin, channel, overrides)
-        _seed_quality_check_nscf(wannier_overrides, bands_kpoints, scf_nscf_overrides)
+        _seed_wannier_scf_nscf_overrides(wannier_overrides, scf_nscf_overrides)
 
         occ_blocks = list(manifold["occ"])
         emp_blocks = list(manifold.get("emp") or [])
@@ -1308,7 +1327,7 @@ def SinglepointDFPTWorkflow(
         # body. Manifold membership and band order travel as the caller's
         # own label lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
-            "kcw_code": codes["kcw"],
+            "kcw_code": reference(codes, "kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
             "occ_labels": [str(block["label"]) for block in occ_blocks],
@@ -1328,7 +1347,7 @@ def SinglepointDFPTWorkflow(
             "metadata": {"call_link_label": f"dfpt{suffix}"},
         }
         _add_quality_check_dfpt_inputs(
-            dfpt_inputs, bands_kpoints, wannierized, wannierize_codes, pseudo_family, structure
+            dfpt_inputs, bands_kpoints, wannierized, pseudo_family, structure
         )
 
         if emp_blocks:

@@ -29,8 +29,8 @@ periodic-image corrections consume.
 Wannierization
 ==============
 
-``Wannierize`` and ``OptimizeWannierization`` (``workgraphs.wannier90``)
-wrap the ``aiida-wannier90-workflows`` workchains for a whole system.
+``Wannierize`` (``workgraphs.wannier90``) wraps the
+``aiida-wannier90-workflows`` workchains for a whole system.
 
 ``WannierizeBlocks`` (``workgraphs.block_wannierize``) is the form the
 Koopmans workflows use: one shared scf and nscf, then a

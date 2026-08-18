@@ -197,7 +197,9 @@ class TestWannierizeBlocks:
 
 
 class TestSinglepointDFPT:
-    def test_the_scf_samples_the_kpoints_mesh(self, dfpt_codes, silicon_structure, kmesh, kpath):
+    def test_the_scf_samples_the_kpoints_mesh(
+        self, dfpt_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
+    ):
         """The user mesh feeds the SCF; the NSCF gets its unreduced expansion."""
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 
@@ -207,7 +209,9 @@ class TestSinglepointDFPT:
             manifolds={"none": {"occ": [explicit_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             bands_kpoints=kpath,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            # A real installed family: bands_kpoints unconditionally
+            # evaluates projected_dos_supported(...), which resolves it.
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf=11.7,
         )
         scf_nscf = wg.tasks["scf_nscf"]
@@ -231,7 +235,7 @@ class TestSinglepointDFPT:
             )
 
     def test_scf_kpoints_moves_the_scf_alone(
-        self, dfpt_codes, silicon_structure, kmesh, kpath, denser_kmesh
+        self, dfpt_codes, silicon_structure, kmesh, kpath, denser_kmesh, fake_cutoffs_family
     ):
         """A denser ground state must not move the mesh kcw.x counts in."""
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
@@ -243,7 +247,7 @@ class TestSinglepointDFPT:
             kpoints=kmesh,
             scf_kpoints=denser_kmesh,
             bands_kpoints=kpath,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf=11.7,
         )
         scf_nscf = wg.tasks["scf_nscf"]
@@ -254,7 +258,7 @@ class TestSinglepointDFPT:
         assert list(wg.tasks["dfpt"].inputs["kgrid"].value) == [2, 2, 2]
 
     def test_an_scf_kpoints_distance_leaves_the_scf_meshless(
-        self, dfpt_codes, silicon_structure, kmesh, kpath
+        self, dfpt_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
         """The two inputs exclude each other, so the fallback mesh has to stand down."""
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
@@ -266,7 +270,7 @@ class TestSinglepointDFPT:
             kpoints=kmesh,
             overrides={"scf": {"kpoints_distance": 0.11}},
             bands_kpoints=kpath,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf=11.7,
         )
         scf_nscf = wg.tasks["scf_nscf"]

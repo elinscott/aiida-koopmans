@@ -428,7 +428,9 @@ class TestRunDFPTMaterialization:
 
 
 class TestSinglepointDFPTBuild:
-    def test_occ_and_emp_manifolds(self, dfpt_codes, silicon_structure, kmesh, bands_path):
+    def test_occ_and_emp_manifolds(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
+    ):
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
@@ -440,7 +442,11 @@ class TestSinglepointDFPTBuild:
             },
             kpoints=kmesh,
             bands_kpoints=bands_path,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            # A real installed family: bands_kpoints unlocks WannierizeBlocks'
+            # quality-check bands run, which always evaluates
+            # projected_dos_supported(...) now (no "projwfc" in codes
+            # short-circuit) — that call resolves the family.
+            pseudo_family=fake_cutoffs_family.label,
             eps_inf=11.7,
         )
         names = [t.name for t in wg.tasks]
@@ -494,14 +500,18 @@ class TestSinglepointDFPTBuild:
         assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
 
     def test_bands_kpoints_unlocks_the_wannierize_quality_check(
-        self, dfpt_codes, silicon_structure, kmesh, bands_path
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
     ):
         """A bands path threads through to WannierizeBlocks' quality check.
 
         The shared scf's scratch (not a fresh one) feeds the quality-check
         bands step, and its ``bands`` output reaches ``RunDFPT`` as
-        ``wannierize_bands``. No projwfc code was configured, so
-        ``RunDFPT``'s ``projwfc`` input stays unwired.
+        ``wannierize_bands``. No projwfc code was configured, but the
+        family supports the projected DOS
+        (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
+        the sole gate now), so ``RunDFPT``'s ``projwfc`` input still wires —
+        the missing code surfaces as a structural error only when the graph
+        actually runs.
         """
         wg = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
@@ -509,7 +519,7 @@ class TestSinglepointDFPTBuild:
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             bands_kpoints=bands_path,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
+            pseudo_family=fake_cutoffs_family.label,
         )
         wannierize_inputs = wg.tasks["wannierize"].inputs
         scf_links = wannierize_inputs["scf_remote_folder"]._links
@@ -519,7 +529,7 @@ class TestSinglepointDFPTBuild:
 
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert dfpt_inputs["wannierize_bands"]._links
-        assert not dfpt_inputs["projwfc"]._links
+        assert dfpt_inputs["projwfc"]._links
         assert_graph_roundtrips(wg)
 
     def test_no_bands_kpoints_skips_the_wannierize_quality_check(
@@ -544,6 +554,46 @@ class TestSinglepointDFPTBuild:
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert not dfpt_inputs["wannierize_bands"]._links
         assert not dfpt_inputs["projwfc"]._links
+
+    @pytest.mark.parametrize("bands_kpoints_given", [True, False])
+    def test_cutoffless_family_needs_scf_and_nscf_cutoffs_threaded(
+        self,
+        dfpt_codes,
+        silicon_structure,
+        kmesh,
+        bands_path,
+        fake_cutoffless_family,
+        bands_kpoints_given,
+    ):
+        """Both the shared scf's and nscf's cutoffs reach the nested wannier builder.
+
+        ``WannierizeBlocks``' per-block ``Wannier90WorkChain.get_builder_from_protocol``
+        call asks ``fake_cutoffless_family`` for cutoffs it does not
+        recommend unless the caller's ``ecutwfc``/``ecutrho`` reach it
+        through ``overrides["scf"]``/``overrides["nscf"]`` — regardless of
+        whether a ``bands_kpoints`` path unlocks the quality-check bands
+        step, since that construction happens either way (issue #98).
+        """
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path if bands_kpoints_given else None,
+            pseudo_family=fake_cutoffless_family.label,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+        )
+        overrides = wg.tasks["wannierize"].inputs["overrides"]
+        scf = overrides["scf"].value
+        nscf = overrides["nscf"].value
+        assert scf["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 30.0
+        assert scf["pw"]["parameters"]["SYSTEM"]["ecutrho"] == 240.0
+        assert nscf["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 30.0
+        assert nscf["pw"]["parameters"]["SYSTEM"]["ecutrho"] == 240.0
 
     def test_projwfc_code_chains_the_projected_dos_into_each_channel(
         self, dfpt_pdos_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family

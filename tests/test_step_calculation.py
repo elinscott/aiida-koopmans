@@ -141,11 +141,11 @@ class TestRunPwBandsEnforcement:
 
 
 class TestWannierizeEnforcement:
-    """Exercise the nscf enforcement shared by ``Wannierize`` / ``OptimizeWannierization``.
+    """Exercise the nscf enforcement ``Wannierize`` applies via its shared tail.
 
-    Both route through ``_finalize_wannier_builder``, which is where the nscf
-    step stamps its calculation. These target that shared tail directly rather
-    than the whole graph; the full-graph build is covered by
+    ``Wannierize`` routes through ``_finalize_wannier_builder``, which is
+    where the nscf step stamps its calculation. These target that tail
+    directly rather than the whole graph; the full-graph build is covered by
     ``test_wannierize_workgraph.py``.
     """
 
@@ -182,8 +182,8 @@ class TestWannierizeEnforcement:
             builder,
             kpoint_path=None,
             bands_kpoints=None,
+            interpolation_kpoints=None,
             projector_rotation=None,
-            set_bands_kpoints=True,
         )
         assert data["nscf"]["pw"]["parameters"].get_dict()["CONTROL"]["calculation"] == "nscf"
 
@@ -203,6 +203,6 @@ class TestWannierizeEnforcement:
                 builder,
                 kpoint_path=None,
                 bands_kpoints=None,
+                interpolation_kpoints=None,
                 projector_rotation=None,
-                set_bands_kpoints=True,
             )

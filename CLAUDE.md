@@ -38,10 +38,11 @@ Part of a three-repo project. See the companion [`../koopmans2/CLAUDE.md`](../ko
 6. **New Data types** (`Band`, `Bands`, `ProjectionBlock`, …) subclass `orm.Data` and register under the `aiida.data` entry point group in `pyproject.toml`.
 7. **Filename convention:** `workgraphs/<qe_tool>.py`, one module per physics step (`pw.py`, `pdos.py`, `wannier90.py`, eventually `kcw.py`, `ph.py`, `kcp.py`).
 8. **Naming convention:** case encodes what a call creates. **PascalCase** for anything whose call creates a process node — `@task.graph` builders (verb-first: `WannierizeBlock`, `RunScfNscf`, `ComputeOrbitalScreeningParameters`; `Workflow` suffix reserved for the dispatcher entry points) and `task(WorkChain/CalcJob)` constants (`Step` suffix: `KcpStep`, `PwBaseStep`). **snake_case** for leaf `@task`/calcfunction/workfunction computations (`compute_alpha_from_dscf`). No `Task`/`ViaBuilder` suffixes; internal alpha vocabulary stays `alpha`, user-facing graph names say `ScreeningParameter(s)`.
+9. **Code presence never decides graph shape.** Conditionality decides whether a graph is entered; requiredness lives on the entered graph's own `codes` `TypedDict`. A step that should run enters the graph whose spec requires its code, wired unconditionally via `reference(codes, 'x')` — a missing code then surfaces as the framework's structural missing-input error at submission, never a silent skip. Entry conditions are input- and data-driven only (a k-path, a pseudo's capability, a setting) — never `'x' in codes`; membership tests on `codes` namespaces are forbidden.
 
 ## Current state
 
-- Workgraphs present: `RunPwBands`, `RunScfNscf` (`workgraphs/pw.py`), `RunPdos` (`workgraphs/pdos.py`), `Wannierize`, `OptimizeWannierization` (`workgraphs/wannier90.py`).
+- Workgraphs present: `RunPwBands`, `RunScfNscf` (`workgraphs/pw.py`), `RunPdos` (`workgraphs/pdos.py`), `Wannierize` (`workgraphs/wannier90.py`).
 - **Cleanup needed:** `calculations.py` (DiffCalculation), `parsers.py` (DiffParser), `data/__init__.py` (DiffParameters) are `aiida-plugin-cutter` template leftovers. Safe to delete once a real Koopmans CalcJob or Data type replaces them.
 - No Koopmans-specific Data types defined yet — `Band`/`Bands`/`ProjectionBlock` equivalents still live in legacy `koopmans/src/koopmans/`.
 - No ASE↔AiiDA conversion utilities here; those belong in `../koopmans2/src/koopmans/aiida/conversion.py`.

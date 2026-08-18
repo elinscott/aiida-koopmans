@@ -65,6 +65,7 @@ from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -91,11 +92,11 @@ from aiida_koopmans.workgraphs.wannier90 import (
     ProjwfcCode,
     ProjwfcOutputs,
     Pw2Wannier90Code,
+    RunProjwfc,
     Wannier90Code,
     Wannier90Step,
     projected_dos_supported,
     require_path_labels,
-    run_projwfc_step,
 )
 
 
@@ -661,10 +662,27 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
     namelist. Callers supply the flat :class:`WannierizeOverrides` and never
     touch this shape.
+
+    ``scf`` / ``nscf`` are already in upstream shape (they feed
+    :func:`~aiida_koopmans.workgraphs.pw.RunScfNscf` verbatim) and pass
+    through unwrapped: :meth:`Wannier90WorkChain.get_builder_from_protocol`
+    reads them at this same top-level key and forwards them into its own
+    nested ``PwBaseWorkChain.get_builder_from_protocol`` calls. Without this,
+    a pseudo family that recommends no cutoffs crashes that nested call even
+    when the caller's ``ecutwfc``/``ecutrho`` are sitting right there in
+    ``scf``/``nscf`` — :func:`WannierizeBlock` discards both namespaces
+    afterwards (it reuses the shared nscf scratch), so this is the only use
+    the cutoffs get.
     """
+    scf = overrides.get("scf")
+    nscf = overrides.get("nscf")
     wannier90 = overrides.get("wannier90")
     pw2wannier90 = overrides.get("pw2wannier90")
     builder_overrides: dict[str, Any] = {}
+    if scf:
+        builder_overrides["scf"] = scf
+    if nscf:
+        builder_overrides["nscf"] = nscf
     if wannier90:
         builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
     if pw2wannier90:
@@ -1091,30 +1109,17 @@ def _maybe_emit_orbital_partition(
 def _reject_inputs_an_external_scratch_ignores(
     overrides: WannierizeOverrides,
     scf_kpoints: orm.KpointsData | None,
-    scf_remote_folder: orm.RemoteData | None,
-    interpolation_kpoints: orm.KpointsData | None,
 ) -> None:
-    """Reject inputs to an scf that an external nscf scratch skips.
+    """Reject an input to the internal scf that an external nscf scratch skips.
 
-    ``overrides["nscf"]`` is the one exception: paired with both
-    ``scf_remote_folder`` *and* ``interpolation_kpoints`` — the quality-check
-    bands step needs both to run at all — it seeds that step's SYSTEM
-    parameters (e.g. ``nbnd``), so it is genuinely consumed then and only
-    rejected when either is missing.
+    ``overrides["scf"]`` / ``overrides["nscf"]`` are not rejected here: an
+    external scratch skips the *internal* shared scf + nscf, but both
+    namespaces still reach every per-block :func:`WannierizeBlock` call
+    below (see :func:`_builder_overrides`) — the only way a pseudo family
+    that recommends no cutoffs can satisfy the nested
+    ``Wannier90WorkChain.get_builder_from_protocol`` call there. Only
+    ``scf_kpoints`` has no consumer left once the internal scf is skipped.
     """
-    if "scf" in overrides:
-        raise ValueError(
-            "scf overrides were given together with an external "
-            "nscf_remote_folder; the internal scf + nscf is skipped, so "
-            "they would be silently ignored."
-        )
-    if "nscf" in overrides and (scf_remote_folder is None or interpolation_kpoints is None):
-        raise ValueError(
-            "nscf overrides were given together with an external "
-            "nscf_remote_folder, but no quality-check bands step will run "
-            "to consume them (that step needs both scf_remote_folder and "
-            "interpolation_kpoints); they would be silently ignored."
-        )
     if scf_kpoints is not None:
         raise ValueError(
             "scf_kpoints was given together with an external "
@@ -1124,7 +1129,6 @@ def _reject_inputs_an_external_scratch_ignores(
 
 
 def _resolve_split_mode(
-    codes: WannierizeBlocksCodes,
     blocks: list[ProjectionBlock],
     mp_grid: list[int] | None,
     nscf_remote_folder: orm.RemoteData | None,
@@ -1141,17 +1145,24 @@ def _resolve_split_mode(
     Split mode triggers on the *need* for splitting: a gap threshold was
     requested (``split_threshold``), or a block's band groups are only
     discovered at runtime (an automatic-projections block — no
-    ``projections`` key). ``bands_kpoints`` is a requirement of split mode,
-    not its trigger. Plain mode rejects split-only knobs rather than
-    silently ignore them; every violation raises naming the gap.
-    ``interpolation_kpoints`` rides on both routes and only its labels are
-    checked here.
+    ``projections`` key). Split mode requires ``bands_kpoints`` but does not
+    trigger on it: it rides on both routes, setting the quality-check pw.x
+    run's k-point list either way (and doubling as the split-detection
+    input when split). Plain mode rejects the remaining split-only knobs
+    rather than silently ignore them; every violation raises naming the
+    gap. ``interpolation_kpoints`` also rides on both routes and only its
+    labels are checked here. Does not validate the ``wannierjl`` code: that
+    requirement lives on
+    :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`'s
+    own ``codes`` spec, which the split branch enters unconditionally.
     """
     require_path_labels(interpolation_kpoints, "interpolation_kpoints")
     split = split_threshold is not None or any("projections" not in block for block in blocks)
     if not split:
+        # bands_kpoints is not split-only: off the split path it still sets
+        # the quality-check pw.x run's own k-point list, independent of
+        # interpolation_kpoints (see _run_explicit_bands_and_dos_steps).
         split_only = {
-            "bands_kpoints": bands_kpoints,
             "num_occ_bands": num_occ_bands,
             "wjl_options": wjl_options,
             "subblock_wannier90_options": subblock_wannier90_options,
@@ -1174,11 +1185,6 @@ def _resolve_split_mode(
         raise ValueError(
             "Split mode requires `num_occ_bands`: the group detection always "
             "opens a group at the occupied/empty boundary."
-        )
-    if "wannierjl" not in codes:
-        raise ValueError(
-            "Split mode requires a `wannierjl` code: the detected groups are "
-            "split with Wannier.jl parallel transport."
         )
     if nscf_remote_folder is not None:
         raise ValueError(
@@ -1210,7 +1216,6 @@ def _resolve_split_mode(
 def _run_explicit_bands_and_dos_steps(
     codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
-    split: bool,
     bands_kpoints: orm.KpointsData | None,
     interpolation_kpoints: orm.KpointsData | None,
     scf_remote_folder: orm.RemoteData,
@@ -1223,19 +1228,22 @@ def _run_explicit_bands_and_dos_steps(
     """Assemble the pw.x quality-check bands run and its projwfc step.
 
     A plain graph-assembly helper: it must be called inside a
-    ``@task.graph`` body. Split mode samples ``bands_kpoints`` (the
-    detection run doubles as the quality check), plain mode
-    ``interpolation_kpoints``; without a path nothing is assembled.
-    Returns the bands run as a ready-to-wire :class:`PwOutputs` namespace
-    (``output_band`` holds the eigenvalues the detection and the quality
-    comparison read) and — when ``codes`` carries a ``projwfc`` code and
-    every pseudo carries ``PP_PSWFC`` atomic wavefunctions
+    ``@task.graph`` body. Samples ``bands_kpoints`` when given (in split
+    mode this run doubles as the detection input), and falls back to
+    ``interpolation_kpoints`` otherwise; without either path nothing is
+    assembled. Returns the bands run as a ready-to-wire :class:`PwOutputs`
+    namespace (``output_band`` holds the eigenvalues the detection and the
+    quality comparison read) and — whenever every pseudo carries
+    ``PP_PSWFC`` atomic wavefunctions
     (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
     which skips with a warning otherwise) — the chained projected-DOS
     namespace off the run's scratch
-    (:func:`~aiida_koopmans.workgraphs.wannier90.run_projwfc_step`).
+    (:func:`~aiida_koopmans.workgraphs.wannier90.RunProjwfc`, entered
+    unconditionally on that predicate; a ``projwfc`` code missing from
+    ``codes`` then surfaces as that graph's own structural missing-input
+    error).
     """
-    quality_path = bands_kpoints if split else interpolation_kpoints
+    quality_path = bands_kpoints if bands_kpoints is not None else interpolation_kpoints
     if quality_path is None:
         return None, None
     bands_step = run_bands_step(
@@ -1255,12 +1263,13 @@ def _run_explicit_bands_and_dos_steps(
         output_band=bands_step["output_band"],
     )
     projwfc_outputs = None
-    if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
-        projwfc_outputs = run_projwfc_step(
-            projwfc_code=codes["projwfc"],
+    if projected_dos_supported(pseudo_family, structure):
+        projwfc_outputs = RunProjwfc(
+            projwfc_code=reference(codes, "projwfc"),
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
+            metadata={"call_link_label": "projwfc"},
         )
     return bands_outputs, projwfc_outputs
 
@@ -1394,9 +1403,13 @@ def WannierizeBlocks(
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
             keys (``scf`` / ``nscf`` pw-protocol dicts feed
-            :func:`RunScfNscf`; ``wannier90`` / ``pw2wannier90``
-            flat keyword dicts feed every per-block wannier builder). Never
-            the upstream namespace-nested shape.
+            :func:`RunScfNscf` when the internal scf + nscf runs; with an
+            external ``nscf_remote_folder`` they instead reach every
+            per-block wannier builder's nested ``get_builder_from_protocol``
+            call, unused otherwise — see :func:`_builder_overrides`;
+            ``wannier90`` / ``pw2wannier90`` flat keyword dicts feed every
+            per-block wannier builder either way). Never the upstream
+            namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
         nscf_remote_folder: an existing nscf scratch to build every block
             on. When given, the internal scf + nscf is skipped (and the
@@ -1426,8 +1439,11 @@ def WannierizeBlocks(
             split; setting it is one of the two split-mode triggers.
             ``None`` (with automatic-projections blocks supplying the other
             trigger) splits only at the occupied/empty boundary.
-        bands_kpoints: split mode only (required there) — the k-path for
-            the pw.x ``bands`` run the group detection reads.
+        bands_kpoints: the k-path for the pw.x quality-check ``bands`` run,
+            independent of ``interpolation_kpoints`` (which falls back to
+            this path when it is not given itself, and vice versa). Split
+            mode requires it: the group detection reads the same run's
+            eigenvalues.
         num_occ_bands: split mode only (required there) — occupied-band
             count of the channel (the detection always opens a new group at
             this boundary).
@@ -1449,11 +1465,10 @@ def WannierizeBlocks(
             (see :class:`WannierizeBlockOutputs`). In split mode the path
             reaches both the whole-block run and every per-group re-run
             (:func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`).
-            In plain mode it also triggers the pw.x quality-check ``bands``
-            run along the same path (which needs the internal scf, so an
-            external ``nscf_remote_folder`` leaves it out). Distinct from
-            the split-mode ``bands_kpoints``, which feeds the pw.x
-            detection run.
+            Without ``bands_kpoints`` it also feeds the pw.x quality-check
+            ``bands`` run (which needs the internal scf, so an external
+            ``nscf_remote_folder`` leaves it out); with ``bands_kpoints``
+            the two runs sample independent densities instead.
         external_projectors_path / external_projectors: the projector
             directory (one ``<element>.dat`` per element, on the
             pw2wannier90 code's computer) and the per-element orbital
@@ -1481,7 +1496,6 @@ def WannierizeBlocks(
     )
 
     split = _resolve_split_mode(
-        codes=codes,
         blocks=blocks,
         mp_grid=mp_grid,
         nscf_remote_folder=nscf_remote_folder,
@@ -1503,9 +1517,7 @@ def WannierizeBlocks(
         # scf scratch (``scf_remote_folder``), which lets the run happen off
         # it. The per-block Wannier interpolation (which reads only the nscf
         # scratch) runs either way.
-        _reject_inputs_an_external_scratch_ignores(
-            overrides, scf_kpoints, scf_remote_folder, interpolation_kpoints
-        )
+        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
         scf_nscf = None
         nscf_scratch = nscf_remote_folder
         block_bands = nscf_bands
@@ -1513,7 +1525,6 @@ def WannierizeBlocks(
             bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
                 codes=codes,
                 structure=structure,
-                split=False,
                 bands_kpoints=None,
                 interpolation_kpoints=interpolation_kpoints,
                 scf_remote_folder=scf_remote_folder,
@@ -1531,7 +1542,7 @@ def WannierizeBlocks(
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
         scf_nscf = RunScfNscf(
-            pw_code=codes["pw"],
+            pw_code=reference(codes, "pw"),
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1553,17 +1564,17 @@ def WannierizeBlocks(
         # --- quality-check / detection bands run (at most one per graph) ---
         # Nested under the internal scf + nscf on purpose: the run reads
         # this scf's remote folder (split mode rejects an external scratch,
-        # and plain mode skips the run without an internal scf). Split mode
-        # always runs it along ``bands_kpoints`` (required there); plain
-        # mode runs it along ``interpolation_kpoints`` when given, as the
-        # explicit eigenvalues the Wannier interpolation is judged against.
-        # One run serves both purposes when split mode's detection path
-        # doubles as the interpolation path (how the koopmans dispatcher
-        # wires it).
+        # and plain mode skips the run without an internal scf). Runs along
+        # ``bands_kpoints`` when given — required in split mode, where it
+        # doubles as the detection input — and falls back to
+        # ``interpolation_kpoints`` otherwise, as the explicit eigenvalues
+        # the Wannier interpolation is judged against. One run serves both
+        # purposes when the caller passes the same node for both (how the
+        # koopmans dispatcher wires a route with no independent density for
+        # each).
         bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
             codes=codes,
             structure=structure,
-            split=split,
             bands_kpoints=bands_kpoints,
             interpolation_kpoints=interpolation_kpoints,
             scf_remote_folder=scf_nscf["scf_remote_folder"],
@@ -1599,13 +1610,15 @@ def WannierizeBlocks(
             from aiida_koopmans.workgraphs.auto_wannierize import WannierizeAndSplitBlock
 
             wannierized = WannierizeAndSplitBlock(
-                # The split graph's namespace declares exactly its four codes;
-                # the guard above guarantees ``wannierjl`` is present here.
+                # Wired unconditionally: WannierizeAndSplitBlock's own
+                # SplitBlockCodes requires all four, so a missing
+                # ``wannierjl`` surfaces there as the framework's structural
+                # missing-input error.
                 codes={
-                    "pw": codes["pw"],
-                    "pw2wannier90": codes["pw2wannier90"],
-                    "wannier90": codes["wannier90"],
-                    "wannierjl": codes["wannierjl"],
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
+                    "wannierjl": reference(codes, "wannierjl"),
                 },
                 structure=structure,
                 block=block,
@@ -1629,9 +1642,9 @@ def WannierizeBlocks(
         else:
             wannierized = WannierizeBlock(
                 codes={
-                    "pw": codes["pw"],
-                    "pw2wannier90": codes["pw2wannier90"],
-                    "wannier90": codes["wannier90"],
+                    "pw": reference(codes, "pw"),
+                    "pw2wannier90": reference(codes, "pw2wannier90"),
+                    "wannier90": reference(codes, "wannier90"),
                 },
                 structure=structure,
                 block=block,

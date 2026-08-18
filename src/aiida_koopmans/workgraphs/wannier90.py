@@ -12,18 +12,16 @@ import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import (
-    OptimizeMetric,
-    OptimizeMuReference,
-    OptimizeStrategy,
     WannierDisentanglementType,
     WannierFrozenType,
     WannierProjectionType,
 )
-from aiida_wannier90_workflows.workflows import Wannier90OptimizeWorkChain, Wannier90WorkChain
+from aiida_wannier90_workflows.workflows import Wannier90WorkChain
 from aiida_wannier90_workflows.workflows.base.projwfc import ProjwfcBaseWorkChain
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
+from node_graph import reference
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -56,11 +54,7 @@ ProjwfcCode = Annotated[
 
 
 class WannierizeCodes(TypedDict):
-    """Codes for :func:`Wannierize` and :func:`OptimizeWannierization`.
-
-    Shared because both workflows' upstream builders wire the same
-    scf / nscf / pw2wannier90 / wannier90 steps.
-    """
+    """Codes for :func:`Wannierize`."""
 
     pw: PwCode
     pw2wannier90: Pw2Wannier90Code
@@ -133,7 +127,6 @@ class WannierWorkflowOutputs(TypedDict):
 
 
 Wannier90Step = task(Wannier90WorkChain)
-Wannier90OptimizeStep = task(Wannier90OptimizeWorkChain)
 ProjwfcBaseStep = task(ProjwfcBaseWorkChain)
 
 
@@ -236,6 +229,30 @@ def run_projwfc_step(
     )
 
 
+@task.graph
+def RunProjwfc(
+    projwfc_code: ProjwfcCode,
+    parent_folder: orm.RemoteData,
+    protocol: str | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> ProjwfcOutputs:
+    """Run projwfc.x off a pw.x run's scratch, entered by its own required code.
+
+    ``projwfc_code`` is required, so a caller enters this graph
+    unconditionally whenever the projected DOS should run
+    (:func:`projected_dos_supported`) and wires the code with
+    ``reference()`` — a caller whose ``projwfc`` code is genuinely missing
+    gets the framework's structural missing-input error, not a membership
+    test on its own ``codes``.
+    """
+    return run_projwfc_step(
+        projwfc_code=projwfc_code,
+        parent_folder=parent_folder,
+        protocol=protocol,
+        parallelization=parallelization,
+    )
+
+
 def require_path_labels(kpoints: orm.KpointsData | None, name: str) -> None:
     """Reject an explicit bands path whose k-points carry no labels.
 
@@ -256,45 +273,49 @@ def _finalize_wannier_builder(
     *,
     kpoint_path: dict[str, Any] | None,
     bands_kpoints: orm.KpointsData | None,
+    interpolation_kpoints: orm.KpointsData | None,
     projector_rotation: np.ndarray | None,
-    set_bands_kpoints: bool,
 ) -> dict[str, Any]:
-    """Apply the shared bands-path / projector-rotation wiring, then flatten to a dict.
+    """Apply the bands-path / projector-rotation wiring, then flatten to a dict.
 
-    Both ``Wannierize`` and ``OptimizeWannierization``
-    share this finalisation tail: enforce that ``kpoint_path`` and
-    ``bands_kpoints`` are mutually exclusive, wire the explicit bands path
+    ``Wannierize``'s finalisation tail: enforce that ``kpoint_path`` and
+    wannier90's explicit bands path are mutually exclusive, wire that path
     onto the nested wannier90 builder, apply the optional
     ``projector_rotation``, and reduce the builder to the plain-dict inputs
     the wrapped task expects.
+
+    ``interpolation_kpoints``, when given, is the explicit path wannier90
+    interpolates along; ``bands_kpoints`` falls back to that role when it
+    is not, so a caller who wants one path for both wannier90 and the
+    quality-check pw.x run (``Wannierize``'s own use of ``bands_kpoints``,
+    below) still only states it once.
 
     A path wired here also sets ``bands_plot = True`` in the wannier90
     parameters: wannier90 interpolates its band structure (and writes the
     ``_band.dat`` the parser turns into ``interpolated_bands``) only under
     that keyword, and ``Wannier90WorkChain`` never sets it itself.
 
-    ``bands_kpoints`` renders as an ``explicit_kpath`` block, which needs
-    wannier90 4.0 or newer (releases up to 3.1.0 reject it).
-    ``kpoint_path`` writes the portable ``kpoint_path`` block instead.
-
-    ``set_bands_kpoints`` distinguishes the two callers: the plain builder
-    assigns ``bands_kpoints`` onto ``builder.wannier90.wannier90`` here,
-    whereas the optimize builder passes it to ``get_builder_from_protocol``
-    upstream — whose ``Wannier90BandsWorkChain`` machinery wires the path
-    and ``bands_plot`` at runtime — and only needs it here for the
-    mutual-exclusion check.
+    The explicit path renders as an ``explicit_kpath`` block, which needs
+    wannier90 4.0 or newer (releases up to 3.1.0 reject it). ``kpoint_path``
+    writes the portable ``kpoint_path`` block instead.
     """
-    if kpoint_path is not None and bands_kpoints is not None:
-        raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
-    require_path_labels(bands_kpoints, "bands_kpoints")
+    wannier_path = interpolation_kpoints if interpolation_kpoints is not None else bands_kpoints
+    if kpoint_path is not None and wannier_path is not None:
+        raise ValueError(
+            "Cannot specify both `kpoint_path` and `bands_kpoints`/`interpolation_kpoints`."
+        )
+    require_path_labels(
+        wannier_path,
+        "interpolation_kpoints" if interpolation_kpoints is not None else "bands_kpoints",
+    )
 
     if kpoint_path is not None:
         builder.wannier90.wannier90.kpoint_path = kpoint_path
 
-    if set_bands_kpoints and bands_kpoints is not None:
-        builder.wannier90.wannier90.bands_kpoints = bands_kpoints
+    if wannier_path is not None:
+        builder.wannier90.wannier90.bands_kpoints = wannier_path
 
-    if kpoint_path is not None or (set_bands_kpoints and bands_kpoints is not None):
+    if kpoint_path is not None or wannier_path is not None:
         parameters = builder.wannier90.wannier90.parameters.get_dict()
         parameters["bands_plot"] = True
         builder.wannier90.wannier90.parameters = orm.Dict(parameters)
@@ -381,6 +402,7 @@ def Wannierize(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -430,13 +452,19 @@ def Wannierize(
             along which wannier90 interpolates its band structure; also sets
             ``bands_plot = True``, without which wannier90 interpolates
             nothing.
-        bands_kpoints: the same path as a labelled explicit ``KpointsData``;
-            mutually exclusive with ``kpoint_path``, and likewise sets
-            ``bands_plot = True``. Also runs pw.x along the same explicit
-            list off the scf density (the ``bands`` output namespace), so
-            the interpolation can be judged against computed eigenvalues on
-            identical k-points — which is why ``kpoint_path``, being
-            symbolic, triggers no such run.
+        bands_kpoints: an explicit ``KpointsData`` path; runs pw.x along it
+            off the scf density (the ``bands`` output namespace), so an
+            interpolation can be judged against computed eigenvalues.
+            Without ``interpolation_kpoints``, wannier90 interpolates along
+            this same path too — mutually exclusive with ``kpoint_path``
+            in that case, and likewise sets ``bands_plot = True``.
+            ``kpoint_path``, being symbolic, never triggers the pw.x run.
+        interpolation_kpoints: the explicit path wannier90 interpolates
+            along, when it should differ from ``bands_kpoints`` — the
+            quality-check pw.x run stays on ``bands_kpoints`` (or is
+            skipped if that is unset) while wannier90 interpolates here
+            instead. Mutually exclusive with ``kpoint_path``; sets
+            ``bands_plot = True``.
         kpoints: the explicit k-point list the nscf and wannier90 share.
             Unset leaves both on the protocol's ``kpoints_distance``-derived
             mesh. Requires ``mp_grid``.
@@ -488,8 +516,8 @@ def Wannierize(
         builder,
         kpoint_path=kpoint_path,
         bands_kpoints=bands_kpoints,
+        interpolation_kpoints=interpolation_kpoints,
         projector_rotation=projector_rotation,
-        set_bands_kpoints=True,
     )
 
     _apply_kpoint_mesh(data, kpoints=kpoints, mp_grid=mp_grid, scf_kpoints=scf_kpoints)
@@ -556,169 +584,13 @@ def Wannierize(
             output_parameters=bands_step["output_parameters"],
             output_band=bands_step["output_band"],
         )
-        if "projwfc" in codes and projected_dos_supported(pseudo_family, structure):
-            workflow_outputs["projwfc"] = run_projwfc_step(
-                projwfc_code=codes["projwfc"],
+        if projected_dos_supported(pseudo_family, structure):
+            workflow_outputs["projwfc"] = RunProjwfc(
+                projwfc_code=reference(codes, "projwfc"),
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,
+                metadata={"call_link_label": "projwfc"},
             )
 
     return workflow_outputs
-
-
-class WannierOptimizeOutputs(TypedDict, total=False):
-    """Output types for Wannier90 optimize workgraph tasks."""
-
-    scf: PwOutputs
-    nscf: PwOutputs
-    wannier90: Wannier90Outputs
-    wannier90_up: Wannier90Outputs
-    wannier90_down: Wannier90Outputs
-    wannier90_optimal: Wannier90Outputs
-    wannier90_optimal_up: Wannier90Outputs
-    wannier90_optimal_down: Wannier90Outputs
-    projwfc: ProjwfcOutputs
-    bands_distance: float
-
-
-@task.graph
-def OptimizeWannierization(
-    codes: WannierizeCodes,
-    structure: orm.StructureData,
-    reference_bands: orm.BandsData | None = None,
-    bands_distance_threshold: float = 1e-2,
-    optimize_strategy: OptimizeStrategy = OptimizeStrategy.GRID,
-    optimize_metric: OptimizeMetric = OptimizeMetric.FERMI_DIRAC,
-    optimize_max_iterations: int | None = None,
-    optimize_disprojmax_range: list[float] | None = None,
-    optimize_disprojmin_range: list[float] | None = None,
-    optimize_mu_shift: float = 2.0,
-    optimize_sigma: float = 0.1,
-    optimize_mu_reference: OptimizeMuReference = OptimizeMuReference.FERMI_ENERGY,
-    protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
-    pseudo_family: str | None = None,
-    electronic_type: ElectronicType = ElectronicType.INSULATOR,
-    spin_type: SpinType = SpinType.NONE,
-    projection_type: WannierProjectionType = WannierProjectionType.ATOMIC_PROJECTORS_QE,
-    disentanglement_type: WannierDisentanglementType | None = None,
-    frozen_type: WannierFrozenType | None = None,
-    only_valence: bool = False,
-    exclude_semicore: bool = False,
-    external_projectors_path: str | None = None,
-    external_projectors: dict[str, Any] | None = None,
-    plot_wannier_functions: bool = False,
-    retrieve_hamiltonian: bool = False,
-    retrieve_matrices: bool = False,
-    print_summary: bool = False,
-    kpoint_path: dict[str, Any] | None = None,
-    bands_kpoints: orm.KpointsData | None = None,
-    projector_rotation: np.ndarray | None = None,
-) -> WannierOptimizeOutputs:
-    """Run Wannier90OptimizeWorkChain using the protocol-based builder pattern.
-
-    Wraps Wannier90OptimizeWorkChain to optimize dis_proj_min/max for
-    projectability disentanglement, using either grid search or Bayesian
-    optimization.
-
-    Args:
-        codes: Dictionary mapping code names to Code instances.
-        structure: The StructureData instance to use.
-        reference_bands: DFT reference bands for computing bands distance.
-            Required for Bayesian strategy.
-        bands_distance_threshold: Stop optimization when bands distance
-            drops below this threshold (eV).
-        optimize_strategy: Search strategy - GRID or BAYESIAN.
-        optimize_metric: Metric for evaluating band quality -
-            FERMI_DIRAC_EF2 or UNWEIGHTED_RMS.
-        optimize_max_iterations: Maximum iterations for Bayesian strategy.
-        protocol: Protocol to use. If not specified, the default will be used.
-        overrides: Optional dictionary of inputs to override protocol defaults.
-        pseudo_family: Pseudopotential family to use.
-        electronic_type: Electronic type - "metal" or "insulator".
-        spin_type: Spin type.
-        projection_type: Wannier projection type.
-        disentanglement_type: Wannier disentanglement type.
-        frozen_type: Wannier frozen window type.
-        exclude_semicore: If True, exclude semicore states.
-        external_projectors_path: Path to external projector files.
-        external_projectors: Dictionary describing external projectors.
-        plot_wannier_functions: If True, plot Wannier functions.
-        retrieve_hamiltonian: If True, retrieve Wannier Hamiltonian.
-        retrieve_matrices: If True, retrieve amn/mmn/eig/chk/spin files.
-        print_summary: If True, print a summary of key input parameters.
-        kpoint_path: Explicit k-point path dictionary.
-        bands_kpoints: Explicit k-point path as KpointsData.
-
-    Returns:
-        Dict with outputs including optimal Wannier90 results and bands_distance.
-    """
-    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it, and to
-    # genuine enum members for the two enums this builder forwards into
-    # ``PwBaseWorkChain``, whose branches test them with ``is``.
-    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-
-    builder = Wannier90OptimizeWorkChain.get_builder_from_protocol(
-        codes=codes,
-        structure=structure,
-        reference_bands=reference_bands,
-        bands_distance_threshold=bands_distance_threshold,
-        optimize_strategy=optimize_strategy,
-        optimize_metric=optimize_metric,
-        optimize_max_iterations=optimize_max_iterations,
-        protocol=protocol,
-        overrides=overrides or {},
-        pseudo_family=pseudo_family,
-        electronic_type=unwrap_enum(electronic_type, ElectronicType),
-        spin_type=unwrap_enum(spin_type, SpinType),
-        projection_type=projection_type,
-        disentanglement_type=disentanglement_type,
-        frozen_type=frozen_type,
-        exclude_semicore=exclude_semicore,
-        only_valence=only_valence,
-        external_projectors_path=external_projectors_path,
-        external_projectors=external_projectors,
-        plot_wannier_functions=plot_wannier_functions,
-        retrieve_hamiltonian=retrieve_hamiltonian,
-        retrieve_matrices=retrieve_matrices,
-        print_summary=print_summary,
-        bands_kpoints=bands_kpoints,
-    )
-
-    if optimize_disprojmax_range is not None:
-        builder.optimize_disprojmax_range = optimize_disprojmax_range
-    if optimize_disprojmin_range is not None:
-        builder.optimize_disprojmin_range = optimize_disprojmin_range
-
-    builder.optimize_mu_shift = optimize_mu_shift
-    builder.optimize_sigma = optimize_sigma
-    # ``to_aiida_type`` maps ``Enum -> EnumData``, but the port wants ``orm.Str``;
-    # extract ``.value`` so the default serializer wraps a plain str into ``orm.Str``.
-    builder.optimize_mu_reference = optimize_mu_reference.value
-
-    # ``bands_kpoints`` is already wired through ``get_builder_from_protocol``
-    # above, so the finaliser only needs it for the mutual-exclusion check.
-    data = _finalize_wannier_builder(
-        builder,
-        kpoint_path=kpoint_path,
-        bands_kpoints=bands_kpoints,
-        projector_rotation=projector_rotation,
-        set_bands_kpoints=False,
-    )
-
-    outputs = Wannier90OptimizeStep(**data)
-
-    return WannierOptimizeOutputs(
-        scf=outputs.scf,
-        nscf=outputs.nscf,
-        wannier90=outputs.wannier90,
-        wannier90_up=outputs.wannier90_up,
-        wannier90_down=outputs.wannier90_down,
-        wannier90_optimal=outputs.wannier90_optimal,
-        wannier90_optimal_up=outputs.wannier90_optimal_up,
-        wannier90_optimal_down=outputs.wannier90_optimal_down,
-        projwfc=outputs.projwfc,
-        bands_distance=outputs.bands_distance,
-    )

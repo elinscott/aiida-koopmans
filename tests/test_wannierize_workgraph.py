@@ -11,12 +11,46 @@ from __future__ import annotations
 import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
-from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from aiida_koopmans.workgraphs.wannier90 import RunProjwfc, Wannierize
 from tests.fixtures import (
     assert_graph_roundtrips,
     count_pw_bands_runs,
     si_external_projector_tables,
 )
+
+
+class TestRunProjwfcGraphBuild:
+    """Construction-level test of ``RunProjwfc`` entered directly.
+
+    Every other test reaches ``RunProjwfc`` only as a nested task inside
+    ``Wannierize``/``WannierizeBlocks``, whose own body is deferred to run
+    time — so this is the only construction-level test that actually
+    executes ``run_projwfc_step``'s body (the ``ProjwfcBaseWorkChain``
+    builder assembly).
+    """
+
+    def test_graph_wires_the_projwfc_step(self, pdos_codes, scf_remote):
+        wg = RunProjwfc.build(
+            projwfc_code=pdos_codes["projwfc"],
+            parent_folder=scf_remote,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "projwfc" in names
+        step = wg.tasks["projwfc"]
+        assert step.inputs["projwfc"]["parent_folder"].value.uuid == scf_remote.uuid
+        assert_graph_roundtrips(wg)
+
+    def test_parallelization_reaches_the_projwfc_calcjob(self, pdos_codes, scf_remote):
+        """A ``projwfc`` parallelization entry threads through to the calcjob."""
+        wg = RunProjwfc.build(
+            projwfc_code=pdos_codes["projwfc"],
+            parent_folder=scf_remote,
+            parallelization={"projwfc": {"ntasks": 2, "npool": 2, "pd": True}},
+        )
+        projwfc = wg.tasks["projwfc"].inputs["projwfc"]
+        resources = projwfc["metadata"]["options"]["resources"].value
+        assert resources["num_mpiprocs_per_machine"] == 2
+        assert projwfc["settings"].value["cmdline"] == ["-npool", "2", "-pd", "true"]
 
 
 class TestWannierizeGraphBuild:
@@ -122,7 +156,10 @@ class TestBandInterpolation:
         assert nscf_params["SYSTEM"]["nbnd"] is not None
         assert params["SYSTEM"]["nbnd"] == nscf_params["SYSTEM"]["nbnd"]
 
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        # "projwfc" is now RunProjwfc, a nested graph task entered
+        # unconditionally on projected_dos_supported(...); parent_folder is
+        # its own top-level input, not nested under a projwfc CalcJob shape.
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["bands"]["output_band"]._links
         # The chained step displaces the workchain's own (SCDM-only)
@@ -130,6 +167,67 @@ class TestBandInterpolation:
         links = wg.outputs["projwfc"]["Dos"]._links
         assert [link.from_task.name for link in links] == ["projwfc"]
         assert_graph_roundtrips(wg)
+
+    def test_interpolation_kpoints_decouples_from_bands_kpoints(
+        self, fake_cutoffs_family, silicon_structure, pdos_codes, kpath, labelled_kpath
+    ):
+        """Given, ``interpolation_kpoints`` wins for wannier90; ``bands_kpoints`` stays pw.x-only.
+
+        ``bands_kpoints`` needs no labels here since it no longer reaches
+        wannier90's own ``bands_kpoints`` port — that's exactly the point.
+        """
+        wg = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            pdos_codes,
+            bands_kpoints=kpath,
+            interpolation_kpoints=labelled_kpath,
+        )
+        inputs = self._w90_inputs(wg)
+        assert inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        assert inputs["parameters"].value.get_dict()["bands_plot"] is True
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["kpoints"].value.uuid == kpath.uuid
+        assert_graph_roundtrips(wg)
+
+    def test_kpoint_path_and_interpolation_kpoints_conflict(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+    ):
+        """``interpolation_kpoints`` is exclusive with ``kpoint_path``, like ``bands_kpoints``."""
+        path = {
+            "path": [["GAMMA", "X"]],
+            "point_coords": {"GAMMA": [0.0, 0.0, 0.0], "X": [0.5, 0.0, 0.0]},
+        }
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            self._build(
+                fake_cutoffs_family,
+                silicon_structure,
+                wannier_codes,
+                kpoint_path=path,
+                interpolation_kpoints=labelled_kpath,
+            )
+
+    def test_bands_kpoints_without_projwfc_code_needs_projwfc(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+    ):
+        """A missing projwfc code is a structural error, not a silent skip.
+
+        Entry into the projwfc step is decided by
+        ``projected_dos_supported(...)`` alone — ``fake_cutoffs_family``
+        supports it — so the step is wired regardless of whether
+        ``wannier_codes`` carries a ``projwfc`` code.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        wg = self._build(
+            fake_cutoffs_family, silicon_structure, wannier_codes, bands_kpoints=labelled_kpath
+        )
+        names = [t.name for t in wg.tasks]
+        assert "projwfc" in names
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".projwfc_code") for path in missing)
 
     def test_kpoint_path_sets_bands_plot(
         self, fake_cutoffs_family, silicon_structure, wannier_codes

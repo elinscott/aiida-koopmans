@@ -23,6 +23,7 @@ build:
     - rm -rf ../aiida-workgraph && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-workgraph ../aiida-workgraph
     - rm -rf ../node-graph && git clone --depth 1 --branch patched https://github.com/elinscott/node-graph ../node-graph
     - rm -rf ../aiida-wannier90-workflows && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-wannier90-workflows ../aiida-wannier90-workflows
+    - rm -rf ../aiida-quantumespresso && git clone --depth 1 --branch patched https://github.com/elinscott/aiida-quantumespresso ../aiida-quantumespresso
     - rm -rf ../aiida-wannierjl && git clone --depth 1 --branch main https://github.com/elinscott/aiida-wannierjl ../aiida-wannierjl
     - rm -rf ../upf-tools && git clone --depth 1 --branch main https://github.com/elinscott/upf-tools ../upf-tools
     - uv venv $READTHEDOCS_VIRTUALENV_PATH

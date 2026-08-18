@@ -212,12 +212,38 @@ class TestBlockWannierizeGraphBuild:
             == "bands"
         )
         # projwfc reads the bands run's scratch, so its projections resolve
-        # along the path.
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        # along the path. "projwfc" is RunProjwfc, a nested graph task;
+        # parent_folder is its own top-level input.
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["bands"]["output_band"]._links
         assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
+
+    def test_bands_kpoints_decouples_the_quality_check_from_interpolation(
+        self, pdos_codes, silicon_structure, kmesh, kpath, labelled_kpath, fake_cutoffs_family
+    ):
+        """Off the split path, ``bands_kpoints`` no longer needs a split trigger.
+
+        Given alongside ``interpolation_kpoints``, the quality-check
+        ``bands`` run samples the former while every block's wannier90
+        interpolates along the latter — two independent k-point lists, not
+        the same node doing double duty.
+        """
+        wg = WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            interpolation_kpoints=labelled_kpath,
+        )
+        assert wg.tasks["bands"].inputs["kpoints"].value.uuid == kpath.uuid
+        block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for task_ in block_tasks:
+            assert task_.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
 
     def test_no_interpolation_kpoints_feeds_no_block(self, pdos_codes, silicon_structure, kmesh):
         """Negative control: absent a path, no per-block graph receives one.
@@ -237,10 +263,20 @@ class TestBlockWannierizeGraphBuild:
         assert not wg.outputs["bands"]["output_band"]._links
         assert not wg.outputs["projwfc"]["Dos"]._links
 
-    def test_interpolation_without_projwfc_code_runs_bands_only(
+    def test_interpolation_without_projwfc_code_runs_bands_and_needs_projwfc(
         self, wannier_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
-        """Without a projwfc code the quality-check bands run still happens."""
+        """The quality-check bands run happens; a missing projwfc code is now loud.
+
+        Entry into the projwfc step is decided by
+        ``projected_dos_supported(...)`` alone — ``fake_cutoffs_family``
+        supports it — so the step is wired regardless of whether
+        ``wannier_codes`` carries a ``projwfc`` code. Its own required
+        socket then goes unfilled, caught structurally before ``run``
+        rather than silently skipped at build.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
         wg = WannierizeBlocks.build(
             codes=wannier_codes,
             structure=silicon_structure,
@@ -251,14 +287,24 @@ class TestBlockWannierizeGraphBuild:
         )
         names = [t.name for t in wg.tasks]
         assert count_pw_bands_runs(wg) == 1
-        assert "projwfc" not in names
+        assert "projwfc" in names
         assert wg.outputs["bands"]["output_band"]._links
-        assert not wg.outputs["projwfc"]["Dos"]._links
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".projwfc_code") for path in missing)
 
     def test_parallelization_reaches_the_quality_check_steps(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
     ):
-        """The pw entry lands on the bands run, the projwfc entry on projwfc."""
+        """The pw entry lands on the bands run; the whole mapping reaches projwfc.
+
+        "projwfc" is now RunProjwfc, a nested graph task: its own
+        ``projwfc.x`` ``metadata.options`` only exist once that graph
+        expands, so this checks the mapping arrives at the wrapper's own
+        ``parallelization`` input instead of the (now invisible) inner
+        CalcJob options.
+        """
         wg = WannierizeBlocks.build(
             codes=pdos_codes,
             structure=silicon_structure,
@@ -271,8 +317,8 @@ class TestBlockWannierizeGraphBuild:
         bands_pw = wg.tasks["bands"].inputs["pw"]
         assert bands_pw["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 3
         assert bands_pw["settings"].value["cmdline"] == ["-npool", "2"]
-        projwfc = wg.tasks["projwfc"].inputs["projwfc"]
-        assert projwfc["metadata"]["options"]["resources"].value["num_mpiprocs_per_machine"] == 2
+        parallelization = wg.tasks["projwfc"].inputs["parallelization"].value
+        assert parallelization["projwfc"]["ntasks"] == 2
 
     def test_incapable_pseudos_skip_only_the_projected_dos(
         self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_family_without_pswfc
@@ -402,35 +448,33 @@ class TestBlockWannierizeGraphBuild:
         with pytest.raises(ValueError, match="uppermost block of its spin channel"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 
-    def test_external_scratch_rejects_scf_nscf_overrides(
-        self, wannier_codes, silicon_structure, kmesh, nscf_remote
+    def test_external_scratch_still_forwards_scf_nscf_to_the_block_builders(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote, fake_cutoffless_family
     ):
-        """scf/nscf overrides would be silently ignored alongside an external scratch."""
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                overrides={"scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 70.0}}}}},
-            )
+        """``scf``/``nscf`` overrides reach every per-block builder, not just the internal scf+nscf.
 
-    def test_external_scratch_rejects_nscf_overrides_without_scf_remote_folder(
-        self, wannier_codes, silicon_structure, kmesh, nscf_remote
-    ):
-        """Without ``scf_remote_folder`` no step reads ``overrides["nscf"]``."""
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
-            )
+        An external ``nscf_remote_folder`` skips the *internal* shared scf +
+        nscf, but each block's nested ``Wannier90WorkChain.get_builder_from_protocol``
+        call still needs cutoffs when the family recommends none — the only
+        way the caller's ``ecutwfc``/``ecutrho`` can reach it. A build that
+        used to be rejected here now succeeds instead.
+        """
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffless_family.label,
+            nscf_remote_folder=nscf_remote,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+        )
+        names = [t.name for t in wg.tasks]
+        assert "scf_nscf" not in names
+        assert sum(1 for name in names if name.startswith("wannierize_block")) == 2
 
     def test_scf_remote_folder_unlocks_the_quality_check(
         self,
@@ -486,27 +530,30 @@ class TestBlockWannierizeGraphBuild:
         assert "bands" not in names
         assert "projwfc" not in names
 
-    def test_scf_remote_folder_without_a_path_still_rejects_nscf_overrides(
+    def test_scf_remote_folder_without_a_path_still_forwards_nscf_overrides(
         self, wannier_codes, silicon_structure, kmesh, nscf_remote, scf_remote
     ):
-        """``scf_remote_folder`` alone does not unlock ``overrides["nscf"]`` either.
+        """``overrides["nscf"]`` builds even without a quality-check bands step to consume it.
 
         Without ``interpolation_kpoints`` too, no quality-check bands step
-        runs to consume the nscf overrides (see the previous test): giving
-        them anyway would be silently ignored, exactly as without
-        ``scf_remote_folder`` at all.
+        runs (see the previous test) — but ``overrides["nscf"]`` still
+        reaches every per-block builder's nested
+        ``Wannier90WorkChain.get_builder_from_protocol`` call (see
+        :func:`_builder_overrides`), so it is no longer rejected.
         """
-        with pytest.raises(ValueError, match="external"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family="SSSP/1.3/PBE/efficiency",
-                nscf_remote_folder=nscf_remote,
-                scf_remote_folder=scf_remote,
-                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
-            )
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            nscf_remote_folder=nscf_remote,
+            scf_remote_folder=scf_remote,
+            overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
+        )
+        names = [t.name for t in wg.tasks]
+        assert "bands" not in names
+        assert "projwfc" not in names
 
 
 # ----------------------------------------------------------------------
@@ -577,11 +624,25 @@ class TestSplitMode:
             self._build_split(auto_codes, silicon_structure, kmesh, kpath, num_occ_bands=None)
 
     def test_split_without_wannierjl_code_raises(
-        self, wannier_codes, silicon_structure, kmesh, kpath
+        self, wannier_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
-        """The detected groups are split with Wannier.jl, so its code is required."""
-        with pytest.raises(ValueError, match="Split mode requires a `wannierjl` code"):
-            self._build_split(wannier_codes, silicon_structure, kmesh, kpath)
+        """The detected groups are split with Wannier.jl.
+
+        ``wannierjl`` is wired unconditionally into
+        ``WannierizeAndSplitBlock``'s own required socket, so a caller
+        without the code still builds — the framework's structural
+        missing-input check catches it before ``run``, naming the per-block
+        socket, not a build-time membership test on ``codes``.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        wg = self._build_split(
+            wannier_codes, silicon_structure, kmesh, kpath, pseudo_family=fake_cutoffs_family.label
+        )
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        assert any(path.endswith(".codes.wannierjl") for path in missing)
 
     def test_split_with_external_scratch_raises(
         self, auto_codes, silicon_structure, kmesh, kpath, nscf_remote
@@ -696,8 +757,10 @@ class TestSplitMode:
         )
         names = [t.name for t in wg.tasks]
         assert names.count("collect_wannier_functions") == 1
-        # ``auto_codes`` carries no projwfc code, so no projected DOS runs.
-        assert "projwfc" not in names
+        # ``auto_codes`` carries no projwfc code, but ``fake_cutoffs_family``
+        # supports the projected DOS, so the projwfc entry still runs — its
+        # own required code socket goes unfilled rather than gating entry.
+        assert "projwfc" in names
         # Each entry receives its whole products namespace through a single
         # handle link (per-key links into a dynamic entry do not survive the
         # run-start round-trip), so the link sits on the entry itself.
@@ -746,7 +809,7 @@ class TestSplitMode:
         names = [t.name for t in wg.tasks]
         assert count_pw_bands_runs(wg) == 1
         assert names.count("projwfc") == 1
-        links = wg.tasks["projwfc"].inputs["projwfc"]["parent_folder"]._links
+        links = wg.tasks["projwfc"].inputs["parent_folder"]._links
         assert [link.from_task.name for link in links] == ["bands"]
         assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
@@ -1304,6 +1367,39 @@ class TestWannierizeBlockBuild:
 
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
+
+    def test_cutoffless_family_needs_scf_nscf_cutoffs_threaded(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffless_family
+    ):
+        """A pseudo family that recommends no cutoffs must not crash the build.
+
+        ``fake_cutoffless_family`` carries no ``RecommendedCutoffMixin``, so
+        the nested ``Wannier90WorkChain.get_builder_from_protocol`` call
+        inside :func:`WannierizeBlock` raises "cannot recommend cutoffs"
+        unless the caller's ``ecutwfc``/``ecutrho`` reach it — even though
+        the block discards the nested ``scf``/``nscf`` namespaces once the
+        builder has been constructed (see
+        ``test_flat_overrides_reach_the_builder_namespaces`` above, which
+        uses a cutoffs-recommending family and so never exercises this path).
+        """
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        cutoffs = {"SYSTEM": {"ecutwfc": 30.0, "ecutrho": 240.0}}
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffless_family.label,
+            overrides={
+                "scf": {"pw": {"parameters": dict(cutoffs)}},
+                "nscf": {"pw": {"parameters": dict(cutoffs)}},
+            },
+            mp_grid=[2, 2, 2],
+        )
+        assert self._w90_parameters(wg)["num_wann"] == 4
 
     def test_parameters_ride_an_explicit_socket(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family

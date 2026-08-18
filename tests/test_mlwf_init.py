@@ -273,6 +273,46 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
         assert any(name.startswith("ComputeScreeningParameters") for name in names), names
         assert any(name.startswith("RunFinalKI") for name in names), names
 
+    def test_missing_wannier_route_codes_raises_structurally(
+        self, periodic_ozone_structure, kcp_code, ozone_pseudo_family, kmesh
+    ):
+        """The Wannier route builds without its codes; ``run`` catches the gap.
+
+        ``_validate_scope`` no longer checks code membership: entering the
+        Wannier route is decided by ``init_orbitals`` alone, and the five
+        Wannier-route codes are wired unconditionally into
+        ``MlwfInitialization``'s own required ``codes`` spec. Omitting them
+        here still builds — the missing members surface as the framework's
+        structural missing-input error, naming the nested
+        ``wannier_initialization.codes.*`` sockets, not a build-time
+        ``ValueError``.
+        """
+        from aiida_workgraph.errors import MissingRequiredInputsError
+
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        wg = KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={"kcp": kcp_code},
+            blocks=_ozone_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+        )
+        with pytest.raises(MissingRequiredInputsError) as excinfo:
+            wg.check_before_run()
+        missing = {entry.socket_path for entry in excinfo.value.missing}
+        for member in ("pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc"):
+            assert any(
+                path.endswith(f"wannier_initialization.codes.{member}") for path in missing
+            ), (member, missing)
+
 
 class TestWannierOverridesThreading:
     """``wannier_overrides`` reach the wannierize step unchanged."""
