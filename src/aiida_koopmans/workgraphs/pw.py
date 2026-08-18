@@ -19,6 +19,7 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
+    force_pw_verbosity,
     inject_pseudo_family,
     pin_kpoints,
     unwrap_enum,
@@ -94,7 +95,8 @@ def assemble_pw_base_step(
 
     Build the step from the protocol builder with ``overrides`` merged on
     top, stamp its ``CONTROL.calculation`` (raising on a conflicting
-    explicit value), replace the protocol's distance-derived mesh with
+    explicit value) and its ``CONTROL.verbosity``, replace the protocol's
+    distance-derived mesh with
     ``kpoints`` when given, wire ``parent_folder``, and add the step to the
     surrounding graph under ``call_link_label``. A plain graph-assembly
     helper: it must be called inside a ``@task.graph`` body.
@@ -114,6 +116,7 @@ def assemble_pw_base_step(
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)
+    force_pw_verbosity(data["pw"])
     pin_kpoints(data, kpoints)
     if parent_folder is not None:
         data["pw"]["parent_folder"] = parent_folder
@@ -255,6 +258,7 @@ def RunPwBands(
         pw_inputs["parameters"] = orm.Dict(
             enforce_step_calculation(pw_inputs["parameters"].get_dict(), step, expected)
         )
+        force_pw_verbosity(pw_inputs)
 
     pin_kpoints(data["scf"], scf_kpoints)
 
