@@ -93,7 +93,11 @@ from aiida_koopmans.projections import (
     ProjectionBlock,
 )
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.variational_orbitals import VariationalOrbital, map_key_for
+from aiida_koopmans.variational_orbitals import (
+    VariationalOrbital,
+    display_name_for,
+    map_key_for,
+)
 from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
@@ -291,7 +295,10 @@ def GroupedKcwScreening(
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": namelist},
             "parent_folder": parent_folder,
             "wannier_files": wannier_files,
-            "metadata": {"call_link_label": f"screen_{key}"},
+            "metadata": {
+                "call_link_label": f"screen_{key}",
+                "label": display_name_for(orbital),
+            },
         }
         merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
@@ -716,7 +723,7 @@ def RunDFPT(
         "parameters": {"CONTROL": control, "WANNIER": wannier},
         "parent_folder": nscf_remote_folder,
         "wannier_files": wannier_files,
-        "metadata": {"call_link_label": "wann2kc"},
+        "metadata": {"call_link_label": "wann2kc", "label": "Wannier gauge"},
     }
     merge_parallelization_into_inputs(wann2kc_inputs, parallelization, "kcw")
     wann2kc = Wann2kcStep(**wann2kc_inputs)
@@ -775,7 +782,7 @@ def RunDFPT(
             wannier_files=wannier_files,
             orbitals=orbitals.result,
             parallelization=parallelization,
-            metadata={"call_link_label": "grouped_screen"},
+            metadata={"call_link_label": "grouped_screen", "label": "Orbital screening"},
         )
         alphas = grouped["alphas"]
     else:
@@ -786,7 +793,7 @@ def RunDFPT(
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
             "parent_folder": wann2kc["remote_folder"],
             "wannier_files": wannier_files,
-            "metadata": {"call_link_label": "screen"},
+            "metadata": {"call_link_label": "screen", "label": "Screening parameters"},
         }
         merge_parallelization_into_inputs(screen_inputs, parallelization, "kcw")
         screen = KcwScreenStep(**screen_inputs)
@@ -807,7 +814,7 @@ def RunDFPT(
         "parent_folder": wann2kc["remote_folder"],
         "wannier_files": wannier_files,
         "alphas": alphas,
-        "metadata": {"call_link_label": "ham"},
+        "metadata": {"call_link_label": "ham", "label": "Koopmans Hamiltonian"},
     }
     if do_bands:
         ham_inputs["kpoints"] = bands_kpoints
@@ -1231,7 +1238,7 @@ def SinglepointDFPTWorkflow(
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=spin,
-            metadata={"call_link_label": "dielectric"},
+            metadata={"call_link_label": "dielectric", "label": "Dielectric constant"},
         )
         eps_inf = dielectric["eps_inf"]
 
@@ -1291,7 +1298,7 @@ def SinglepointDFPTWorkflow(
         nscf_kpoints=explicit_kpoints,
         scf_kpoints=scf_kpoints,
         parallelization=parallelization,
-        metadata={"call_link_label": "scf_nscf"},
+        metadata={"call_link_label": "scf_nscf", "label": "Ground state"},
     )
     nscf_remote_folder = scf_nscf["nscf_remote_folder"]
 
@@ -1300,6 +1307,9 @@ def SinglepointDFPTWorkflow(
         channel_key = str(channel_key)
         channel = SpinChannel(channel_key)
         suffix = f"_{channel_key}" if collinear else ""
+        # A collinear run resolves the two channels separately, so every
+        # step of one says which channel it is.
+        channel_display = f" (spin {channel_key})" if collinear else ""
         wannier_overrides = _manifold_wannier_overrides(spin, channel, overrides)
         _seed_wannier_scf_nscf_overrides(wannier_overrides, scf_nscf_overrides)
 
@@ -1331,7 +1341,10 @@ def SinglepointDFPTWorkflow(
             nscf_bands=scf_nscf["nscf_output_band"],
             interpolation_kpoints=bands_kpoints,
             parallelization=parallelization,
-            metadata={"call_link_label": f"wannierize{suffix}"},
+            metadata={
+                "call_link_label": f"wannierize{suffix}",
+                "label": f"Wannierization{channel_display}",
+            },
         )
         # Hand RunDFPT the whole ``blocks`` namespace: a nested sub-graph's
         # dynamic namespace has no per-key sockets at build time, so it must
@@ -1356,7 +1369,10 @@ def SinglepointDFPTWorkflow(
             "check_spread": check_spread,
             "kcw_overrides": kcw_overrides,
             "parallelization": parallelization,
-            "metadata": {"call_link_label": f"dfpt{suffix}"},
+            "metadata": {
+                "call_link_label": f"dfpt{suffix}",
+                "label": f"DFPT screening{channel_display}",
+            },
         }
         _add_quality_check_dfpt_inputs(
             dfpt_inputs, bands_kpoints, wannierized, pseudo_family, structure
