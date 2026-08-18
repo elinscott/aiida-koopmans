@@ -50,6 +50,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
+from aiida_koopmans.projections import block_display_name
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital, VariationalOrbitalType
@@ -539,7 +540,10 @@ def fan_out_block_descriptors(
                 "u_mat": products["u_mat"],
                 "centres_xyz": products["centres_xyz"],
                 "centres_file": products["centres_file"],
-                "metadata": {"call_link_label": f"decompose_{label}"},
+                "metadata": {
+                    "call_link_label": f"decompose_{label}",
+                    "label": f"Decomposition ({block_display_name(block, group['spin'])})",
+                },
             }
             # Per-block namelist: the manifold's spin channel (structural
             # authority) fixes ``spin_component``, overriding any shared value
@@ -777,6 +781,16 @@ def require_ml_mode_inputs(
         )
 
 
+def snapshot_display(label: str) -> str:
+    """Return how one snapshot is named for a reader, from its socket key.
+
+    The key is the snapshot's identity throughout the trajectory
+    (``snapshot_3``); this renders it as prose (``Snapshot 3``) without
+    reading anything into its parts.
+    """
+    return label.replace("_", " ").capitalize()
+
+
 def wire_snapshot_dataset(
     descriptor: MLDescriptor,
     dscf: Any,
@@ -802,7 +816,10 @@ def wire_snapshot_dataset(
             alphas=dscf["alphas"],
             decompose_parameters=decompose_parameters,
             parallelization=parallelization,
-            metadata={"call_link_label": f"descriptors_{label}"},
+            metadata={
+                "call_link_label": f"descriptors_{label}",
+                "label": f"Descriptors ({snapshot_display(label).lower()})",
+            },
         )["dataset"]
     return extract_snapshot_dataset(parameters=dscf["parameters"], alphas=dscf["alphas"])
 
@@ -935,7 +952,7 @@ def TrajectoryWorkflow(
             eps_inf=eps_inf,
             overrides=overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": f"dscf_{label}"},
+            metadata={"call_link_label": f"dscf_{label}", "label": snapshot_display(label)},
         )
         snapshot_outputs[label] = KoopmansDSCFOutputs(
             parameters=dscf["parameters"],
