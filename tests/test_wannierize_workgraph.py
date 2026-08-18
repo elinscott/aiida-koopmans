@@ -168,6 +168,45 @@ class TestBandInterpolation:
         assert [link.from_task.name for link in links] == ["projwfc"]
         assert_graph_roundtrips(wg)
 
+    def test_interpolation_kpoints_decouples_from_bands_kpoints(
+        self, fake_cutoffs_family, silicon_structure, pdos_codes, kpath, labelled_kpath
+    ):
+        """Given, ``interpolation_kpoints`` wins for wannier90; ``bands_kpoints`` stays pw.x-only.
+
+        ``bands_kpoints`` needs no labels here since it no longer reaches
+        wannier90's own ``bands_kpoints`` port — that's exactly the point.
+        """
+        wg = self._build(
+            fake_cutoffs_family,
+            silicon_structure,
+            pdos_codes,
+            bands_kpoints=kpath,
+            interpolation_kpoints=labelled_kpath,
+        )
+        inputs = self._w90_inputs(wg)
+        assert inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        assert inputs["parameters"].value.get_dict()["bands_plot"] is True
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["kpoints"].value.uuid == kpath.uuid
+        assert_graph_roundtrips(wg)
+
+    def test_kpoint_path_and_interpolation_kpoints_conflict(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
+    ):
+        """``interpolation_kpoints`` is exclusive with ``kpoint_path``, like ``bands_kpoints``."""
+        path = {
+            "path": [["GAMMA", "X"]],
+            "point_coords": {"GAMMA": [0.0, 0.0, 0.0], "X": [0.5, 0.0, 0.0]},
+        }
+        with pytest.raises(ValueError, match="Cannot specify both"):
+            self._build(
+                fake_cutoffs_family,
+                silicon_structure,
+                wannier_codes,
+                kpoint_path=path,
+                interpolation_kpoints=labelled_kpath,
+            )
+
     def test_bands_kpoints_without_projwfc_code_needs_projwfc(
         self, fake_cutoffs_family, silicon_structure, wannier_codes, labelled_kpath
     ):
