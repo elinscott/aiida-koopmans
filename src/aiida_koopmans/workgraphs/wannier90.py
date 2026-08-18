@@ -518,10 +518,11 @@ def Wannierize(
 
     # ``Wannier90WorkChain`` sets ``call_link_label`` on the inputs it exposes
     # for these four steps, leaving a label given here in place. Its two
-    # wannier90.x steps are not among them: both read the one ``wannier90``
-    # namespace, and the workchain replaces that namespace's metadata
-    # wholesale before submitting each (aiida-wannier90-workflows
-    # ``run_wannier90_pp`` / ``run_wannier90``).
+    # wannier90.x steps are not among them: the -pp pass and the
+    # minimization are two runs off one ``wannier90`` namespace, so one
+    # label could not tell them apart, and the workchain replaces that
+    # namespace's own metadata before submitting each anyway
+    # (aiida-wannier90-workflows ``run_wannier90_pp`` / ``run_wannier90``).
     for namespace, calculation, display in (
         ("scf", "pw", "SCF"),
         ("nscf", "pw", "NSCF"),

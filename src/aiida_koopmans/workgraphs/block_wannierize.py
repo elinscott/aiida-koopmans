@@ -956,9 +956,9 @@ def WannierizeBlock(
         data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90"
     )
 
-    # The workchain names its own pw2wannier90 step; its two wannier90.x
-    # steps read one shared namespace whose metadata it replaces wholesale,
-    # so those two carry no label (see ``Wannierize``).
+    # The workchain carries a label through to its pw2wannier90 step; its
+    # two wannier90.x steps are two runs off one namespace, so neither
+    # can be named from here (see ``Wannierize``).
     name_step(data["pw2wannier90"], "Overlaps")
     name_step(data["pw2wannier90"]["pw2wannier90"], "Overlaps")
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"

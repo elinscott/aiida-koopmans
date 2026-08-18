@@ -92,11 +92,12 @@ def map_key_for(orbital: VariationalOrbital) -> str:
 def display_name_for(orbital: VariationalOrbital) -> str:
     """Return how one variational orbital is named for a reader.
 
-    ``Orbital 5``, or ``Orbital 5 (spin up)`` where the run resolves the
-    two channels separately. The band index is the orbital's own 1-based
-    per-spin index, not its position in any fan-out.
+    ``Orbital 5``, or ``Orbital 5 (spin up)`` on a collinear run, which
+    resolves the two channels separately. A spinless or spinor orbital
+    belongs to no channel and is named without one. The band index is the
+    orbital's own 1-based per-spin index, not its position in a fan-out.
     """
     spin = SpinChannel(orbital["spin"])
-    if spin is SpinChannel.NONE:
-        return f"Orbital {orbital['index']}"
-    return f"Orbital {orbital['index']} (spin {spin.value})"
+    if spin in (SpinChannel.UP, SpinChannel.DOWN):
+        return f"Orbital {orbital['index']} (spin {spin.value})"
+    return f"Orbital {orbital['index']}"

@@ -414,8 +414,8 @@ def block_display_name(block: ProjectionBlock, spin: SpinChannel | None = None) 
 
     The manifold and the index come from the label, which is where alone
     they are recorded: ``occ`` / ``emp`` says which manifold the block
-    was cut from and ``block`` that it straddles the boundary, and the
-    trailing index counts the blocks of one manifold (see
+    was cut from, ``block`` that no manifold has been settled for it, and
+    the trailing index counts the blocks of one manifold (see
     :func:`_manifold_projection_blocks`). A label written to no such
     pattern is returned unchanged.
 
