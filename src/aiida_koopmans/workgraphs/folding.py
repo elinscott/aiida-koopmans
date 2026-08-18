@@ -46,7 +46,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from aiida_koopmans.calculations.merge_evc import MergeEvcCalculation
 from aiida_koopmans.calculations.wann2kcp import Wann2kcpCalculation
 from aiida_koopmans.parallelization import ParallelizationDict, merge_parallelization_into_inputs
-from aiida_koopmans.projections import ProjectionBlock
+from aiida_koopmans.projections import ProjectionBlock, block_display_name
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import MergeGroup, merge_dest_filename
@@ -129,11 +129,13 @@ class FoldTarget(TypedDict):
     * ``source_port`` — the per-block wann2kcp output to concatenate
       (``evcw1`` / ``evcw2`` for a spinless run, ``evcw`` for a
       spin-resolved one).
+    * ``display`` — how the run is named for a reader.
     """
 
     group_index: int
     stem: str
     source_port: str
+    display: str
 
 
 def enumerate_fold_targets(
@@ -157,7 +159,15 @@ def enumerate_fold_targets(
             pairs = [(1, "evcw1"), (2, "evcw2")]
         for spin_index, source_port in pairs:
             stem = merge_dest_filename(group["filled"], spin_index).removesuffix(".dat")
-            targets.append(FoldTarget(group_index=group_index, stem=stem, source_port=source_port))
+            manifold = "occupied" if group["filled"] else "empty"
+            targets.append(
+                FoldTarget(
+                    group_index=group_index,
+                    stem=stem,
+                    source_port=source_port,
+                    display=f"Merged Wannier manifold ({manifold}, spin {spin_index})",
+                )
+            )
     return targets
 
 
@@ -228,7 +238,10 @@ def FoldToSupercell(
             "nnkp_file": block_wannier[label]["nnkp_file"],
             "chk_file": wannier_files["chk_file"],
             "hr_file": wannier_files["hr_file"],
-            "metadata": {"call_link_label": f"fold_{label}"},
+            "metadata": {
+                "call_link_label": f"fold_{label}",
+                "label": f"Supercell Wannier functions ({block_display_name(block)})",
+            },
         }
         merge_parallelization_into_inputs(w2k_inputs, parallelization, "wann2kcp")
         w2k_outputs[label] = Wann2kcpTask(**w2k_inputs)
@@ -249,7 +262,10 @@ def FoldToSupercell(
             "kgrid": list(kgrid),
             "dest_filename": f"{target['stem']}.dat",
             "source_files": source_files,
-            "metadata": {"call_link_label": f"merge_{target['stem']}"},
+            "metadata": {
+                "call_link_label": f"merge_{target['stem']}",
+                "label": target["display"],
+            },
         }
         merged[target["stem"]] = MergeEvcTask(**merge_inputs)["merged_file"]
 
