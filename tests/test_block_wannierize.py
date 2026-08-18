@@ -220,6 +220,31 @@ class TestBlockWannierizeGraphBuild:
         assert wg.outputs["projwfc"]["Dos"]._links
         assert_graph_roundtrips(wg)
 
+    def test_bands_kpoints_decouples_the_quality_check_from_interpolation(
+        self, pdos_codes, silicon_structure, kmesh, kpath, labelled_kpath, fake_cutoffs_family
+    ):
+        """Off the split path, ``bands_kpoints`` no longer needs a split trigger.
+
+        Given alongside ``interpolation_kpoints``, the quality-check
+        ``bands`` run samples the former while every block's wannier90
+        interpolates along the latter — two independent k-point lists, not
+        the same node doing double duty.
+        """
+        wg = WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            bands_kpoints=kpath,
+            interpolation_kpoints=labelled_kpath,
+        )
+        assert wg.tasks["bands"].inputs["kpoints"].value.uuid == kpath.uuid
+        block_tasks = [t for t in wg.tasks if t.name.startswith("wannierize_block")]
+        assert len(block_tasks) == 2
+        for task_ in block_tasks:
+            assert task_.inputs["interpolation_kpoints"].value.uuid == labelled_kpath.uuid
+
     def test_no_interpolation_kpoints_feeds_no_block(self, pdos_codes, silicon_structure, kmesh):
         """Negative control: absent a path, no per-block graph receives one.
 
