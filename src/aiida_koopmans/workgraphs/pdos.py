@@ -15,7 +15,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import inject_pseudo_family, unwrap_enum
+from aiida_koopmans.workgraphs import force_pw_verbosity, inject_pseudo_family, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwCode
 
 
@@ -110,6 +110,9 @@ def RunPdos(
     )
 
     data = get_dict_from_builder(builder)
+
+    for step in ("scf", "nscf"):
+        force_pw_verbosity(data[step]["pw"])
 
     # PdosWorkChain.get_builder_from_protocol seeds projwfc.code / parameters /
     # metadata but never projwfc.settings, so a projwfc entry threaded through

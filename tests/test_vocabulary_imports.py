@@ -9,10 +9,16 @@ import sys
 # closure must not reach ``aiida_workgraph`` or ``aiida_pythonjob``:
 # ``aiida_pythonjob`` loads the AiiDA configuration at import time and
 # raises on a machine that has none.
+#
+# The bar is a usable import without a configuration, not an
+# aiida-free one: importing any module in this package runs
+# ``aiida_koopmans/__init__.py``, whose hyperqueue patch imports
+# ``aiida_hyperqueue.scheduler`` and so ``aiida.common``.
 VOCABULARY_MODULES = (
     "aiida_koopmans.functionals",
     "aiida_koopmans.ml",
     "aiida_koopmans.occupations",
+    "aiida_koopmans.owned_keywords",
     "aiida_koopmans.parallelization",
     "aiida_koopmans.projections",
     "aiida_koopmans.screening",
