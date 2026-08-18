@@ -8,42 +8,17 @@ the aiida-quantumespresso ``PdosWorkChain.get_builder_from_protocol`` dropping
 
 from __future__ import annotations
 
-import pytest
 from aiida_quantumespresso.common.types import ElectronicType
 
 from aiida_koopmans.workgraphs.pdos import RunPdos
 
 
-@pytest.fixture
-def pdos_codes(aiida_localhost):
-    """Stand-in pw / dos / projwfc codes (construction-only; never executed)."""
-    from aiida.common.exceptions import NotExistent
-    from aiida.orm import InstalledCode
-
-    def _code(label: str, entry_point: str):
-        try:
-            return InstalledCode.collection.get(label=label)
-        except NotExistent:
-            return InstalledCode(
-                label=label,
-                computer=aiida_localhost,
-                filepath_executable="/bin/true",
-                default_calc_job_plugin=entry_point,
-            ).store()
-
-    return {
-        "pw": _code("pdos-pw", "quantumespresso.pw"),
-        "dos": _code("pdos-dos", "quantumespresso.dos"),
-        "projwfc": _code("pdos-pjw", "quantumespresso.projwfc"),
-    }
-
-
 def test_projwfc_npool_and_pd_reach_the_projwfc_step(
-    pdos_codes, silicon_structure, fake_cutoffs_family
+    run_pdos_codes, silicon_structure, fake_cutoffs_family
 ):
     """The projwfc entry lands on projwfc.settings despite the workchain dropping it."""
     wg = RunPdos.build(
-        codes=pdos_codes,
+        codes=run_pdos_codes,
         structure=silicon_structure,
         pseudo_family=fake_cutoffs_family.label,
         parallelization={"projwfc": {"ntasks": 4, "npool": 2, "pd": True}},
@@ -71,11 +46,11 @@ class TestRunPdosOccupations:
     """
 
     def test_default_insulator_fixes_both_steps(
-        self, pdos_codes, silicon_structure, fake_cutoffs_family
+        self, run_pdos_codes, silicon_structure, fake_cutoffs_family
     ):
         """No ``electronic_type`` given: the declared ``INSULATOR`` default fires."""
         wg = RunPdos.build(
-            codes=pdos_codes,
+            codes=run_pdos_codes,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
         )
@@ -85,10 +60,10 @@ class TestRunPdosOccupations:
         assert "smearing" not in system
         assert "degauss" not in system
 
-    def test_metal_still_smears(self, pdos_codes, silicon_structure, fake_cutoffs_family):
+    def test_metal_still_smears(self, run_pdos_codes, silicon_structure, fake_cutoffs_family):
         """A metallic run keeps the protocol's smearing — the fix is not a blanket override."""
         wg = RunPdos.build(
-            codes=pdos_codes,
+            codes=run_pdos_codes,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
             electronic_type=ElectronicType.METAL,

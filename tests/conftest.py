@@ -45,6 +45,7 @@ from tests.fixtures import (  # noqa: F401
     periodic_ozone_structure,
     ph_codes,
     pw_code,
+    run_pdos_codes,
     scf_remote,
     si_reference,
     silicon_structure,

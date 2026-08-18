@@ -671,6 +671,30 @@ def pdos_codes(wannier_codes, aiida_localhost):
 
 
 @pytest.fixture
+def run_pdos_codes(aiida_localhost):
+    """Return the pw / dos / projwfc codes ``RunPdos`` takes (never executed)."""
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    def _code(label: str, entry_point: str):
+        try:
+            return InstalledCode.collection.get(label=label)
+        except NotExistent:
+            return InstalledCode(
+                label=label,
+                computer=aiida_localhost,
+                filepath_executable="/bin/true",
+                default_calc_job_plugin=entry_point,
+            ).store()
+
+    return {
+        "pw": _code("pdos-pw", "quantumespresso.pw"),
+        "dos": _code("pdos-dos", "quantumespresso.dos"),
+        "projwfc": _code("pdos-pjw", "quantumespresso.projwfc"),
+    }
+
+
+@pytest.fixture
 def dfpt_codes(aiida_localhost):
     """Return a codes dict of stand-in nodes for the kcw.x graphs.
 

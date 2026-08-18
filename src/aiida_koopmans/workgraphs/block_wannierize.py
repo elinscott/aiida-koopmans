@@ -67,6 +67,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 from node_graph import reference
 
+from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -892,9 +893,9 @@ def WannierizeBlock(
     # ``write_u_matrices`` / ``write_xyz`` produce the U matrices and Wannier
     # centres that pw2wannier90 ``wan_mode='decompose'`` and the wannierjl
     # split consume.
-    w90_params["write_hr"] = True
-    w90_params["write_u_matrices"] = True
-    w90_params["write_xyz"] = True
+    w90_params.update(
+        owned("wannier90", {"write_hr": True, "write_u_matrices": True, "write_xyz": True})
+    )
     # The protocol builder froze ``mp_grid`` from its own distance-derived
     # mesh, which goes stale once the shared k-list is substituted below.
     # Pin the real mesh dimensions when given (wannier90 cannot re-derive
@@ -1145,11 +1146,13 @@ def _resolve_split_mode(
     Split mode triggers on the *need* for splitting: a gap threshold was
     requested (``split_threshold``), or a block's band groups are only
     discovered at runtime (an automatic-projections block — no
-    ``projections`` key). ``bands_kpoints`` is a requirement of split mode,
-    not its trigger. Plain mode rejects split-only knobs rather than
-    silently ignore them; every violation raises naming the gap.
-    ``interpolation_kpoints`` rides on both routes and only its labels are
-    checked here. Does not validate the ``wannierjl`` code: that
+    ``projections`` key). Split mode requires ``bands_kpoints`` but does not
+    trigger on it: it rides on both routes, setting the quality-check pw.x
+    run's k-point list either way (and doubling as the split-detection
+    input when split). Plain mode rejects the remaining split-only knobs
+    rather than silently ignore them; every violation raises naming the
+    gap. ``interpolation_kpoints`` also rides on both routes and only its
+    labels are checked here. Does not validate the ``wannierjl`` code: that
     requirement lives on
     :func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`'s
     own ``codes`` spec, which the split branch enters unconditionally.
@@ -1157,8 +1160,10 @@ def _resolve_split_mode(
     require_path_labels(interpolation_kpoints, "interpolation_kpoints")
     split = split_threshold is not None or any("projections" not in block for block in blocks)
     if not split:
+        # bands_kpoints is not split-only: off the split path it still sets
+        # the quality-check pw.x run's own k-point list, independent of
+        # interpolation_kpoints (see _run_explicit_bands_and_dos_steps).
         split_only = {
-            "bands_kpoints": bands_kpoints,
             "num_occ_bands": num_occ_bands,
             "wjl_options": wjl_options,
             "subblock_wannier90_options": subblock_wannier90_options,
@@ -1212,7 +1217,6 @@ def _resolve_split_mode(
 def _run_explicit_bands_and_dos_steps(
     codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
-    split: bool,
     bands_kpoints: orm.KpointsData | None,
     interpolation_kpoints: orm.KpointsData | None,
     scf_remote_folder: orm.RemoteData,
@@ -1225,13 +1229,13 @@ def _run_explicit_bands_and_dos_steps(
     """Assemble the pw.x quality-check bands run and its projwfc step.
 
     A plain graph-assembly helper: it must be called inside a
-    ``@task.graph`` body. Split mode samples ``bands_kpoints`` (the
-    detection run doubles as the quality check), plain mode
-    ``interpolation_kpoints``; without a path nothing is assembled.
-    Returns the bands run as a ready-to-wire :class:`PwOutputs` namespace
-    (``output_band`` holds the eigenvalues the detection and the quality
-    comparison read) and — whenever every pseudo carries ``PP_PSWFC`` atomic
-    wavefunctions
+    ``@task.graph`` body. Samples ``bands_kpoints`` when given (in split
+    mode this run doubles as the detection input), and falls back to
+    ``interpolation_kpoints`` otherwise; without either path nothing is
+    assembled. Returns the bands run as a ready-to-wire :class:`PwOutputs`
+    namespace (``output_band`` holds the eigenvalues the detection and the
+    quality comparison read) and — whenever every pseudo carries
+    ``PP_PSWFC`` atomic wavefunctions
     (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`,
     which skips with a warning otherwise) — the chained projected-DOS
     namespace off the run's scratch
@@ -1240,7 +1244,7 @@ def _run_explicit_bands_and_dos_steps(
     ``codes`` then surfaces as that graph's own structural missing-input
     error).
     """
-    quality_path = bands_kpoints if split else interpolation_kpoints
+    quality_path = bands_kpoints if bands_kpoints is not None else interpolation_kpoints
     if quality_path is None:
         return None, None
     bands_step = run_bands_step(
@@ -1436,8 +1440,11 @@ def WannierizeBlocks(
             split; setting it is one of the two split-mode triggers.
             ``None`` (with automatic-projections blocks supplying the other
             trigger) splits only at the occupied/empty boundary.
-        bands_kpoints: split mode only (required there) — the k-path for
-            the pw.x ``bands`` run the group detection reads.
+        bands_kpoints: the k-path for the pw.x quality-check ``bands`` run,
+            independent of ``interpolation_kpoints`` (which falls back to
+            this path when it is not given itself, and vice versa). Split
+            mode requires it: the group detection reads the same run's
+            eigenvalues.
         num_occ_bands: split mode only (required there) — occupied-band
             count of the channel (the detection always opens a new group at
             this boundary).
@@ -1459,11 +1466,10 @@ def WannierizeBlocks(
             (see :class:`WannierizeBlockOutputs`). In split mode the path
             reaches both the whole-block run and every per-group re-run
             (:func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`).
-            In plain mode it also triggers the pw.x quality-check ``bands``
-            run along the same path (which needs the internal scf, so an
-            external ``nscf_remote_folder`` leaves it out). Distinct from
-            the split-mode ``bands_kpoints``, which feeds the pw.x
-            detection run.
+            Without ``bands_kpoints`` it also feeds the pw.x quality-check
+            ``bands`` run (which needs the internal scf, so an external
+            ``nscf_remote_folder`` leaves it out); with ``bands_kpoints``
+            the two runs sample independent densities instead.
         external_projectors_path / external_projectors: the projector
             directory (one ``<element>.dat`` per element, on the
             pw2wannier90 code's computer) and the per-element orbital
@@ -1520,7 +1526,6 @@ def WannierizeBlocks(
             bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
                 codes=codes,
                 structure=structure,
-                split=False,
                 bands_kpoints=None,
                 interpolation_kpoints=interpolation_kpoints,
                 scf_remote_folder=scf_remote_folder,
@@ -1560,17 +1565,17 @@ def WannierizeBlocks(
         # --- quality-check / detection bands run (at most one per graph) ---
         # Nested under the internal scf + nscf on purpose: the run reads
         # this scf's remote folder (split mode rejects an external scratch,
-        # and plain mode skips the run without an internal scf). Split mode
-        # always runs it along ``bands_kpoints`` (required there); plain
-        # mode runs it along ``interpolation_kpoints`` when given, as the
-        # explicit eigenvalues the Wannier interpolation is judged against.
-        # One run serves both purposes when split mode's detection path
-        # doubles as the interpolation path (how the koopmans dispatcher
-        # wires it).
+        # and plain mode skips the run without an internal scf). Runs along
+        # ``bands_kpoints`` when given — required in split mode, where it
+        # doubles as the detection input — and falls back to
+        # ``interpolation_kpoints`` otherwise, as the explicit eigenvalues
+        # the Wannier interpolation is judged against. One run serves both
+        # purposes when the caller passes the same node for both (how the
+        # koopmans dispatcher wires a route with no independent density for
+        # each).
         bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
             codes=codes,
             structure=structure,
-            split=split,
             bands_kpoints=bands_kpoints,
             interpolation_kpoints=interpolation_kpoints,
             scf_remote_folder=scf_nscf["scf_remote_folder"],
