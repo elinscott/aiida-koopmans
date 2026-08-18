@@ -29,7 +29,12 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import enforce_step_calculation, name_step, unwrap_enum
+from aiida_koopmans.workgraphs import (
+    enforce_step_calculation,
+    force_pw_verbosity,
+    name_step,
+    unwrap_enum,
+)
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
@@ -334,6 +339,13 @@ def _finalize_wannier_builder(
         nscf_pw["parameters"] = orm.Dict(
             enforce_step_calculation(nscf_pw["parameters"].get_dict(), "nscf", "nscf")
         )
+
+    # Both pw namespaces are optional on the workchain (a run off an existing
+    # scratch has neither), so force each only where this run has it.
+    for step in ("scf", "nscf"):
+        pw_inputs = data.get(step, {}).get("pw")
+        if pw_inputs is not None and pw_inputs.get("parameters") is not None:
+            force_pw_verbosity(pw_inputs)
 
     return data
 

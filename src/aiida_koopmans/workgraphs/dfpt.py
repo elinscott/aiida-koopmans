@@ -83,6 +83,7 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
+from aiida_koopmans.owned_keywords import owned, seeded
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -907,13 +908,16 @@ def _channel_w90_defaults(spin: SpinType, channel: SpinChannel) -> WannierizeOve
     (shared-nscf pattern), so the upstream path can never fire here.
     """
     wannier90: dict[str, Any] = {"write_u_matrices": True, "write_xyz": True}
-    defaults: WannierizeOverrides = {"wannier90": wannier90}
+    defaults: WannierizeOverrides = {"wannier90": owned("wannier90", wannier90)}
     if spin in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
-        wannier90["spinors"] = True
+        wannier90.update(owned("wannier90", {"spinors": True}))
         return defaults
     if spin == SpinType.COLLINEAR:
-        wannier90["spin"] = channel.value
-    defaults["pw2wannier90"] = {"spin_component": "down" if channel == SpinChannel.DOWN else "up"}
+        wannier90.update(owned("wannier90", {"spin": channel.value}))
+    defaults["pw2wannier90"] = owned(
+        "pw2wannier90.INPUTPP",
+        {"spin_component": "down" if channel == SpinChannel.DOWN else "up"},
+    )
     return defaults
 
 
@@ -932,21 +936,24 @@ def _manifold_wannier_overrides(
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
-    wannier_defaults: dict[str, Any] = {
-        "guiding_centres": True,
-        "num_iter": 10000,
-        # The aiida-wannier90-workflows protocol raises num_cg_steps to 200;
-        # on the ZnO live validation that setting left the spread
-        # minimisation oscillating without convergence on matrices where the
-        # wannier90 default (5) converges in ~400 iterations.
-        "num_cg_steps": 5,
-        "conv_tol": 1.0e-10,
-        "conv_window": 5,
-        # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
-        # pin wannier90's own default (1e-10) so the disentanglement is
-        # tightly converged rather than the protocol's looser 4e-7.
-        "dis_conv_tol": 1.0e-10,
-    }
+    wannier_defaults: dict[str, Any] = seeded(
+        "wannier90",
+        {
+            "guiding_centres": True,
+            "num_iter": 10000,
+            # The aiida-wannier90-workflows protocol raises num_cg_steps to 200;
+            # on the ZnO live validation that setting left the spread
+            # minimisation oscillating without convergence on matrices where the
+            # wannier90 default (5) converges in ~400 iterations.
+            "num_cg_steps": 5,
+            "conv_tol": 1.0e-10,
+            "conv_window": 5,
+            # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
+            # pin wannier90's own default (1e-10) so the disentanglement is
+            # tightly converged rather than the protocol's looser 4e-7.
+            "dis_conv_tol": 1.0e-10,
+        },
+    )
     channel_defaults = _channel_w90_defaults(spin, channel)
     wannier90 = recursive_merge(
         recursive_merge(wannier_defaults, dict(overrides.get("wannier90", {}))),
@@ -1198,9 +1205,12 @@ def SinglepointDFPTWorkflow(
     forced_system = _pw_spin_system_defaults(spin)
     # The domag nudge is a *default*, not a requirement: a genuinely magnetic
     # system supplies its own starting_magnetization, which must win.
-    seed_system = {}
+    seed_system: dict[str, Any] = {}
     if "starting_magnetization" in forced_system:
-        seed_system = {"starting_magnetization": forced_system.pop("starting_magnetization")}
+        seed_system = seeded(
+            "pw.SYSTEM", {"starting_magnetization": forced_system.pop("starting_magnetization")}
+        )
+    owned("pw.SYSTEM", forced_system)
 
     def _with_spin(user: dict[str, Any], extra_forced: dict[str, Any]) -> dict[str, Any]:
         # seed (under) <- user <- forced (on top): the forced nspin/noncolin
@@ -1214,7 +1224,9 @@ def SinglepointDFPTWorkflow(
 
     scf_nscf_overrides: dict[str, Any] = {
         "scf": _with_spin(overrides.get("scf", {}), {}),
-        "nscf": _with_spin(overrides.get("nscf", {}), {"nosym": True, "noinv": True}),
+        "nscf": _with_spin(
+            overrides.get("nscf", {}), owned("pw.SYSTEM", {"nosym": True, "noinv": True})
+        ),
     }
 
     # wannier90 / pw2wannier90 need the nscf eigenstates on the full

@@ -43,6 +43,7 @@ from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
+from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
     ProjectionBlock,
@@ -351,12 +352,17 @@ def _subblock_w90_parameters(
         {key: value for key, value in (wannier90_overrides or {}).items() if key not in dropped}
     )
     params.update(
-        num_wann=int(num_wann),
-        num_bands=int(num_wann),
-        mp_grid=[int(x) for x in mp_grid],
-        write_hr=True,
-        write_u_matrices=True,
-        write_xyz=True,
+        owned(
+            "wannier90",
+            {
+                "num_wann": int(num_wann),
+                "num_bands": int(num_wann),
+                "mp_grid": [int(x) for x in mp_grid],
+                "write_hr": True,
+                "write_u_matrices": True,
+                "write_xyz": True,
+            },
+        )
     )
     return params
 

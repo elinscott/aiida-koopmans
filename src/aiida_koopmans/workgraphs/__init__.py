@@ -16,6 +16,8 @@ from typing import Any
 
 from aiida import orm
 
+from aiida_koopmans.owned_keywords import owned
+
 
 def unwrap_enum[EnumT: Enum](value: Any, enum_cls: type[EnumT]) -> EnumT | None:
     """Return ``value`` as a member of ``enum_cls``, or ``None`` for ``None``.
@@ -99,6 +101,22 @@ def name_step(inputs: dict[str, Any], display: str) -> None:
         display: The name to show.
     """
     inputs.setdefault("metadata", {})["label"] = display
+
+
+def force_pw_verbosity(pw_inputs: dict[str, Any]) -> None:
+    """Set the ``CONTROL.verbosity`` every koopmans pw.x calculation runs at.
+
+    Applied after the protocol defaults and caller overrides are merged, so
+    the forced value replaces any the merged parameters carry. Call it on
+    every pw.x step a route assembles.
+
+    Args:
+        pw_inputs: One built ``PwCalculation`` input namespace; its
+            ``parameters`` node is replaced (mutated in place).
+    """
+    parameters = pw_inputs["parameters"].get_dict()
+    parameters.setdefault("CONTROL", {}).update(owned("pw.CONTROL", {"verbosity": "high"}))
+    pw_inputs["parameters"] = orm.Dict(parameters)
 
 
 def pin_kpoints(inputs: dict[str, Any], kpoints: orm.KpointsData | None) -> None:

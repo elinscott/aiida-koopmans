@@ -67,6 +67,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 from node_graph import reference
 
+from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -893,9 +894,9 @@ def WannierizeBlock(
     # ``write_u_matrices`` / ``write_xyz`` produce the U matrices and Wannier
     # centres that pw2wannier90 ``wan_mode='decompose'`` and the wannierjl
     # split consume.
-    w90_params["write_hr"] = True
-    w90_params["write_u_matrices"] = True
-    w90_params["write_xyz"] = True
+    w90_params.update(
+        owned("wannier90", {"write_hr": True, "write_u_matrices": True, "write_xyz": True})
+    )
     # The protocol builder froze ``mp_grid`` from its own distance-derived
     # mesh, which goes stale once the shared k-list is substituted below.
     # Pin the real mesh dimensions when given (wannier90 cannot re-derive
