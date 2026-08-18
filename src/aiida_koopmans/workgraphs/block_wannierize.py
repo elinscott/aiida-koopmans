@@ -75,6 +75,7 @@ from aiida_koopmans.parallelization import (
 from aiida_koopmans.projections import (
     ProjectionBlock,
     ProjectionBlockId,
+    block_display_name,
     block_occupancy,
     block_w90_kwargs,
     validate_projection_block,
@@ -82,7 +83,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
-from aiida_koopmans.workgraphs import unwrap_enum
+from aiida_koopmans.workgraphs import name_step, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
@@ -955,6 +956,11 @@ def WannierizeBlock(
         data["pw2wannier90"]["pw2wannier90"], parallelization, "pw2wannier90"
     )
 
+    # The workchain names its own pw2wannier90 step; its two wannier90.x
+    # steps read one shared namespace whose metadata it replaces wholesale,
+    # so those two carry no label (see ``Wannierize``).
+    name_step(data["pw2wannier90"], "Overlaps")
+    name_step(data["pw2wannier90"]["pw2wannier90"], "Overlaps")
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 
@@ -1266,7 +1272,7 @@ def _run_explicit_bands_and_dos_steps(
             parent_folder=bands_step["remote_folder"],
             protocol=protocol,
             parallelization=parallelization,
-            metadata={"call_link_label": "projwfc"},
+            metadata={"call_link_label": "projwfc", "label": "Atomic projections"},
         )
     return bands_outputs, projwfc_outputs
 
@@ -1549,7 +1555,7 @@ def WannierizeBlocks(
             nscf_kpoints=kpoints,
             scf_kpoints=scf_kpoints,
             parallelization=parallelization,
-            metadata={"call_link_label": "scf_nscf"},
+            metadata={"call_link_label": "scf_nscf", "label": "Ground state"},
         )
         nscf_scratch = scf_nscf["nscf_remote_folder"]
         # The eigenvalues each disentangling block's frozen window is checked
@@ -1633,7 +1639,10 @@ def WannierizeBlocks(
                 pw2wannier90_options=cubic_pw2wannier90_options,
                 interpolation_kpoints=interpolation_kpoints,
                 **external_kwargs,
-                metadata={"call_link_label": f"wannierize_split_{block['label']}"},
+                metadata={
+                    "call_link_label": f"wannierize_split_{block['label']}",
+                    "label": f"Split Wannierization ({block_display_name(block)})",
+                },
             )
         else:
             wannierized = WannierizeBlock(
@@ -1657,7 +1666,10 @@ def WannierizeBlocks(
                 nscf_bands=block_bands,
                 interpolation_kpoints=interpolation_kpoints,
                 **external_kwargs,
-                metadata={"call_link_label": f"wannierize_{block['label']}"},
+                metadata={
+                    "call_link_label": f"wannierize_{block['label']}",
+                    "label": f"Wannierization ({block_display_name(block)})",
+                },
             )
         # Both per-block graphs return the flat WannierizeBlockOutputs
         # shape, forwarded whole into the entry (split-mode entries leave

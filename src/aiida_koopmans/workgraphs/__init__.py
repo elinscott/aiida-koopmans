@@ -83,6 +83,24 @@ def enforce_step_calculation(params: dict[str, Any], step: str, expected: str) -
     return params
 
 
+def name_step(inputs: dict[str, Any], display: str) -> None:
+    """Name one process for a reader, via ``metadata.label``, in place.
+
+    The label is what a progress display and ``verdi process list`` show
+    instead of the class name, so it reads as the step it stands for
+    (``SCF``, ``Trial KI``) rather than as an identifier. It is mutable
+    metadata and takes no part in the caching hash: ``ProcessNode``
+    excludes ``metadata_inputs`` from the hashed attributes, and the node
+    label is a column rather than an attribute.
+
+    Args:
+        inputs: The inputs of one process, or of one exposed namespace of
+            a workchain that launches it (mutated in place).
+        display: The name to show.
+    """
+    inputs.setdefault("metadata", {})["label"] = display
+
+
 def pin_kpoints(inputs: dict[str, Any], kpoints: orm.KpointsData | None) -> None:
     """Replace a ``PwBaseWorkChain`` step's protocol mesh with ``kpoints``, in place.
 

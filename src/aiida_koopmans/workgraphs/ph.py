@@ -24,7 +24,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import pin_kpoints
+from aiida_koopmans.workgraphs import name_step, pin_kpoints
 from aiida_koopmans.workgraphs.pw import PwBaseStep, PwCode
 
 
@@ -148,6 +148,8 @@ def DielectricTask(
     scf_data = get_dict_from_builder(scf_builder)
     pin_kpoints(scf_data, scf_kpoints)
     scf_data.setdefault("metadata", {})["call_link_label"] = "scf"
+    name_step(scf_data, "SCF")
+    name_step(scf_data["pw"], "SCF")
     scf_outputs = PwBaseStep(**scf_data)
 
     ph_defaults: dict[str, Any] = {
@@ -170,6 +172,8 @@ def DielectricTask(
     # Wire SCF remote_folder → ph.x parent_folder
     ph_data["ph"]["parent_folder"] = scf_outputs["remote_folder"]
     ph_data.setdefault("metadata", {})["call_link_label"] = "ph"
+    name_step(ph_data, "Dielectric response")
+    name_step(ph_data["ph"], "Dielectric response")
     ph_outputs = PhBaseTask(**ph_data)
 
     extracted = extract_dielectric_constant(

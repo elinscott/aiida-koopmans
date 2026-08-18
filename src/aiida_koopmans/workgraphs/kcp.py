@@ -49,6 +49,7 @@ from aiida_koopmans.utils.pseudos import resolve_pseudo_family_task
 from aiida_koopmans.variational_orbitals import (
     VariationalOrbital,
     VariationalOrbitalType,
+    display_name_for,
     map_key_for,
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
@@ -477,7 +478,7 @@ def wire_descriptor_rows(
             merge_groups=merge_groups,
             decompose_parameters=decompose_parameters,
             parallelization=parallelization,
-            metadata={"call_link_label": call_link_label},
+            metadata={"call_link_label": call_link_label, "label": "Descriptors"},
         )["slots"]
         # Labelled outside the descriptor workflow, which therefore takes
         # no input from the trial KI and runs alongside it.
@@ -995,6 +996,7 @@ def InitializeOrbitals(
     outerloop: bool = True,
     parent_folder: orm.RemoteData | None = None,
     name: str = "dft_init",
+    display: str = "DFT initialization",
     overrides: KcpNamelistOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> DFTCPOutputs:
@@ -1017,6 +1019,8 @@ def InitializeOrbitals(
             to ``"dft_init"`` so the standard single-step path keeps its
             existing label; chained init callers should override this to
             disambiguate the three sub-steps.
+        display: how that calc is named for a reader. A chained init
+            caller names each sub-step the same way it names this graph.
 
     ``pseudos`` and the electron counts arrive as sockets resolved
     upstream by :func:`resolve_pseudo_family_task` and
@@ -1048,6 +1052,7 @@ def InitializeOrbitals(
         parallelization=parallelization,
         parent_folder=parent_folder,
         name=name,
+        display=display,
     )
     outputs = KcpStep(**inputs)
 
@@ -1289,7 +1294,10 @@ def KoopmansDSCFWorkflow(
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": "wannier_initialization"},
+            metadata={
+                "call_link_label": "wannier_initialization",
+                "label": "Wannier initialization",
+            },
         )
         dft_remote = init["remote_folder"]
         initial_evc_occupied1 = init["evc_occupied1"]
@@ -1315,7 +1323,7 @@ def KoopmansDSCFWorkflow(
             tot_magnetization=tot_magnetization,
             overrides=dft_overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": "dft_init"},
+            metadata={"call_link_label": "dft_init", "label": "DFT initialization"},
         )
         dft_remote = dft["remote_folder"]
     else:
@@ -1346,7 +1354,11 @@ def KoopmansDSCFWorkflow(
             restart_mode="from_scratch",
             overrides=dft_overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": "dft_init_nspin1"},
+            display="DFT initialization (nspin=1)",
+            metadata={
+                "call_link_label": "dft_init_nspin1",
+                "label": "DFT initialization (nspin=1)",
+            },
         )
 
         dft_nspin2_dummy = InitializeOrbitals(
@@ -1365,7 +1377,11 @@ def KoopmansDSCFWorkflow(
             restart_mode="from_scratch",
             overrides=dft_overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": "dft_init_nspin2_dummy"},
+            display="DFT initialization (nspin=2, staging)",
+            metadata={
+                "call_link_label": "dft_init_nspin2_dummy",
+                "label": "DFT initialization (nspin=2, staging)",
+            },
         )
 
         # ``convert_spin1_to_spin2`` is a ``@task.calcfunction`` — pure
@@ -1395,7 +1411,11 @@ def KoopmansDSCFWorkflow(
             parent_folder=converted["remote_folder"],
             overrides=dft_overrides,
             parallelization=parallelization,
-            metadata={"call_link_label": "dft_init_nspin2"},
+            display="DFT initialization (nspin=2)",
+            metadata={
+                "call_link_label": "dft_init_nspin2",
+                "label": "DFT initialization (nspin=2)",
+            },
         )
         dft_remote = dft["remote_folder"]
 
@@ -1405,6 +1425,7 @@ def KoopmansDSCFWorkflow(
     if calculate_alpha:
         if predict_only:
             screening = PredictScreeningParameters(
+                metadata={"label": "Predicted screening parameters"},
                 kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
@@ -1437,6 +1458,7 @@ def KoopmansDSCFWorkflow(
             )
         else:
             screening = ComputeScreeningParameters(
+                metadata={"label": "Screening parameters"},
                 kcp_code=kcp_code,
                 structure=run_structure,
                 pseudos=pseudos,
@@ -1525,6 +1547,9 @@ def KoopmansDSCFWorkflow(
         is_first_iteration=first_orbdep_run,
         overrides=overrides.get("ki") if overrides else None,
         parallelization=parallelization,
+        metadata={
+            "label": "Final KIPZ" if correction == Correction.KIPZ else "Final KI",
+        },
     )
     if calculate_alpha:
         out_alphas = screening["alphas"]
@@ -1679,7 +1704,10 @@ def _run_predicted_final_ki(
         is_first_iteration=False,
         overrides=overrides.get("ki") if overrides else None,
         parallelization=parallelization,
-        metadata={"call_link_label": "run_final_ki_predicted"},
+        metadata={
+            "call_link_label": "run_final_ki_predicted",
+            "label": "Final KI (predicted alphas)",
+        },
     )
     outputs["predicted_alphas"] = cast("AlphaScreening", predicted_alphas)
     outputs["predicted_eigenvalues"] = cast("np.ndarray", ki_final_ml["eigenvalues"])
@@ -1728,10 +1756,9 @@ def RunFinalKI(
     orbital-dependent run after the init (KIPZ's molecular inner-loop
     CG pass keys off it, matching the trial-KI convention).
 
-    The wrapper's ``call_link_label`` and the inner CalcJob's
-    ``ki_final`` are both prettified to ``"KI Final"`` in the progress
-    table — the suppression rule in ``add_process_rows`` then collapses
-    the wrapper-and-child pair into a single row.
+    Both this graph and the CalcJob it wraps are labelled ``Final KI``
+    (``Final KIPZ`` under the KIPZ correction), so the pair reads as one
+    step whichever of the two a display shows.
     """
     # Deferred body: the counts are concrete here, so caller-injected
     # alphas whose per-channel lists don't match the manifolds fail with
@@ -1767,6 +1794,7 @@ def RunFinalKI(
         variational_orbital_overlays=variational_orbital_overlays,
         read_wavefunctions=read_wavefunctions,
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
+        display="Final KIPZ" if correction == Correction.KIPZ else "Final KI",
     )
     final = KcpStep(**final_inputs)
     return KIFinalOutputs(
@@ -1852,6 +1880,7 @@ def ComputeFilledOrbitalScreeningParameter(
         # KI, KIPZ-flavoured for KIPZ. Shows up in the live progress
         # display via ``progress.prettify_label``.
         name="kipz_n_minus_1" if correction == Correction.KIPZ else "dft_n_minus_1",
+        display="KIPZ (N-1)" if correction == Correction.KIPZ else "DFT (N-1)",
     )
     dft_outputs = KcpStep(**inputs)
 
@@ -1944,6 +1973,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         pseudos,
         parallelization=parallelization,
         name="dft_n_plus_1_dummy",  # always plain DFT in both KI and KIPZ
+        display="DFT (N+1, staging)",
     )
     dummy_outputs = KcpStep(**dummy_inputs)
 
@@ -1966,6 +1996,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         parent_folder=trial_remote,
         variational_orbital_overlays=overlay,
         name="kipz_print" if correction == Correction.KIPZ else "pz_print",
+        display="KIPZ staging" if correction == Correction.KIPZ else "PZ staging",
     )
     pz_outputs = KcpStep(**pz_inputs)
 
@@ -1980,6 +2011,7 @@ def ComputeEmptyOrbitalScreeningParameter(
         parent_folder=dummy_outputs["remote_folder"],
         parent_folder_evcfixed=pz_outputs["remote_folder"],
         name="kipz_n_plus_1" if correction == Correction.KIPZ else "dft_n_plus_1",
+        display="KIPZ (N+1)" if correction == Correction.KIPZ else "DFT (N+1)",
     )
     n_plus_1_outputs = KcpStep(**n_plus_1_inputs)
 
@@ -2083,7 +2115,10 @@ def ComputeOrbitalScreeningParameters(
             overrides=filled_overrides,
             parallelization=parallelization,
             correction=correction,
-            metadata={"call_link_label": f"compute_alpha_{key}"},
+            metadata={
+                "call_link_label": f"compute_alpha_{key}",
+                "label": display_name_for(item["orbital"]),
+            },
         )
         filled_alphas[key] = filled_out["alpha"]
         filled_errors[key] = filled_out["error"]
@@ -2119,7 +2154,10 @@ def ComputeOrbitalScreeningParameters(
             overrides=empty_overrides_dict,
             parallelization=parallelization,
             correction=correction,
-            metadata={"call_link_label": f"compute_alpha_{key}"},
+            metadata={
+                "call_link_label": f"compute_alpha_{key}",
+                "label": display_name_for(empty_item["orbital"]),
+            },
         )
         empty_alphas[key] = empty_out["alpha"]
         empty_errors[key] = empty_out["error"]
@@ -2269,7 +2307,10 @@ def ScreeningIteration(
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         parallelization=parallelization,
-        metadata={"call_link_label": "compute_orbital_screening_parameters"},
+        metadata={
+            "call_link_label": "compute_orbital_screening_parameters",
+            "label": "Orbital screening",
+        },
     )
 
     max_err = max_alpha_error(
@@ -2365,7 +2406,7 @@ def RefineScreeningParameters(
         filled_overrides=filled_overrides,
         empty_overrides_dict=empty_overrides_dict,
         parallelization=parallelization,
-        metadata={"call_link_label": "screening_iteration"},
+        metadata={"call_link_label": "screening_iteration", "label": "Iteration"},
     )
 
     remainder = RefineScreeningParameters(
@@ -2540,6 +2581,7 @@ def ComputeScreeningParameters(
     # ``_add_kipz_orbdep``.
     # ------------------------------------------------------------------
     iter_1 = ScreeningIteration(
+        metadata={"label": "Iteration"},
         kcp_code=kcp_code,
         structure=structure,
         pseudos=pseudos,
@@ -3638,4 +3680,5 @@ def _trial_kcp_inputs(
         variational_orbital_overlays=variational_orbital_overlays,
         read_wavefunctions=read_wavefunctions,
         name="kipz_trial" if correction == Correction.KIPZ else "ki_trial",
+        display="Trial KIPZ" if correction == Correction.KIPZ else "Trial KI",
     )

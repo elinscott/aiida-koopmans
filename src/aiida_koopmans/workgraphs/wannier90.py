@@ -29,7 +29,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_inputs,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import enforce_step_calculation, unwrap_enum
+from aiida_koopmans.workgraphs import enforce_step_calculation, name_step, unwrap_enum
 
 # ``PwOutputs`` is the canonical single-PwBaseWorkChain output shape; it
 # lives in ``pw.py`` next to the other pw output types. Re-exported here so
@@ -219,6 +219,8 @@ def run_projwfc_step(
     data["projwfc"]["parent_folder"] = parent_folder
     merge_parallelization_into_inputs(data["projwfc"], parallelization, "projwfc")
     data.setdefault("metadata", {})["call_link_label"] = "projwfc"
+    name_step(data, "Atomic projections")
+    name_step(data["projwfc"], "Atomic projections")
     outputs = ProjwfcBaseStep(**data)
     return ProjwfcOutputs(
         remote_folder=outputs["remote_folder"],
@@ -514,6 +516,25 @@ def Wannierize(
         ],
     )
 
+    # ``Wannier90WorkChain`` sets ``call_link_label`` on the inputs it exposes
+    # for these four steps, leaving a label given here in place. Its two
+    # wannier90.x steps are not among them: both read the one ``wannier90``
+    # namespace, and the workchain replaces that namespace's metadata
+    # wholesale before submitting each (aiida-wannier90-workflows
+    # ``run_wannier90_pp`` / ``run_wannier90``).
+    for namespace, calculation, display in (
+        ("scf", "pw", "SCF"),
+        ("nscf", "pw", "NSCF"),
+        ("projwfc", "projwfc", "Atomic projections"),
+        ("pw2wannier90", "pw2wannier90", "Overlaps"),
+    ):
+        step = data.get(namespace)
+        if step is None:
+            continue
+        name_step(step, display)
+        if calculation in step:
+            name_step(step[calculation], display)
+
     # Submit the workchain with converted inputs
     outputs = Wannier90Step(**data)
 
@@ -569,7 +590,7 @@ def Wannierize(
                 parent_folder=bands_step["remote_folder"],
                 protocol=protocol,
                 parallelization=parallelization,
-                metadata={"call_link_label": "projwfc"},
+                metadata={"call_link_label": "projwfc", "label": "Atomic projections"},
             )
 
     return workflow_outputs

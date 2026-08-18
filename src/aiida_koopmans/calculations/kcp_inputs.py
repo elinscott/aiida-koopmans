@@ -109,6 +109,7 @@ def build_kcp_inputs(
     variational_orbital_overlays: dict[str, str] | None = None,
     read_wavefunctions: dict[str, Any] | None = None,
     name: str | None = None,
+    display: str | None = None,
 ) -> dict[str, Any]:
     """Assemble a kwargs dict for ``KcpStep(**inputs)``.
 
@@ -117,9 +118,10 @@ def build_kcp_inputs(
     serialization adapter wraps each value into the matching AiiDA
     Node when the underlying CalcJob socket is set.
 
-    ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob —
-    that's what shows up in ``verdi process list`` and the koopmans progress
-    table (e.g. ``kcp-dft_init`` instead of ``kcp-KcpCalculation``).
+    ``name`` becomes ``metadata.call_link_label`` on the resulting CalcJob,
+    which is what provenance reads as (``kcp-dft_init`` instead of
+    ``kcp-KcpCalculation``); ``display`` becomes its ``metadata.label``,
+    which is how a reader is shown it (``DFT initialization``).
 
     Inside the per-orbital screening sub-graphs, ``name`` is set statically
     (e.g. ``"dft_n_minus_1"``, ``"pz_print"``, ``"dft_n_plus_1_dummy"``,
@@ -160,5 +162,7 @@ def build_kcp_inputs(
         inputs["read_wavefunctions"] = read_wavefunctions
     if name:
         inputs["metadata"] = {"call_link_label": name}
+    if display:
+        inputs.setdefault("metadata", {})["label"] = display
     merge_parallelization_into_inputs(inputs, parallelization, "kcp")
     return inputs
