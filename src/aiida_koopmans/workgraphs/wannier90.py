@@ -275,36 +275,49 @@ def _finalize_wannier_builder(
     *,
     kpoint_path: dict[str, Any] | None,
     bands_kpoints: orm.KpointsData | None,
+    interpolation_kpoints: orm.KpointsData | None,
     projector_rotation: np.ndarray | None,
 ) -> dict[str, Any]:
     """Apply the bands-path / projector-rotation wiring, then flatten to a dict.
 
     ``Wannierize``'s finalisation tail: enforce that ``kpoint_path`` and
-    ``bands_kpoints`` are mutually exclusive, wire the explicit bands path
+    wannier90's explicit bands path are mutually exclusive, wire that path
     onto the nested wannier90 builder, apply the optional
     ``projector_rotation``, and reduce the builder to the plain-dict inputs
     the wrapped task expects.
+
+    ``interpolation_kpoints``, when given, is the explicit path wannier90
+    interpolates along; ``bands_kpoints`` falls back to that role when it
+    is not, so a caller who wants one path for both wannier90 and the
+    quality-check pw.x run (``Wannierize``'s own use of ``bands_kpoints``,
+    below) still only states it once.
 
     A path wired here also sets ``bands_plot = True`` in the wannier90
     parameters: wannier90 interpolates its band structure (and writes the
     ``_band.dat`` the parser turns into ``interpolated_bands``) only under
     that keyword, and ``Wannier90WorkChain`` never sets it itself.
 
-    ``bands_kpoints`` renders as an ``explicit_kpath`` block, which needs
-    wannier90 4.0 or newer (releases up to 3.1.0 reject it).
-    ``kpoint_path`` writes the portable ``kpoint_path`` block instead.
+    The explicit path renders as an ``explicit_kpath`` block, which needs
+    wannier90 4.0 or newer (releases up to 3.1.0 reject it). ``kpoint_path``
+    writes the portable ``kpoint_path`` block instead.
     """
-    if kpoint_path is not None and bands_kpoints is not None:
-        raise ValueError("Cannot specify both `kpoint_path` and `bands_kpoints`.")
-    require_path_labels(bands_kpoints, "bands_kpoints")
+    wannier_path = interpolation_kpoints if interpolation_kpoints is not None else bands_kpoints
+    if kpoint_path is not None and wannier_path is not None:
+        raise ValueError(
+            "Cannot specify both `kpoint_path` and `bands_kpoints`/`interpolation_kpoints`."
+        )
+    require_path_labels(
+        wannier_path,
+        "interpolation_kpoints" if interpolation_kpoints is not None else "bands_kpoints",
+    )
 
     if kpoint_path is not None:
         builder.wannier90.wannier90.kpoint_path = kpoint_path
 
-    if bands_kpoints is not None:
-        builder.wannier90.wannier90.bands_kpoints = bands_kpoints
+    if wannier_path is not None:
+        builder.wannier90.wannier90.bands_kpoints = wannier_path
 
-    if kpoint_path is not None or bands_kpoints is not None:
+    if kpoint_path is not None or wannier_path is not None:
         parameters = builder.wannier90.wannier90.parameters.get_dict()
         parameters["bands_plot"] = True
         builder.wannier90.wannier90.parameters = orm.Dict(parameters)
@@ -391,6 +404,7 @@ def Wannierize(
     print_summary: bool = False,
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
     kpoints: orm.KpointsData | None = None,
@@ -440,13 +454,19 @@ def Wannierize(
             along which wannier90 interpolates its band structure; also sets
             ``bands_plot = True``, without which wannier90 interpolates
             nothing.
-        bands_kpoints: the same path as a labelled explicit ``KpointsData``;
-            mutually exclusive with ``kpoint_path``, and likewise sets
-            ``bands_plot = True``. Also runs pw.x along the same explicit
-            list off the scf density (the ``bands`` output namespace), so
-            the interpolation can be judged against computed eigenvalues on
-            identical k-points — which is why ``kpoint_path``, being
-            symbolic, triggers no such run.
+        bands_kpoints: an explicit ``KpointsData`` path; runs pw.x along it
+            off the scf density (the ``bands`` output namespace), so an
+            interpolation can be judged against computed eigenvalues.
+            Without ``interpolation_kpoints``, wannier90 interpolates along
+            this same path too — mutually exclusive with ``kpoint_path``
+            in that case, and likewise sets ``bands_plot = True``.
+            ``kpoint_path``, being symbolic, never triggers the pw.x run.
+        interpolation_kpoints: the explicit path wannier90 interpolates
+            along, when it should differ from ``bands_kpoints`` — the
+            quality-check pw.x run stays on ``bands_kpoints`` (or is
+            skipped if that is unset) while wannier90 interpolates here
+            instead. Mutually exclusive with ``kpoint_path``; sets
+            ``bands_plot = True``.
         kpoints: the explicit k-point list the nscf and wannier90 share.
             Unset leaves both on the protocol's ``kpoints_distance``-derived
             mesh. Requires ``mp_grid``.
@@ -498,6 +518,7 @@ def Wannierize(
         builder,
         kpoint_path=kpoint_path,
         bands_kpoints=bands_kpoints,
+        interpolation_kpoints=interpolation_kpoints,
         projector_rotation=projector_rotation,
     )
 
