@@ -21,6 +21,7 @@ from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
     force_pw_verbosity,
     inject_pseudo_family,
+    name_step,
     pin_kpoints,
     unwrap_enum,
 )
@@ -84,6 +85,7 @@ def assemble_pw_base_step(
     *,
     calculation: str,
     call_link_label: str,
+    display: str,
     overrides: dict[str, Any] | None = None,
     protocol: str | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
@@ -100,6 +102,10 @@ def assemble_pw_base_step(
     ``kpoints`` when given, wire ``parent_folder``, and add the step to the
     surrounding graph under ``call_link_label``. A plain graph-assembly
     helper: it must be called inside a ``@task.graph`` body.
+
+    ``display`` names the step for a reader: it is set on both the
+    workchain and the pw.x calculation it wraps, so the step is named
+    whichever of the two a restart leaves visible.
     """
     overrides = overrides or {}
     enforce_step_calculation(
@@ -123,6 +129,8 @@ def assemble_pw_base_step(
     if parallelization is not None:
         merge_parallelization_into_inputs(data["pw"], parallelization, "pw")
     data.setdefault("metadata", {})["call_link_label"] = call_link_label
+    name_step(data, display)
+    name_step(data["pw"], display)
     return PwBaseStep(**data)
 
 
@@ -169,6 +177,7 @@ def run_bands_step(
         structure,
         calculation="bands",
         call_link_label="bands",
+        display="Band structure",
         overrides=bands_overrides,
         protocol=protocol,
         electronic_type=electronic_type,
@@ -253,11 +262,15 @@ def RunPwBands(
     # Each step owns its calculation mode: the scf step stays 'scf' and the
     # bands step stays 'bands', raising if a merged override set either
     # otherwise.
-    for step, expected in (("scf", "scf"), ("bands", "bands")):
+    for step, expected, display in (("scf", "scf", "SCF"), ("bands", "bands", "Band structure")):
         pw_inputs = data[step]["pw"]
         pw_inputs["parameters"] = orm.Dict(
             enforce_step_calculation(pw_inputs["parameters"].get_dict(), step, expected)
         )
+        # ``PwBandsWorkChain`` sets only ``call_link_label`` on the inputs it
+        # exposes, so a label given here reaches the step it names.
+        name_step(data[step], display)
+        name_step(pw_inputs, display)
         force_pw_verbosity(pw_inputs)
 
     pin_kpoints(data["scf"], scf_kpoints)
@@ -342,6 +355,7 @@ def RunScfNscf(
         structure,
         calculation="scf",
         call_link_label="scf",
+        display="SCF",
         overrides=overrides.setdefault("scf", {}),
         protocol=protocol,
         electronic_type=electronic_type,
@@ -356,6 +370,7 @@ def RunScfNscf(
         structure,
         calculation="nscf",
         call_link_label="nscf",
+        display="NSCF",
         overrides=overrides.setdefault("nscf", {}),
         protocol=protocol,
         electronic_type=electronic_type,

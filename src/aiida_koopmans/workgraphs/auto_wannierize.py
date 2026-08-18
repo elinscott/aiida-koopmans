@@ -458,6 +458,7 @@ def RewannierizeSplitBlocks(
             **path_inputs,
             metadata={
                 "call_link_label": f"wannier90_split_block_{i}",
+                "label": f"Minimization (group {i + 1})",
                 "options": _plain_options(wannier90_options),
             },
         )
@@ -581,7 +582,10 @@ def WannierizeAndSplitBlock(
         interpolation_kpoints=interpolation_kpoints,
         external_projectors_path=external_projectors_path,
         external_projectors=external_projectors,
-        metadata={"call_link_label": "wannierize_whole_block"},
+        metadata={
+            "call_link_label": "wannierize_whole_block",
+            "label": "Whole-block Wannierization",
+        },
     )
 
     # Split mode rejects every disentangled block, so no block in this
@@ -627,7 +631,7 @@ def WannierizeAndSplitBlock(
         pw2wannier90_code=reference(codes, "pw2wannier90"),
         wjl_options=wjl_options,
         pw2wannier90_options=pw2wannier90_options,
-        metadata={"call_link_label": "split_wannierization"},
+        metadata={"call_link_label": "split_wannierization", "label": "Parallel-transport split"},
     )
 
     # The split's ``blocks`` namespace keys only exist once it has run, so
@@ -647,7 +651,10 @@ def WannierizeAndSplitBlock(
         wannier90_overrides=overrides.get("wannier90"),
         wannier90_options=wannier90_options,
         interpolation_kpoints=interpolation_kpoints,
-        metadata={"call_link_label": "rewannierize_split_blocks"},
+        metadata={
+            "call_link_label": "rewannierize_split_blocks",
+            "label": "Per-group Wannierization",
+        },
     )
 
     block_outputs = WannierizeBlockOutputs(
