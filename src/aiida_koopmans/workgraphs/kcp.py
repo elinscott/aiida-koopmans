@@ -191,8 +191,8 @@ class KoopmansDSCFOutputs(TypedDict):
     the model-predicted alphas; its outputs land in ``predicted_alphas`` /
     ``predicted_eigenvalues``, present only on that route.
 
-    With ``calculate_bands`` the unfold-and-interpolate stage adds
-    ``band_structure`` (the interpolated Koopmans bands along ``kpath``),
+    With a ``kpath`` the unfold-and-interpolate stage adds
+    ``band_structure`` (the interpolated Koopmans bands along it),
     ``band_structure_reference`` (their valence-band maximum, eV) and —
     unless the ``do_dos`` knob is off — ``dos``.
     """
@@ -1124,7 +1124,6 @@ def KoopmansDSCFWorkflow(
     wannier_overrides: WannierizeOverrides | None = None,
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
-    calculate_bands: bool = False,
     kpath: orm.KpointsData | None = None,
     unfold_and_interpolate: dict | None = None,
     plotting: dict | None = None,
@@ -1185,14 +1184,14 @@ def KoopmansDSCFWorkflow(
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
-    ``calculate_bands=True`` adds the unfold-and-interpolate stage
+    A ``kpath`` adds the unfold-and-interpolate stage
     (:func:`~aiida_koopmans.workgraphs.ui.dscf.DscfBandStructureTask`):
     the final KI prints its Koopmans Hamiltonians and they are
-    interpolated onto the primitive-cell ``kpath``, which the switch
-    therefore requires. Only the periodic Wannier route can serve it —
-    the molecular route has no Wannier basis to unfold. The
-    ``unfold_and_interpolate`` knobs (``use_ws_distance``, ``do_dos``)
-    and the ``plotting`` DOS window shape the result.
+    interpolated onto that primitive-cell path. Only the periodic
+    Wannier route can serve it — the molecular route has no Wannier
+    basis to unfold. The ``unfold_and_interpolate`` knobs
+    (``use_ws_distance``, ``do_dos``) and the ``plotting`` DOS window
+    shape the result.
 
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
@@ -1217,11 +1216,10 @@ def KoopmansDSCFWorkflow(
         blocks=blocks,
         kgrid=kgrid,
         kpoints=kpoints,
-        calculate_bands=calculate_bands,
         kpath=kpath,
     )
     ui_use_ws_distance, ui_do_dos = _resolve_band_interpolation_knobs(
-        unfold_and_interpolate, calculate_bands=calculate_bands
+        unfold_and_interpolate, kpath=kpath
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
@@ -1589,7 +1587,7 @@ def KoopmansDSCFWorkflow(
         initial_evc_occupied1=final_evc_occupied1,
         initial_evc_occupied2=final_evc_occupied2,
         is_first_iteration=first_orbdep_run,
-        write_hr=calculate_bands,
+        write_hr=kpath is not None,
         overrides=overrides.get("ki") if overrides else None,
         parallelization=parallelization,
         metadata={
@@ -1653,7 +1651,6 @@ def KoopmansDSCFWorkflow(
 
     _attach_band_structure(
         outputs,
-        calculate_bands=calculate_bands,
         structure=structure,
         merge_groups=merge_groups,
         block_wannierizations=block_wannierizations,
@@ -1671,7 +1668,6 @@ def KoopmansDSCFWorkflow(
 def _attach_band_structure(
     outputs: KoopmansDSCFOutputs,
     *,
-    calculate_bands: bool,
     structure: orm.StructureData,
     merge_groups: Any,
     block_wannierizations: Any,
@@ -1685,10 +1681,10 @@ def _attach_band_structure(
 ) -> None:
     """Add the unfold-and-interpolate stage and its outputs to the workflow.
 
-    Does nothing without ``calculate_bands``. Called from the
+    Does nothing without a ``kpath``. Called from the
     ``KoopmansDSCFWorkflow`` body, so the tasks it creates join that graph.
     """
-    if not calculate_bands:
+    if kpath is None:
         return
     # Imported here: ui.dscf imports this module for the printed-Hamiltonian
     # filenames, so a module-level import would be circular.
@@ -2927,7 +2923,7 @@ def PredictScreeningParameters(
 
 
 def _resolve_band_interpolation_knobs(
-    knobs: dict | None, *, calculate_bands: bool
+    knobs: dict | None, *, kpath: orm.KpointsData | None
 ) -> tuple[bool, bool]:
     """Return ``(use_ws_distance, do_dos)``, rejecting settings that cannot take effect.
 
@@ -2938,11 +2934,11 @@ def _resolve_band_interpolation_knobs(
     wannierization that produces the second one is not written.
     """
     settings = dict(knobs) if knobs else {}
-    if settings and not calculate_bands:
+    if settings and kpath is None:
         raise ValueError(
-            "`unfold_and_interpolate` settings were given but calculate_bands is off, "
-            "so no interpolation runs and they would take no effect. Set "
-            "calculate_bands=True or drop the settings."
+            "`unfold_and_interpolate` settings were given without a `kpath`, so no "
+            "interpolation runs and they would take no effect. Pass the band path to "
+            "interpolate along, or drop the settings."
         )
     factor = settings.get("smooth_int_factor")
     if factor is not None and any(int(f) > 1 for f in factor):
@@ -2963,7 +2959,6 @@ def _validate_scope(
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
-    calculate_bands: bool = False,
     kpath: orm.KpointsData | None = None,
 ) -> None:
     """Fail fast on inputs the workflow cannot honour yet.
@@ -2972,8 +2967,9 @@ def _validate_scope(
     (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
     (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
     the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints``).
-    ``calculate_bands`` is defined on the Wannier route alone and needs a
-    ``kpath``. Everything else raises. Does not validate the Wannier-route ``codes``
+    A ``kpath``, which asks for the interpolated band structure, is
+    defined on the Wannier route alone.
+    Everything else raises. Does not validate the Wannier-route ``codes``
     members: that requirement lives on
     :func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`'s own
     ``codes`` spec, which the Wannier-init route enters unconditionally —
@@ -3000,13 +2996,6 @@ def _validate_scope(
         VariationalOrbitalType.PROJWFS,
     )
     periodic = any(structure.pbc)
-    if calculate_bands and not wannier_init:
-        raise NotImplementedError(
-            f"calculate_bands=True is not defined for init_orbitals={init_orbitals!r}: "
-            "recovering primitive-cell bands from the supercell unfolds the Koopmans "
-            "Hamiltonian in the Wannier basis, which only the Wannier-initialised "
-            "route builds. Set init_orbitals='mlwfs' or 'projwfs'."
-        )
     if wannier_init:
         if not periodic:
             raise ValueError(
@@ -3025,11 +3014,6 @@ def _validate_scope(
                 f"{missing} (projection blocks, the Monkhorst-Pack grid, and the "
                 "explicit k-mesh)."
             )
-        if calculate_bands and kpath is None:
-            raise ValueError(
-                "calculate_bands=True needs the band path to interpolate along: pass "
-                "`kpath`, a KpointsData holding the primitive-cell k-path."
-            )
     elif init_orbitals != VariationalOrbitalType.KOHN_SHAM:
         raise NotImplementedError(
             f"init_orbitals={init_orbitals!r} not yet supported. Supported: "
@@ -3042,6 +3026,16 @@ def _validate_scope(
             "supported — it needs a pw.x-only wannierize pass plus a "
             "ks2kcp folding mode. Use init_orbitals='mlwfs' / 'projwfs' "
             "for periodic systems."
+        )
+
+    # Last, so that a route the workflow does not run at all is named before
+    # the band path it cannot serve either.
+    if kpath is not None and not wannier_init:
+        raise NotImplementedError(
+            "`kpath` is not defined for init_orbitals='kohn-sham': recovering "
+            "primitive-cell bands from the supercell unfolds the Koopmans Hamiltonian "
+            "in the Wannier basis, which only the Wannier-initialised route builds. "
+            "Set init_orbitals='mlwfs' or 'projwfs'."
         )
 
 

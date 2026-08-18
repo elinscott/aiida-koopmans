@@ -336,39 +336,45 @@ class TestMergeManifoldEnergies:
         with pytest.raises(ValueError, match="different k-paths"):
             self._merge(occupied=[[1.0], [1.1]], empty=[[5.0]])
 
+    def test_spin_channels_of_different_widths_are_refused(self):
+        """Two channels holding different band counts cannot stack."""
+        with pytest.raises(ValueError, match="different shapes"):
+            self._merge(
+                occupied=[[1.0, 2.0]],
+                empty=[[5.0]],
+                occupied_down=[[1.0]],
+                empty_down=[[5.0]],
+            )
+
 
 # ----------------------------------------------------------------------
 # The workflow-level gate
 # ----------------------------------------------------------------------
 
 
-class TestCalculateBandsScope:
-    def test_the_molecular_route_cannot_serve_it(self, ozone_structure):
+class TestBandPathScope:
+    """A ``kpath`` asks for the interpolation; only the Wannier route serves it."""
+
+    def test_the_molecular_route_cannot_serve_a_path(self, ozone_structure):
         with pytest.raises(NotImplementedError, match="Wannier basis"):
             _validate_scope(
                 correction=Correction.KI,
                 init_orbitals=VariationalOrbitalType.KOHN_SHAM,
                 fix_spin_contamination=False,
                 structure=ozone_structure,
-                calculate_bands=True,
+                kpath=_kpath(),
             )
 
-    def test_a_path_is_required(self, periodic_ozone_structure, kmesh):
-        from tests.fixtures import ozone_projection_blocks
+    def test_the_molecular_route_without_a_path_is_untouched(self, ozone_structure):
+        """Negative control: it is the path that the molecular route refuses."""
+        _validate_scope(
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            fix_spin_contamination=False,
+            structure=ozone_structure,
+        )
 
-        with pytest.raises(ValueError, match="needs the band path"):
-            _validate_scope(
-                correction=Correction.KI,
-                init_orbitals=VariationalOrbitalType.MLWFS,
-                fix_spin_contamination=False,
-                structure=periodic_ozone_structure,
-                blocks=ozone_projection_blocks(),
-                kgrid=[2, 1, 1],
-                kpoints=kmesh,
-                calculate_bands=True,
-            )
-
-    def test_a_path_satisfies_it(self, periodic_ozone_structure, kmesh):
+    def test_the_wannier_route_takes_a_path(self, periodic_ozone_structure, kmesh):
         from tests.fixtures import ozone_projection_blocks
 
         _validate_scope(
@@ -379,17 +385,17 @@ class TestCalculateBandsScope:
             blocks=ozone_projection_blocks(),
             kgrid=[2, 1, 1],
             kpoints=kmesh,
-            calculate_bands=True,
             kpath=_kpath(),
         )
 
 
 class TestInterpolationKnobs:
     @staticmethod
-    def _resolve(knobs, *, calculate_bands=True):
+    def _resolve(knobs):
+        """Resolve ``knobs`` for a run that asks for bands."""
         from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
 
-        return _resolve_band_interpolation_knobs(knobs, calculate_bands=calculate_bands)
+        return _resolve_band_interpolation_knobs(knobs, kpath=_kpath())
 
     def test_smooth_interpolation_is_refused_by_name(self):
         with pytest.raises(NotImplementedError, match="smooth_int_factor"):
@@ -401,9 +407,76 @@ class TestInterpolationKnobs:
     def test_the_defaults_are_ws_distance_and_a_dos(self):
         assert self._resolve(None) == (True, True)
 
-    def test_knobs_without_the_stage_are_refused(self):
-        with pytest.raises(ValueError, match="calculate_bands is off"):
-            self._resolve({"do_dos": True}, calculate_bands=False)
+    def test_knobs_without_a_path_are_refused(self):
+        from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
+
+        with pytest.raises(ValueError, match="without a `kpath`"):
+            _resolve_band_interpolation_knobs({"do_dos": True}, kpath=None)
+
+    def test_no_knobs_and_no_path_is_silent(self):
+        """Negative control: it is the settings, not the missing path, that raise."""
+        from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
+
+        assert _resolve_band_interpolation_knobs(None, kpath=None) == (True, True)
+
+
+class TestTheWorkflowGatesOnTheBandPath:
+    """The whole ΔSCF workflow adds the stage exactly when it is given a path."""
+
+    @staticmethod
+    def _build(*, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh, **kw):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+        from tests.fixtures import ozone_projection_blocks
+
+        return KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={**mlwf_codes, "kcp": kcp_code},
+            blocks=ozone_projection_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+            **kw,
+        )
+
+    def test_a_path_adds_the_stage_and_prints_the_hamiltonians(
+        self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh
+    ):
+        wg = self._build(
+            periodic_ozone_structure=periodic_ozone_structure,
+            kcp_code=kcp_code,
+            mlwf_codes=mlwf_codes,
+            ozone_pseudo_family=ozone_pseudo_family,
+            kmesh=kmesh,
+            kpath=_kpath(),
+        )
+        names = [task.name for task in wg.tasks]
+        assert "interpolate_band_structure" in names, names
+        # The stage reads Hamiltonians that exist only because the final KI
+        # was asked to print them.
+        final_ki = next(task for task in wg.tasks if task.name.startswith("RunFinalKI"))
+        assert final_ki.inputs["write_hr"].value is True
+
+    def test_without_a_path_neither_happens(
+        self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh
+    ):
+        """Negative control: the same route, one input short, builds neither."""
+        wg = self._build(
+            periodic_ozone_structure=periodic_ozone_structure,
+            kcp_code=kcp_code,
+            mlwf_codes=mlwf_codes,
+            ozone_pseudo_family=ozone_pseudo_family,
+            kmesh=kmesh,
+        )
+        names = [task.name for task in wg.tasks]
+        assert "interpolate_band_structure" not in names, names
+        final_ki = next(task for task in wg.tasks if task.name.startswith("RunFinalKI"))
+        assert final_ki.inputs["write_hr"].value is False
 
 
 class TestInterpolateBandsCentres:
@@ -420,3 +493,41 @@ class TestInterpolateBandsCentres:
                 kpath=_kpath(),
                 kgrid=[1, 1, 1],
             )
+
+    def test_centres_that_are_not_three_vectors_are_named(self, aiida_profile, silicon_structure):
+        """A per-band table of the wrong width cannot be a set of centres."""
+        from aiida_koopmans.workgraphs.ui import interpolate_bands
+
+        with pytest.raises(ValueError, match=r"one \[x, y, z\] per Wannier function"):
+            interpolate_bands._callable(
+                kc_ham_file=orm.SinglefileData.from_string("x"),
+                centres=[[0.0, 0.0]],
+                structure=silicon_structure,
+                kpath=_kpath(),
+                kgrid=[1, 1, 1],
+            )
+
+
+class TestExtractKoopmansHamiltonian:
+    """Lifting one printed Hamiltonian out of the retrieved folder."""
+
+    def test_a_missing_file_names_the_folder_contents(self, aiida_profile):
+        """The run that did not print them is what the reader has to fix."""
+        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+
+        retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
+        with pytest.raises(ValueError, match=r"ham_emp_1\.dat"):
+            extract_koopmans_hamiltonian._callable(
+                retrieved=retrieved, filename=orm.Str("ham_emp_1.dat")
+            )
+
+    def test_a_present_file_comes_out_under_its_own_name(self, aiida_profile):
+        """Negative control: the same folder yields the file it does hold."""
+        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+
+        retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
+        lifted = extract_koopmans_hamiltonian._callable(
+            retrieved=retrieved, filename=orm.Str("ham_occ_1.dat")
+        )
+        assert lifted.filename == "ham_occ_1.dat"
+        assert lifted.get_content() == "h"
