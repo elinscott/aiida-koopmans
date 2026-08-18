@@ -8,6 +8,7 @@ Wannier90 ``.win`` projection strings and Wannier-function counts.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from itertools import pairwise
 from typing import NotRequired, TypedDict, cast
@@ -406,6 +407,33 @@ def get_wannier_indices(block: ProjectionBlock) -> list[int]:
     functions.
     """
     return _read_bands(block)[: int(block["num_wann"])]
+
+
+def block_display_name(block: ProjectionBlock, spin: SpinChannel | None = None) -> str:
+    """Return how one block is named for a reader: ``occupied block 2, spin up``.
+
+    The manifold and the index come from the label, which is where alone
+    they are recorded: ``occ`` / ``emp`` says which manifold the block
+    was cut from, ``block`` that no manifold has been settled for it, and
+    the trailing index counts the blocks of one manifold (see
+    :func:`_manifold_projection_blocks`). A label written to no such
+    pattern is returned unchanged.
+
+    ``spin`` names the channel, defaulting to the block's own. Pass it
+    where the block travels inside a structure that carries the channel
+    instead (a :class:`~aiida_koopmans.workgraphs.utils.wannier_merge.MergeGroup`).
+    """
+    match = re.fullmatch(r"(occ|emp|block)(?:_(?:up|down))?(?:_(\d+))?", block["label"])
+    if not match:
+        return block["label"]
+    manifold, index = match.groups()
+    text = {"occ": "occupied block", "emp": "empty block", "block": "block"}[manifold]
+    if index is not None:
+        text = f"{text} {index}"
+    channel = SpinChannel(spin if spin is not None else block.get("spin", SpinChannel.NONE))
+    if channel in (SpinChannel.UP, SpinChannel.DOWN):
+        text = f"{text}, spin {channel.value}"
+    return text
 
 
 def block_occupancy(block: ProjectionBlock) -> bool:

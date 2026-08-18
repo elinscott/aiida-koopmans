@@ -354,7 +354,7 @@ def MlwfInitialization(
         overrides=wannier_overrides,
         spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
         parallelization=parallelization,
-        metadata={"call_link_label": "wannierize"},
+        metadata={"call_link_label": "wannierize", "label": "Wannierization"},
     )
 
     # --- B2: fold + merge into supercell kcp.x wavefunctions ---
@@ -371,7 +371,7 @@ def MlwfInitialization(
         gamma_only=gamma_only,
         spin_polarized=spin_polarized,
         parallelization=parallelization,
-        metadata={"call_link_label": "fold_to_supercell"},
+        metadata={"call_link_label": "fold_to_supercell", "label": "Supercell folding"},
     )
 
     # --- B3: dft_dummy — save-skeleton writer on the supercell ---
@@ -392,6 +392,7 @@ def MlwfInitialization(
         pseudos,
         parallelization=parallelization,
         name="dft_dummy",
+        display="DFT staging",
     )
     dummy = KcpStep(**dummy_inputs)
 
@@ -411,6 +412,7 @@ def MlwfInitialization(
         parent_folder=dummy["remote_folder"],
         read_wavefunctions=staged,
         name="dft_init",
+        display="DFT initialization",
     )
     dft_init = KcpStep(**init_inputs)
 
