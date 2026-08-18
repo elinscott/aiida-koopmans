@@ -12,7 +12,7 @@ corrections consume.
 from typing import Annotated, Any, TypedDict
 
 from aiida import orm
-from aiida_quantumespresso.common.types import ElectronicType
+from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_quantumespresso.workflows.ph.base import PhBaseWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -24,7 +24,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
-from aiida_koopmans.workgraphs import pin_kpoints
+from aiida_koopmans.workgraphs import pin_kpoints, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwBaseStep, PwCode
 
 
@@ -84,6 +84,7 @@ def DielectricTask(
     overrides: dict[str, Any] | None = None,
     parallelization: ParallelizationDict | None = None,
     scf_kpoints: orm.KpointsData | None = None,
+    spin_type: SpinType = SpinType.NONE,
 ) -> DielectricOutputs:
     """Compute the macroscopic dielectric tensor: scf, then ph.x with epsil.
 
@@ -112,6 +113,12 @@ def DielectricTask(
             taken about, replacing the protocol's ``kpoints_distance``.
             Leave unset only where no mesh is prescribed and the protocol
             should choose one. The q-mesh is separate and stays at Gamma.
+        spin_type: Spin regime of the ground state. ``NONE`` and
+            ``COLLINEAR`` only — ph.x refuses the electric-field
+            perturbation for a noncollinear magnetic ground state. Under
+            ``COLLINEAR`` the caller's ``overrides`` must carry a
+            ``tot_magnetization``: pw.x rejects fixed occupations under
+            LSDA without one.
 
     Returns:
         Dict with the scalar ``eps_inf`` (isotropic average), the full
@@ -120,6 +127,17 @@ def DielectricTask(
     validate_parallelization(parallelization)
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    # ph.x aborts on `noncolin .and. domag` with an electric-field
+    # perturbation, and the protocol seeds a nonzero starting_magnetization
+    # under both spinor regimes, so domag is always true here.
+    spin = unwrap_enum(spin_type, SpinType) or SpinType.NONE
+    if spin in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
+        raise NotImplementedError(
+            f"spin_type={spin.value!r} cannot reach ph.x: the electric-field "
+            "perturbation is not implemented for noncollinear magnetism. Use "
+            "'none' or 'collinear'."
+        )
 
     overrides = overrides or {}
 
@@ -143,6 +161,7 @@ def DielectricTask(
         protocol=protocol,
         overrides=scf_overrides,
         electronic_type=ElectronicType.INSULATOR,
+        spin_type=spin,
     )
     scf_builder.pop("clean_workdir", None)
     scf_data = get_dict_from_builder(scf_builder)
