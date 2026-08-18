@@ -4,7 +4,7 @@ import copy
 from typing import Annotated, Any, NotRequired, TypedDict
 
 from aiida import orm
-from aiida_quantumespresso.common.types import ElectronicType
+from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_quantumespresso.workflows.pw.bands import PwBandsWorkChain
 from aiida_quantumespresso.workflows.pw.base import PwBaseWorkChain
 from aiida_workgraph import task
@@ -19,6 +19,7 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
+    force_pw_verbosity,
     inject_pseudo_family,
     pin_kpoints,
     unwrap_enum,
@@ -94,7 +95,8 @@ def assemble_pw_base_step(
 
     Build the step from the protocol builder with ``overrides`` merged on
     top, stamp its ``CONTROL.calculation`` (raising on a conflicting
-    explicit value), replace the protocol's distance-derived mesh with
+    explicit value) and its ``CONTROL.verbosity``, replace the protocol's
+    distance-derived mesh with
     ``kpoints`` when given, wire ``parent_folder``, and add the step to the
     surrounding graph under ``call_link_label``. A plain graph-assembly
     helper: it must be called inside a ``@task.graph`` body.
@@ -114,6 +116,7 @@ def assemble_pw_base_step(
     )
     data = get_dict_from_builder(builder)
     data.pop("clean_workdir", None)
+    force_pw_verbosity(data["pw"])
     pin_kpoints(data, kpoints)
     if parent_folder is not None:
         data["pw"]["parent_folder"] = parent_folder
@@ -186,6 +189,7 @@ def RunPwBands(
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    spin_type: SpinType = SpinType.NONE,
 ) -> ScfBandsOutputs:
     """Run PwBandsWorkChain using the protocol-based builder pattern.
 
@@ -212,6 +216,12 @@ def RunPwBands(
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
+        spin_type: Spin regime for both steps. ``COLLINEAR`` sets
+            ``nspin = 2``; ``NON_COLLINEAR`` and ``SPIN_ORBIT`` set
+            ``noncolin = .true.``, the latter adding ``lspinorb``. With the
+            ``INSULATOR`` default, ``COLLINEAR`` also needs a
+            ``tot_magnetization`` in ``overrides``: pw.x rejects fixed
+            occupations under LSDA without one.
 
     Returns:
         Dict with scf_parameters and band_structure outputs.
@@ -235,6 +245,7 @@ def RunPwBands(
         protocol=protocol,
         overrides=overrides,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
+        spin_type=unwrap_enum(spin_type, SpinType),
     )
 
     data = get_dict_from_builder(builder)
@@ -247,6 +258,7 @@ def RunPwBands(
         pw_inputs["parameters"] = orm.Dict(
             enforce_step_calculation(pw_inputs["parameters"].get_dict(), step, expected)
         )
+        force_pw_verbosity(pw_inputs)
 
     pin_kpoints(data["scf"], scf_kpoints)
 
