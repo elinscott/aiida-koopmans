@@ -356,6 +356,23 @@ def emit_namespace_dict_field(value: dict) -> dict:
     return dict(value)
 
 
+class KcwOverrides(TypedDict, total=False):
+    """User kcw.x namelist overrides, layered onto :func:`RunDFPT`'s synthesized values.
+
+    ``control`` / ``wannier`` reach every kcw.x step (wann2kcw, screen,
+    ham); ``screen`` / ``ham`` reach only their own step, alongside
+    ``control`` and ``wannier``. Keys the route derives itself (the
+    ``calculation`` type, the mp grid, ...) are rejected at koopmans
+    input-file parse time and never reach here -- see
+    ``koopmans.input_file.kcw``.
+    """
+
+    control: dict
+    wannier: dict
+    screen: dict
+    ham: dict
+
+
 class ChannelResults(TypedDict, total=False):
     """Results of one kcw.x chain (one spin channel).
 
@@ -567,6 +584,7 @@ def RunDFPT(
     l_vcut: bool | None = None,
     spin_component: int = 1,
     check_spread: bool = True,
+    kcw_overrides: KcwOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> ChannelResults:
     """Run the kcw.x chain off provided wannierization outputs.
@@ -650,10 +668,20 @@ def RunDFPT(
             level orbital grouping (``group_orbitals_tol``). Only affects
             the single all-orbital screen step; the grouped
             per-representative ``i_orb`` runs force it off.
+        kcw_overrides: user kcw.x namelist keywords, layered onto this
+            graph's synthesized ``control`` / ``wannier`` / ``screen`` /
+            ``ham`` dicts (user values win). ``control`` and ``wannier``
+            reach every step; ``screen`` only the screen step (including
+            each group representative's ``i_orb`` run), ``ham`` only the
+            ham step.
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
     l_vcut = True if l_vcut is None else bool(l_vcut)
+    # Explicitly unwrap a (possibly TaggedValue-proxied) overrides namespace
+    # by iterating its ``.items()`` into a plain dict, rather than relying on
+    # ``dict(proxy)`` to coerce the proxy — same fix as ``GroupedKcwScreening``.
+    kcw_namelist_overrides: dict[str, Any] = dict((kcw_overrides or {}).items())
     control = {
         "kcw_iverbosity": 1,
         "kcw_at_ks": False,
@@ -664,6 +692,7 @@ def RunDFPT(
         "mp1": kgrid[0],
         "mp2": kgrid[1],
         "mp3": kgrid[2],
+        **dict((kcw_namelist_overrides.get("control") or {}).items()),
     }
     wannier = {
         "seedname": SEEDNAME,
@@ -672,6 +701,7 @@ def RunDFPT(
         "num_wann_emp": num_wann_emp,
         "have_empty": num_wann_emp > 0,
         "has_disentangle": has_disentangle,
+        **dict((kcw_namelist_overrides.get("wannier") or {}).items()),
     }
 
     prep_inputs: dict[str, Any] = {
@@ -707,6 +737,10 @@ def RunDFPT(
     }
     if eps_inf is not None:
         screen_namelist["eps_inf"] = eps_inf
+    screen_namelist = {
+        **screen_namelist,
+        **dict((kcw_namelist_overrides.get("screen") or {}).items()),
+    }
 
     if alpha_guess is not None:
         alphas = alphas_from_guess(
@@ -772,6 +806,7 @@ def RunDFPT(
         "use_ws_distance": True,
         "write_hr": True,
         "on_site_only": False,
+        **dict((kcw_namelist_overrides.get("ham") or {}).items()),
     }
     ham_inputs: dict[str, Any] = {
         "code": kcw_code,
@@ -1073,6 +1108,7 @@ def SinglepointDFPTWorkflow(
     spin: SpinType = SpinType.NONE,
     check_spread: bool = True,
     group_orbitals_tol: float | None = None,
+    kcw_overrides: KcwOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> KoopmansDFPTOutputs:
     """End-to-end singlepoint Koopmans DFPT: wannierize, then the kcw.x chain.
@@ -1142,6 +1178,10 @@ def SinglepointDFPTWorkflow(
     retrieved folders. Each channel clusters its own Wannier functions
     independently (a channel running from its ``alpha_guess`` skips
     screening entirely, grouping included).
+
+    ``kcw_overrides`` reaches every channel's :func:`RunDFPT` unchanged: user
+    kcw.x namelist keywords layered onto its synthesized ``control`` /
+    ``wannier`` / ``screen`` / ``ham`` dicts.
     """
     validate_parallelization(parallelization)
 
@@ -1327,6 +1367,7 @@ def SinglepointDFPTWorkflow(
             "l_vcut": l_vcut,
             "spin_component": 2 if channel == SpinChannel.DOWN else 1,
             "check_spread": check_spread,
+            "kcw_overrides": kcw_overrides,
             "parallelization": parallelization,
             "metadata": {
                 "call_link_label": f"dfpt{suffix}",
