@@ -1230,6 +1230,7 @@ def _run_explicit_bands_and_dos_steps(
     pseudo_family: str | None,
     protocol: str | None,
     electronic_type: ElectronicType,
+    spin_type: SpinType,
     parallelization: ParallelizationDict | None,
 ) -> tuple[PwOutputs | None, ProjwfcOutputs | None]:
     """Assemble the pw.x quality-check bands run and its projwfc step.
@@ -1262,6 +1263,7 @@ def _run_explicit_bands_and_dos_steps(
         pseudo_family=pseudo_family,
         protocol=protocol,
         electronic_type=electronic_type,
+        spin_type=spin_type,
         parallelization=parallelization,
     )
     bands_outputs = PwOutputs(
@@ -1418,6 +1420,12 @@ def WannierizeBlocks(
             per-block wannier builder either way). Never the upstream
             namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
+            ``spin_type`` also reaches every pw.x step assembled here — the
+            shared scf + nscf and the quality-check bands run — so the
+            blocks are Wannierized off a ground state in the regime the
+            caller asked for. ``COLLINEAR`` with the ``INSULATOR`` default
+            needs a ``tot_magnetization`` in the ``scf`` / ``nscf``
+            overrides.
         nscf_remote_folder: an existing nscf scratch to build every block
             on. When given, the internal scf + nscf is skipped (and the
             ``nscf`` output namespace is absent); the caller owns keeping
@@ -1539,6 +1547,7 @@ def WannierizeBlocks(
                 pseudo_family=pseudo_family,
                 protocol=protocol,
                 electronic_type=electronic_type,
+                spin_type=spin_type,
                 parallelization=parallelization,
             )
     else:
@@ -1559,6 +1568,7 @@ def WannierizeBlocks(
             # grid (not the protocol's kpoints_distance-derived one).
             nscf_kpoints=kpoints,
             scf_kpoints=scf_kpoints,
+            spin_type=spin_type,
             parallelization=parallelization,
             metadata={"call_link_label": "scf_nscf", "label": "Ground state"},
         )
@@ -1589,6 +1599,7 @@ def WannierizeBlocks(
             pseudo_family=pseudo_family,
             protocol=protocol,
             electronic_type=electronic_type,
+            spin_type=spin_type,
             parallelization=parallelization,
         )
         if split:

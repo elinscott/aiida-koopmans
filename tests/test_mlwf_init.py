@@ -353,3 +353,78 @@ class TestWannierOverridesThreading:
         )
         overrides = wg.tasks["wannierize"].inputs["overrides"]["wannier90"].value
         assert overrides["dis_froz_max"] == 1.0
+
+
+def _spin_resolved_ozone_blocks():
+    """Return the ozone manifold projected per spin channel: 9 occupied + 1 empty each."""
+    from aiida_koopmans.spin import SpinChannel
+    from tests.fixtures import explicit_block
+
+    return [
+        explicit_block(f"{name}_{channel.value}", indices, spin=channel, filled=filled)
+        for channel in (SpinChannel.UP, SpinChannel.DOWN)
+        for name, indices, filled in (
+            ("block_occ", range(1, 10), True),
+            ("block_emp", range(10, 11), False),
+        )
+    ]
+
+
+class TestSpinRegimeThreading:
+    """``spin_polarized`` reaches the wannierization as a ``spin_type``.
+
+    That regime is what decides whether the shared scf + nscf under the
+    wannierization runs at ``nspin = 2``; a collinear DSCF run that stops
+    here Wannierizes spin-resolved blocks off an unpolarized density.
+    """
+
+    @staticmethod
+    def _build(mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, blocks, **kwargs):
+        from aiida.orm import List
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+        return MlwfInitialization.build(
+            codes={**mlwf_codes, "kcp": mlwf_codes["pw"]},
+            structure=periodic_ozone_structure,
+            supercell=supercell,
+            pseudos=ozone_real_pseudos,
+            blocks=blocks,
+            kpoints=kmesh,
+            kgrid=[2, 1, 1],
+            nelec=36,
+            nelup=18,
+            neldw=18,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=20,
+            pseudo_family="unused-here",
+            **kwargs,
+        )
+
+    def test_unpolarized_run_stays_none(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh
+    ):
+        """The negative control for the collinear case below."""
+        from aiida_quantumespresso.common.types import SpinType
+
+        wg = self._build(
+            mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, _ozone_blocks()
+        )
+        assert wg.tasks["wannierize"].inputs["spin_type"].value == SpinType.NONE
+
+    def test_collinear_run_asks_for_two_channels(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh
+    ):
+        from aiida_quantumespresso.common.types import SpinType
+
+        wg = self._build(
+            mlwf_codes,
+            periodic_ozone_structure,
+            ozone_real_pseudos,
+            kmesh,
+            _spin_resolved_ozone_blocks(),
+            spin_polarized=True,
+        )
+        assert wg.tasks["wannierize"].inputs["spin_type"].value == SpinType.COLLINEAR
