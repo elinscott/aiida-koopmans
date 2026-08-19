@@ -57,6 +57,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
+from aiida_koopmans.workgraphs.ui import DensityOfStates
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -76,6 +77,23 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
 # node, not its payload.
 
 
+#: Glob patterns naming the Koopmans Hamiltonians kcp.x prints under
+#: ``write_hr``, one occupied and one empty file per spin channel, in the
+#: working directory (QE ``CPV/write_hamiltonian.f90``).
+KOOPMANS_HAMILTONIAN_PATTERNS = ("ham_occ_*.dat", "ham_emp_*.dat")
+
+
+def koopmans_hamiltonian_filename(*, filled: bool, spin_index: int) -> str:
+    """Name the Koopmans Hamiltonian kcp.x prints for one manifold.
+
+    ``spin_index`` is kcp.x's 1-based spin index: 1 for up (and for the
+    single channel of an unpolarized run), 2 for down.
+    """
+    if spin_index not in (1, 2):
+        raise ValueError(f"spin_index must be 1 or 2, got {spin_index!r}")
+    return f"ham_{'occ' if filled else 'emp'}_{spin_index}.dat"
+
+
 class DFTCPOutputs(TypedDict):
     """Outputs of a single kcp.x DFT-only run."""
 
@@ -85,13 +103,19 @@ class DFTCPOutputs(TypedDict):
 
 
 class KIFinalOutputs(TypedDict):
-    """Outputs of the final KI run (the application of the converged alphas)."""
+    """Outputs of the final KI run (the application of the converged alphas).
+
+    ``retrieved`` is the kcp.x retrieved folder. With ``write_hr`` it also
+    holds the printed Koopmans Hamiltonians (``ham_occ_?.dat`` /
+    ``ham_emp_?.dat``) the band interpolation reads.
+    """
 
     parameters: dict
     eigenvalues: np.ndarray
     lambdas: np.ndarray
     bare_lambdas: np.ndarray
     remote_folder: orm.RemoteData
+    retrieved: orm.FolderData
 
 
 #: Annotation for the DSCF codes only the periodic Wannier route consumes.
@@ -166,6 +190,11 @@ class KoopmansDSCFOutputs(TypedDict):
     With ``ml_model`` and ``ml_test=True`` a second final KI applies
     the model-predicted alphas; its outputs land in ``predicted_alphas`` /
     ``predicted_eigenvalues``, present only on that route.
+
+    With a ``kpath`` the unfold-and-interpolate stage adds
+    ``band_structure`` (the interpolated Koopmans bands along it),
+    ``band_structure_reference`` (their valence-band maximum, eV) and —
+    unless the ``do_dos`` knob is off — ``dos``.
     """
 
     parameters: dict
@@ -179,6 +208,9 @@ class KoopmansDSCFOutputs(TypedDict):
     nscf_remote_folder: NotRequired[orm.RemoteData]
     block_wannierizations: NotRequired[Annotated[dict, dynamic(WannierizeBlockOutputs)]]
     merge_groups: NotRequired[list]
+    band_structure: NotRequired[orm.BandsData]
+    band_structure_reference: NotRequired[float]
+    dos: NotRequired[DensityOfStates]
 
 
 @dataclass(frozen=True)
@@ -1092,6 +1124,9 @@ def KoopmansDSCFWorkflow(
     wannier_overrides: WannierizeOverrides | None = None,
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
+    kpath: orm.KpointsData | None = None,
+    unfold_and_interpolate: dict | None = None,
+    plotting: dict | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> KoopmansDSCFOutputs:
@@ -1149,6 +1184,15 @@ def KoopmansDSCFWorkflow(
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
+    A ``kpath`` adds the unfold-and-interpolate stage
+    (:func:`~aiida_koopmans.workgraphs.ui.dscf.DscfBandStructureTask`):
+    the final KI prints its Koopmans Hamiltonians and they are
+    interpolated onto that primitive-cell path. Only the periodic
+    Wannier route can serve it — the molecular route has no Wannier
+    basis to unfold. The ``unfold_and_interpolate`` knobs
+    (``use_ws_distance``, ``do_dos``) and the ``plotting`` DOS window
+    shape the result.
+
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
@@ -1172,6 +1216,10 @@ def KoopmansDSCFWorkflow(
         blocks=blocks,
         kgrid=kgrid,
         kpoints=kpoints,
+        kpath=kpath,
+    )
+    ui_use_ws_distance, ui_do_dos = _resolve_band_interpolation_knobs(
+        unfold_and_interpolate, kpath=kpath
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
@@ -1539,6 +1587,7 @@ def KoopmansDSCFWorkflow(
         initial_evc_occupied1=final_evc_occupied1,
         initial_evc_occupied2=final_evc_occupied2,
         is_first_iteration=first_orbdep_run,
+        write_hr=kpath is not None,
         overrides=overrides.get("ki") if overrides else None,
         parallelization=parallelization,
         metadata={
@@ -1599,7 +1648,67 @@ def KoopmansDSCFWorkflow(
         outputs["nscf_remote_folder"] = cast("orm.RemoteData", nscf_remote_folder)
         outputs["block_wannierizations"] = cast("dict", block_wannierizations)
         outputs["merge_groups"] = cast("list", merge_groups)
+
+    _attach_band_structure(
+        outputs,
+        structure=structure,
+        merge_groups=merge_groups,
+        block_wannierizations=block_wannierizations,
+        koopmans_ham_retrieved=ki_final["retrieved"],
+        kgrid=kgrid,
+        kpath=kpath,
+        spin_polarized=spin_polarized,
+        use_ws_distance=ui_use_ws_distance,
+        do_dos=ui_do_dos,
+        plotting=plotting,
+    )
     return outputs
+
+
+def _attach_band_structure(
+    outputs: KoopmansDSCFOutputs,
+    *,
+    structure: orm.StructureData,
+    merge_groups: Any,
+    block_wannierizations: Any,
+    koopmans_ham_retrieved: Any,
+    kgrid: Any,
+    kpath: Any,
+    spin_polarized: bool,
+    use_ws_distance: bool,
+    do_dos: bool,
+    plotting: dict | None,
+) -> None:
+    """Add the unfold-and-interpolate stage and its outputs to the workflow.
+
+    Does nothing without a ``kpath``. Called from the
+    ``KoopmansDSCFWorkflow`` body, so the tasks it creates join that graph.
+    """
+    if kpath is None:
+        return
+    # Imported here: ui.dscf imports this module for the printed-Hamiltonian
+    # filenames, so a module-level import would be circular.
+    from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
+
+    interpolation = DscfBandStructureTask(
+        structure=structure,
+        merge_groups=merge_groups,
+        block_wannierizations=block_wannierizations,
+        koopmans_ham_retrieved=koopmans_ham_retrieved,
+        kgrid=kgrid,
+        kpath=kpath,
+        spin_polarized=spin_polarized,
+        use_ws_distance=use_ws_distance,
+        do_dos=do_dos,
+        plotting=plotting,
+        metadata={"call_link_label": "interpolate_band_structure"},
+    )
+    outputs["band_structure"] = interpolation["band_structure"]
+    outputs["band_structure_reference"] = interpolation["reference"]
+    if do_dos:
+        # Same gate as inside the child graph: subscribe to ``dos`` only
+        # where the child produces it.
+        outputs["dos"] = interpolation["dos"]
 
 
 def _run_predicted_final_ki(
@@ -1728,6 +1837,7 @@ def RunFinalKI(
     initial_evc_occupied1: orm.SinglefileData | None = None,
     initial_evc_occupied2: orm.SinglefileData | None = None,
     is_first_iteration: bool = False,
+    write_hr: bool = False,
     overrides: KcpNamelistOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> KIFinalOutputs:
@@ -1753,6 +1863,12 @@ def RunFinalKI(
     Both this graph and the CalcJob it wraps are labelled ``Final KI``
     (``Final KIPZ`` under the KIPZ correction), so the pair reads as one
     step whichever of the two a display shows.
+
+    ``write_hr=True`` has kcp.x print its converged Koopmans Hamiltonians
+    in the Wannier basis and retrieves them: one ``ham_occ_<ispin>.dat``
+    and one ``ham_emp_<ispin>.dat`` per spin channel, written to the
+    working directory. Glob patterns name them, so a channel a given
+    ``nspin`` does not produce is simply absent.
     """
     # Deferred body: the counts are concrete here, so caller-injected
     # alphas whose per-channel lists don't match the manifolds fail with
@@ -1775,6 +1891,8 @@ def RunFinalKI(
     read_wavefunctions = _stage_wannier_seed(
         ki_parameters, initial_evc_occupied1, initial_evc_occupied2
     )
+    if write_hr:
+        ki_parameters["CONTROL"]["write_hr"] = True
     if overrides:
         ki_parameters = recursive_merge(ki_parameters, overrides)
     final_inputs = build_kcp_inputs(
@@ -1787,6 +1905,9 @@ def RunFinalKI(
         parent_folder=parent_folder,
         variational_orbital_overlays=variational_orbital_overlays,
         read_wavefunctions=read_wavefunctions,
+        settings=(
+            {"additional_retrieve_list": list(KOOPMANS_HAMILTONIAN_PATTERNS)} if write_hr else None
+        ),
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
         display="Final KIPZ" if correction == Correction.KIPZ else "Final KI",
     )
@@ -1797,6 +1918,7 @@ def RunFinalKI(
         lambdas=final["output_lambdas"],
         bare_lambdas=final["output_bare_lambdas"],
         remote_folder=final["remote_folder"],
+        retrieved=final["retrieved"],
     )
 
 
@@ -2800,6 +2922,34 @@ def PredictScreeningParameters(
 # ----------------------------------------------------------------------
 
 
+def _resolve_band_interpolation_knobs(
+    knobs: dict | None, *, kpath: orm.KpointsData | None
+) -> tuple[bool, bool]:
+    """Return ``(use_ws_distance, do_dos)``, rejecting settings that cannot take effect.
+
+    ``smooth_int_factor`` above 1 in any direction asks for the
+    smooth-interpolation method, which replaces the DFT part of the
+    Koopmans Hamiltonian with one wannierized on a denser mesh. The
+    interpolation accepts both Hamiltonians; the denser-grid
+    wannierization that produces the second one is not written.
+    """
+    settings = dict(knobs) if knobs else {}
+    if settings and kpath is None:
+        raise ValueError(
+            "`unfold_and_interpolate` settings were given without a `kpath`, so no "
+            "interpolation runs and they would take no effect. Pass the band path to "
+            "interpolate along, or drop the settings."
+        )
+    factor = settings.get("smooth_int_factor")
+    if factor is not None and any(int(f) > 1 for f in factor):
+        raise NotImplementedError(
+            f"unfold_and_interpolate.smooth_int_factor={list(factor)!r} asks for the "
+            "smooth-interpolation method, which needs a second wannierization on the "
+            "denser mesh; that pass is not ported. Set smooth_int_factor to 1."
+        )
+    return bool(settings.get("use_ws_distance", True)), bool(settings.get("do_dos", True))
+
+
 def _validate_scope(
     *,
     correction: Correction,
@@ -2809,6 +2959,7 @@ def _validate_scope(
     blocks: list | None = None,
     kgrid: list[int] | None = None,
     kpoints: orm.KpointsData | None = None,
+    kpath: orm.KpointsData | None = None,
 ) -> None:
     """Fail fast on inputs the workflow cannot honour yet.
 
@@ -2816,6 +2967,8 @@ def _validate_scope(
     (``init_orbitals='kohn-sham'``, non-periodic) and periodic Wannier
     (``init_orbitals in ('mlwfs', 'projwfs')``, which additionally needs
     the wannierisation inputs ``blocks`` / ``kgrid`` / ``kpoints``).
+    A ``kpath``, which asks for the interpolated band structure, is
+    defined on the Wannier route alone.
     Everything else raises. Does not validate the Wannier-route ``codes``
     members: that requirement lives on
     :func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`'s own
@@ -2873,6 +3026,16 @@ def _validate_scope(
             "supported — it needs a pw.x-only wannierize pass plus a "
             "ks2kcp folding mode. Use init_orbitals='mlwfs' / 'projwfs' "
             "for periodic systems."
+        )
+
+    # Last, so that a route the workflow does not run at all is named before
+    # the band path it cannot serve either.
+    if kpath is not None and not wannier_init:
+        raise NotImplementedError(
+            "`kpath` is not defined for init_orbitals='kohn-sham': recovering "
+            "primitive-cell bands from the supercell unfolds the Koopmans Hamiltonian "
+            "in the Wannier basis, which only the Wannier-initialised route builds. "
+            "Set init_orbitals='mlwfs' or 'projwfs'."
         )
 
 

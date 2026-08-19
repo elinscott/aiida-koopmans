@@ -999,11 +999,10 @@ def collect_wannier_functions(
     one band-ordered array pair. Within a block the entries are ordered by
     ``wf_ids``.
 
-    The input namespace is keyed ``b{i:02d}`` by the block's position in
-    :func:`WannierizeBlocks`'s band-ordered input list. That keying is a
-    private transport detail between the graph body and this task (producer
-    and consumer sit a few lines apart) — it is *not* a cross-graph
-    contract, and no other code may rely on it.
+    Callers key the input namespace so that lexicographic key order is the
+    band order they want out (``b00``, ``b01``, ...); the concatenation
+    follows that order and nothing else. The keys carry no other meaning —
+    in particular they are not block labels.
     """
     centres: list[list[float | None]] = []
     spreads: list[float] = []
