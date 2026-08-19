@@ -485,6 +485,26 @@ class TestSharedOutputSpecCollision:
         return PyFunction.spec().outputs
 
     @staticmethod
+    def _plant_namespace_port(shared, name):
+        """Plant a dynamic namespace port on ``shared``, simulating old-plumpy pollution.
+
+        plumpy's ``get_port(name, create_dynamically=True)`` used to clone the
+        parent namespace's attributes onto a new child port when the name was
+        absent; plumpy#351 drops that path. Recreate the same clone directly
+        so the planted port still matches what a leaked namespace output used
+        to leave behind.
+        """
+        shared[name] = shared.__class__(
+            name=name,
+            required=shared.required,
+            validator=shared.validator,
+            valid_type=shared.valid_type,
+            default=shared.default,
+            dynamic=shared.dynamic,
+            populate_defaults=shared.populate_defaults,
+        )
+
+    @staticmethod
     def _run_pre_rename(name):
         """Run the pre-rename dataset shape and return its process node."""
         from aiida_workgraph import WorkGraph
@@ -502,7 +522,8 @@ class TestSharedOutputSpecCollision:
 
         shared = self._shared_output_ports()
         for name in self.SCREENING_NAMESPACES:
-            shared.get_port(name, create_dynamically=True)
+            self._plant_namespace_port(shared, name)
+        assert all(name in shared for name in self.SCREENING_NAMESPACES)
         try:
             wg = WorkGraph("dataset_after_screening_namespaces")
             wg.add_task(
@@ -527,7 +548,8 @@ class TestSharedOutputSpecCollision:
         """
         shared = self._shared_output_ports()
         for name in self.SCREENING_NAMESPACES:
-            shared.get_port(name, create_dynamically=True)
+            self._plant_namespace_port(shared, name)
+        assert all(name in shared for name in self.SCREENING_NAMESPACES)
         # Run the rejected case first and the accepted case second: a
         # successful run is a valid cache source, so the opposite order
         # would serve the second run from the cache and prove nothing.
