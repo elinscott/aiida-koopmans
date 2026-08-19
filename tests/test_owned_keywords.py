@@ -35,8 +35,8 @@ def test_owned_rejects_a_keyword_that_is_only_seeded():
 
 
 def test_conditional_keywords_pass_either_check():
-    # The known gaps are settable and forced on different steps; both checks
-    # let them through so no route has to work around the classification.
+    # One route forces these and the others honour them, so both checks let
+    # them through; koopmans refuses each on the route that forces it.
     assert owned("pw.SYSTEM", {"nosym": True}) == {"nosym": True}
     assert seeded("pw.SYSTEM", {"nosym": True}) == {"nosym": True}
 
