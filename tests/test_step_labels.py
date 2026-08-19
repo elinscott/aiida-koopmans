@@ -5,8 +5,9 @@ name has to reach the process — it rides ``metadata.label``, which the
 engine writes onto the node — and it has to be free of consequence, or a
 rename would invalidate every cached calculation underneath it.
 
-The first holds for a calculation and for a wrapped workchain, and does
-not yet hold for a sub-graph: see :class:`TestASubGraphIsNotNamedYet`.
+Both hold for a calculation, a wrapped workchain, and — since
+aiida-workgraph ``5b140d4`` — a sub-graph: see
+:class:`TestASubGraphKeepsItsName`.
 """
 
 from __future__ import annotations
@@ -115,21 +116,22 @@ def OuterGraph(x: int) -> int:  # noqa: N802 - a @task.graph is CamelCase
     return NamedSubGraph(x=x, metadata={"call_link_label": "inner", "label": "A named sub-graph"})
 
 
-class TestASubGraphIsNotNamedYet:
-    """A ``@task.graph``'s name does not survive onto its node.
+class TestASubGraphKeepsItsName:
+    """A ``@task.graph``'s name survives onto its node.
 
-    ``WorkGraphEngine.on_create`` assigns ``node.label`` from the
-    workgraph's own name after the engine has applied ``metadata.label``,
-    so the name a builder gives a sub-graph is overwritten by its task
-    name — the call link label. Recorded here so the day it stops being
-    true is a failing test rather than a silent change: the koopmans
-    package works around it by treating a label equal to the call link
-    label as no name at all, which costs it the ability to show a
-    sub-graph anything its own lookup does not already name.
+    Before aiida-workgraph ``5b140d4``, ``WorkGraphEngine.on_create``
+    assigned ``node.label`` from the workgraph's own name regardless of
+    an explicit ``metadata.label``, so the name a builder gave a
+    sub-graph was overwritten by its task name — the call link label.
+    That fix keeps the explicit label instead. Recorded here so a
+    regression is a failing test rather than a silent change: the
+    koopmans package still has to read runs recorded before the fix,
+    where a label equal to the call link label carries no name — see
+    ``koopmans.aiida.utils._is_a_name`` in koopmans2.
     """
 
-    def test_the_engine_overwrites_a_sub_graphs_name(self, aiida_profile_clean):
-        """The label the builder gave the sub-graph is not the one stored."""
+    def test_the_engine_keeps_a_sub_graphs_name(self, aiida_profile_clean):
+        """The label the builder gave the sub-graph is the one stored."""
         OuterGraph.run(x=1)
         inner = (
             orm.QueryBuilder()
@@ -138,10 +140,10 @@ class TestASubGraphIsNotNamedYet:
         )
 
         assert inner.get_metadata_inputs()["metadata"]["label"] == "A named sub-graph"
-        assert inner.label == "inner"
+        assert inner.label == "A named sub-graph"
 
-    def test_a_step_under_it_keeps_its_name(self, aiida_profile_clean):
-        """Only the graph loses its name; what it launches does not."""
+    def test_a_step_under_it_keeps_its_name_too(self, aiida_profile_clean):
+        """Both the sub-graph and what it launches carry their own name."""
         OuterGraph.run(x=1)
         added = (
             orm.QueryBuilder()
