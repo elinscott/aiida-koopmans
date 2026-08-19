@@ -285,8 +285,8 @@ def _finalize_wannier_builder(
 
     ``Wannierize``'s finalisation tail: enforce that ``kpoint_path`` and
     wannier90's explicit bands path are mutually exclusive, wire that path
-    onto the nested wannier90 builder, apply the optional
-    the wrapped task expects.
+    onto the nested wannier90 builder, then reduce the builder to the
+    plain-dict inputs the wrapped task expects.
 
     ``interpolation_kpoints``, when given, is the explicit path wannier90
     interpolates along; ``bands_kpoints`` falls back to that role when it
