@@ -14,12 +14,16 @@ from __future__ import annotations
 from aiida import orm
 from aiida.engine import calcfunction
 from aiida.manage.caching import enable_caching
+from aiida_wannier90_workflows.common.types import WannierProjectionType
 from aiida_workgraph import task
 
 from aiida_koopmans.projections import block_display_name
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import display_name_for
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlock
 from aiida_koopmans.workgraphs.ph import DielectricTask
+from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from tests.fixtures import explicit_block
 
 
 @calcfunction
@@ -44,6 +48,62 @@ class TestLabelsReachTheStep:
         assert wg.tasks["scf"].inputs["pw"]["metadata"]["label"].value == "SCF"
         assert wg.tasks["ph"].inputs["metadata"]["label"].value == "Dielectric response"
         assert wg.tasks["ph"].inputs["ph"]["metadata"]["label"].value == "Dielectric response"
+
+
+class TestWannier90PreprocessingAndMinimizationLabels:
+    """The wannier90.x -pp pass and minimization run each carry their own name.
+
+    Both ``Wannierize`` (whole-manifold) and ``WannierizeBlock`` (per-block)
+    submit through the same ``Wannier90WorkChain``, which exposes the -pp
+    pass and the minimization run as separate ``wannier90_pp`` / ``wannier90``
+    namespaces (aiida-wannier90-workflows fork carrying the
+    ``preserve-caller-metadata`` fix) -- previously one shared ``wannier90``
+    namespace, off which neither step could be named on its own.
+    """
+
+    def test_the_whole_manifold_route_labels_both_steps(
+        self, wannier_codes, silicon_structure, fake_cutoffs_family
+    ):
+        wg = Wannierize.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        step = wg.tasks["Wannier90WorkChain"].inputs
+        assert step["wannier90"]["metadata"]["label"].value == "Minimization"
+        assert step["wannier90"]["wannier90"]["metadata"]["label"].value == "Minimization"
+        assert step["wannier90_pp"]["metadata"]["label"].value == "Preprocessing"
+        assert step["wannier90_pp"]["wannier90"]["metadata"]["label"].value == "Preprocessing"
+        # The pw2wannier90 step's own label is untouched by this change.
+        assert step["pw2wannier90"]["metadata"]["label"].value == "Overlaps"
+
+    def test_the_per_block_route_labels_both_steps(
+        self,
+        wannier_codes,
+        silicon_structure,
+        kmesh,
+        aiida_localhost,
+        tmp_path,
+        fake_cutoffs_family,
+    ):
+        nscf_scratch = orm.RemoteData(computer=aiida_localhost, remote_path=str(tmp_path))
+        block = explicit_block("block_1", range(1, 5), projections=["Si: sp3"])
+        wg = WannierizeBlock.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            block=block,
+            projection_type=WannierProjectionType.ANALYTIC,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        step = wg.tasks["wannier90"].inputs
+        assert step["wannier90"]["metadata"]["label"].value == "Minimization"
+        assert step["wannier90"]["wannier90"]["metadata"]["label"].value == "Minimization"
+        assert step["wannier90_pp"]["metadata"]["label"].value == "Preprocessing"
+        assert step["wannier90_pp"]["wannier90"]["metadata"]["label"].value == "Preprocessing"
+        # The pw2wannier90 step's own label is untouched by this change.
+        assert step["pw2wannier90"]["metadata"]["label"].value == "Overlaps"
 
 
 class TestLabelsAreFreeOfConsequence:

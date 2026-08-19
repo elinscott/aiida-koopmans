@@ -103,6 +103,39 @@ def name_step(inputs: dict[str, Any], display: str) -> None:
     inputs.setdefault("metadata", {})["label"] = display
 
 
+def stamp_wannier90_pp_namespace(data: dict[str, Any]) -> None:
+    """Seed ``wannier90_pp`` as a "Preprocessing"-labeled copy of ``wannier90``, in place.
+
+    aiida-wannier90-workflows' ``Wannier90WorkChain`` runs its wannier90.x
+    -pp pass and its minimization off one exposed ``wannier90`` namespace
+    unless a caller supplies the optional ``wannier90_pp`` namespace, in
+    which case the -pp pass builds from that instead. Every koopmans caller
+    wants the two runs distinguishable in a progress display, so this always
+    populates ``wannier90_pp`` and labels it "Preprocessing", leaving
+    ``wannier90`` for the caller to label "Minimization" itself.
+
+    AiiDA inputs are node references, so the copy is cheap; any ``metadata``
+    already on ``wannier90`` is dropped from the copy first so the two
+    steps' labels don't alias one dict.
+
+    Args:
+        data: The flattened ``Wannier90WorkChain`` inputs (mutated in place).
+            A no-op if ``wannier90`` is absent.
+    """
+    wannier90_step = data.get("wannier90")
+    if wannier90_step is None:
+        return
+    pp_step = dict(wannier90_step)
+    pp_step.pop("metadata", None)
+    if "wannier90" in pp_step:
+        pp_step["wannier90"] = dict(pp_step["wannier90"])
+        pp_step["wannier90"].pop("metadata", None)
+    data["wannier90_pp"] = pp_step
+    name_step(pp_step, "Preprocessing")
+    if "wannier90" in pp_step:
+        name_step(pp_step["wannier90"], "Preprocessing")
+
+
 def force_pw_verbosity(pw_inputs: dict[str, Any]) -> None:
     """Set the ``CONTROL.verbosity`` every koopmans pw.x calculation runs at.
 
