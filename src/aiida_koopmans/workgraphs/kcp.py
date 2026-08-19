@@ -52,6 +52,7 @@ from aiida_koopmans.variational_orbitals import (
     display_name_for,
     map_key_for,
 )
+from aiida_koopmans.workgraphs import mark_step
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeOverrides,
@@ -2243,6 +2244,7 @@ def ScreeningIteration(
     ``base`` is a frozen ``KcpBaseInputs`` dataclass and crosses this
     ``@task.graph`` boundary intact.
     """
+    mark_step(numbered=True)
     trial = KcpStep(
         **_trial_kcp_inputs(
             kcp_code=kcp_code,
@@ -2369,6 +2371,7 @@ def RefineScreeningParameters(
     ``is_first_iteration=False`` (KIPZ's inner-loop CG ran on iteration
     1 only) — and recurses on its outputs with a decremented budget.
     """
+    mark_step(transparent=True)
     if remaining_steps <= 0 or prev_max_error < alpha_conv_thr:
         # A graph cannot echo a raw input as an output; route the converged
         # alphas (and the trial's parsed parameters) through tasks so the

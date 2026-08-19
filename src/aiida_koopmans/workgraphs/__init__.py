@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Any
 
 from aiida import orm
+from aiida_workgraph import task
 
 from aiida_koopmans.owned_keywords import owned
 
@@ -101,6 +102,49 @@ def name_step(inputs: dict[str, Any], display: str) -> None:
         display: The name to show.
     """
     inputs.setdefault("metadata", {})["label"] = display
+
+
+@task.calcfunction
+def stamp_render_intent(kind: str) -> orm.Bool:
+    """Set ``koopmans_render`` extras on the process that called this task.
+
+    AiiDA's ``metadata`` input namespace is spec'd (``label``,
+    ``description``, ``call_link_label``, ``store_provenance``,
+    ``disable_cache``) and takes no arbitrary keys, so a render-intent flag
+    cannot ride through ``metadata`` the way :func:`name_step` rides
+    ``metadata.label``. Extras have no such namespace: they are free-form
+    and settable on any stored node. Runs as a genuine (in-process)
+    ``@task.calcfunction`` so ``Process.current()`` resolves to itself and
+    ``.caller`` to whichever process invoked it — the row a reader actually
+    sees, whichever of its call sites ran.
+
+    Args:
+        kind: ``"transparent"`` (render invisible, children hoisted onto
+            the parent) or ``"numbered"`` (positional "Iteration N"
+            numbering rather than a name).
+    """
+    from aiida.engine import Process
+
+    current = Process.current()
+    caller = None if current is None else current.node.caller  # type: ignore[attr-defined]
+    if caller is not None:
+        caller.base.extras.set("koopmans_render", {getattr(kind, "value", kind): True})
+    return orm.Bool(True)
+
+
+def mark_step(*, transparent: bool = False, numbered: bool = False) -> None:
+    """Stamp render intent on the enclosing ``@task.graph`` run.
+
+    Call once, unconditionally, near the top of the ``@task.graph`` body
+    whose rendering this marks — not at each of its call sites. The intent
+    is a property of which function ran (:func:`stamp_render_intent` reads
+    it off its own ``ProcessNode.caller`` at run time), not of who called
+    it, so one call per graph body covers every call site at once.
+    """
+    if transparent:
+        stamp_render_intent(kind="transparent")
+    if numbered:
+        stamp_render_intent(kind="numbered")
 
 
 def force_pw_verbosity(pw_inputs: dict[str, Any]) -> None:

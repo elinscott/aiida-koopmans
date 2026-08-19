@@ -1132,6 +1132,107 @@ class TestKoopmansDSCFGraphBuild:
         # Convergence indicator the recursive ``RefineScreeningParameters`` reads.
         assert _iter_has("max_alpha_error"), iter_labels
 
+    def test_render_intent_marker(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        """``mark_step`` wires a ``stamp_render_intent`` task with the right ``kind``.
+
+        The stamp itself lands on the calling process's extras only when
+        ``stamp_render_intent`` actually runs (see its docstring) — not
+        visible at build time. What *is* visible at build time, and what
+        this test checks, is the wiring: the task exists inside the graph
+        whose rendering it marks, carrying the ``kind`` that graph passed,
+        and is absent from a graph that never calls ``mark_step``.
+        """
+        from aiida import orm
+        from aiida_pseudo.groups.family import PseudoPotentialFamily
+
+        from aiida_koopmans.workgraphs.kcp import (
+            ComputeScreeningParameters,
+            RefineScreeningParameters,
+            ScreeningIteration,
+            kcp_base_inputs,
+        )
+
+        family = (
+            orm.QueryBuilder()
+            .append(PseudoPotentialFamily, filters={"label": ozone_pseudo_family})
+            .one()[0]
+        )
+        pseudos = family.get_pseudos(structure=ozone_structure)
+        dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
+        base = kcp_base_inputs(
+            ozone_structure,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+        )
+
+        # An iteration carries "numbered".
+        iter_wg = ScreeningIteration.build(
+            kcp_code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            base=base,
+            nbnd=10,
+            correction=Correction.KI,
+            spin_polarized=False,
+            current_alphas={"filled": {"none": [0.6] * 9}, "empty": {"none": [0.6]}},
+            parent_folder=dummy_remote,
+            variational_orbital_overlays=None,
+            ki_overrides=None,
+            filled_overrides=None,
+            empty_overrides_dict=None,
+            parallelization=None,
+        )
+        assert self._find_task(iter_wg, "stamp_render_intent").inputs.kind.value == "numbered"
+
+        # The recursion wrapper carries "transparent" — both from its
+        # first call (out of ``ComputeScreeningParameters``, exercised
+        # below) and from itself recursing on itself.
+        ref_wg = RefineScreeningParameters.build(
+            kcp_code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            base=base,
+            nbnd=10,
+            correction=Correction.KI,
+            spin_polarized=False,
+            prev_alphas={"filled": {"none": [0.6] * 9}, "empty": {"none": [0.6]}},
+            prev_trial_remote=dummy_remote,
+            prev_trial_output_parameters={},
+            prev_max_error=1.0,
+            remaining_steps=2,
+            alpha_conv_thr=1e-3,
+        )
+        assert self._find_task(ref_wg, "stamp_render_intent").inputs.kind.value == "transparent"
+
+        # A plain step's own graph never calls ``mark_step``: build the
+        # driver directly (rather than walking the wrapper's opaque child)
+        # and check its own top-level tasks carry no marker.
+        csp_wg = ComputeScreeningParameters.build(
+            kcp_code=kcp_code,
+            structure=ozone_structure,
+            pseudos=pseudos,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=0,
+            initial_alpha=0.6,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.KOHN_SHAM,
+            dft_remote=dummy_remote,
+        )
+        assert not any(t.name == "stamp_render_intent" for t in csp_wg.tasks), [
+            t.name for t in csp_wg.tasks
+        ]
+
     def _build_per_orbital_wg(
         self,
         *,
