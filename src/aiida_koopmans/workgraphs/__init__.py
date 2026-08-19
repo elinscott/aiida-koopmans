@@ -104,36 +104,19 @@ def name_step(inputs: dict[str, Any], display: str) -> None:
 
 
 def stamp_wannier90_pp_namespace(data: dict[str, Any]) -> None:
-    """Seed ``wannier90_pp`` as a "Preprocessing"-labeled copy of ``wannier90``, in place.
+    """Label the wannier90.x -pp pass "Preprocessing" via its ``wannier90_pp`` namespace, in place.
 
-    aiida-wannier90-workflows' ``Wannier90WorkChain`` runs its wannier90.x
-    -pp pass and its minimization off one exposed ``wannier90`` namespace
-    unless a caller supplies the optional ``wannier90_pp`` namespace, in
-    which case the -pp pass builds from that instead. Every koopmans caller
-    wants the two runs distinguishable in a progress display, so this always
-    populates ``wannier90_pp`` and labels it "Preprocessing", leaving
-    ``wannier90`` for the caller to label "Minimization" itself.
-
-    AiiDA inputs are node references, so the copy is cheap; any ``metadata``
-    already on ``wannier90`` is dropped from the copy first so the two
-    steps' labels don't alias one dict.
+    The -pp pass and the minimization run are two phases of one
+    calculation, so aiida-wannier90-workflows' ``wannier90_pp`` namespace
+    carries metadata only -- every physics input still comes from
+    ``wannier90`` alone, for both phases. This sets only that metadata.
+    The caller labels ``wannier90`` itself (by convention here,
+    "Minimization") separately.
 
     Args:
         data: The flattened ``Wannier90WorkChain`` inputs (mutated in place).
-            A no-op if ``wannier90`` is absent.
     """
-    wannier90_step = data.get("wannier90")
-    if wannier90_step is None:
-        return
-    pp_step = dict(wannier90_step)
-    pp_step.pop("metadata", None)
-    if "wannier90" in pp_step:
-        pp_step["wannier90"] = dict(pp_step["wannier90"])
-        pp_step["wannier90"].pop("metadata", None)
-    data["wannier90_pp"] = pp_step
-    name_step(pp_step, "Preprocessing")
-    if "wannier90" in pp_step:
-        name_step(pp_step["wannier90"], "Preprocessing")
+    name_step(data.setdefault("wannier90_pp", {}), "Preprocessing")
 
 
 def force_pw_verbosity(pw_inputs: dict[str, Any]) -> None:

@@ -55,10 +55,13 @@ class TestWannier90PreprocessingAndMinimizationLabels:
 
     Both ``Wannierize`` (whole-manifold) and ``WannierizeBlock`` (per-block)
     submit through the same ``Wannier90WorkChain``, which exposes the -pp
-    pass and the minimization run as separate ``wannier90_pp`` / ``wannier90``
-    namespaces (aiida-wannier90-workflows fork carrying the
-    ``preserve-caller-metadata`` fix) -- previously one shared ``wannier90``
-    namespace, off which neither step could be named on its own.
+    pass's naming as a metadata-only ``wannier90_pp`` namespace alongside the
+    minimization run's own ``wannier90`` namespace (aiida-wannier90-workflows
+    fork carrying the ``preserve-caller-metadata`` fix) -- previously one
+    shared ``wannier90`` namespace, off which neither step could be named on
+    its own. ``wannier90_pp`` carries no physics inputs: the -pp pass and
+    the minimization run are two phases of one calculation, so both read
+    their physics from ``wannier90`` alone.
     """
 
     def test_the_whole_manifold_route_labels_both_steps(
@@ -73,7 +76,6 @@ class TestWannier90PreprocessingAndMinimizationLabels:
         assert step["wannier90"]["metadata"]["label"].value == "Minimization"
         assert step["wannier90"]["wannier90"]["metadata"]["label"].value == "Minimization"
         assert step["wannier90_pp"]["metadata"]["label"].value == "Preprocessing"
-        assert step["wannier90_pp"]["wannier90"]["metadata"]["label"].value == "Preprocessing"
         # The pw2wannier90 step's own label is untouched by this change.
         assert step["pw2wannier90"]["metadata"]["label"].value == "Overlaps"
 
@@ -101,7 +103,6 @@ class TestWannier90PreprocessingAndMinimizationLabels:
         assert step["wannier90"]["metadata"]["label"].value == "Minimization"
         assert step["wannier90"]["wannier90"]["metadata"]["label"].value == "Minimization"
         assert step["wannier90_pp"]["metadata"]["label"].value == "Preprocessing"
-        assert step["wannier90_pp"]["wannier90"]["metadata"]["label"].value == "Preprocessing"
         # The pw2wannier90 step's own label is untouched by this change.
         assert step["pw2wannier90"]["metadata"]["label"].value == "Overlaps"
 
