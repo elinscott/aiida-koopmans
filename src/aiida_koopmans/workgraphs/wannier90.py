@@ -33,6 +33,7 @@ from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
     force_pw_verbosity,
     name_step,
+    stamp_wannier90_pp_namespace,
     unwrap_enum,
 )
 
@@ -550,17 +551,13 @@ def Wannierize(
     )
 
     # ``Wannier90WorkChain`` sets ``call_link_label`` on the inputs it exposes
-    # for these four steps, leaving a label given here in place. Its two
-    # wannier90.x steps are not among them: the -pp pass and the
-    # minimization are two runs off one ``wannier90`` namespace, so one
-    # label could not tell them apart, and the workchain replaces that
-    # namespace's own metadata before submitting each anyway
-    # (aiida-wannier90-workflows ``run_wannier90_pp`` / ``run_wannier90``).
+    # for these steps, leaving a label given here in place.
     for namespace, calculation, display in (
         ("scf", "pw", "SCF"),
         ("nscf", "pw", "NSCF"),
         ("projwfc", "projwfc", "Atomic projections"),
         ("pw2wannier90", "pw2wannier90", "Overlaps"),
+        ("wannier90", "wannier90", "Minimization"),
     ):
         step = data.get(namespace)
         if step is None:
@@ -568,6 +565,7 @@ def Wannierize(
         name_step(step, display)
         if calculation in step:
             name_step(step[calculation], display)
+    stamp_wannier90_pp_namespace(data)
 
     # Submit the workchain with converted inputs
     outputs = Wannier90Step(**data)
