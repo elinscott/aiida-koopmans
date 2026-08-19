@@ -5,8 +5,9 @@ name has to reach the process — it rides ``metadata.label``, which the
 engine writes onto the node — and it has to be free of consequence, or a
 rename would invalidate every cached calculation underneath it.
 
-The first holds for a calculation and for a wrapped workchain, and does
-not yet hold for a sub-graph: see :class:`TestASubGraphIsNotNamedYet`.
+Both hold for a calculation, a wrapped workchain, and — since
+aiida-workgraph ``5b140d4`` — a sub-graph; that engine guarantee is
+tested upstream (aiida-workgraph #811), not here.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 from aiida import orm
 from aiida.engine import calcfunction
 from aiida.manage.caching import enable_caching
-from aiida_workgraph import task
 
 from aiida_koopmans.projections import block_display_name
 from aiida_koopmans.spin import SpinChannel
@@ -95,58 +95,3 @@ class TestReadableNames:
         """The per-spin 1-based band index, with the channel where there is one."""
         assert display_name_for({"spin": SpinChannel.NONE, "index": 5}) == "Orbital 5"
         assert display_name_for({"spin": SpinChannel.UP, "index": 10}) == "Orbital 10 (spin up)"
-
-
-@task
-def add_one(x: int) -> int:
-    """Add one (a stand-in for any step a sub-graph runs)."""
-    return x + 1
-
-
-@task.graph
-def NamedSubGraph(x: int) -> int:  # noqa: N802 - a @task.graph is CamelCase
-    """Stand in for any of the workgraphs' ``@task.graph`` builders."""
-    return add_one(x=x, metadata={"label": "Inner step"}).result
-
-
-@task.graph
-def OuterGraph(x: int) -> int:  # noqa: N802 - a @task.graph is CamelCase
-    """Call the sub-graph under a name of its own."""
-    return NamedSubGraph(x=x, metadata={"call_link_label": "inner", "label": "A named sub-graph"})
-
-
-class TestASubGraphIsNotNamedYet:
-    """A ``@task.graph``'s name does not survive onto its node.
-
-    ``WorkGraphEngine.on_create`` assigns ``node.label`` from the
-    workgraph's own name after the engine has applied ``metadata.label``,
-    so the name a builder gives a sub-graph is overwritten by its task
-    name — the call link label. Recorded here so the day it stops being
-    true is a failing test rather than a silent change: the koopmans
-    package works around it by treating a label equal to the call link
-    label as no name at all, which costs it the ability to show a
-    sub-graph anything its own lookup does not already name.
-    """
-
-    def test_the_engine_overwrites_a_sub_graphs_name(self, aiida_profile_clean):
-        """The label the builder gave the sub-graph is not the one stored."""
-        OuterGraph.run(x=1)
-        inner = (
-            orm.QueryBuilder()
-            .append(orm.WorkflowNode, filters={"attributes.process_label": "WorkGraph<inner>"})
-            .one()[0]
-        )
-
-        assert inner.get_metadata_inputs()["metadata"]["label"] == "A named sub-graph"
-        assert inner.label == "inner"
-
-    def test_a_step_under_it_keeps_its_name(self, aiida_profile_clean):
-        """Only the graph loses its name; what it launches does not."""
-        OuterGraph.run(x=1)
-        added = (
-            orm.QueryBuilder()
-            .append(orm.ProcessNode, filters={"attributes.process_label": "add_one"})
-            .one()[0]
-        )
-
-        assert added.label == "Inner step"
