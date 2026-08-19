@@ -6,8 +6,8 @@ engine writes onto the node — and it has to be free of consequence, or a
 rename would invalidate every cached calculation underneath it.
 
 Both hold for a calculation, a wrapped workchain, and — since
-aiida-workgraph ``5b140d4`` — a sub-graph: see
-:class:`TestASubGraphKeepsItsName`.
+aiida-workgraph ``5b140d4`` — a sub-graph; that engine guarantee is
+tested upstream (aiida-workgraph #811), not here.
 """
 
 from __future__ import annotations
