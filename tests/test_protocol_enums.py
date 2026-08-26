@@ -209,6 +209,129 @@ class TestRunScfNscfOccupations:
         _assert_smeared(_system(wg.tasks["nscf"], "pw"))
 
 
+class TestRunScfNscfSpin:
+    """``RunScfNscf`` honours ``spin_type`` on both of its steps.
+
+    This is the ground state every Wannierization is built on, so a regime
+    that stops at the graph boundary leaves the blocks Wannierized off an
+    unpolarized density whatever the run asked for. Every regime is
+    proxied, the form a graph input takes in production.
+    """
+
+    @staticmethod
+    def _system_pair(fake_cutoffs_family, silicon_structure, kmesh, pw_code, spin_type):
+        wg = RunScfNscf.build(
+            pw_code=pw_code,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            nscf_kpoints=kmesh,
+            spin_type=TaggedValue(spin_type),
+            # Fixed occupations under nspin = 2 need a magnetization.
+            overrides={
+                step: {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
+                for step in ("scf", "nscf")
+            },
+        )
+        return _system(wg.tasks["scf"], "pw"), _system(wg.tasks["nscf"], "pw")
+
+    def test_default_none_leaves_the_namelist_unpolarized(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        """Nothing given: no spin keyword appears — the negative control."""
+        wg = RunScfNscf.build(
+            pw_code=pw_code,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            nscf_kpoints=kmesh,
+        )
+        for system in (_system(wg.tasks["scf"], "pw"), _system(wg.tasks["nscf"], "pw")):
+            assert "nspin" not in system
+            assert "noncolin" not in system
+            assert "starting_magnetization" not in system
+
+    def test_collinear_sets_nspin_beside_the_magnetization(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        """Both keywords together: pw.x refuses a moment with no ``nspin``."""
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.COLLINEAR
+        ):
+            assert system["nspin"] == 2
+            assert system["tot_magnetization"] == 2
+            assert "noncolin" not in system
+
+    def test_non_collinear_sets_noncolin_without_spinorb(
+        self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
+    ):
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.NON_COLLINEAR
+        ):
+            assert system["noncolin"] is True
+            assert system["nspin"] == 4
+            assert "lspinorb" not in system
+
+    def test_spin_orbit_adds_lspinorb(self, fake_cutoffs_family, silicon_structure, kmesh, pw_code):
+        for system in self._system_pair(
+            fake_cutoffs_family, silicon_structure, kmesh, pw_code, SpinType.SPIN_ORBIT
+        ):
+            assert system["noncolin"] is True
+            assert system["lspinorb"] is True
+
+
+class TestWannierizeBlocksSpinReachesTheGroundState:
+    """``WannierizeBlocks`` hands its ``spin_type`` to every pw.x step it runs.
+
+    The shared scf + nscf sits in a nested graph whose body has not run at
+    build time, so it is checked on the forwarded socket; the quality-check
+    bands step is assembled by a plain helper in this graph's own body and
+    is checked on its materialized namelist. The bands step reads the scf
+    density back channel by channel, so a regime that reached the scf but
+    not the bands run would abort mid-run.
+    """
+
+    @staticmethod
+    def _build(pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family, **kwargs):
+        return WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=[
+                explicit_block("block_1", range(1, 5), ["Si: sp3"]),
+                explicit_block("block_2", range(5, 9), ["Si: sp3"]),
+            ],
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            interpolation_kpoints=labelled_kpath,
+            **kwargs,
+        )
+
+    def test_default_none_leaves_both_unpolarized(
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+    ):
+        """The negative control for the collinear case below."""
+        wg = self._build(pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family)
+        assert wg.tasks["scf_nscf"].inputs["spin_type"].value == SpinType.NONE
+        assert "nspin" not in _system(wg.tasks["bands"], "pw")
+
+    def test_collinear_reaches_the_shared_pair_and_the_bands_step(
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, fake_cutoffs_family
+    ):
+        """One regime, stated once, reaches every ground-state step."""
+        magnetized = {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
+        wg = self._build(
+            pdos_codes,
+            silicon_structure,
+            kmesh,
+            labelled_kpath,
+            fake_cutoffs_family,
+            spin_type=TaggedValue(SpinType.COLLINEAR),
+            overrides={"scf": magnetized, "nscf": magnetized},
+        )
+        assert wg.tasks["scf_nscf"].inputs["spin_type"].value == SpinType.COLLINEAR
+        system = _system(wg.tasks["bands"], "pw")
+        assert system["nspin"] == 2
+        assert system["tot_magnetization"] == 2
+
+
 class TestRunPwBandsOccupations:
     """``RunPwBands`` honours ``electronic_type`` on both of its steps.
 
