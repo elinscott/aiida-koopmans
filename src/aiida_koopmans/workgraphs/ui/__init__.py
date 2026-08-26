@@ -16,7 +16,7 @@ Scope notes:
   :mod:`aiida_koopmans.workgraphs.ui.dscf`.
 * The smooth-interpolation correction consumes a pre-computed denser-grid
   DFT Hamiltonian (``dft_smooth_ham_file``); wannierizing that denser grid
-  is the caller's job.
+  is the caller's job (:mod:`aiida_koopmans.workgraphs.ui.smooth`).
 """
 
 from __future__ import annotations
