@@ -84,7 +84,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
-from aiida_koopmans.workgraphs import name_step, unwrap_enum
+from aiida_koopmans.workgraphs import name_step, stamp_wannier90_pp_namespace, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
@@ -958,10 +958,13 @@ def WannierizeBlock(
     )
 
     # The workchain carries a label through to its pw2wannier90 step; its
-    # two wannier90.x steps are two runs off one namespace, so neither
-    # can be named from here (see ``Wannierize``).
+    # two wannier90.x steps get their own labels via the ``wannier90`` /
+    # ``wannier90_pp`` namespaces (see ``Wannierize``).
     name_step(data["pw2wannier90"], "Overlaps")
     name_step(data["pw2wannier90"]["pw2wannier90"], "Overlaps")
+    name_step(data["wannier90"], "Minimization")
+    name_step(data["wannier90"]["wannier90"], "Minimization")
+    stamp_wannier90_pp_namespace(data)
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 

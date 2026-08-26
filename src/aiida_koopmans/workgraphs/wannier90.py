@@ -8,7 +8,6 @@ import copy
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
-import numpy as np
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90_workflows.common.types import (
@@ -33,6 +32,7 @@ from aiida_koopmans.workgraphs import (
     enforce_step_calculation,
     force_pw_verbosity,
     name_step,
+    stamp_wannier90_pp_namespace,
     unwrap_enum,
 )
 
@@ -281,15 +281,13 @@ def _finalize_wannier_builder(
     kpoint_path: dict[str, Any] | None,
     bands_kpoints: orm.KpointsData | None,
     interpolation_kpoints: orm.KpointsData | None,
-    projector_rotation: np.ndarray | None,
 ) -> dict[str, Any]:
-    """Apply the bands-path / projector-rotation wiring, then flatten to a dict.
+    """Apply the bands-path wiring, then flatten to a dict.
 
     ``Wannierize``'s finalisation tail: enforce that ``kpoint_path`` and
     wannier90's explicit bands path are mutually exclusive, wire that path
-    onto the nested wannier90 builder, apply the optional
-    ``projector_rotation``, and reduce the builder to the plain-dict inputs
-    the wrapped task expects.
+    onto the nested wannier90 builder, then reduce the builder to the
+    plain-dict inputs the wrapped task expects.
 
     ``interpolation_kpoints``, when given, is the explicit path wannier90
     interpolates along; ``bands_kpoints`` falls back to that role when it
@@ -326,9 +324,6 @@ def _finalize_wannier_builder(
         parameters = builder.wannier90.wannier90.parameters.get_dict()
         parameters["bands_plot"] = True
         builder.wannier90.wannier90.parameters = orm.Dict(parameters)
-
-    if projector_rotation is not None:
-        builder.projector_rotation = projector_rotation
 
     data = get_dict_from_builder(builder)
 
@@ -417,17 +412,12 @@ def Wannierize(
     kpoint_path: dict[str, Any] | None = None,
     bands_kpoints: orm.KpointsData | None = None,
     interpolation_kpoints: orm.KpointsData | None = None,
-    projector_rotation: np.ndarray | None = None,
     parallelization: ParallelizationDict | None = None,
     kpoints: orm.KpointsData | None = None,
     mp_grid: list[int] | None = None,
     scf_kpoints: orm.KpointsData | None = None,
 ) -> WannierWorkflowOutputs:
     """Run Wannier90WorkChain using the protocol-based builder pattern.
-
-    If ``projector_rotation`` is provided, the workchain will apply
-    ``A' = B @ A`` to the pw2wannier90 projection matrix before
-    wannier90 reads it.
 
     This task wraps Wannier90WorkChain and uses get_builder_from_protocol to
     construct the inputs from a simplified set of arguments.
@@ -531,7 +521,6 @@ def Wannierize(
         kpoint_path=kpoint_path,
         bands_kpoints=bands_kpoints,
         interpolation_kpoints=interpolation_kpoints,
-        projector_rotation=projector_rotation,
     )
 
     _apply_kpoint_mesh(data, kpoints=kpoints, mp_grid=mp_grid, scf_kpoints=scf_kpoints)
@@ -550,17 +539,13 @@ def Wannierize(
     )
 
     # ``Wannier90WorkChain`` sets ``call_link_label`` on the inputs it exposes
-    # for these four steps, leaving a label given here in place. Its two
-    # wannier90.x steps are not among them: the -pp pass and the
-    # minimization are two runs off one ``wannier90`` namespace, so one
-    # label could not tell them apart, and the workchain replaces that
-    # namespace's own metadata before submitting each anyway
-    # (aiida-wannier90-workflows ``run_wannier90_pp`` / ``run_wannier90``).
+    # for these steps, leaving a label given here in place.
     for namespace, calculation, display in (
         ("scf", "pw", "SCF"),
         ("nscf", "pw", "NSCF"),
         ("projwfc", "projwfc", "Atomic projections"),
         ("pw2wannier90", "pw2wannier90", "Overlaps"),
+        ("wannier90", "wannier90", "Minimization"),
     ):
         step = data.get(namespace)
         if step is None:
@@ -568,6 +553,7 @@ def Wannierize(
         name_step(step, display)
         if calculation in step:
             name_step(step[calculation], display)
+    stamp_wannier90_pp_namespace(data)
 
     # Submit the workchain with converted inputs
     outputs = Wannier90Step(**data)

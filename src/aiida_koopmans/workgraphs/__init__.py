@@ -103,6 +103,22 @@ def name_step(inputs: dict[str, Any], display: str) -> None:
     inputs.setdefault("metadata", {})["label"] = display
 
 
+def stamp_wannier90_pp_namespace(data: dict[str, Any]) -> None:
+    """Label the wannier90.x -pp pass "Preprocessing" via its ``wannier90_pp`` namespace, in place.
+
+    The -pp pass and the minimization run are two phases of one
+    calculation, so aiida-wannier90-workflows' ``wannier90_pp`` namespace
+    carries metadata only -- every physics input still comes from
+    ``wannier90`` alone, for both phases. This sets only that metadata.
+    The caller labels ``wannier90`` itself (by convention here,
+    "Minimization") separately.
+
+    Args:
+        data: The flattened ``Wannier90WorkChain`` inputs (mutated in place).
+    """
+    name_step(data.setdefault("wannier90_pp", {}), "Preprocessing")
+
+
 def force_pw_verbosity(pw_inputs: dict[str, Any]) -> None:
     """Set the ``CONTROL.verbosity`` every koopmans pw.x calculation runs at.
 
