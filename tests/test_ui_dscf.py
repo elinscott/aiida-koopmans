@@ -14,7 +14,7 @@ from aiida_koopmans.functionals import Correction
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import _validate_scope
-from tests.fixtures import block_wannierization, occ_emp_merge_groups
+from tests.fixtures import block_wannierization, explicit_block, occ_emp_merge_groups
 
 
 def _task_names(wg) -> list[str]:
@@ -302,6 +302,156 @@ class TestRunAgainstTheSiliconReference:
         )
 
 
+class TestSmoothWannierizationGraph:
+    """The denser-mesh wannierization: dense where it must be, coarse where it must not."""
+
+    @staticmethod
+    def _build(wannier_codes, silicon_structure):
+        from aiida_koopmans.workgraphs.ui.smooth import SmoothWannierization
+
+        coarse = orm.KpointsData()
+        coarse.set_kpoints_mesh([2, 2, 2])
+        dense = orm.KpointsData()
+        dense.set_kpoints(np.zeros((8, 3)))
+        return SmoothWannierization.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=[
+                explicit_block("block_1", range(1, 5), filled=True),
+                explicit_block("block_2", range(5, 9), filled=False),
+            ],
+            smooth_kpoints=dense,
+            smooth_mp_grid=[4, 4, 4],
+            scf_kpoints=coarse,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+        )
+
+    def test_the_scf_keeps_the_coarse_mesh_while_wannier90_takes_the_dense_one(
+        self, wannier_codes, silicon_structure
+    ):
+        """Only the nscf and the wannierization are denser; re-converging the density is not.
+
+        The ``scf_kpoints`` assertion is the discriminating one: scaling
+        both meshes runs a needlessly expensive scf and still produces
+        plausible bands.
+        """
+        wg = self._build(wannier_codes, silicon_structure)
+        wannierize = {task.name: task for task in wg.tasks}["wannierize"]
+        assert wannierize.inputs["mp_grid"].value == [4, 4, 4]
+        assert wannierize.inputs["scf_kpoints"].value.get_kpoints_mesh()[0] == [2, 2, 2]
+        assert len(wannierize.inputs["kpoints"].value.get_kpoints()) == 8
+
+    def test_the_blocks_namespace_is_the_only_output(self, wannier_codes, silicon_structure):
+        """Downstream needs the per-block Hamiltonians and nothing else."""
+        wg = self._build(wannier_codes, silicon_structure)
+        assert [socket._name for socket in wg.outputs] == ["blocks"]
+
+
+class TestSmoothInterpolationWiring:
+    """A second, denser-mesh wannierization swaps in the smooth correction."""
+
+    @staticmethod
+    def _build(silicon_structure, *, smooth: bool, blocks_per_manifold: int = 1):
+        from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
+
+        labels = {
+            manifold: [
+                manifold if blocks_per_manifold == 1 else f"{manifold}_{index}"
+                for index in range(blocks_per_manifold)
+            ]
+            for manifold in ("occ", "emp")
+        }
+        merge_groups = [
+            {"filled": True, "spin": "none", "blocks": [{"label": x} for x in labels["occ"]]},
+            {"filled": False, "spin": "none", "blocks": [{"label": x} for x in labels["emp"]]},
+        ]
+        every_label = labels["occ"] + labels["emp"]
+        inputs = {
+            "structure": silicon_structure,
+            "merge_groups": merge_groups,
+            "block_wannierizations": {
+                label: block_wannierization(label, num_wann=2) for label in every_label
+            },
+            "koopmans_ham_retrieved": _retrieved_with_hamiltonians(
+                ["ham_occ_1.dat", "ham_emp_1.dat"]
+            ),
+            "kgrid": [2, 2, 2],
+            "kpath": _kpath(),
+        }
+        if smooth:
+            inputs["smooth_block_wannierizations"] = {
+                label: block_wannierization(f"{label}_smooth", num_wann=2) for label in every_label
+            }
+        return DscfBandStructureTask.build(**inputs)
+
+    def test_both_dft_hamiltonians_reach_the_interpolation(self, silicon_structure):
+        wg = self._build(silicon_structure, smooth=True)
+        interpolate = {task.name: task for task in wg.tasks}["interpolate_occ"]
+        assert interpolate.inputs["dft_ham_file"]._links
+        assert interpolate.inputs["dft_smooth_ham_file"]._links
+
+    def test_without_a_smooth_run_neither_reaches_it(self, silicon_structure):
+        """Negative control: the coarse Hamiltonian alone would be a silent bug.
+
+        ``helpers.calc_bands`` subtracts whatever coarse Hamiltonian it is
+        given, so wiring one without its dense counterpart shifts every
+        band. Neither socket may be linked.
+        """
+        wg = self._build(silicon_structure, smooth=False)
+        interpolate = {task.name: task for task in wg.tasks}["interpolate_occ"]
+        assert not interpolate.inputs["dft_ham_file"]._links
+        assert not interpolate.inputs["dft_smooth_ham_file"]._links
+
+    def test_a_one_block_manifold_passes_its_hamiltonian_through(self, silicon_structure):
+        """Nothing to combine, so no combining task is added."""
+        names = _task_names(self._build(silicon_structure, smooth=True))
+        assert not [name for name in names if name.startswith("merge_occ")]
+
+    def test_a_multi_block_manifold_combines_both_hamiltonians(self, silicon_structure):
+        """Coarse and dense are each block-diagonal over the manifold's blocks."""
+        wg = self._build(silicon_structure, smooth=True, blocks_per_manifold=2)
+        by_name = {task.name: task for task in wg.tasks}
+        assert "merge_occ_dft_hamiltonian" in by_name
+        assert "merge_occ_smooth_dft_hamiltonian" in by_name
+        # Band order travels as the key order: one linked socket per block.
+        for name in ("merge_occ_dft_hamiltonian", "merge_occ_smooth_dft_hamiltonian"):
+            combined = by_name[name]
+            assert combined.inputs["b00"]._links
+            assert combined.inputs["b01"]._links
+
+    def test_the_key_order_is_the_band_order(self, aiida_profile):
+        """``b00`` before ``b01`` on the diagonal, whatever order they arrive in."""
+        import io
+
+        from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
+        from aiida_koopmans.workgraphs.ui.dscf import manifold_hamiltonian
+        from aiida_koopmans.workgraphs.utils.wannier_merge import (
+            generate_wannier_hr_file_contents,
+        )
+
+        def _block(value):
+            content = generate_wannier_hr_file_contents(
+                np.array([[[value + 0.0j]]]), np.array([[0, 0, 0]]), [1]
+            )
+            return orm.SinglefileData(io.StringIO(content), filename="aiida_hr.dat").store()
+
+        # Passed b01 first: the ordering must come from the keys, not the
+        # call order.
+        merged = manifold_hamiltonian._callable(b01=_block(-2.0), b00=_block(-1.0))
+        hr, _rvect, _weights, _nrpts = ui_helpers.parse_hr_file_contents(merged.get_content("r"))
+        assert np.allclose(hr.reshape(2, 2).diagonal(), [-1.0, -2.0])
+
+    def test_the_graph_survives_a_dict_round_trip(self, silicon_structure):
+        """The smooth input is a typed dynamic namespace, which has broken this before."""
+        from aiida_workgraph import WorkGraph
+
+        wg = self._build(silicon_structure, smooth=True)
+        restored = WorkGraph.from_dict(wg.to_dict())
+        assert sorted(task.name for task in restored.tasks) == sorted(
+            task.name for task in wg.tasks
+        )
+
+
 class TestMergeManifoldEnergies:
     """The concatenation and the reference energy."""
 
@@ -391,33 +541,68 @@ class TestBandPathScope:
 
 class TestInterpolationKnobs:
     @staticmethod
-    def _resolve(knobs):
+    def _resolve(knobs, **smooth):
         """Resolve ``knobs`` for a run that asks for bands."""
         from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
 
-        return _resolve_band_interpolation_knobs(knobs, kpath=_kpath())
+        return _resolve_band_interpolation_knobs(
+            knobs,
+            kpath=_kpath(),
+            smooth_kpoints=smooth.get("smooth_kpoints"),
+            smooth_mp_grid=smooth.get("smooth_mp_grid"),
+        )
 
-    def test_smooth_interpolation_is_refused_by_name(self):
-        with pytest.raises(NotImplementedError, match="smooth_int_factor"):
+    @staticmethod
+    def _dense_mesh():
+        mesh = orm.KpointsData()
+        mesh.set_kpoints_mesh([4, 4, 4])
+        return mesh
+
+    def test_a_scaled_factor_with_its_mesh_asks_for_smooth_interpolation(self):
+        assert self._resolve(
+            {"smooth_int_factor": [2, 2, 2]},
+            smooth_kpoints=self._dense_mesh(),
+            smooth_mp_grid=[4, 4, 4],
+        ) == (True, True, True)
+
+    def test_a_scaled_factor_without_its_mesh_names_what_is_missing(self):
+        with pytest.raises(ValueError, match="smooth_kpoints and smooth_mp_grid"):
             self._resolve({"smooth_int_factor": [2, 2, 2]})
 
+    def test_a_mesh_without_a_scaled_factor_is_refused(self):
+        """A denser mesh nothing interpolates against would take no effect."""
+        with pytest.raises(ValueError, match="smooth_int_factor"):
+            self._resolve(
+                {"smooth_int_factor": [1, 1, 1]},
+                smooth_kpoints=self._dense_mesh(),
+                smooth_mp_grid=[4, 4, 4],
+            )
+
     def test_an_unscaled_factor_passes_and_the_knobs_come_through(self):
-        assert self._resolve({"smooth_int_factor": [1, 1, 1], "do_dos": False}) == (True, False)
+        assert self._resolve({"smooth_int_factor": [1, 1, 1], "do_dos": False}) == (
+            True,
+            False,
+            False,
+        )
 
     def test_the_defaults_are_ws_distance_and_a_dos(self):
-        assert self._resolve(None) == (True, True)
+        assert self._resolve(None) == (True, True, False)
 
     def test_knobs_without_a_path_are_refused(self):
         from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
 
         with pytest.raises(ValueError, match="without a `kpath`"):
-            _resolve_band_interpolation_knobs({"do_dos": True}, kpath=None)
+            _resolve_band_interpolation_knobs(
+                {"do_dos": True}, kpath=None, smooth_kpoints=None, smooth_mp_grid=None
+            )
 
     def test_no_knobs_and_no_path_is_silent(self):
         """Negative control: it is the settings, not the missing path, that raise."""
         from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
 
-        assert _resolve_band_interpolation_knobs(None, kpath=None) == (True, True)
+        assert _resolve_band_interpolation_knobs(
+            None, kpath=None, smooth_kpoints=None, smooth_mp_grid=None
+        ) == (True, True, False)
 
 
 class TestTheWorkflowGatesOnTheBandPath:
