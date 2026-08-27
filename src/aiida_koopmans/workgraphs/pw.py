@@ -79,6 +79,56 @@ PwBaseStep = task(PwBaseWorkChain)
 PwBandsStep = task(PwBandsWorkChain)
 
 
+def _finish_pw_base_step(
+    builder: Any,
+    *,
+    step: str,
+    display: str,
+    kpoints: orm.KpointsData | None = None,
+    parent_folder: Any = None,
+    parallelization: ParallelizationDict | None = None,
+) -> dict[str, Any]:
+    """Turn a built ``PwBaseWorkChain`` builder into one step's task inputs.
+
+    The post-build half every pw.x step of this package shares: drop
+    ``clean_workdir`` (the graph owns the scratch), stamp
+    ``CONTROL.verbosity``, replace the protocol's distance-derived mesh with
+    ``kpoints``, wire ``parent_folder`` and the per-code parallelization,
+    and name the step for a reader. The step's ``CONTROL.calculation``
+    belongs to the *overrides* the builder was built from, where
+    :func:`enforce_step_calculation` can tell a caller's explicit value from
+    the protocol's default.
+
+    ``display`` names the step on both the workchain and the pw.x
+    calculation it wraps, so the step is named whichever of the two a
+    restart leaves visible.
+
+    Args:
+        builder: A ``PwBaseWorkChain`` builder, or its flattened inputs.
+        step: The step's ``call_link_label``.
+        display: The name a reader sees.
+        kpoints: The mesh (or explicit list) the step samples.
+        parent_folder: The scratch the step restarts from.
+        parallelization: Per-code parallelization mapping.
+
+    Returns:
+        The step's inputs, ready to pass to ``PwBaseStep``.
+    """
+    data = builder if isinstance(builder, dict) else get_dict_from_builder(builder)
+    data.pop("clean_workdir", None)
+    pw_inputs = data["pw"]
+    force_pw_verbosity(pw_inputs)
+    pin_kpoints(data, kpoints)
+    if parent_folder is not None:
+        pw_inputs["parent_folder"] = parent_folder
+    if parallelization is not None:
+        merge_parallelization_into_inputs(pw_inputs, parallelization, "pw")
+    data.setdefault("metadata", {})["call_link_label"] = step
+    name_step(data, display)
+    name_step(pw_inputs, display)
+    return data
+
+
 def assemble_pw_base_step(
     pw_code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -95,17 +145,12 @@ def assemble_pw_base_step(
 ) -> Any:
     """Assemble one ``PwBaseWorkChain`` step inside a graph body.
 
-    Build the step from the protocol builder with ``overrides`` merged on
-    top, stamp its ``CONTROL.calculation`` (raising on a conflicting
-    explicit value) and its ``CONTROL.verbosity``, replace the protocol's
-    distance-derived mesh with
-    ``kpoints`` when given, wire ``parent_folder``, and add the step to the
-    surrounding graph under ``call_link_label``. A plain graph-assembly
-    helper: it must be called inside a ``@task.graph`` body.
-
-    ``display`` names the step for a reader: it is set on both the
-    workchain and the pw.x calculation it wraps, so the step is named
-    whichever of the two a restart leaves visible.
+    Stamp the step's ``CONTROL.calculation`` into ``overrides`` (raising on
+    a conflicting explicit value), build the step from the protocol builder
+    with those overrides merged on top, finish it with
+    :func:`_finish_pw_base_step`, and add it to the surrounding graph under
+    ``call_link_label``. A plain graph-assembly helper: it must be called
+    inside a ``@task.graph`` body.
     """
     overrides = overrides or {}
     enforce_step_calculation(
@@ -120,17 +165,14 @@ def assemble_pw_base_step(
         overrides=overrides,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
-    data = get_dict_from_builder(builder)
-    data.pop("clean_workdir", None)
-    force_pw_verbosity(data["pw"])
-    pin_kpoints(data, kpoints)
-    if parent_folder is not None:
-        data["pw"]["parent_folder"] = parent_folder
-    if parallelization is not None:
-        merge_parallelization_into_inputs(data["pw"], parallelization, "pw")
-    data.setdefault("metadata", {})["call_link_label"] = call_link_label
-    name_step(data, display)
-    name_step(data["pw"], display)
+    data = _finish_pw_base_step(
+        builder,
+        step=call_link_label,
+        display=display,
+        kpoints=kpoints,
+        parent_folder=parent_folder,
+        parallelization=parallelization,
+    )
     return PwBaseStep(**data)
 
 
@@ -304,14 +346,25 @@ def RunScfNscf(
     parallelization: ParallelizationDict | None = None,
     scf_kpoints: orm.KpointsData | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
+    nbnd: int | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
 
-    Each step samples the Brillouin zone on the mesh it is given, falling
-    back to the protocol's ``kpoints_distance`` when none is. The NSCF step
-    reuses the SCF charge density via ``parent_folder`` and sets
-    ``calculation = 'nscf'``.
+    Both steps are seeded from
+    ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``, so the NSCF
+    carries the invariants a Wannierization needs — ``nosym`` / ``noinv``
+    for the full k-grid, ``diago_full_acc`` for the empty states,
+    ``startingpot = 'file'`` off the SCF density, and the k-points listed
+    in wannier90's own order — from the same recipe
+    ``Wannier90WorkChain`` runs itself. Each step samples the Brillouin
+    zone on the mesh it is given, falling back to the protocol's
+    ``kpoints_distance`` when none is.
+
+    The pw.x spin regime comes from ``overrides``, not from a ``spin_type``
+    argument: callers force it (``nspin``, ``noncolin``, ``lspinorb``)
+    on top of the merged parameters, which the recipe's protocol-level
+    ``spin_type`` could not express.
 
     Overrides are split by namespace: ``overrides["scf"]`` applies to the
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
@@ -330,9 +383,12 @@ def RunScfNscf(
             protocol's ``kpoints_distance``. Leave unset only where no
             mesh is prescribed and the protocol should choose one.
         nscf_kpoints: Explicit k-points for the NSCF step, replacing the
-            protocol's ``kpoints_distance``. A wannierisation NSCF must run
-            on the full (symmetry-unreduced) grid in the k-point order the
-            downstream wannier90 expects.
+            protocol's ``kpoints_distance``. A mesh is expanded to the
+            explicit list in wannier90's k-point order; an explicit list is
+            used as given.
+        nbnd: Band count for the NSCF step. Leave unset to keep whatever
+            ``overrides["nscf"]`` states, or the protocol default where it
+            states nothing.
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
@@ -340,6 +396,8 @@ def RunScfNscf(
     Returns:
         Dict with remote folders and retrieved data from both steps.
     """
+    from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
+
     # A graph input arrives as a wrapt proxy; coerce to a plain str so the
     # protocol builder's pseudo-family QueryBuilder can bind it.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
@@ -350,33 +408,48 @@ def RunScfNscf(
     merge_parallelization_into_overrides(
         overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
     )
-    scf_outputs = assemble_pw_base_step(
+
+    # Each step owns its ``CONTROL.calculation``, stamped into the overrides
+    # the recipe merges on top of the protocol so a conflicting explicit
+    # value raises rather than being dropped.
+    for namespace, calculation in (("scf", "scf"), ("nscf", "nscf")):
+        enforce_step_calculation(
+            overrides.setdefault(namespace, {}).setdefault("pw", {}).setdefault("parameters", {}),
+            namespace,
+            calculation,
+        )
+
+    # ``spin_type`` stays at its default: the regimes our callers run
+    # (collinear, noncollinear, spin-orbit) are forced through ``overrides``
+    # instead, so the recipe never reaches its SOC refusal.
+    scf_builder, nscf_builder = Wannier90WorkChain.get_scf_nscf_builders_from_protocol(
         pw_code,
-        structure,
-        calculation="scf",
-        call_link_label="scf",
-        display="SCF",
-        overrides=overrides.setdefault("scf", {}),
+        structure=structure,
+        nbnd=int(nbnd) if nbnd is not None else None,
+        kpoints=nscf_kpoints,
         protocol=protocol,
-        electronic_type=electronic_type,
-        kpoints=scf_kpoints,
+        overrides={key: overrides[key] for key in ("scf", "nscf") if key in overrides},
+        electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
 
-    # The nscf reuses the scf density; an explicit mesh (when given) must
-    # replace the protocol's distance-derived one — a wannierisation nscf
-    # runs on the full grid in the downstream wannier90's k-order.
-    nscf_outputs = assemble_pw_base_step(
-        pw_code,
-        structure,
-        calculation="nscf",
-        call_link_label="nscf",
-        display="NSCF",
-        overrides=overrides.setdefault("nscf", {}),
-        protocol=protocol,
-        electronic_type=electronic_type,
-        kpoints=nscf_kpoints,
-        parent_folder=scf_outputs["remote_folder"],
+    scf_data = _finish_pw_base_step(
+        get_dict_from_builder(scf_builder), step="scf", display="SCF", kpoints=scf_kpoints
     )
+    scf_outputs = PwBaseStep(**scf_data)
+
+    # The recipe pins the nscf k-points itself, expanding a mesh into
+    # wannier90's order, so re-pin what it settled on rather than the
+    # caller's node; that also drops the ``kpoints_force_parity`` which only
+    # qualifies a distance.
+    nscf_data = get_dict_from_builder(nscf_builder)
+    nscf_data = _finish_pw_base_step(
+        nscf_data,
+        step="nscf",
+        display="NSCF",
+        kpoints=nscf_data.get("kpoints", nscf_kpoints),
+    )
+    nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
+    nscf_outputs = PwBaseStep(**nscf_data)
 
     return ScfNscfOutputs(
         scf_remote_folder=scf_outputs["remote_folder"],
