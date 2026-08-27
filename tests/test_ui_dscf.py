@@ -391,11 +391,14 @@ class TestSmoothInterpolationWiring:
         assert interpolate.inputs["dft_smooth_ham_file"]._links
 
     def test_without_a_smooth_run_neither_reaches_it(self, silicon_structure):
-        """Negative control: the coarse Hamiltonian alone would be a silent bug.
+        """Pin that no smooth wannierization leaves neither DFT socket linked.
 
-        ``helpers.calc_bands`` subtracts whatever coarse Hamiltonian it is
-        given, so wiring one without its dense counterpart shifts every
-        band. Neither socket may be linked.
+        ``helpers.unfold_and_interpolate`` (the wired entry point) ignores a
+        coarse Hamiltonian given without its dense counterpart: it only
+        switches on the smooth-interpolation subtraction when the dense one
+        is present. A coarse socket linked alone would therefore be an inert
+        no-op rather than a silent shift, but the graph should still never
+        produce that half-wired state.
         """
         wg = self._build(silicon_structure, smooth=False)
         interpolate = {task.name: task for task in wg.tasks}["interpolate_occ"]
