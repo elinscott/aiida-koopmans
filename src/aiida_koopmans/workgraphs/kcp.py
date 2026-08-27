@@ -55,6 +55,7 @@ from aiida_koopmans.variational_orbitals import (
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
+    WannierizeBlocks,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -1358,7 +1359,7 @@ def KoopmansDSCFWorkflow(
             blocks=blocks,
             smooth_kpoints=smooth_kpoints,
             smooth_mp_grid=smooth_mp_grid,
-            scf_kpoints=kpoints,
+            scf_remote_folder=init["scf_remote_folder"],
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
@@ -1693,7 +1694,7 @@ def _wannierize_smooth_mesh(
     blocks: Any,
     smooth_kpoints: Any,
     smooth_mp_grid: Any,
-    scf_kpoints: Any,
+    scf_remote_folder: Any,
     pseudo_family: str,
     wannier_protocol: str | None,
     wannier_overrides: WannierizeOverrides | None,
@@ -1706,12 +1707,17 @@ def _wannierize_smooth_mesh(
     ``KoopmansDSCFWorkflow`` body, so the task it creates joins that
     graph. It depends on nothing the KI chain produces, so it runs
     alongside the screening.
+
+    Skips the scf: ``scf_remote_folder`` is the initialisation
+    wannierization's own converged scf density (same structure, same
+    coarse mesh), so :func:`WannierizeBlocks` runs only a fresh nscf on
+    ``smooth_kpoints`` off it, rather than re-converging a density this
+    graph already has, or relying on an AiiDA cache hit to skip that for
+    free.
     """
     if not do_smooth:
         return None
-    from aiida_koopmans.workgraphs.ui.smooth import SmoothWannierization
-
-    smooth = SmoothWannierization(
+    smooth = WannierizeBlocks(
         codes={
             "pw": reference(codes, "pw"),
             "pw2wannier90": reference(codes, "pw2wannier90"),
@@ -1719,11 +1725,9 @@ def _wannierize_smooth_mesh(
         },
         structure=structure,
         blocks=blocks,
-        smooth_kpoints=smooth_kpoints,
-        smooth_mp_grid=smooth_mp_grid,
-        # The dense mesh enters at the nscf; the scf stays on the coarse
-        # one the initialisation wannierization used.
-        scf_kpoints=scf_kpoints,
+        kpoints=smooth_kpoints,
+        mp_grid=list(smooth_mp_grid),
+        scf_remote_folder=scf_remote_folder,
         pseudo_family=pseudo_family,
         protocol=wannier_protocol,
         overrides=wannier_overrides,

@@ -187,6 +187,55 @@ def run_bands_step(
     )
 
 
+def run_nscf_step(
+    pw_code: orm.AbstractCode,
+    structure: orm.StructureData,
+    nscf_kpoints: orm.KpointsData,
+    scf_remote_folder: orm.RemoteData,
+    nscf_overrides: dict[str, Any] | None = None,
+    pseudo_family: str | None = None,
+    protocol: str | None = None,
+    electronic_type: ElectronicType = ElectronicType.INSULATOR,
+    parallelization: ParallelizationDict | None = None,
+) -> Any:
+    """Assemble a pw.x ``nscf`` step on ``nscf_kpoints`` off an external scf density.
+
+    A plain graph-assembly helper, not a task: it must be called inside a
+    ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
+    surrounding graph (``call_link_label`` ``nscf``). Mirrors the nscf half
+    of :func:`RunScfNscf`, but reads its density from ``scf_remote_folder``
+    instead of running its own scf step first -- for a caller that already
+    has a converged scf on this structure and wants a fresh nscf on a
+    different mesh, without re-converging the density. Returns the step's
+    outputs (``output_band`` holds the eigenvalues on ``nscf_kpoints``).
+    """
+    # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
+    # provenance-tagged proxies; the family label ends up bound as an SQL
+    # parameter inside ``get_builder_from_protocol``, which needs a plain str.
+    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
+
+    # Deep-copy the seed: the shared assembly stamps this step's calculation
+    # type into the overrides, which must never leak into the caller's own
+    # copy through shared nested dicts.
+    nscf_overrides = copy.deepcopy(dict(nscf_overrides or {}))
+    nscf_overrides.get("pw", {}).get("parameters", {}).get("CONTROL", {}).pop("calculation", None)
+    if pseudo_family is not None:
+        nscf_overrides.setdefault("pseudo_family", pseudo_family)
+    return assemble_pw_base_step(
+        pw_code,
+        structure,
+        calculation="nscf",
+        call_link_label="nscf",
+        display="NSCF",
+        overrides=nscf_overrides,
+        protocol=protocol,
+        electronic_type=electronic_type,
+        kpoints=nscf_kpoints,
+        parent_folder=scf_remote_folder,
+        parallelization=parallelization,
+    )
+
+
 @task.graph
 def RunPwBands(
     codes: PwBandsCodes,

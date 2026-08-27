@@ -385,7 +385,7 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
         names = [t.name for t in wg.tasks]
         assert "wannierize_smooth" in names, names
 
-    def test_the_dense_wannierization_keeps_the_coarse_scf_mesh(
+    def test_the_dense_wannierization_reuses_the_coarse_scf_density(
         self,
         periodic_ozone_structure,
         kcp_code,
@@ -394,11 +394,19 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
         kmesh,
         labelled_kpath,
     ):
-        """``scf_kpoints`` stays the primitive route's own coarse ``kpoints``.
+        """The dense wannierization skips its own scf, off the init route's converged one.
 
-        The mp_grid assertion is the discriminating one: passing the
+        The mp_grid assertion is one discriminating check: passing the
         coarse mesh's own dimensions there instead of ``smooth_mp_grid``
-        would build without error but wannierize the wrong grid.
+        would build without error but wannierize the wrong grid. The
+        ``scf_remote_folder`` link is the other: it must trace to the
+        initialisation wannierization's own scf, not a fresh one built
+        here (which relying on an AiiDA cache hit to skip cheaply would be
+        fragile compared to). ``wannierize_smooth`` is itself a nested
+        ``WannierizeBlocks`` graph, so its own internal choice between an
+        ``scf_nscf`` and a bare ``nscf`` step is a construction-level
+        ``WannierizeBlocks`` concern, covered directly in
+        ``test_block_wannierize.py``.
         """
         wg = self._build(
             periodic_ozone_structure,
@@ -410,8 +418,11 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
             smooth=True,
         )
         task = {t.name: t for t in wg.tasks}["wannierize_smooth"]
-        assert task.inputs["smooth_mp_grid"].value == [4, 1, 1]
-        assert task.inputs["scf_kpoints"].value.uuid == kmesh.uuid
+        assert task.inputs["mp_grid"].value == [4, 1, 1]
+        scf_links = task.inputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in scf_links] == ["wannier_initialization"]
+        assert [link.from_socket._name for link in scf_links] == ["scf_remote_folder"]
+        assert not task.inputs["scf_kpoints"]._links
 
     def test_its_blocks_reach_the_interpolation(
         self,
