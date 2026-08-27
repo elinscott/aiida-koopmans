@@ -791,15 +791,17 @@ def si_reference() -> dict:
         return json.load(handle)
 
 
-def block_wannierization(label: str, *, with_u_dis: bool = False) -> dict:
+def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int = 1) -> dict:
     """Build a stored per-block ``WannierizeBlockOutputs``-shaped entry.
 
     The ``retrieved`` folder carries the wannier90 read-back files a
     ``wan_mode='decompose'`` pass stages (``aiida_u.mat``,
     ``aiida_centres.xyz``, and ``aiida_u_dis.mat`` for a disentangling
-    manifold), plus the ``nnkp_file`` the pass reads first. Contents are
-    placeholders: every consumer of this fixture inspects graph structure
-    rather than running the pass.
+    manifold), plus the ``nnkp_file`` the pass reads first, and
+    ``output_parameters`` holds the parsed per-WF final-state table the
+    band interpolation takes its centres from. Contents are placeholders:
+    every consumer of this fixture inspects graph structure rather than
+    running the pass.
     """
     import io
 
@@ -813,9 +815,29 @@ def block_wannierization(label: str, *, with_u_dis: bool = False) -> dict:
         io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
     )
     folder.store()
+
+    def _file(name: str, content: bytes):
+        return orm.SinglefileData(io.BytesIO(content), filename=name).store()
+
     return {
         "retrieved": folder,
-        "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
+        "nnkp_file": _file(f"{label}.nnkp", b"n"),
+        "u_file": _file("aiida_u.mat", b"u"),
+        "hr_file": _file("aiida_hr.dat", b"h"),
+        "centres_file": _file("aiida_centres.xyz", b"1\n\nX 0 0 0\n"),
+        "output_parameters": orm.Dict(
+            {
+                "number_wfs": num_wann,
+                "wannier_functions_output": [
+                    {
+                        "wf_ids": index + 1,
+                        "wf_centres": [0.1 * index, 0.0, 0.0],
+                        "wf_spreads": 1.0 + index,
+                    }
+                    for index in range(num_wann)
+                ],
+            }
+        ).store(),
     }
 
 
