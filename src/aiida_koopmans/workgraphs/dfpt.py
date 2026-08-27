@@ -287,8 +287,7 @@ def GroupedKcwScreening(
             # iterating its ``.items()`` into a plain dict before extending it,
             # rather than relying on ``dict(proxy)`` to coerce the proxy.
             **dict((screen_namelist or {}).items()),
-            "i_orb": int(orbital["index"]),
-            "check_spread": False,
+            **owned("kcw.SCREEN", {"i_orb": int(orbital["index"]), "check_spread": False}),
         }
         screen_inputs: dict[str, Any] = {
             "code": kcw_code,
@@ -357,14 +356,17 @@ def emit_namespace_dict_field(value: dict) -> dict:
 
 
 class KcwOverrides(TypedDict, total=False):
-    """User kcw.x namelist overrides, layered onto :func:`RunDFPT`'s synthesized values.
+    """User kcw.x namelist keywords, merged into :func:`RunDFPT`'s namelists.
 
     ``control`` / ``wannier`` reach every kcw.x step (wann2kcw, screen,
     ham); ``screen`` / ``ham`` reach only their own step, alongside
-    ``control`` and ``wannier``. Keys the route derives itself (the
-    ``calculation`` type, the mp grid, ...) are rejected at koopmans
-    input-file parse time and never reach here -- see
-    ``koopmans.input_file.kcw``.
+    ``control`` and ``wannier``.
+
+    A keyword listed in ``aiida_koopmans.owned_keywords.OWNED`` for its
+    block is force-merged on top of these, so a value here is discarded;
+    ``koopmans`` drops every such keyword from its input-file schema, so an
+    input file cannot state one. Everything else — the ``SEEDED`` defaults
+    and the keywords the route never writes — takes the value given here.
     """
 
     control: dict
@@ -668,12 +670,13 @@ def RunDFPT(
             level orbital grouping (``group_orbitals_tol``). Only affects
             the single all-orbital screen step; the grouped
             per-representative ``i_orb`` runs force it off.
-        kcw_overrides: user kcw.x namelist keywords, layered onto this
-            graph's synthesized ``control`` / ``wannier`` / ``screen`` /
-            ``ham`` dicts (user values win). ``control`` and ``wannier``
-            reach every step; ``screen`` only the screen step (including
-            each group representative's ``i_orb`` run), ``ham`` only the
-            ham step.
+        kcw_overrides: user kcw.x namelist keywords, merged into this
+            graph's ``control`` / ``wannier`` / ``screen`` / ``ham`` dicts
+            over their seeded defaults and under the keywords this route
+            owns (:data:`~aiida_koopmans.owned_keywords.OWNED`).
+            ``control`` and ``wannier`` reach every step; ``screen`` only
+            the screen step (including each group representative's
+            ``i_orb`` run), ``ham`` only the ham step.
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
@@ -682,26 +685,40 @@ def RunDFPT(
     # by iterating its ``.items()`` into a plain dict, rather than relying on
     # ``dict(proxy)`` to coerce the proxy — same fix as ``GroupedKcwScreening``.
     kcw_namelist_overrides: dict[str, Any] = dict((kcw_overrides or {}).items())
+
+    def user(namelist: str) -> dict[str, Any]:
+        """Return the caller's overrides for one namelist, proxy-unwrapped."""
+        return dict((kcw_namelist_overrides.get(namelist) or {}).items())
+
     control = {
-        "kcw_iverbosity": 1,
-        "kcw_at_ks": False,
-        "read_unitary_matrix": True,
-        "lrpa": False,
-        "l_vcut": l_vcut,
-        "spin_component": spin_component,
-        "mp1": kgrid[0],
-        "mp2": kgrid[1],
-        "mp3": kgrid[2],
-        **dict((kcw_namelist_overrides.get("control") or {}).items()),
+        **seeded("kcw.CONTROL", {"kcw_iverbosity": 1, "lrpa": False}),
+        **user("control"),
+        **owned(
+            "kcw.CONTROL",
+            {
+                "kcw_at_ks": False,
+                "read_unitary_matrix": True,
+                "l_vcut": l_vcut,
+                "spin_component": spin_component,
+                "mp1": kgrid[0],
+                "mp2": kgrid[1],
+                "mp3": kgrid[2],
+            },
+        ),
     }
     wannier = {
-        "seedname": SEEDNAME,
-        "check_ks": True,
-        "num_wann_occ": num_wann_occ,
-        "num_wann_emp": num_wann_emp,
-        "have_empty": num_wann_emp > 0,
-        "has_disentangle": has_disentangle,
-        **dict((kcw_namelist_overrides.get("wannier") or {}).items()),
+        **seeded("kcw.WANNIER", {"check_ks": True}),
+        **user("wannier"),
+        **owned(
+            "kcw.WANNIER",
+            {
+                "seedname": SEEDNAME,
+                "num_wann_occ": num_wann_occ,
+                "num_wann_emp": num_wann_emp,
+                "have_empty": num_wann_emp > 0,
+                "has_disentangle": has_disentangle,
+            },
+        ),
     }
 
     prep_inputs: dict[str, Any] = {
@@ -731,16 +748,11 @@ def RunDFPT(
     outputs = ChannelResults(wann2kc_remote_folder=wann2kc["remote_folder"])
 
     screen_namelist: dict[str, Any] = {
-        "tr2": 1.0e-18,
-        "nmix": 4,
-        "niter": 33,
+        **seeded("kcw.SCREEN", {"tr2": 1.0e-18, "nmix": 4, "niter": 33}),
+        **user("screen"),
     }
     if eps_inf is not None:
-        screen_namelist["eps_inf"] = eps_inf
-    screen_namelist = {
-        **screen_namelist,
-        **dict((kcw_namelist_overrides.get("screen") or {}).items()),
-    }
+        screen_namelist.update(owned("kcw.SCREEN", {"eps_inf": eps_inf}))
 
     if alpha_guess is not None:
         alphas = alphas_from_guess(
@@ -787,7 +799,7 @@ def RunDFPT(
         alphas = grouped["alphas"]
     else:
         # ``bool()`` unwraps a possible wrapt proxy, as for ``l_vcut``.
-        screen_namelist["check_spread"] = bool(check_spread)
+        screen_namelist.update(owned("kcw.SCREEN", {"check_spread": bool(check_spread)}))
         screen_inputs: dict[str, Any] = {
             "code": kcw_code,
             "parameters": {"CONTROL": control, "WANNIER": wannier, "SCREEN": screen_namelist},
@@ -802,11 +814,12 @@ def RunDFPT(
 
     do_bands = bands_kpoints is not None
     ham_namelist = {
-        "do_bands": do_bands,
-        "use_ws_distance": True,
-        "write_hr": True,
-        "on_site_only": False,
-        **dict((kcw_namelist_overrides.get("ham") or {}).items()),
+        **seeded(
+            "kcw.HAM",
+            {"use_ws_distance": True, "write_hr": True, "on_site_only": False},
+        ),
+        **user("ham"),
+        **owned("kcw.HAM", {"do_bands": do_bands}),
     }
     ham_inputs: dict[str, Any] = {
         "code": kcw_code,
@@ -1180,8 +1193,8 @@ def SinglepointDFPTWorkflow(
     screening entirely, grouping included).
 
     ``kcw_overrides`` reaches every channel's :func:`RunDFPT` unchanged: user
-    kcw.x namelist keywords layered onto its synthesized ``control`` /
-    ``wannier`` / ``screen`` / ``ham`` dicts.
+    kcw.x namelist keywords merged into its ``control`` / ``wannier`` /
+    ``screen`` / ``ham`` dicts.
     """
     validate_parallelization(parallelization)
 

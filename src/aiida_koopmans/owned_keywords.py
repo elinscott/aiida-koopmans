@@ -94,6 +94,54 @@ OWNED: dict[str, frozenset[str]] = {
             "spin_component",
         }
     ),
+    "kcw.CONTROL": frozenset(
+        {
+            # Written by KcwCalculation, which pins each of the three modes
+            # to its own subclass and rejects a parameters Dict stating them.
+            "calculation",
+            "prefix",
+            "outdir",
+            # The mesh the Wannier functions were built on, from the nscf.
+            "mp1",
+            "mp2",
+            "mp3",
+            # The Gygi-Baldereschi long-range cutoff, a workflow keyword.
+            "l_vcut",
+            # workflow.spin again: one kcw.x chain runs per spin channel.
+            "spin_component",
+            # The DFPT route screens Wannier functions, never the KS states:
+            # it always feeds kcw.x the U matrices the wannierization wrote.
+            "kcw_at_ks",
+            "read_unitary_matrix",
+        }
+    ),
+    "kcw.WANNIER": frozenset(
+        {
+            # koopmans writes the wannierization products under one seedname.
+            "seedname",
+            # Manifold bookkeeping, derived from the projections.
+            "num_wann_occ",
+            "num_wann_emp",
+            "have_empty",
+            "has_disentangle",
+        }
+    ),
+    "kcw.SCREEN": frozenset(
+        {
+            # Which orbitals one screen calculation covers is the route's own
+            # fan-out decision, not a per-calculation keyword.
+            "i_orb",
+            "check_spread",
+            # Requested through workflow.eps_inf.
+            "eps_inf",
+        }
+    ),
+    "kcw.HAM": frozenset(
+        {
+            # An interpolated band structure runs exactly when a k-path is given.
+            "do_bands",
+        }
+    ),
     "wannier90": frozenset(
         {
             # Band and manifold bookkeeping, derived from the projections.
@@ -129,6 +177,38 @@ SEEDED: dict[str, frozenset[str]] = {
             # A tiny moment so QE runs its spin-accounting branch; a
             # genuinely magnetic system states its own.
             "starting_magnetization",
+        }
+    ),
+    "kcw.CONTROL": frozenset(
+        {
+            # Verbosity enough to print the per-orbital screening breakdown,
+            # and the full (non-RPA) response; a caller may ask for either.
+            "kcw_iverbosity",
+            "lrpa",
+        }
+    ),
+    "kcw.WANNIER": frozenset(
+        {
+            # kcw.x re-derives the KS eigenvalues as a gauge cross-check.
+            "check_ks",
+        }
+    ),
+    "kcw.SCREEN": frozenset(
+        {
+            # Linear-response convergence settings.
+            "tr2",
+            "nmix",
+            "niter",
+        }
+    ),
+    "kcw.HAM": frozenset(
+        {
+            # Hamiltonian assembly settings: the Wigner-Seitz weighting, the
+            # kcw_hr file the unfold-and-interpolate step reads, and the
+            # on-site approximation (off, i.e. the full Hamiltonian).
+            "use_ws_distance",
+            "write_hr",
+            "on_site_only",
         }
     ),
     "wannier90": frozenset(

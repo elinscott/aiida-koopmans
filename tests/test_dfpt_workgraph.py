@@ -315,6 +315,42 @@ class TestKoopmansDFPTTaskBuild:
         assert "HAM" not in wann2kc_params
         assert "HAM" not in screen_params
 
+    def test_the_route_keeps_the_keywords_it_owns(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """An owned keyword takes the route's value, not the caller's.
+
+        The seeded neighbours in the same namelists take the caller's, so a
+        blanket "overrides are ignored" would not pass this.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            kcw_overrides={
+                "control": {"mp1": 7, "kcw_at_ks": True, "kcw_iverbosity": 2},
+                "wannier": {"num_wann_occ": 99, "check_ks": False},
+                "ham": {"do_bands": True, "write_hr": False},
+            },
+        )
+        control = wg.tasks["wann2kc"].inputs["parameters"].value["CONTROL"]
+        wannier = wg.tasks["wann2kc"].inputs["parameters"].value["WANNIER"]
+        ham_params = wg.tasks["ham"].inputs["parameters"].value
+
+        # Owned: the route's value stands.
+        assert control["mp1"] == 2
+        assert control["kcw_at_ks"] is False
+        assert wannier["num_wann_occ"] == 4
+        # No band path was given, so no interpolation runs.
+        assert ham_params["HAM"]["do_bands"] is False
+
+        # Seeded, in those same namelists: the caller's value stands.
+        assert control["kcw_iverbosity"] == 2
+        assert wannier["check_ks"] is False
+        assert ham_params["HAM"]["write_hr"] is False
+
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):
