@@ -1461,7 +1461,9 @@ def WannierizeBlocks(
             call, unused otherwise — see :func:`_builder_overrides`;
             ``wannier90`` / ``pw2wannier90`` flat keyword dicts feed every
             per-block wannier builder either way). Never the upstream
-            namespace-nested shape.
+            namespace-nested shape. An ``nscf`` ``nbnd`` below the highest
+            band the blocks read is refused; leaving it unset lets the
+            blocks fix the count.
         electronic_type / spin_type: forwarded to the wannier builder.
         nscf_remote_folder: an existing nscf scratch to build every block
             on. When given, the internal scf + nscf is skipped (and the
