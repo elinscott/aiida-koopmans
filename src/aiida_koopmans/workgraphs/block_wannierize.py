@@ -84,7 +84,7 @@ from aiida_koopmans.projections import (
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
-from aiida_koopmans.workgraphs import name_step, unwrap_enum
+from aiida_koopmans.workgraphs import name_step, stamp_wannier90_pp_namespace, unwrap_enum
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
@@ -958,10 +958,13 @@ def WannierizeBlock(
     )
 
     # The workchain carries a label through to its pw2wannier90 step; its
-    # two wannier90.x steps are two runs off one namespace, so neither
-    # can be named from here (see ``Wannierize``).
+    # two wannier90.x steps get their own labels via the ``wannier90`` /
+    # ``wannier90_pp`` namespaces (see ``Wannierize``).
     name_step(data["pw2wannier90"], "Overlaps")
     name_step(data["pw2wannier90"]["pw2wannier90"], "Overlaps")
+    name_step(data["wannier90"], "Minimization")
+    name_step(data["wannier90"]["wannier90"], "Minimization")
+    stamp_wannier90_pp_namespace(data)
     data.setdefault("metadata", {})["call_link_label"] = "wannier90"
     outputs = Wannier90Step(**data)
 
@@ -999,11 +1002,10 @@ def collect_wannier_functions(
     one band-ordered array pair. Within a block the entries are ordered by
     ``wf_ids``.
 
-    The input namespace is keyed ``b{i:02d}`` by the block's position in
-    :func:`WannierizeBlocks`'s band-ordered input list. That keying is a
-    private transport detail between the graph body and this task (producer
-    and consumer sit a few lines apart) — it is *not* a cross-graph
-    contract, and no other code may rely on it.
+    Callers key the input namespace so that lexicographic key order is the
+    band order they want out (``b00``, ``b01``, ...); the concatenation
+    follows that order and nothing else. The keys carry no other meaning —
+    in particular they are not block labels.
     """
     centres: list[list[float | None]] = []
     spreads: list[float] = []

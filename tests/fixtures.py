@@ -94,6 +94,48 @@ def ozone_pseudos(fake_upf):
     return {"O": fake_upf(filename="O.upf", uuid="fake-upf-uuid", z_valence=6.0)}
 
 
+# Valence configuration of every element the fixture pseudos cover: the
+# ``(label, l, occupation)`` of each ``PP_CHI`` atomic wave function, in the
+# order a generator writes them. Every generator labels its wave functions
+# spectroscopically (``label="3S"``), and readers take the principal quantum
+# number from those leading digits, so a ``PP_CHI`` carrying only ``l`` is not
+# something a pseudopotential file ever contains. The labels are those the
+# curated tables in aiida-wannier90-workflows give for the same elements.
+_VALENCE_ORBITALS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    "Si": (("3S", 0, 2.0), ("3P", 1, 2.0)),
+    "O": (("2S", 0, 2.0), ("2P", 1, 4.0)),
+}
+
+
+def _pswfc_block(element: str, z_valence: float) -> tuple[str, int]:
+    """Return an element's ``PP_PSWFC`` block and the number of wave functions in it.
+
+    :raises ValueError: ``element`` has no tabulated valence configuration, or
+        its occupations do not add up to ``z_valence``.
+    """
+    orbitals = _VALENCE_ORBITALS.get(element)
+    if orbitals is None:
+        raise ValueError(
+            f"no valence configuration for {element}: add its (label, l, occupation) "
+            f"orbitals to _VALENCE_ORBITALS, which covers "
+            f"{', '.join(sorted(_VALENCE_ORBITALS))}"
+        )
+    electrons = sum(occupation for _, _, occupation in orbitals)
+    if abs(electrons - z_valence) > 1.0e-6:
+        labels = ", ".join(label for label, _, _ in orbitals)
+        raise ValueError(
+            f"z_valence={z_valence} contradicts {element}'s tabulated valence "
+            f"({labels}), which holds {electrons:g} electrons: pass "
+            f"z_valence={electrons:g} or correct _VALENCE_ORBITALS"
+        )
+    chi = "".join(
+        f'<PP_CHI.{index} label="{label}" l="{momentum}" occupation="{occupation}">'
+        f"0.0 0.0 0.0</PP_CHI.{index}>\n"
+        for index, (label, momentum, occupation) in enumerate(orbitals, start=1)
+    )
+    return f"<PP_PSWFC>\n{chi}</PP_PSWFC>\n", len(orbitals)
+
+
 @pytest.fixture
 def generate_upf_data(aiida_profile):
     """Return a factory producing real (stored) ``UpfData`` nodes for parser/CalcJob tests.
@@ -107,22 +149,17 @@ def generate_upf_data(aiida_profile):
     from aiida_pseudo.data.pseudo.upf import UpfData
 
     def _generate_upf_data(
-        element: str, z_valence: float = 6.0, number_of_wfc: int | None = 2
+        element: str, z_valence: float = 6.0, *, with_pswfc: bool = True
     ) -> UpfData:
         # Shaped for the line-based block extractors in
         # aiida-wannier90-workflows' pseudo utilities: ``<PP_HEADER`` and its
         # ``/>`` sit on their own lines (sharing a line with the ``<UPF>``
-        # root tag loses the attributes), ``has_so`` is required, and
-        # ``PP_PSWFC`` provides an s+p valence so projection counting works.
-        # ``number_of_wfc`` is what the projected-DOS gate reads; ``None``
-        # omits the attribute and the ``PP_PSWFC`` block (a pseudo without
-        # atomic wavefunctions).
-        wfc_attribute = "" if number_of_wfc is None else f'number_of_wfc="{number_of_wfc}"\n'
-        pswfc_block = (
-            ""
-            if number_of_wfc is None
-            else '<PP_PSWFC>\n<PP_CHI.1 l="0"/>\n<PP_CHI.2 l="1"/>\n</PP_PSWFC>\n'
-        )
+        # root tag loses the attributes) and ``has_so`` is required.
+        # ``number_of_wfc`` is what the projected-DOS gate reads;
+        # ``with_pswfc=False`` drops it along with the ``PP_PSWFC`` block (a
+        # pseudo without atomic wavefunctions).
+        pswfc_block, number_of_wfc = _pswfc_block(element, z_valence) if with_pswfc else ("", 0)
+        wfc_attribute = f'number_of_wfc="{number_of_wfc}"\n' if with_pswfc else ""
         content = (
             f'<UPF version="2.0.1">\n'
             f'<PP_HEADER\nelement="{element}"\n'
@@ -161,6 +198,7 @@ def generate_full_upf_data(aiida_profile):
         element: str, *, z_valence: float = 6.0, core_correction: bool = False
     ) -> UpfData:
         nlcc = '<PP_NLCC size="3">0.0 0.0 0.0</PP_NLCC>' if core_correction else ""
+        pswfc_block, number_of_wfc = _pswfc_block(element, z_valence)
         content = (
             f'<UPF version="2.0.1">\n'
             f"<PP_HEADER\n"
@@ -168,7 +206,7 @@ def generate_full_upf_data(aiida_profile):
             f'z_valence="{z_valence}"\nhas_so="F"\n'
             f'core_correction="{"T" if core_correction else "F"}"\n'
             f'pseudo_type="NC"\nmesh_size="3"\n'
-            f'is_ultrasoft="F"\nnumber_of_proj="1"\nnumber_of_wfc="2"\n/>\n'
+            f'is_ultrasoft="F"\nnumber_of_proj="1"\nnumber_of_wfc="{number_of_wfc}"\n/>\n'
             f"<PP_MESH>\n"
             f'<PP_R size="3">0.0 0.1 0.2</PP_R>\n'
             f"</PP_MESH>\n"
@@ -178,10 +216,7 @@ def generate_full_upf_data(aiida_profile):
             f'<PP_BETA.1 angular_momentum="0">0.0 0.0 0.0</PP_BETA.1>\n'
             f"<PP_DIJ>0.0</PP_DIJ>\n"
             f"</PP_NONLOCAL>\n"
-            f"<PP_PSWFC>\n"
-            f'<PP_CHI.1 l="0" occupation="2.0">0.0 0.0 0.0</PP_CHI.1>\n'
-            f'<PP_CHI.2 l="1" occupation="4.0">0.0 0.0 0.0</PP_CHI.2>\n'
-            f"</PP_PSWFC>\n"
+            f"{pswfc_block}"
             f'<PP_RHOATOM size="3">0.0 0.0 0.0</PP_RHOATOM>\n'
             f"</UPF>\n"
         )
@@ -264,7 +299,7 @@ def fake_family_without_pswfc(aiida_profile, generate_upf_data):
     return install_cutoffs_family(
         "FAKE/NOPSWFC/PBE/SR",
         [
-            generate_upf_data(element, z_valence=z, number_of_wfc=None)
+            generate_upf_data(element, z_valence=z, with_pswfc=False)
             for element, z in (("Si", 4.0), ("O", 6.0))
         ],
     )
@@ -756,15 +791,17 @@ def si_reference() -> dict:
         return json.load(handle)
 
 
-def block_wannierization(label: str, *, with_u_dis: bool = False) -> dict:
+def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int = 1) -> dict:
     """Build a stored per-block ``WannierizeBlockOutputs``-shaped entry.
 
     The ``retrieved`` folder carries the wannier90 read-back files a
     ``wan_mode='decompose'`` pass stages (``aiida_u.mat``,
     ``aiida_centres.xyz``, and ``aiida_u_dis.mat`` for a disentangling
-    manifold), plus the ``nnkp_file`` the pass reads first. Contents are
-    placeholders: every consumer of this fixture inspects graph structure
-    rather than running the pass.
+    manifold), plus the ``nnkp_file`` the pass reads first, and
+    ``output_parameters`` holds the parsed per-WF final-state table the
+    band interpolation takes its centres from. Contents are placeholders:
+    every consumer of this fixture inspects graph structure rather than
+    running the pass.
     """
     import io
 
@@ -778,9 +815,29 @@ def block_wannierization(label: str, *, with_u_dis: bool = False) -> dict:
         io.BytesIO(b"1\n\nX 0 0 0\n"), "aiida_centres.xyz"
     )
     folder.store()
+
+    def _file(name: str, content: bytes):
+        return orm.SinglefileData(io.BytesIO(content), filename=name).store()
+
     return {
         "retrieved": folder,
-        "nnkp_file": orm.SinglefileData(io.BytesIO(b"n"), filename=f"{label}.nnkp").store(),
+        "nnkp_file": _file(f"{label}.nnkp", b"n"),
+        "u_file": _file("aiida_u.mat", b"u"),
+        "hr_file": _file("aiida_hr.dat", b"h"),
+        "centres_file": _file("aiida_centres.xyz", b"1\n\nX 0 0 0\n"),
+        "output_parameters": orm.Dict(
+            {
+                "number_wfs": num_wann,
+                "wannier_functions_output": [
+                    {
+                        "wf_ids": index + 1,
+                        "wf_centres": [0.1 * index, 0.0, 0.0],
+                        "wf_spreads": 1.0 + index,
+                    }
+                    for index in range(num_wann)
+                ],
+            }
+        ).store(),
     }
 
 

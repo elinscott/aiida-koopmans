@@ -183,7 +183,6 @@ class TestWannierizeEnforcement:
             kpoint_path=None,
             bands_kpoints=None,
             interpolation_kpoints=None,
-            projector_rotation=None,
         )
         assert data["nscf"]["pw"]["parameters"].get_dict()["CONTROL"]["calculation"] == "nscf"
 
@@ -204,5 +203,4 @@ class TestWannierizeEnforcement:
                 kpoint_path=None,
                 bands_kpoints=None,
                 interpolation_kpoints=None,
-                projector_rotation=None,
             )
