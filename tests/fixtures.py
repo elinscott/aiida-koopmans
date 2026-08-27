@@ -496,34 +496,6 @@ def count_pw_bands_runs(wg):
     return count
 
 
-def expand_subgraph(task, graph):
-    """Build ``graph`` from the values a nested ``@task.graph`` task was given.
-
-    A nested graph stays a single task until it runs, so its own steps are
-    invisible at build time. Rebuilding it from the task's socket values is
-    the construction-level way to see them.
-
-    Args:
-        task: The nested graph's task in a built ``WorkGraph``.
-        graph: The ``@task.graph`` it stands for.
-
-    Returns:
-        The built inner ``WorkGraph``.
-    """
-    kwargs = {}
-    for socket in task.inputs:
-        name = socket._name
-        if name in ("metadata", "_wait", "_outputs"):
-            continue
-        try:
-            value = socket.value
-        except (AttributeError, KeyError, TypeError):
-            continue
-        if value is not None:
-            kwargs[name] = value
-    return graph.build(**kwargs)
-
-
 def assert_graph_roundtrips(wg):
     """Assert a built WorkGraph survives ``to_dict`` -> ``from_dict``.
 

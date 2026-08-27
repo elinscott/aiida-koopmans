@@ -94,10 +94,7 @@ def _finish_pw_base_step(
     ``clean_workdir`` (the graph owns the scratch), stamp
     ``CONTROL.verbosity``, replace the protocol's distance-derived mesh with
     ``kpoints``, wire ``parent_folder`` and the per-code parallelization,
-    and name the step for a reader. The step's ``CONTROL.calculation``
-    belongs to the *overrides* the builder was built from, where
-    :func:`enforce_step_calculation` can tell a caller's explicit value from
-    the protocol's default.
+    and name the step for a reader.
 
     ``display`` names the step on both the workchain and the pw.x
     calculation it wraps, so the step is named whichever of the two a
@@ -253,7 +250,9 @@ def RunPwBands(
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
-        protocol: Protocol to use. If not specified, the default will be used.
+        protocol: One of ``moderate`` (the default), ``precise`` or
+            ``fast``; anything else raises. The recipe resolves the name
+            against ``Wannier90WorkChain``'s protocols, not pw.x's.
         overrides: Optional dictionary of inputs to override protocol defaults.
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry sets the scf/bands pw.x ``metadata.options`` and
@@ -346,7 +345,6 @@ def RunScfNscf(
     parallelization: ParallelizationDict | None = None,
     scf_kpoints: orm.KpointsData | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
-    nbnd: int | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
     """Run SCF + NSCF using two PwBaseWorkChain steps.
@@ -362,9 +360,8 @@ def RunScfNscf(
     ``kpoints_distance`` when none is.
 
     The pw.x spin regime comes from ``overrides``, not from a ``spin_type``
-    argument: callers force it (``nspin``, ``noncolin``, ``lspinorb``)
-    on top of the merged parameters, which the recipe's protocol-level
-    ``spin_type`` could not express.
+    argument: callers force ``nspin`` / ``noncolin`` / ``lspinorb`` on top
+    of the merged parameters.
 
     Overrides are split by namespace: ``overrides["scf"]`` applies to the
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
@@ -374,7 +371,9 @@ def RunScfNscf(
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
-        protocol: Protocol to use. If not specified, the default will be used.
+        protocol: One of ``moderate`` (the default), ``precise`` or
+            ``fast``; anything else raises. The recipe resolves the name
+            against ``Wannier90WorkChain``'s protocols, not pw.x's.
         overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry sets the scf/nscf pw.x ``metadata.options`` and
@@ -386,9 +385,6 @@ def RunScfNscf(
             protocol's ``kpoints_distance``. A mesh is expanded to the
             explicit list in wannier90's k-point order; an explicit list is
             used as given.
-        nbnd: Band count for the NSCF step. Leave unset to keep whatever
-            ``overrides["nscf"]`` states, or the protocol default where it
-            states nothing.
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
@@ -425,7 +421,6 @@ def RunScfNscf(
     scf_builder, nscf_builder = Wannier90WorkChain.get_scf_nscf_builders_from_protocol(
         pw_code,
         structure=structure,
-        nbnd=int(nbnd) if nbnd is not None else None,
         kpoints=nscf_kpoints,
         protocol=protocol,
         overrides={key: overrides[key] for key in ("scf", "nscf") if key in overrides},

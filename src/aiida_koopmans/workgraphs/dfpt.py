@@ -1224,10 +1224,9 @@ def SinglepointDFPTWorkflow(
 
     scf_nscf_overrides: dict[str, Any] = {
         "scf": _with_spin(overrides.get("scf", {}), {}),
-        # ``RunScfNscf`` already takes ``nosym``/``noinv`` from the shared
-        # Wannier90WorkChain recipe, but as protocol *defaults* a user
-        # override would win over. wannier90 needs the full grid, so force
-        # them here on top of the overrides as well.
+        # The recipe supplies ``nosym``/``noinv`` as protocol defaults,
+        # which a user override replaces. wannier90 needs the full grid,
+        # so force them on top of the overrides here.
         "nscf": _with_spin(
             overrides.get("nscf", {}), owned("pw.SYSTEM", {"nosym": True, "noinv": True})
         ),

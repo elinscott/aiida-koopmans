@@ -9,38 +9,16 @@ materialized ``PwBaseWorkChain`` inputs.
 
 from __future__ import annotations
 
-import pytest
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
 
-from aiida_koopmans.projections import ExplicitProjectionBlock, nbnd_covering_blocks
-from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 from aiida_koopmans.workgraphs.pw import RunScfNscf
-from tests.fixtures import expand_subgraph, explicit_block
-
-
-def _silicon_blocks() -> list[ExplicitProjectionBlock]:
-    """Si tutorial shape: one 4-band occupied block, one 4-band empty block."""
-    return [
-        explicit_block("block_1", range(1, 5), filled=True),
-        explicit_block("block_2", range(5, 9), filled=False),
-    ]
+from tests.fixtures import explicit_block
 
 
 def _parameters(task):
     """Return a built pw step's parameters as a plain dict."""
     return task.inputs["pw"]["parameters"].value.get_dict()
-
-
-def _pw_step_parameters(wg):
-    """Yield the parameters of every pw step a built graph carries."""
-    for task in wg.tasks:
-        try:
-            value = task.inputs["pw"]["parameters"].value
-        except (AttributeError, KeyError, TypeError):
-            continue
-        if value is not None:
-            yield value.get_dict()
 
 
 class TestRecipeIsShared:
@@ -53,11 +31,10 @@ class TestRecipeIsShared:
         comparison carries the change through, because the expected values
         are read off the recipe rather than written out here.
         """
-        overrides = {"nscf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 60.0}}}}}
+        overrides = {"nscf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 60.0, "nbnd": 8}}}}}
         _, expected_builder = Wannier90WorkChain.get_scf_nscf_builders_from_protocol(
             pw_code,
             structure=silicon_structure,
-            nbnd=8,
             kpoints=kpath,
             overrides=overrides,
             pseudo_family=fake_cutoffs_family.label,
@@ -71,7 +48,6 @@ class TestRecipeIsShared:
             pseudo_family=fake_cutoffs_family.label,
             scf_kpoints=kmesh,
             nscf_kpoints=kpath,
-            nbnd=8,
             overrides=overrides,
         )
         built = _parameters(wg.tasks["nscf"])
@@ -134,88 +110,14 @@ class TestRecipeIsShared:
         assert wg.tasks["nscf"].inputs["kpoints_force_parity"].value is None
 
 
-class TestNscfBandCount:
-    def test_nbnd_covers_the_highest_band_any_block_reads(
-        self, wannier_codes, silicon_structure, kmesh, fake_cutoffs_family, pw_code
-    ):
-        """Without a stated ``nbnd`` the blocks fix the nscf band count."""
-        blocks = _silicon_blocks()
-        assert nbnd_covering_blocks(blocks) == 8
-
-        wg = WannierizeBlocks.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            blocks=blocks,
-            kpoints=kmesh,
-            pseudo_family=fake_cutoffs_family.label,
-        )
-        assert wg.tasks["scf_nscf"].inputs["nbnd"].value == 8
-
-        inner = expand_subgraph(wg.tasks["scf_nscf"], RunScfNscf)
-        assert _parameters(inner.tasks["nscf"])["SYSTEM"]["nbnd"] == 8
-
-    def test_a_larger_stated_nbnd_wins(
-        self, wannier_codes, silicon_structure, kmesh, fake_cutoffs_family
-    ):
-        """Asking for more bands than the blocks read keeps them."""
-        wg = WannierizeBlocks.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            blocks=_silicon_blocks(),
-            kpoints=kmesh,
-            pseudo_family=fake_cutoffs_family.label,
-            overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
-        )
-        assert wg.tasks["scf_nscf"].inputs["nbnd"].value == 12
-
-    def test_an_nbnd_below_the_blocks_raises(
-        self, wannier_codes, silicon_structure, kmesh, fake_cutoffs_family
-    ):
-        """An nscf too short for the blocks is refused, not silently run."""
-        with pytest.raises(ValueError, match="read up to band 8"):
-            WannierizeBlocks.build(
-                codes=wannier_codes,
-                structure=silicon_structure,
-                blocks=_silicon_blocks(),
-                kpoints=kmesh,
-                pseudo_family=fake_cutoffs_family.label,
-                overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 6}}}}},
-            )
-
-    def test_the_quality_check_bands_run_computes_the_same_bands(
-        self, wannier_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
-    ):
-        """The reference curve must reach every band the interpolation covers.
-
-        pw.x defaults to roughly the occupied bands, so a bands run seeded
-        without ``nbnd`` would stop at the valence top and the empty-state
-        comparison would have nothing to compare against.
-        """
-        wg = WannierizeBlocks.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            blocks=_silicon_blocks(),
-            kpoints=kmesh,
-            bands_kpoints=kpath,
-            pseudo_family=fake_cutoffs_family.label,
-        )
-        bands = [
-            parameters
-            for parameters in _pw_step_parameters(wg)
-            if parameters["CONTROL"].get("calculation") == "bands"
-        ]
-        assert len(bands) == 1
-        assert bands[0]["SYSTEM"]["nbnd"] == 8
-
-
 class TestOtherRoutesKeepTheirForcing:
     def test_dfpt_still_forces_symmetry_off(
         self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
     ):
         """A user ``nosym = False`` cannot reach the DFPT nscf.
 
-        The recipe supplies ``nosym`` / ``noinv`` as protocol *defaults*,
-        which an override would win over; the DFPT route forces them on top
+        The recipe supplies ``nosym`` / ``noinv`` as protocol defaults,
+        which a user override replaces; the DFPT route forces them on top
         of the overrides, so its wannierization keeps the full grid.
         """
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow

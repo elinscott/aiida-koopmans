@@ -51,7 +51,6 @@ require.
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
-import copy
 import warnings
 from typing import Annotated, Any, NotRequired, TypedDict
 
@@ -80,7 +79,6 @@ from aiida_koopmans.projections import (
     block_display_name,
     block_occupancy,
     block_w90_kwargs,
-    nbnd_covering_blocks,
     validate_projection_block,
     validate_projection_block_sequence,
 )
@@ -1224,36 +1222,6 @@ def _resolve_split_mode(
     return True
 
 
-def _nscf_band_count(blocks: list[ProjectionBlock], overrides: WannierizeOverrides) -> int:
-    """Return the band count every pw.x run of this graph computes.
-
-    The blocks fix the floor: a run stopping below the highest band any
-    block reads leaves that block without the states it Wannierises. A
-    caller asking for more bands than that keeps them.
-
-    Raises:
-        ValueError: If ``overrides["nscf"]`` states an ``nbnd`` below the
-            floor.
-    """
-    nbnd = nbnd_covering_blocks(blocks)
-    stated = (
-        (overrides.get("nscf") or {})
-        .get("pw", {})
-        .get("parameters", {})
-        .get("SYSTEM", {})
-        .get("nbnd")
-    )
-    if stated is None:
-        return nbnd
-    if int(stated) < nbnd:
-        raise ValueError(
-            f"The nscf overrides ask for nbnd = {int(stated)}, but the blocks read up "
-            f"to band {nbnd}. Raise `nbnd` to at least {nbnd}, or narrow the "
-            "projections so the blocks read fewer bands."
-        )
-    return int(stated)
-
-
 def _run_explicit_bands_and_dos_steps(
     codes: WannierizeBlocksCodes,
     structure: orm.StructureData,
@@ -1265,15 +1233,8 @@ def _run_explicit_bands_and_dos_steps(
     protocol: str | None,
     electronic_type: ElectronicType,
     parallelization: ParallelizationDict | None,
-    nbnd: int,
 ) -> tuple[PwOutputs | None, ProjwfcOutputs | None]:
     """Assemble the pw.x quality-check bands run and its projwfc step.
-
-    ``nbnd`` is the band count the run computes: the eigenvalues are
-    compared band-by-band against the Wannier interpolation, so the run
-    must reach every band the blocks read. It is stamped over the seed
-    because the nscf resolves its own band count inside a builder, out of
-    the caller's reach.
 
     A plain graph-assembly helper: it must be called inside a
     ``@task.graph`` body. Samples ``bands_kpoints`` when given (in split
@@ -1294,16 +1255,12 @@ def _run_explicit_bands_and_dos_steps(
     quality_path = bands_kpoints if bands_kpoints is not None else interpolation_kpoints
     if quality_path is None:
         return None, None
-    bands_seed = copy.deepcopy(dict(nscf_overrides or {}))
-    bands_seed.setdefault("pw", {}).setdefault("parameters", {}).setdefault("SYSTEM", {})[
-        "nbnd"
-    ] = int(nbnd)
     bands_step = run_bands_step(
         pw_code=codes["pw"],
         structure=structure,
         bands_kpoints=quality_path,
         scf_remote_folder=scf_remote_folder,
-        nscf_overrides=bands_seed,
+        nscf_overrides=nscf_overrides,
         pseudo_family=pseudo_family,
         protocol=protocol,
         electronic_type=electronic_type,
@@ -1461,9 +1418,7 @@ def WannierizeBlocks(
             call, unused otherwise — see :func:`_builder_overrides`;
             ``wannier90`` / ``pw2wannier90`` flat keyword dicts feed every
             per-block wannier builder either way). Never the upstream
-            namespace-nested shape. An ``nscf`` ``nbnd`` below the highest
-            band the blocks read is refused; leaving it unset lets the
-            blocks fix the count.
+            namespace-nested shape.
         electronic_type / spin_type: forwarded to the wannier builder.
         nscf_remote_folder: an existing nscf scratch to build every block
             on. When given, the internal scf + nscf is skipped (and the
@@ -1549,8 +1504,6 @@ def WannierizeBlocks(
         external_projectors,
     )
 
-    nbnd = _nscf_band_count(blocks, overrides)
-
     split = _resolve_split_mode(
         blocks=blocks,
         mp_grid=mp_grid,
@@ -1589,7 +1542,6 @@ def WannierizeBlocks(
                 protocol=protocol,
                 electronic_type=electronic_type,
                 parallelization=parallelization,
-                nbnd=nbnd,
             )
     else:
         scf_nscf_overrides: dict[str, Any] = {}
@@ -1609,7 +1561,6 @@ def WannierizeBlocks(
             # grid (not the protocol's kpoints_distance-derived one).
             nscf_kpoints=kpoints,
             scf_kpoints=scf_kpoints,
-            nbnd=nbnd,
             parallelization=parallelization,
             metadata={"call_link_label": "scf_nscf", "label": "Ground state"},
         )
@@ -1641,7 +1592,6 @@ def WannierizeBlocks(
             protocol=protocol,
             electronic_type=electronic_type,
             parallelization=parallelization,
-            nbnd=nbnd,
         )
         if split:
             detect = _detect_split_groups(

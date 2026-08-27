@@ -387,25 +387,6 @@ def validate_projection_block_sequence(blocks: Sequence[ProjectionBlock]) -> Non
                 )
 
 
-def nbnd_covering_blocks(blocks: Sequence[ProjectionBlock]) -> int:
-    """Return the pw.x band count that covers every band ``blocks`` read.
-
-    The highest band index any block reads, so an nscf run with this
-    ``nbnd`` feeds every block's wannier90: a block reads ``num_bands``
-    bands from the run, skipping the ones ``exclude_bands`` names, and the
-    extra bands of a disentangling block sit above its own.
-
-    Args:
-        blocks: every block one pw.x run feeds. Must be non-empty.
-
-    Returns:
-        The band count, counted from 1.
-    """
-    if not blocks:
-        raise ValueError("`blocks` is empty: an nscf band count needs at least one block.")
-    return max(_read_bands(block)[-1] for block in blocks)
-
-
 def get_wannier_indices(block: ProjectionBlock) -> list[int]:
     """Return the block's ascending Wannier-function indices within its spin channel.
 
