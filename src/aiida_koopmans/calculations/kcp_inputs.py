@@ -108,7 +108,7 @@ def build_kcp_inputs(
     parent_folder_evcfixed: orm.RemoteData | None = None,
     variational_orbital_overlays: dict[str, str] | None = None,
     read_wavefunctions: dict[str, Any] | None = None,
-    settings: dict[str, Any] | None = None,
+    additional_retrieve_list: list[str] | None = None,
     name: str | None = None,
     display: str | None = None,
 ) -> dict[str, Any]:
@@ -144,9 +144,9 @@ def build_kcp_inputs(
     staging of the folded ``evc_occupied{n}.dat`` / ``evc0_empty{n}.dat``
     merge outputs).
 
-    ``settings`` feeds the CalcJob's ``settings`` port, whose
     ``additional_retrieve_list`` names working-directory files to keep
-    beyond the stdout and CRASH defaults.
+    beyond the stdout and CRASH defaults, fed to the CalcJob's ``settings``
+    port.
     """
     _autogenerate_nrb(structure, pseudos, parameters)
     inputs: dict[str, Any] = {
@@ -165,8 +165,8 @@ def build_kcp_inputs(
         inputs["variational_orbital_overlays"] = orm.Dict(dict=variational_orbital_overlays)
     if read_wavefunctions:
         inputs["read_wavefunctions"] = read_wavefunctions
-    if settings:
-        inputs["settings"] = orm.Dict(dict=settings)
+    if additional_retrieve_list:
+        inputs["settings"] = orm.Dict(dict={"additional_retrieve_list": additional_retrieve_list})
     if name:
         inputs["metadata"] = {"call_link_label": name}
     if display:
