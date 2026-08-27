@@ -59,7 +59,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS
 from aiida_koopmans.workgraphs.ui import DensityOfStates
-from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
+from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureOutputs, DscfBandStructureTask
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -1633,20 +1633,22 @@ def KoopmansDSCFWorkflow(
         outputs["merge_groups"] = cast("list", merge_groups)
 
     if kpath is not None:
-        outputs.update(
-            _interpolate_bands(
-                structure=structure,
-                merge_groups=merge_groups,
-                block_wannierizations=block_wannierizations,
-                koopmans_ham_retrieved=ki_final["retrieved"],
-                kgrid=kgrid,
-                kpath=kpath,
-                spin_polarized=spin_polarized,
-                use_ws_distance=ui_use_ws_distance,
-                do_dos=ui_do_dos,
-                plotting=plotting,
-            )
+        bands = _interpolate_bands(
+            structure=structure,
+            merge_groups=merge_groups,
+            block_wannierizations=block_wannierizations,
+            koopmans_ham_retrieved=ki_final["retrieved"],
+            kgrid=kgrid,
+            kpath=kpath,
+            spin_polarized=spin_polarized,
+            use_ws_distance=ui_use_ws_distance,
+            do_dos=ui_do_dos,
+            plotting=plotting,
         )
+        outputs["band_structure"] = bands["band_structure"]
+        outputs["band_structure_reference"] = bands["reference"]
+        if ui_do_dos:
+            outputs["dos"] = bands["dos"]
     return outputs
 
 
@@ -1662,7 +1664,7 @@ def _interpolate_bands(
     use_ws_distance: bool,
     do_dos: bool,
     plotting: dict | None,
-) -> dict:
+) -> DscfBandStructureOutputs:
     """Run the unfold-and-interpolate stage and return its outputs.
 
     Returns ``band_structure`` and ``band_structure_reference`` always, and
@@ -1681,15 +1683,7 @@ def _interpolate_bands(
         plotting=plotting,
         metadata={"call_link_label": "interpolate_band_structure"},
     )
-    result = {
-        "band_structure": interpolation["band_structure"],
-        "band_structure_reference": interpolation["reference"],
-    }
-    if do_dos:
-        # Same gate as inside the child graph: subscribe to ``dos`` only
-        # where the child produces it.
-        result["dos"] = interpolation["dos"]
-    return result
+    return interpolation
 
 
 def _run_predicted_final_ki(
