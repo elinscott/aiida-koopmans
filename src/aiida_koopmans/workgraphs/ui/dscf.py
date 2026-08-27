@@ -27,7 +27,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     collect_wannier_functions,
 )
-from aiida_koopmans.workgraphs.kcp import kcp_hamiltonian_filename
+from aiida_koopmans.workgraphs.kcp_files import kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import (
     DensityOfStates,
     compute_dos_from_bands,

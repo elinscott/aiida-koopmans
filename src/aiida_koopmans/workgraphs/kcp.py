@@ -57,7 +57,9 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
+from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS
 from aiida_koopmans.workgraphs.ui import DensityOfStates
+from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -75,23 +77,6 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
 # axis-0 by ``SpinChannel.axis``. ``remote_folder`` stays as
 # ``orm.RemoteData`` because downstream ``parent_folder`` sockets take the
 # node, not its payload.
-
-
-#: Glob patterns naming the Koopmans Hamiltonians kcp.x prints under
-#: ``write_hr``, one occupied and one empty file per spin channel, in the
-#: working directory (QE ``CPV/write_hamiltonian.f90``).
-KCP_HAMILTONIAN_PATTERNS = ("ham_occ_*.dat", "ham_emp_*.dat")
-
-
-def kcp_hamiltonian_filename(*, filled: bool, spin_index: int) -> str:
-    """Name the Koopmans Hamiltonian kcp.x prints for one manifold.
-
-    ``spin_index`` is kcp.x's 1-based spin index: 1 for up (and for the
-    single channel of an unpolarized run), 2 for down.
-    """
-    if spin_index not in (1, 2):
-        raise ValueError(f"spin_index must be 1 or 2, got {spin_index!r}")
-    return f"ham_{'occ' if filled else 'emp'}_{spin_index}.dat"
 
 
 class DFTCPOutputs(TypedDict):
@@ -1249,10 +1234,8 @@ def KoopmansDSCFWorkflow(
     # Delta-SCF energies is on for periodic supercell runs and off (indeed
     # forbidden) for molecules; ``eps_inf`` falls back to 1.0 (vacuum — a
     # crude default for real materials).
-    if mp_correction is None:
-        mp_correction = wannier_init
-    if eps_inf is None:
-        eps_inf = 1.0
+    mp_correction = wannier_init if mp_correction is None else mp_correction
+    eps_inf = 1.0 if eps_inf is None else eps_inf
 
     # For the periodic Wannier route every kcp.x step runs on the Γ-point
     # supercell; the extensive inputs scale by the primitive-cell count.
@@ -1649,24 +1632,25 @@ def KoopmansDSCFWorkflow(
         outputs["block_wannierizations"] = cast("dict", block_wannierizations)
         outputs["merge_groups"] = cast("list", merge_groups)
 
-    _add_band_structure_outputs(
-        outputs,
-        structure=structure,
-        merge_groups=merge_groups,
-        block_wannierizations=block_wannierizations,
-        koopmans_ham_retrieved=ki_final["retrieved"],
-        kgrid=kgrid,
-        kpath=kpath,
-        spin_polarized=spin_polarized,
-        use_ws_distance=ui_use_ws_distance,
-        do_dos=ui_do_dos,
-        plotting=plotting,
-    )
+    if kpath is not None:
+        outputs.update(
+            _interpolate_bands(
+                structure=structure,
+                merge_groups=merge_groups,
+                block_wannierizations=block_wannierizations,
+                koopmans_ham_retrieved=ki_final["retrieved"],
+                kgrid=kgrid,
+                kpath=kpath,
+                spin_polarized=spin_polarized,
+                use_ws_distance=ui_use_ws_distance,
+                do_dos=ui_do_dos,
+                plotting=plotting,
+            )
+        )
     return outputs
 
 
-def _add_band_structure_outputs(
-    outputs: KoopmansDSCFOutputs,
+def _interpolate_bands(
     *,
     structure: orm.StructureData,
     merge_groups: Any,
@@ -1678,18 +1662,12 @@ def _add_band_structure_outputs(
     use_ws_distance: bool,
     do_dos: bool,
     plotting: dict | None,
-) -> None:
-    """Add the unfold-and-interpolate stage and its outputs to the workflow.
+) -> dict:
+    """Run the unfold-and-interpolate stage and return its outputs.
 
-    Does nothing without a ``kpath``. Called from the
-    ``KoopmansDSCFWorkflow`` body, so the tasks it creates join that graph.
+    Returns ``band_structure`` and ``band_structure_reference`` always, and
+    ``dos`` only when ``do_dos``.
     """
-    if kpath is None:
-        return
-    # Imported here: ui.dscf imports this module for the printed-Hamiltonian
-    # filenames, so a module-level import would be circular.
-    from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
-
     interpolation = DscfBandStructureTask(
         structure=structure,
         merge_groups=merge_groups,
@@ -1703,12 +1681,15 @@ def _add_band_structure_outputs(
         plotting=plotting,
         metadata={"call_link_label": "interpolate_band_structure"},
     )
-    outputs["band_structure"] = interpolation["band_structure"]
-    outputs["band_structure_reference"] = interpolation["reference"]
+    result = {
+        "band_structure": interpolation["band_structure"],
+        "band_structure_reference": interpolation["reference"],
+    }
     if do_dos:
         # Same gate as inside the child graph: subscribe to ``dos`` only
         # where the child produces it.
-        outputs["dos"] = interpolation["dos"]
+        result["dos"] = interpolation["dos"]
+    return result
 
 
 def _run_predicted_final_ki(
