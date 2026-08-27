@@ -27,7 +27,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     collect_wannier_functions,
 )
-from aiida_koopmans.workgraphs.kcp import koopmans_hamiltonian_filename
+from aiida_koopmans.workgraphs.kcp import kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import (
     DensityOfStates,
     compute_dos_from_bands,
@@ -128,30 +128,27 @@ def build_band_structure(
     return bands
 
 
-def _manifold_index(merge_groups: list) -> dict[tuple[bool, SpinChannel], list]:
-    """Index the block partition by ``(filled, spin)``, its manifold identity."""
-    return {
-        (bool(group["filled"]), SpinChannel(group["spin"])): list(group["blocks"])
+def _select_manifold(merge_groups: list, *, filled: bool, spin: SpinChannel) -> list:
+    """Return one ``(filled, spin)`` manifold's blocks from the group partition.
+
+    Raises if the run has no projection manifold for the combination: every
+    band structure needs an occupied and an empty manifold in each spin
+    channel it interpolates.
+    """
+    matches = [
+        group["blocks"]
         for group in merge_groups
-    }
-
-
-def _require_manifolds(
-    manifolds: dict[tuple[bool, SpinChannel], list], spins: list[SpinChannel]
-) -> None:
-    """Reject a partition missing a manifold the band structure is built from."""
-    missing = [
-        (filled, spin.value)
-        for spin in spins
-        for filled in (True, False)
-        if (filled, spin) not in manifolds
+        if bool(group["filled"]) == filled and SpinChannel(group["spin"]) == spin
     ]
-    if missing:
+    if not matches:
         raise ValueError(
             f"Interpolating a band structure needs an occupied and an empty projection "
-            f"manifold in every spin channel; the run has none for {missing}. Add "
-            "projections covering the empty bands (and both spin channels, if polarized)."
+            f"manifold in every spin channel; the run has none for filled={filled}, "
+            f"spin={spin.value!r}. Add projections covering the empty bands (and both "
+            "spin channels, if polarized)."
         )
+    [blocks] = matches
+    return blocks
 
 
 def _interpolate_manifold(
@@ -174,7 +171,7 @@ def _interpolate_manifold(
     """
     hamiltonian = extract_koopmans_hamiltonian(
         retrieved=koopmans_ham_retrieved,
-        filename=koopmans_hamiltonian_filename(filled=filled, spin_index=spin_index),
+        filename=kcp_hamiltonian_filename(filled=filled, spin_index=spin_index),
         metadata={"call_link_label": f"extract_{label}_hamiltonian"},
     ).result
 
@@ -233,8 +230,6 @@ def DscfBandStructureTask(
         plotting: DOS shaping — ``degauss``, ``nstep``, ``Emin``, ``Emax``.
     """
     spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
-    manifolds = _manifold_index(merge_groups)
-    _require_manifolds(manifolds, spins)
 
     energies_by_manifold = {}
     for spin in spins:
@@ -242,7 +237,7 @@ def DscfBandStructureTask(
             manifold = "occ" if filled else "emp"
             label = manifold if spin == SpinChannel.NONE else f"{manifold}_{spin.value}"
             energies_by_manifold[filled, spin] = _interpolate_manifold(
-                manifolds[filled, spin],
+                _select_manifold(merge_groups, filled=filled, spin=spin),
                 label=label,
                 filled=filled,
                 # kcp.x indexes its printed files 1 = up (and the single
@@ -257,17 +252,12 @@ def DscfBandStructureTask(
             )
 
     first = SpinChannel.UP if spin_polarized else SpinChannel.NONE
-    down_channels = {}
-    if spin_polarized:
-        down_channels = {
-            "occupied_down": energies_by_manifold[True, SpinChannel.DOWN],
-            "empty_down": energies_by_manifold[False, SpinChannel.DOWN],
-        }
     merged = merge_manifold_energies(
         occupied=energies_by_manifold[True, first],
         empty=energies_by_manifold[False, first],
+        occupied_down=energies_by_manifold.get((True, SpinChannel.DOWN)),
+        empty_down=energies_by_manifold.get((False, SpinChannel.DOWN)),
         metadata={"call_link_label": "merge_manifold_energies"},
-        **down_channels,
     )
 
     outputs = DscfBandStructureOutputs(
