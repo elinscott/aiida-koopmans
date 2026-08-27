@@ -25,6 +25,7 @@ __all__ = [
     "ROUTE_CONDITIONAL",
     "SEEDED",
     "owned",
+    "reject_owned",
     "seeded",
 ]
 
@@ -272,6 +273,26 @@ def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
     """
     _check(block, keywords, SEEDED, "seeds")
     return keywords
+
+
+def reject_owned(block: str, keywords: Mapping[str, Any]) -> None:
+    """Raise if the caller states a keyword the route owns.
+
+    Args:
+        block: The input-file block the keywords belong to, as keyed in
+            :data:`OWNED`.
+        keywords: The caller's overrides for that block.
+
+    Raises:
+        ValueError: If ``keywords`` states an owned keyword.
+    """
+    stated = sorted(set(keywords) & OWNED.get(block, frozenset()))
+    if stated:
+        raise ValueError(
+            f"{block} {', '.join(stated)} is owned: the route determines it and forces "
+            f"its own value, so the value given here would be discarded. Drop it from "
+            f"the overrides. koopmans' input file does not advertise it either."
+        )
 
 
 def _check(

@@ -83,7 +83,7 @@ from aiida_koopmans.calculations.kcw import (
     KcwScreenCalculation,
     Wann2kcCalculation,
 )
-from aiida_koopmans.owned_keywords import owned, seeded
+from aiida_koopmans.owned_keywords import owned, reject_owned, seeded
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -363,16 +363,44 @@ class KcwOverrides(TypedDict, total=False):
     ``control`` and ``wannier``.
 
     A keyword listed in ``aiida_koopmans.owned_keywords.OWNED`` for its
-    block is force-merged on top of these, so a value here is discarded;
-    ``koopmans`` drops every such keyword from its input-file schema, so an
-    input file cannot state one. Everything else — the ``SEEDED`` defaults
-    and the keywords the route never writes — takes the value given here.
+    block is refused: :func:`RunDFPT` raises ``ValueError`` naming the block
+    and the keyword, since the route determines it and would discard the
+    value. Everything else — the ``SEEDED`` defaults and the keywords the
+    route never writes — takes the value given here.
     """
 
     control: dict
     wannier: dict
     screen: dict
     ham: dict
+
+
+def kcw_overrides_by_namelist(
+    kcw_overrides: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    """Return the caller's kcw.x keywords split per namelist.
+
+    Args:
+        kcw_overrides: the caller's :class:`KcwOverrides`.
+
+    Returns:
+        One plain dict per namelist name, empty where the caller said nothing.
+
+    Raises:
+        ValueError: If the caller states a keyword the DFPT route owns
+            (:data:`~aiida_koopmans.owned_keywords.OWNED`).
+    """
+    # Explicitly unwrap a (possibly TaggedValue-proxied) overrides namespace by
+    # iterating its ``.items()`` into a plain dict, rather than relying on
+    # ``dict(proxy)`` to coerce the proxy — same fix as ``GroupedKcwScreening``.
+    overrides = dict((kcw_overrides or {}).items())
+    by_namelist = {
+        name: dict((overrides.get(name) or {}).items())
+        for name in ("control", "wannier", "screen", "ham")
+    }
+    for name, keywords in by_namelist.items():
+        reject_owned(f"kcw.{name.upper()}", keywords)
+    return by_namelist
 
 
 class ChannelResults(TypedDict, total=False):
@@ -672,27 +700,23 @@ def RunDFPT(
             per-representative ``i_orb`` runs force it off.
         kcw_overrides: user kcw.x namelist keywords, merged into this
             graph's ``control`` / ``wannier`` / ``screen`` / ``ham`` dicts
-            over their seeded defaults and under the keywords this route
-            owns (:data:`~aiida_koopmans.owned_keywords.OWNED`).
-            ``control`` and ``wannier`` reach every step; ``screen`` only
-            the screen step (including each group representative's
-            ``i_orb`` run), ``ham`` only the ham step.
+            over their seeded defaults. ``control`` and ``wannier`` reach
+            every step; ``screen`` only the screen step (including each
+            group representative's ``i_orb`` run), ``ham`` only the ham
+            step.
+
+    Raises:
+        ValueError: If ``kcw_overrides`` states a keyword this route owns
+            (:data:`~aiida_koopmans.owned_keywords.OWNED`).
     """
     # ``bool()`` unwraps a possible wrapt proxy (a TaggedValue graph input)
     # to a plain bool before it lands in the stored ``control`` Dict.
     l_vcut = True if l_vcut is None else bool(l_vcut)
-    # Explicitly unwrap a (possibly TaggedValue-proxied) overrides namespace
-    # by iterating its ``.items()`` into a plain dict, rather than relying on
-    # ``dict(proxy)`` to coerce the proxy — same fix as ``GroupedKcwScreening``.
-    kcw_namelist_overrides: dict[str, Any] = dict((kcw_overrides or {}).items())
-
-    def user(namelist: str) -> dict[str, Any]:
-        """Return the caller's overrides for one namelist, proxy-unwrapped."""
-        return dict((kcw_namelist_overrides.get(namelist) or {}).items())
+    user = kcw_overrides_by_namelist(kcw_overrides)
 
     control = {
         **seeded("kcw.CONTROL", {"kcw_iverbosity": 1, "lrpa": False}),
-        **user("control"),
+        **user["control"],
         **owned(
             "kcw.CONTROL",
             {
@@ -708,7 +732,7 @@ def RunDFPT(
     }
     wannier = {
         **seeded("kcw.WANNIER", {"check_ks": True}),
-        **user("wannier"),
+        **user["wannier"],
         **owned(
             "kcw.WANNIER",
             {
@@ -749,7 +773,7 @@ def RunDFPT(
 
     screen_namelist: dict[str, Any] = {
         **seeded("kcw.SCREEN", {"tr2": 1.0e-18, "nmix": 4, "niter": 33}),
-        **user("screen"),
+        **user["screen"],
     }
     if eps_inf is not None:
         screen_namelist.update(owned("kcw.SCREEN", {"eps_inf": eps_inf}))
@@ -818,7 +842,7 @@ def RunDFPT(
             "kcw.HAM",
             {"use_ws_distance": True, "write_hr": True, "on_site_only": False},
         ),
-        **user("ham"),
+        **user["ham"],
         **owned("kcw.HAM", {"do_bands": do_bands}),
     }
     ham_inputs: dict[str, Any] = {

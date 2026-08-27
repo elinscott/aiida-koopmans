@@ -315,11 +315,45 @@ class TestKoopmansDFPTTaskBuild:
         assert "HAM" not in wann2kc_params
         assert "HAM" not in screen_params
 
-    def test_the_route_keeps_the_keywords_it_owns(self, dfpt_codes, nscf_remote, occ_retrieved):
-        """An owned keyword takes the route's value, not the caller's.
+    @pytest.mark.parametrize(
+        ("namelist", "keyword", "value"),
+        [
+            ("control", "mp1", 7),
+            ("control", "kcw_at_ks", True),
+            ("wannier", "num_wann_occ", 99),
+            ("screen", "i_orb", 3),
+            ("screen", "eps_inf", 9.9),
+            ("ham", "do_bands", True),
+        ],
+    )
+    def test_an_owned_keyword_in_the_overrides_is_refused(
+        self, dfpt_codes, nscf_remote, occ_retrieved, namelist, keyword, value
+    ):
+        """A keyword the route determines is refused, not quietly dropped.
 
-        The seeded neighbours in the same namelists take the caller's, so a
-        blanket "overrides are ignored" would not pass this.
+        ``i_orb`` and ``eps_inf`` discriminate: the ungrouped path writes
+        neither unless asked, so a filter that merely lets the route win
+        would ship the caller's value to kcw.x.
+        """
+        with pytest.raises(ValueError, match=rf"kcw\.{namelist.upper()} {keyword} is owned"):
+            RunDFPT.build(
+                kcw_code=dfpt_codes["kcw"],
+                nscf_remote_folder=nscf_remote,
+                block_wannier={"occ": {"retrieved": occ_retrieved}},
+                occ_labels=["occ"],
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                kcw_overrides={namelist: {keyword: value}},
+            )
+
+    def test_a_seeded_keyword_in_the_overrides_replaces_the_route_default(
+        self, dfpt_codes, nscf_remote, occ_retrieved
+    ):
+        """The keywords the route only seeds still take the caller's value.
+
+        Sits beside the refusal above so a blanket "overrides are ignored"
+        would not pass both.
         """
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
@@ -330,26 +364,23 @@ class TestKoopmansDFPTTaskBuild:
             num_wann_emp=0,
             kgrid=[2, 2, 2],
             kcw_overrides={
-                "control": {"mp1": 7, "kcw_at_ks": True, "kcw_iverbosity": 2},
-                "wannier": {"num_wann_occ": 99, "check_ks": False},
-                "ham": {"do_bands": True, "write_hr": False},
+                "control": {"kcw_iverbosity": 2},
+                "wannier": {"check_ks": False},
+                "ham": {"write_hr": False},
             },
         )
         control = wg.tasks["wann2kc"].inputs["parameters"].value["CONTROL"]
         wannier = wg.tasks["wann2kc"].inputs["parameters"].value["WANNIER"]
         ham_params = wg.tasks["ham"].inputs["parameters"].value
 
-        # Owned: the route's value stands.
-        assert control["mp1"] == 2
-        assert control["kcw_at_ks"] is False
-        assert wannier["num_wann_occ"] == 4
-        # No band path was given, so no interpolation runs.
-        assert ham_params["HAM"]["do_bands"] is False
-
-        # Seeded, in those same namelists: the caller's value stands.
         assert control["kcw_iverbosity"] == 2
         assert wannier["check_ks"] is False
         assert ham_params["HAM"]["write_hr"] is False
+
+        # The route's own values stand in the same namelists.
+        assert control["mp1"] == 2
+        assert wannier["num_wann_occ"] == 4
+        assert ham_params["HAM"]["do_bands"] is False
 
     def test_alpha_guess_skips_screening(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
@@ -1236,7 +1267,7 @@ class TestGroupedKcwScreeningBuild:
             kcw_code=dfpt_codes["kcw"],
             control={"kcw_iverbosity": 1},
             wannier={"seedname": "aiida"},
-            screen_namelist={"tr2": 1.0e-18},
+            screen_namelist={"tr2": 1.0e-18, "niter": 77},
             parent_folder=nscf_remote,
             wannier_files=occ_retrieved,
             orbitals=orbitals,
@@ -1270,6 +1301,7 @@ class TestGroupedKcwScreeningBuild:
             assert screen_params["SCREEN"]["i_orb"] == index
             assert screen_params["SCREEN"]["check_spread"] == False  # noqa: E712 — TaggedValue breaks `is`
             assert screen_params["SCREEN"]["tr2"] == 1.0e-18
+            assert screen_params["SCREEN"]["niter"] == 77
 
 
 class TestRunDFPTGrouping:
@@ -1306,6 +1338,44 @@ class TestRunDFPTGrouping:
         assert group_inputs["nbnd"].value == 8
         assert group_inputs["tol"].value == 0.05
         assert group_inputs["spin_polarized"].value == False  # noqa: E712 — TaggedValue breaks `is`
+
+    def test_grouped_screening_carries_the_callers_keywords(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """The fan-out screens with the caller's convergence settings.
+
+        The grouped path assembles its own ``SCREEN`` namelist per
+        representative, so a caller keyword reaching the ungrouped screen
+        step says nothing about whether it reaches this one.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": {"retrieved": occ_retrieved},
+                "emp": {"retrieved": emp_retrieved},
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
+            spreads=[0.5] * 4 + [0.7] * 4,
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+            group_orbitals_tol=0.05,
+            kcw_overrides={
+                "screen": {"tr2": 1.0e-16, "niter": 77},
+                "control": {"lrpa": True},
+            },
+        )
+        grouped = wg.tasks["grouped_screen"].inputs
+        screen_namelist = grouped["screen_namelist"].value
+        assert screen_namelist["tr2"] == pytest.approx(1.0e-16)
+        assert screen_namelist["niter"] == 77
+        # The per-representative run writes these itself, one orbital at a time.
+        assert "i_orb" not in screen_namelist
+        assert "check_spread" not in screen_namelist
+        assert grouped["control"].value["lrpa"] is True
 
     def test_grouping_without_spreads_raises(self, dfpt_codes, nscf_remote, occ_retrieved):
         """The spread clustering depends on the unified wannier90 spreads."""
