@@ -14,7 +14,7 @@ from aiida_koopmans.functionals import Correction
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbitalType
 from aiida_koopmans.workgraphs.kcp import _validate_scope
-from tests.fixtures import block_wannierization, explicit_block, occ_emp_merge_groups
+from tests.fixtures import block_wannierization, occ_emp_merge_groups
 
 
 def _task_names(wg) -> list[str]:
@@ -300,51 +300,6 @@ class TestRunAgainstTheSiliconReference:
         assert wg.tasks.merge_manifold_energies.outputs.reference.value == pytest.approx(
             float(expected.max())
         )
-
-
-class TestSmoothWannierizationGraph:
-    """The denser-mesh wannierization: dense where it must be, coarse where it must not."""
-
-    @staticmethod
-    def _build(wannier_codes, silicon_structure):
-        from aiida_koopmans.workgraphs.ui.smooth import SmoothWannierization
-
-        coarse = orm.KpointsData()
-        coarse.set_kpoints_mesh([2, 2, 2])
-        dense = orm.KpointsData()
-        dense.set_kpoints(np.zeros((8, 3)))
-        return SmoothWannierization.build(
-            codes=wannier_codes,
-            structure=silicon_structure,
-            blocks=[
-                explicit_block("block_1", range(1, 5), filled=True),
-                explicit_block("block_2", range(5, 9), filled=False),
-            ],
-            smooth_kpoints=dense,
-            smooth_mp_grid=[4, 4, 4],
-            scf_kpoints=coarse,
-            pseudo_family="SSSP/1.3/PBE/efficiency",
-        )
-
-    def test_the_scf_keeps_the_coarse_mesh_while_wannier90_takes_the_dense_one(
-        self, wannier_codes, silicon_structure
-    ):
-        """Only the nscf and the wannierization are denser; re-converging the density is not.
-
-        The ``scf_kpoints`` assertion is the discriminating one: scaling
-        both meshes runs a needlessly expensive scf and still produces
-        plausible bands.
-        """
-        wg = self._build(wannier_codes, silicon_structure)
-        wannierize = {task.name: task for task in wg.tasks}["wannierize"]
-        assert wannierize.inputs["mp_grid"].value == [4, 4, 4]
-        assert wannierize.inputs["scf_kpoints"].value.get_kpoints_mesh()[0] == [2, 2, 2]
-        assert len(wannierize.inputs["kpoints"].value.get_kpoints()) == 8
-
-    def test_the_blocks_namespace_is_the_only_output(self, wannier_codes, silicon_structure):
-        """Downstream needs the per-block Hamiltonians and nothing else."""
-        wg = self._build(wannier_codes, silicon_structure)
-        assert [socket._name for socket in wg.outputs] == ["blocks"]
 
 
 class TestSmoothInterpolationWiring:

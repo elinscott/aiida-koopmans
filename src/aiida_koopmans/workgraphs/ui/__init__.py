@@ -16,7 +16,10 @@ Scope notes:
   :mod:`aiida_koopmans.workgraphs.ui.dscf`.
 * The smooth-interpolation correction consumes a pre-computed denser-grid
   DFT Hamiltonian (``dft_smooth_ham_file``); wannierizing that denser grid
-  is the caller's job (:mod:`aiida_koopmans.workgraphs.ui.smooth`).
+  is the caller's job
+  (:func:`~aiida_koopmans.workgraphs.kcp._wannierize_smooth_mesh`, a
+  second :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+  call on the denser mesh).
 """
 
 from __future__ import annotations
