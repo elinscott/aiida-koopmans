@@ -80,10 +80,10 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
 #: Glob patterns naming the Koopmans Hamiltonians kcp.x prints under
 #: ``write_hr``, one occupied and one empty file per spin channel, in the
 #: working directory (QE ``CPV/write_hamiltonian.f90``).
-KOOPMANS_HAMILTONIAN_PATTERNS = ("ham_occ_*.dat", "ham_emp_*.dat")
+KCP_HAMILTONIAN_PATTERNS = ("ham_occ_*.dat", "ham_emp_*.dat")
 
 
-def koopmans_hamiltonian_filename(*, filled: bool, spin_index: int) -> str:
+def kcp_hamiltonian_filename(*, filled: bool, spin_index: int) -> str:
     """Name the Koopmans Hamiltonian kcp.x prints for one manifold.
 
     ``spin_index`` is kcp.x's 1-based spin index: 1 for up (and for the
@@ -1649,7 +1649,7 @@ def KoopmansDSCFWorkflow(
         outputs["block_wannierizations"] = cast("dict", block_wannierizations)
         outputs["merge_groups"] = cast("list", merge_groups)
 
-    _attach_band_structure(
+    _add_band_structure_outputs(
         outputs,
         structure=structure,
         merge_groups=merge_groups,
@@ -1665,7 +1665,7 @@ def KoopmansDSCFWorkflow(
     return outputs
 
 
-def _attach_band_structure(
+def _add_band_structure_outputs(
     outputs: KoopmansDSCFOutputs,
     *,
     structure: orm.StructureData,
@@ -1905,9 +1905,7 @@ def RunFinalKI(
         parent_folder=parent_folder,
         variational_orbital_overlays=variational_orbital_overlays,
         read_wavefunctions=read_wavefunctions,
-        settings=(
-            {"additional_retrieve_list": list(KOOPMANS_HAMILTONIAN_PATTERNS)} if write_hr else None
-        ),
+        additional_retrieve_list=list(KCP_HAMILTONIAN_PATTERNS) if write_hr else None,
         name="kipz_final" if correction == Correction.KIPZ else "ki_final",
         display="Final KIPZ" if correction == Correction.KIPZ else "Final KI",
     )

@@ -105,18 +105,18 @@ class TestHamiltonianFilenames:
     """The names kcp.x writes, per QE ``CPV/write_hamiltonian.f90``."""
 
     def test_names_follow_the_manifold_and_spin_index(self):
-        from aiida_koopmans.workgraphs.kcp import koopmans_hamiltonian_filename
+        from aiida_koopmans.workgraphs.kcp import kcp_hamiltonian_filename
 
-        assert koopmans_hamiltonian_filename(filled=True, spin_index=1) == "ham_occ_1.dat"
-        assert koopmans_hamiltonian_filename(filled=False, spin_index=1) == "ham_emp_1.dat"
-        assert koopmans_hamiltonian_filename(filled=True, spin_index=2) == "ham_occ_2.dat"
-        assert koopmans_hamiltonian_filename(filled=False, spin_index=2) == "ham_emp_2.dat"
+        assert kcp_hamiltonian_filename(filled=True, spin_index=1) == "ham_occ_1.dat"
+        assert kcp_hamiltonian_filename(filled=False, spin_index=1) == "ham_emp_1.dat"
+        assert kcp_hamiltonian_filename(filled=True, spin_index=2) == "ham_occ_2.dat"
+        assert kcp_hamiltonian_filename(filled=False, spin_index=2) == "ham_emp_2.dat"
 
     def test_a_third_spin_index_is_rejected(self):
-        from aiida_koopmans.workgraphs.kcp import koopmans_hamiltonian_filename
+        from aiida_koopmans.workgraphs.kcp import kcp_hamiltonian_filename
 
         with pytest.raises(ValueError, match="spin_index"):
-            koopmans_hamiltonian_filename(filled=True, spin_index=3)
+            kcp_hamiltonian_filename(filled=True, spin_index=3)
 
 
 # ----------------------------------------------------------------------
