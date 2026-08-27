@@ -1708,12 +1708,9 @@ def _wannierize_smooth_mesh(
     graph. It depends on nothing the KI chain produces, so it runs
     alongside the screening.
 
-    Skips the scf: ``scf_remote_folder`` is the initialisation
-    wannierization's own converged scf density (same structure, same
-    coarse mesh), so :func:`WannierizeBlocks` runs only a fresh nscf on
-    ``smooth_kpoints`` off it, rather than re-converging a density this
-    graph already has, or relying on an AiiDA cache hit to skip that for
-    free.
+    ``scf_remote_folder`` must be a converged scf on ``structure``:
+    :func:`WannierizeBlocks` skips its own scf and runs only a fresh
+    nscf on ``smooth_kpoints`` off it.
     """
     if not do_smooth:
         return None

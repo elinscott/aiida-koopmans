@@ -203,11 +203,9 @@ def run_nscf_step(
     A plain graph-assembly helper, not a task: it must be called inside a
     ``@task.graph`` body, where the ``PwBaseStep`` it creates joins the
     surrounding graph (``call_link_label`` ``nscf``). Mirrors the nscf half
-    of :func:`RunScfNscf`, but reads its density from ``scf_remote_folder``
-    instead of running its own scf step first -- for a caller that already
-    has a converged scf on this structure and wants a fresh nscf on a
-    different mesh, without re-converging the density. Returns the step's
-    outputs (``output_band`` holds the eigenvalues on ``nscf_kpoints``).
+    of :func:`RunScfNscf`, reading ``scf_remote_folder`` as the parent
+    folder instead of running its own scf step. Returns the step's outputs
+    (``output_band`` holds the eigenvalues on ``nscf_kpoints``).
     """
     # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL

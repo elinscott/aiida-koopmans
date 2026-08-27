@@ -624,10 +624,9 @@ class WannierizeBlocksOutputs(TypedDict):
     * ``scf_remote_folder`` -- the internal scf's own ``RemoteData``,
       populated only when the internal scf + nscf pair ran here (never
       alongside a caller-supplied ``scf_remote_folder`` or
-      ``nscf_remote_folder``, which already own that node). Lets a caller
-      chain a second :func:`WannierizeBlocks` call on a denser mesh off
-      this run's density (see ``scf_remote_folder`` below) without relying
-      on cache hits to skip re-converging it.
+      ``nscf_remote_folder``, which already own that node). Feeds a
+      second :func:`WannierizeBlocks` call's own ``scf_remote_folder``
+      input.
     * ``bands`` -- the pw.x ``bands`` run along the input k-path, off
       whichever scf density this call had -- the internal scf, or a
       caller's ``scf_remote_folder`` (with or without ``nscf_remote_folder``
@@ -1327,13 +1326,12 @@ def _run_nscf_off_external_scf(
     electronic_type: ElectronicType,
     parallelization: ParallelizationDict | None,
 ) -> tuple[Any, orm.RemoteData, orm.BandsData | None, PwOutputs | None, ProjwfcOutputs | None]:
-    """Run a fresh nscf on ``kpoints`` off a caller-supplied scf density, plus the quality check.
+    """Run a fresh nscf on ``kpoints`` off ``scf_remote_folder``, plus the quality check.
 
     A plain graph-assembly helper: it must be called inside a
-    ``@task.graph`` body. Assembles :func:`WannierizeBlocks`'s
-    ``scf_remote_folder``-alone branch, which skips the internal scf but
-    not the nscf (unlike an external ``nscf_remote_folder``, which skips
-    both and reuses an existing nscf scratch whole). Returns
+    ``@task.graph`` body. Runs :func:`run_nscf_step`, then, whenever
+    ``bands_kpoints`` or ``interpolation_kpoints`` is given, the
+    quality-check bands / projwfc pair off the same density. Returns
     ``(nscf_step, nscf_scratch, block_bands, bands_outputs,
     projwfc_outputs)``.
     """
@@ -1378,14 +1376,13 @@ def _reuse_external_nscf_scratch(
     electronic_type: ElectronicType,
     parallelization: ParallelizationDict | None,
 ) -> tuple[orm.RemoteData, orm.BandsData | None, PwOutputs | None, ProjwfcOutputs | None]:
-    """Reuse an existing nscf scratch whole, with an optional quality check off its matching scf.
+    """Wire ``nscf_remote_folder`` through; the quality check reads ``scf_remote_folder``.
 
     A plain graph-assembly helper: it must be called inside a
-    ``@task.graph`` body. Assembles :func:`WannierizeBlocks`'s
-    ``nscf_remote_folder`` branch -- no scf or nscf runs here at all;
-    ``scf_remote_folder``, when given alongside it, only feeds the
-    quality-check bands run (see that argument's own docstring). Returns
-    ``(nscf_scratch, block_bands, bands_outputs, projwfc_outputs)``.
+    ``@task.graph`` body. Runs no scf or nscf itself. With
+    ``scf_remote_folder`` given, also runs the quality-check bands /
+    projwfc pair off it. Returns ``(nscf_scratch, block_bands,
+    bands_outputs, projwfc_outputs)``.
     """
     bands_outputs = None
     projwfc_outputs = None
@@ -1582,19 +1579,11 @@ def WannierizeBlocks(
             bands step. Without ``scf_remote_folder`` alongside it, the
             quality-check ``bands`` / ``projwfc`` outputs stay absent (no
             scf density to run the quality-check off).
-        scf_remote_folder: an existing scf scratch to build the nscf on,
-            skipping the internal scf. Two uses: paired with
-            ``nscf_remote_folder``, it is only the density the
-            quality-check ``bands`` step reads (letting a caller who
-            shares one scf + nscf across several ``WannierizeBlocks``
-            calls still get the quality check on each, off the one scf
-            run); given *alone*, it also seeds a fresh nscf on ``kpoints``
-            here (populating the ``nscf`` output namespace), for a caller
-            re-Wannierising the same structure on a denser mesh who
-            already has its scf converged and wants that reused rather
-            than re-run (or relied on to cache-hit). Ignored (and
-            irrelevant) when the internal scf + nscf runs instead.
-            Incompatible with split mode either way.
+        scf_remote_folder: a converged scf on this structure, skipping the
+            internal scf either way. Given alone, also runs a fresh nscf
+            on ``kpoints`` off it, populating the ``nscf`` output
+            namespace. Paired with ``nscf_remote_folder``, only feeds the
+            quality-check ``bands`` step. Refused in split mode.
         nscf_bands: the nscf eigenvalues. A disentangling block's frozen
             window is checked against them, so a ``dis_froz_max`` that would
             freeze more bands than the block Wannierises is rejected here
@@ -1705,11 +1694,8 @@ def WannierizeBlocks(
             parallelization=parallelization,
         )
     elif scf_remote_folder is not None:
-        # The caller already has a converged scf on this structure (e.g.
-        # the coarse-mesh scf of the same route's earlier
-        # :func:`WannierizeBlocks` call) and wants a fresh nscf on
-        # ``kpoints`` off its density, skipping a redundant internal scf
-        # rather than relying on an AiiDA cache hit to make it free.
+        # The caller supplies a converged scf on this structure; run a
+        # fresh nscf on ``kpoints`` off it instead of the internal scf.
         # ``_resolve_split_mode`` above rejects split mode on this path.
         _reject_inputs_an_external_scratch_ignores(
             overrides, scf_kpoints, source="an external scf_remote_folder"

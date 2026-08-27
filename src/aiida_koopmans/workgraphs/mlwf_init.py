@@ -103,9 +103,8 @@ class MlwfInitializationOutputs(TypedDict):
       block was Wannierised off; the ``parent_folder`` a downstream
       pw2wannier90 ``wan_mode='decompose'`` pass reads.
     * ``scf_remote_folder`` — the primitive-cell scf scratch the nscf ran
-      off, the density a smooth-interpolation re-wannierization on a
-      denser mesh reuses instead of re-converging (or relying on a cache
-      hit to skip it).
+      off. A smooth-interpolation re-wannierization on a denser mesh
+      passes this as its own ``scf_remote_folder`` input.
     * ``block_wannierizations`` — the per-block Wannierisation outputs
       (keyed by block label), each holding the ``retrieved`` folder with
       ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.

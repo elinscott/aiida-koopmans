@@ -578,6 +578,10 @@ class TestBlockWannierizeGraphBuild:
         assert "nscf" in names, names
         nscf_task = {t.name: t for t in wg.tasks}["nscf"]
         assert nscf_task.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid
+        assert (
+            nscf_task.inputs["pw"]["parameters"].value.get_dict()["CONTROL"]["calculation"]
+            == "nscf"
+        )
         assert wg.outputs["nscf"]["remote_folder"]._links
 
     def test_scf_remote_folder_alone_does_not_re_expose_the_callers_own_scf(
@@ -600,8 +604,7 @@ class TestBlockWannierizeGraphBuild:
         """The default (no external scratch) route echoes its own scf density out.
 
         A second :func:`WannierizeBlocks` call on a denser mesh threads
-        this out instead of relying on an AiiDA cache hit to skip
-        re-converging it.
+        this out as its own ``scf_remote_folder`` input.
         """
         wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
         assert wg.outputs["scf_remote_folder"]._links
