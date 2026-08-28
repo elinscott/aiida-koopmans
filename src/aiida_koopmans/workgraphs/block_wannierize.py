@@ -67,7 +67,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 from node_graph import reference
 
-from aiida_koopmans.owned_keywords import owned
+from aiida_koopmans.owned_keywords import owned, seeded
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -658,10 +658,15 @@ class WannierizeBlocksOutputs(TypedDict):
 def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     """Wrap the flat keyword dicts into the upstream builder override shape.
 
-    The ONLY place the upstream override nesting is produced. The protocol
-    overrides mirror the workchain's input namespace tree: base-workchain
-    namespace -> calculation namespace -> ``parameters`` — hence
-    ``wannier90.wannier90.parameters`` for ``.win`` keywords and
+    The ONLY place the upstream override nesting is produced, and the one
+    call site for wannier90's seeded convergence defaults: every route that
+    Wannierises a block funnels through :func:`WannierizeBlock`, so seeding
+    the six minimisation keywords here (below whatever the caller's own
+    ``wannier90`` override states) reaches every route alike, rather than
+    only the ones that happen to call this with a non-empty override. The
+    protocol overrides mirror the workchain's input namespace tree:
+    base-workchain namespace -> calculation namespace -> ``parameters`` —
+    hence ``wannier90.wannier90.parameters`` for ``.win`` keywords and
     ``pw2wannier90.pw2wannier90.parameters.INPUTPP`` for the pw2wannier90
     namelist. Callers supply the flat :class:`WannierizeOverrides` and never
     touch this shape.
@@ -677,17 +682,41 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     afterwards (it reuses the shared nscf scratch), so this is the only use
     the cutoffs get.
     """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
     scf = overrides.get("scf")
     nscf = overrides.get("nscf")
-    wannier90 = overrides.get("wannier90")
     pw2wannier90 = overrides.get("pw2wannier90")
     builder_overrides: dict[str, Any] = {}
     if scf:
         builder_overrides["scf"] = scf
     if nscf:
         builder_overrides["nscf"] = nscf
-    if wannier90:
-        builder_overrides["wannier90"] = {"wannier90": {"parameters": dict(wannier90)}}
+    wannier90_params = recursive_merge(
+        seeded(
+            "wannier90",
+            {
+                # Guiding centres keep the minimisation near the projection
+                # guess so the Wannier functions land in a reproducible
+                # minimum.
+                "guiding_centres": True,
+                "num_iter": 10000,
+                # The aiida-wannier90-workflows protocol raises num_cg_steps to 200;
+                # on the ZnO live validation that setting left the spread
+                # minimisation oscillating without convergence on matrices where the
+                # wannier90 default (5) converges in ~400 iterations.
+                "num_cg_steps": 5,
+                "conv_tol": 1.0e-10,
+                "conv_window": 5,
+                # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
+                # pin wannier90's own default (1e-10) so the disentanglement is
+                # tightly converged rather than the protocol's looser 4e-7.
+                "dis_conv_tol": 1.0e-10,
+            },
+        ),
+        dict(overrides.get("wannier90") or {}),
+    )
+    builder_overrides["wannier90"] = {"wannier90": {"parameters": wannier90_params}}
     if pw2wannier90:
         builder_overrides["pw2wannier90"] = {
             "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}

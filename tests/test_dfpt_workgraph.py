@@ -589,15 +589,18 @@ class TestSinglepointDFPTBuild:
         assert w90_params["write_u_matrices"] is True
         assert w90_params["write_xyz"] is True
 
-        # The route's seeded wannier90 literals equal
-        # aiida_koopmans.owned_keywords.ROUTE_SCOPED_SEEDED_VALUES: the DFPT
-        # chain's own wannierization seeds these six, but the WANNIERIZE
-        # task and the DSCF Wannier-init route do not, so they publish no
-        # schema default.
-        from aiida_koopmans.owned_keywords import ROUTE_SCOPED_SEEDED_VALUES
+        # The six wannier90 minimisation keywords in
+        # aiida_koopmans.owned_keywords.SEEDED_VALUES are seeded once, in
+        # block_wannierize._builder_overrides: the one call site every
+        # Wannierising route passes through. Coverage for that lives in
+        # test_block_wannierize.py's TestWannierizeBlockBuild class. This
+        # DFPT-level overrides input sits upstream of that seeding: it must
+        # not carry any of the six itself, or it would collide with (and
+        # mask test failures in) the seeded defaults reaching kcw.x
+        # downstream.
+        from aiida_koopmans.owned_keywords import SEEDED_VALUES
 
-        for name, value in ROUTE_SCOPED_SEEDED_VALUES["wannier90"].items():
-            assert w90_params[name] == value, name
+        assert not set(SEEDED_VALUES["wannier90"]) & set(w90_params)
 
         # The wannierization reuses the shared scratch (no internal scf+nscf)
         # and sees the channel's blocks in band order: occupied then empty.

@@ -7,7 +7,6 @@ import pytest
 from aiida_koopmans.owned_keywords import (
     OWNED,
     ROUTE_CONDITIONAL,
-    ROUTE_SCOPED_SEEDED_VALUES,
     SEEDED,
     SEEDED_VALUES,
     owned,
@@ -33,14 +32,6 @@ def test_seeded_rejects_a_value_that_disagrees_with_the_roster():
         seeded("kcw.SCREEN", {"tr2": 1e-10})
 
 
-def test_seeded_rejects_a_value_that_disagrees_with_the_route_scoped_roster():
-    # ROUTE_SCOPED_SEEDED_VALUES publishes no schema default, but a DFPT
-    # literal that disagrees with it would still be a silent drift between
-    # the roster and what the route actually seeds.
-    with pytest.raises(ValueError, match=r"wannier90 num_iter=1 .*roster: 10000"):
-        seeded("wannier90", {"num_iter": 1})
-
-
 def test_seeded_accepts_a_keyword_with_no_roster_value():
     # pw.SYSTEM.starting_magnetization is seeded by name only: the route's
     # value depends on the spin regime at runtime, so SEEDED_VALUES carries
@@ -50,21 +41,10 @@ def test_seeded_accepts_a_keyword_with_no_roster_value():
 
 
 def test_every_seeded_keyword_with_a_roster_value_is_in_seeded():
-    # SEEDED_VALUES and ROUTE_SCOPED_SEEDED_VALUES are sources for SEEDED,
-    # not separate registries: every keyword either pins must also be an
-    # accepted name.
+    # SEEDED_VALUES is a source for SEEDED, not a separate registry: every
+    # keyword it pins must also be an accepted name.
     for block, values in SEEDED_VALUES.items():
         assert set(values) <= SEEDED[block], block
-    for block, values in ROUTE_SCOPED_SEEDED_VALUES.items():
-        assert set(values) <= SEEDED[block], block
-
-
-def test_seeded_values_and_route_scoped_seeded_values_do_not_overlap():
-    # A block/keyword pair in both rosters would leave it ambiguous whether
-    # koopmans publishes it as a schema default.
-    for block in SEEDED_VALUES.keys() & ROUTE_SCOPED_SEEDED_VALUES.keys():
-        overlap = set(SEEDED_VALUES[block]) & set(ROUTE_SCOPED_SEEDED_VALUES[block])
-        assert not overlap, f"{block}: {sorted(overlap)}"
 
 
 def test_owned_rejects_an_unclassified_keyword():

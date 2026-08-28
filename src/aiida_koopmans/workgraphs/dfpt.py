@@ -999,37 +999,19 @@ def _manifold_wannier_overrides(
 ) -> WannierizeOverrides:
     """Assemble the flat wannier overrides for one channel's manifolds.
 
-    Tight wannier90 convergence defaults (guiding centres keep the
-    minimisation near the projection guess so the Wannier functions land in a
-    reproducible minimum), the caller's ``overrides`` on top, and the channel
-    staging/selection keys (:func:`_channel_w90_defaults`, kcw-chain
-    requirements) force-merged last. All flat :class:`WannierizeOverrides` —
-    :func:`WannierizeBlock` wraps the keyword dicts into the upstream builder
-    namespace.
+    The caller's ``overrides`` and the channel staging/selection keys
+    (:func:`_channel_w90_defaults`, kcw-chain requirements) force-merged
+    last. All flat :class:`WannierizeOverrides` — :func:`WannierizeBlock`
+    wraps the keyword dicts into the upstream builder namespace, seeding its
+    own wannier90 convergence defaults there
+    (:func:`~aiida_koopmans.workgraphs.block_wannierize._builder_overrides`),
+    so this function does not seed them itself.
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
-    wannier_defaults: dict[str, Any] = seeded(
-        "wannier90",
-        {
-            "guiding_centres": True,
-            "num_iter": 10000,
-            # The aiida-wannier90-workflows protocol raises num_cg_steps to 200;
-            # on the ZnO live validation that setting left the spread
-            # minimisation oscillating without convergence on matrices where the
-            # wannier90 default (5) converges in ~400 iterations.
-            "num_cg_steps": 5,
-            "conv_tol": 1.0e-10,
-            "conv_window": 5,
-            # The aiida-wannier90-workflows protocol loosens dis_conv_tol to 4e-7;
-            # pin wannier90's own default (1e-10) so the disentanglement is
-            # tightly converged rather than the protocol's looser 4e-7.
-            "dis_conv_tol": 1.0e-10,
-        },
-    )
     channel_defaults = _channel_w90_defaults(spin, channel)
     wannier90 = recursive_merge(
-        recursive_merge(wannier_defaults, dict(overrides.get("wannier90", {}))),
+        dict(overrides.get("wannier90", {})),
         channel_defaults.get("wannier90", {}),
     )
     wannier_overrides: WannierizeOverrides = {"wannier90": wannier90}
