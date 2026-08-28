@@ -590,11 +590,13 @@ class TestSinglepointDFPTBuild:
         assert w90_params["write_xyz"] is True
 
         # The route's seeded wannier90 literals equal
-        # aiida_koopmans.owned_keywords.SEEDED_VALUES, which koopmans reads
-        # as the generated field's default.
-        from aiida_koopmans.owned_keywords import SEEDED_VALUES
+        # aiida_koopmans.owned_keywords.ROUTE_SCOPED_SEEDED_VALUES: the DFPT
+        # chain's own wannierization seeds these six, but the WANNIERIZE
+        # task and the DSCF Wannier-init route do not, so they publish no
+        # schema default.
+        from aiida_koopmans.owned_keywords import ROUTE_SCOPED_SEEDED_VALUES
 
-        for name, value in SEEDED_VALUES["wannier90"].items():
+        for name, value in ROUTE_SCOPED_SEEDED_VALUES["wannier90"].items():
             assert w90_params[name] == value, name
 
         # The wannierization reuses the shared scratch (no internal scf+nscf)

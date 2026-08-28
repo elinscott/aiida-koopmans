@@ -23,6 +23,7 @@ from typing import Any
 __all__ = [
     "OWNED",
     "ROUTE_CONDITIONAL",
+    "ROUTE_SCOPED_SEEDED_VALUES",
     "SEEDED",
     "SEEDED_VALUES",
     "owned",
@@ -173,9 +174,14 @@ OWNED: dict[str, frozenset[str]] = {
 }
 
 #: Keywords a route writes as a starting value that a caller value replaces,
-#: mapped to that value for the ones where every route seeds the same
-#: literal. ``koopmans`` reads a keyword's roster value as the generated
-#: field's default, alongside kcw.x's own default in the schema description.
+#: mapped to that value for the ones where *every* route running the code
+#: seeds the same literal. ``koopmans`` reads a keyword's roster value as the
+#: generated field's default, alongside kcw.x's own default in the schema
+#: description — so a keyword belongs here only when publishing that value
+#: as the schema default is true regardless of which route the caller picks.
+#: kcw.x is consumed by the DFPT route alone, so its nine entries below are
+#: universal by construction. A keyword one route seeds but another does not
+#: goes in :data:`ROUTE_SCOPED_SEEDED_VALUES` instead.
 #:
 #: ``pw.SYSTEM.starting_magnetization`` is seeded but absent here: the value
 #: the route writes depends on the spin regime at runtime, so there is no
@@ -206,6 +212,20 @@ SEEDED_VALUES: dict[str, dict[str, Any]] = {
         "write_hr": True,
         "on_site_only": False,
     },
+}
+
+#: Keywords a route seeds, but not every route that runs the code seeds them
+#: the same way: the DFPT chain's own wannierization
+#: (:func:`aiida_koopmans.workgraphs.dfpt._manifold_wannier_overrides`) seeds
+#: these six, while the WANNIERIZE task and the DSCF Wannier-init route
+#: (both built on :func:`aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`)
+#: forward only what the caller states and otherwise inherit
+#: aiida-wannier90-workflows's own protocol defaults. Publishing one of these
+#: as the generated schema's default would be true on the DFPT route and
+#: false on the other two, so ``koopmans`` must not: unlike
+#: :data:`SEEDED_VALUES`, this roster is not read as a schema default — only
+#: as the value :func:`seeded` checks a DFPT literal against.
+ROUTE_SCOPED_SEEDED_VALUES: dict[str, dict[str, Any]] = {
     "wannier90": {
         # Minimisation settings tuned for reproducible Wannier centres.
         "guiding_centres": True,
@@ -217,14 +237,21 @@ SEEDED_VALUES: dict[str, dict[str, Any]] = {
     },
 }
 
+
+def _merge_seeded() -> dict[str, frozenset[str]]:
+    """Return :data:`SEEDED`: every roster's keywords, by block."""
+    seeded: dict[str, frozenset[str]] = {"pw.SYSTEM": frozenset({"starting_magnetization"})}
+    for roster in (SEEDED_VALUES, ROUTE_SCOPED_SEEDED_VALUES):
+        for block, values in roster.items():
+            seeded[block] = seeded.get(block, frozenset()) | frozenset(values)
+    return seeded
+
+
 #: Names of keywords a route writes as a starting value that a caller value
-#: replaces. :data:`SEEDED_VALUES`' keywords plus
-#: ``pw.SYSTEM.starting_magnetization`` (seeded, but with no single roster
-#: value — see above).
-SEEDED: dict[str, frozenset[str]] = {
-    "pw.SYSTEM": frozenset({"starting_magnetization"}),
-    **{block: frozenset(values) for block, values in SEEDED_VALUES.items()},
-}
+#: replaces. :data:`SEEDED_VALUES`' and :data:`ROUTE_SCOPED_SEEDED_VALUES`'
+#: keywords plus ``pw.SYSTEM.starting_magnetization`` (seeded, but with no
+#: single roster value — see above).
+SEEDED: dict[str, frozenset[str]] = _merge_seeded()
 
 #: Keywords a route forces on one step while leaving them settable on
 #: another, so they are neither wholly owned nor merely seeded. Each is a
@@ -260,10 +287,14 @@ def owned[T: Mapping[str, Any]](block: str, keywords: T) -> T:
 def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
     """Return ``keywords`` after checking every one of them is seeded.
 
-    A keyword with a roster entry in :data:`SEEDED_VALUES` must also match
-    that entry's value: the roster is what ``koopmans`` reads as the
-    generated field's default, so a route literal that disagrees would make
-    the schema lie about what the route actually seeds.
+    A keyword with a roster entry in :data:`SEEDED_VALUES` or
+    :data:`ROUTE_SCOPED_SEEDED_VALUES` must also match that entry's value.
+    For a :data:`SEEDED_VALUES` entry, the roster is what ``koopmans`` reads
+    as the generated field's default, so a route literal that disagrees
+    would make the schema lie about what the route actually seeds. A
+    :data:`ROUTE_SCOPED_SEEDED_VALUES` entry publishes no schema default,
+    but still pins what the DFPT route itself seeds, so its literal must
+    agree too.
 
     Args:
         block: The input-file block the keywords belong to, as keyed in
@@ -276,11 +307,11 @@ def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
 
     Raises:
         ValueError: If a keyword is classified neither seeded nor
-            conditional, or if a keyword's value disagrees with its
-            :data:`SEEDED_VALUES` entry.
+            conditional, or if a keyword's value disagrees with its roster
+            entry.
     """
     _check(block, keywords, SEEDED, "seeds")
-    roster = SEEDED_VALUES.get(block, {})
+    roster = {**SEEDED_VALUES.get(block, {}), **ROUTE_SCOPED_SEEDED_VALUES.get(block, {})}
     mismatched = sorted(
         name for name, value in keywords.items() if name in roster and roster[name] != value
     )
@@ -290,9 +321,11 @@ def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
         )
         raise ValueError(
             f"{block} {detail} disagrees with "
-            f"aiida_koopmans.owned_keywords.SEEDED_VALUES. Update SEEDED_VALUES to match "
-            f"the route's literal, or fix the route: koopmans reads SEEDED_VALUES as the "
-            f"generated field's default, so the two must agree."
+            f"aiida_koopmans.owned_keywords.SEEDED_VALUES / ROUTE_SCOPED_SEEDED_VALUES. "
+            f"Update the roster to match the route's literal, or fix the route: "
+            f"koopmans reads SEEDED_VALUES as the generated field's default, so the two "
+            f"must agree; ROUTE_SCOPED_SEEDED_VALUES publishes no default but must still "
+            f"agree with what the route seeds."
         )
     return keywords
 
