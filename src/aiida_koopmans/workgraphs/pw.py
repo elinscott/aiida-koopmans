@@ -11,6 +11,7 @@ from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
+from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -336,7 +337,7 @@ def RunPwBands(
 
 
 @task.graph
-def RunScfNscf(
+def RunWannierGroundState(
     pw_code: orm.AbstractCode,
     structure: orm.StructureData,
     pseudo_family: str | None = None,
@@ -347,17 +348,26 @@ def RunScfNscf(
     nscf_kpoints: orm.KpointsData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
-    """Run SCF + NSCF using two PwBaseWorkChain steps.
+    """Run the Wannier ground state: two chained PwBaseWorkChain steps, scf then nscf.
+
+    Every Wannierization starts from this pair. Its only two callers,
+    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+    and :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow`,
+    both Wannierize; a route that does not (the molecular DSCF KS-init,
+    which runs kcp.x's own ground state, or plain DFT bands/eps) does not
+    call it.
 
     Both steps are seeded from
     ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``, so the NSCF
-    carries the invariants a Wannierization needs — ``nosym`` / ``noinv``
-    for the full k-grid, ``diago_full_acc`` for the empty states,
-    ``startingpot = 'file'`` off the SCF density, and the k-points listed
-    in wannier90's own order — from the same recipe
-    ``Wannier90WorkChain`` runs itself. Each step samples the Brillouin
-    zone on the mesh it is given, falling back to the protocol's
-    ``kpoints_distance`` when none is.
+    carries the invariants a Wannierization needs — ``diago_full_acc`` for
+    the empty states, ``startingpot = 'file'`` off the SCF density, and the
+    k-points listed in wannier90's own order — from the same recipe
+    ``Wannier90WorkChain`` runs itself. The NSCF also always runs on the
+    full, symmetry-unreduced k-list wannier90 orders: ``nosym`` / ``noinv``
+    are forced on top of any override, since a caller cannot switch off the
+    grid wannier90 needs. Each step samples the Brillouin zone on the mesh
+    it is given, falling back to the protocol's ``kpoints_distance`` when
+    none is.
 
     The pw.x spin regime comes from ``overrides``, not from a ``spin_type``
     argument: callers force ``nspin`` / ``noncolin`` / ``lspinorb`` on top
@@ -414,6 +424,13 @@ def RunScfNscf(
             namespace,
             calculation,
         )
+
+    # wannier90 reads the eigenstates on the full, symmetry-unreduced grid
+    # it orders itself; force that on top of the merged overrides so a
+    # caller's own nosym/noinv (or the protocol's default) cannot switch it
+    # off.
+    nscf_system = overrides["nscf"]["pw"]["parameters"].setdefault("SYSTEM", {})
+    nscf_system.update(owned("pw.SYSTEM", {"nosym": True, "noinv": True}))
 
     # ``spin_type`` stays at its default: the regimes our callers run
     # (collinear, noncollinear, spin-orbit) are forced through ``overrides``

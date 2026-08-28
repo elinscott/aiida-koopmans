@@ -1,4 +1,4 @@
-"""Tests for the shared scf + nscf recipe behind ``RunScfNscf``.
+"""Tests for the shared scf + nscf recipe behind ``RunWannierGroundState``.
 
 The pair is seeded from
 ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``, so the nscf
@@ -12,7 +12,7 @@ from __future__ import annotations
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
 
-from aiida_koopmans.workgraphs.pw import RunScfNscf
+from aiida_koopmans.workgraphs.pw import RunWannierGroundState
 from tests.fixtures import explicit_block
 
 
@@ -42,7 +42,7 @@ class TestRecipeIsShared:
         )
         expected = expected_builder["pw"]["parameters"].get_dict()
 
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
@@ -66,7 +66,7 @@ class TestRecipeIsShared:
         ``startingpot = 'file'`` reads the scf density rather than an atomic
         guess.
         """
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
@@ -95,7 +95,7 @@ class TestRecipeIsShared:
         pw.x may reduce a mesh by symmetry; the recipe expands the mesh
         once so the two cannot disagree.
         """
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
@@ -109,17 +109,44 @@ class TestRecipeIsShared:
         assert wg.tasks["nscf"].inputs["kpoints_distance"].value is None
         assert wg.tasks["nscf"].inputs["kpoints_force_parity"].value is None
 
+    def test_a_user_nosym_override_cannot_reach_the_nscf(
+        self, fake_cutoffs_family, silicon_structure, kmesh, kpath, pw_code
+    ):
+        """A user ``nosym = False`` / ``noinv = False`` is overwritten.
 
-class TestOtherRoutesKeepTheirForcing:
-    def test_dfpt_still_forces_symmetry_off(
+        wannier90 needs the full, symmetry-unreduced grid it orders itself;
+        the recipe forces ``nosym`` / ``noinv`` on top of whatever a caller
+        supplies, so an override cannot switch the nscf's protocol default
+        off. This is the recipe's own invariant -- every caller shares it.
+        """
+        wg = RunWannierGroundState.build(
+            pw_code=pw_code,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            scf_kpoints=kmesh,
+            nscf_kpoints=kpath,
+            overrides={
+                "nscf": {"pw": {"parameters": {"SYSTEM": {"nosym": False, "noinv": False}}}}
+            },
+        )
+        parameters = _parameters(wg.tasks["nscf"])
+        assert parameters["SYSTEM"]["nosym"] is True
+        assert parameters["SYSTEM"]["noinv"] is True
+
+
+class TestCallersDoNotForceSymmetryThemselves:
+    """Neither Wannierizing route forces ``nosym`` / ``noinv`` on its own.
+
+    The enforcement is :func:`RunWannierGroundState`'s own invariant (see
+    ``TestRecipeIsShared.test_a_user_nosym_override_cannot_reach_the_nscf``);
+    a route that forced it again on top would just duplicate that logic, so
+    a caller's raw override reaches the ``scf_nscf`` task's ``overrides``
+    input unmodified.
+    """
+
+    def test_dfpt_passes_the_override_through_unmodified(
         self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
     ):
-        """A user ``nosym = False`` cannot reach the DFPT nscf.
-
-        The recipe supplies ``nosym`` / ``noinv`` as protocol defaults,
-        which a user override replaces; the DFPT route forces them on top
-        of the overrides, so its wannierization keeps the full grid.
-        """
         from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 
         wg = SinglepointDFPTWorkflow.build(
@@ -139,5 +166,25 @@ class TestOtherRoutesKeepTheirForcing:
         nscf_system = (
             wg.tasks["scf_nscf"].inputs["overrides"].value["nscf"]["pw"]["parameters"]["SYSTEM"]
         )
-        assert nscf_system["nosym"] is True
-        assert nscf_system["noinv"] is True
+        assert nscf_system["nosym"] is False
+
+    def test_block_route_passes_the_override_through_unmodified(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
+
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=[
+                explicit_block("block_1", range(1, 5), filled=True),
+                explicit_block("block_2", range(5, 9), filled=False),
+            ],
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nosym": False}}}}},
+        )
+        nscf_system = (
+            wg.tasks["scf_nscf"].inputs["overrides"].value["nscf"]["pw"]["parameters"]["SYSTEM"]
+        )
+        assert nscf_system["nosym"] is False

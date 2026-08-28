@@ -1,7 +1,7 @@
 """Tests for the per-step ``CONTROL.calculation`` enforcement backstop.
 
 The pure-function tests exercise :func:`enforce_step_calculation` directly.
-The graph-build tests construct ``RunScfNscf`` / ``RunPwBands`` / ``Wannierize``
+The graph-build tests construct ``RunWannierGroundState`` / ``RunPwBands`` / ``Wannierize``
 and assert each step owner stamps its own calculation mode on the built task,
 and that a genuinely conflicting override raises.
 """
@@ -51,14 +51,14 @@ def _calc(task, *namespace):
     return node["parameters"].value.get_dict()["CONTROL"]["calculation"]
 
 
-class TestRunScfNscfEnforcement:
+class TestRunWannierGroundStateEnforcement:
     def test_k2_shaped_nscf_override_lands_as_nscf(
         self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
     ):
         """A k2-shaped nscf override (no calculation key) resolves to 'nscf'."""
-        from aiida_koopmans.workgraphs.pw import RunScfNscf
+        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
 
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
@@ -71,10 +71,10 @@ class TestRunScfNscfEnforcement:
     def test_conflicting_nscf_override_raises(
         self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
     ):
-        from aiida_koopmans.workgraphs.pw import RunScfNscf
+        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
 
         with pytest.raises(ValueError, match=r"'nscf' step"):
-            RunScfNscf.build(
+            RunWannierGroundState.build(
                 pw_code=pw_code,
                 structure=silicon_structure,
                 pseudo_family=fake_cutoffs_family.label,
@@ -97,7 +97,7 @@ class TestRunScfNscfEnforcement:
         monkeypatch.setattr(
             pw_module, "enforce_step_calculation", lambda params, step, expected: params
         )
-        wg = pw_module.RunScfNscf.build(
+        wg = pw_module.RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,

@@ -2,7 +2,7 @@
 
 Naming convention: case encodes what a call creates. PascalCase names
 create process nodes — verb-first ``@task.graph`` builders
-(``WannierizeBlock``, ``RunScfNscf``; ``Workflow`` suffix reserved for the
+(``WannierizeBlock``, ``RunWannierGroundState``; ``Workflow`` suffix reserved for the
 dispatcher entry points) and ``Step``-suffixed ``task(WorkChain/CalcJob)``
 constants (``KcpStep``, ``PwBaseStep``). snake_case names are in-process
 leaf ``@task`` / calcfunction / workfunction computations.

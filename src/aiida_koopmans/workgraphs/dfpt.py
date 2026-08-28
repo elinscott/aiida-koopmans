@@ -106,7 +106,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunWannierGroundState
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -1093,9 +1093,10 @@ def SinglepointDFPTWorkflow(
     dielectric chain's ground state samples the same.
 
     The workflow has three stages: compute the ground state (one shared
-    scf + nscf, with ``nosym`` / ``noinv`` on the nscf so kcw.x sees the
-    full k-point set), Wannierize each spin channel's occupied and empty
-    blocks (:func:`WannierizeBlocks`), and run the kcw.x chain per spin
+    scf + nscf via :func:`~aiida_koopmans.workgraphs.pw.RunWannierGroundState`, whose
+    nscf always samples the full k-point set kcw.x needs), Wannierize each
+    spin channel's occupied and empty blocks (:func:`WannierizeBlocks`),
+    and run the kcw.x chain per spin
     channel (:func:`RunDFPT`). ``manifolds`` — a dict keyed by spin channel
     (:class:`SpinChannel` values as strings) with :class:`ManifoldBlocks`
     values — sets the channels:
@@ -1222,14 +1223,12 @@ def SinglepointDFPTWorkflow(
         seeded = recursive_merge({"pw": {"parameters": {"SYSTEM": dict(seed_system)}}}, user)
         return recursive_merge(seeded, forced)
 
+    # ``nosym`` / ``noinv`` on the nscf are :func:`RunWannierGroundState`'s own
+    # invariant, not this route's — it forces them on top of whatever
+    # reaches it here.
     scf_nscf_overrides: dict[str, Any] = {
         "scf": _with_spin(overrides.get("scf", {}), {}),
-        # The recipe supplies ``nosym``/``noinv`` as protocol defaults,
-        # which a user override replaces. wannier90 needs the full grid,
-        # so force them on top of the overrides here.
-        "nscf": _with_spin(
-            overrides.get("nscf", {}), owned("pw.SYSTEM", {"nosym": True, "noinv": True})
-        ),
+        "nscf": _with_spin(overrides.get("nscf", {}), {}),
     }
 
     # wannier90 / pw2wannier90 need the nscf eigenstates on the full
@@ -1252,7 +1251,7 @@ def SinglepointDFPTWorkflow(
         ) from None
     explicit_kpoints = get_explicit_kpoints(kpoints)
 
-    scf_nscf = RunScfNscf(
+    scf_nscf = RunWannierGroundState(
         pw_code=reference(codes, "pw"),
         structure=structure,
         pseudo_family=pseudo_family,
