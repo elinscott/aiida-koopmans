@@ -22,6 +22,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 from node_graph import reference
 
+from aiida_koopmans.owned_keywords import SEEDED_VALUES, seeded
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_existing_namespaces,
@@ -345,6 +346,29 @@ def _finalize_wannier_builder(
     return data
 
 
+def _seed_wannier90_defaults(overrides: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge the seeded wannier90 minimisation defaults into ``overrides``.
+
+    This whole-manifold route drives ``Wannier90WorkChain`` straight off
+    ``get_builder_from_protocol``, so unlike the per-block route
+    (:func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock`,
+    seeded in ``block_wannierize._builder_overrides``) it reaches
+    aiida-wannier90-workflows's own protocol defaults for the six keywords
+    in ``aiida_koopmans.owned_keywords.SEEDED_VALUES["wannier90"]`` unless
+    something states them first. Seed them here the same way, merged under
+    whatever the caller's own
+    ``overrides["wannier90"]["wannier90"]["parameters"]`` states.
+    """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    overrides = overrides or {}
+    caller_params = overrides.get("wannier90", {}).get("wannier90", {}).get("parameters") or {}
+    merged_params = recursive_merge(
+        seeded("wannier90", SEEDED_VALUES["wannier90"]), dict(caller_params)
+    )
+    return recursive_merge(overrides, {"wannier90": {"wannier90": {"parameters": merged_params}}})
+
+
 def _apply_kpoint_mesh(
     data: dict[str, Any],
     *,
@@ -431,7 +455,11 @@ def Wannierize(
             atomic wavefunctions (:func:`projected_dos_supported`).
         structure: The StructureData instance to use.
         protocol: Protocol to use. If not specified, the default will be used.
-        overrides: Optional dictionary of inputs to override protocol defaults.
+        overrides: Optional dictionary of inputs to override protocol
+            defaults. wannier90's six seeded minimisation keywords
+            (``aiida_koopmans.owned_keywords.SEEDED_VALUES["wannier90"]``)
+            reach the ``.win`` regardless; a caller value for one of them
+            here still wins.
         pseudo_family: Pseudopotential family to use. If not specified,
             defaults based on spin_type.
         electronic_type: Electronic type - "metal" or "insulator".
@@ -495,11 +523,13 @@ def Wannierize(
     # ``PwBaseWorkChain``, whose branches test them with ``is``.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
+    overrides = _seed_wannier90_defaults(overrides)
+
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         protocol=protocol,
-        overrides=overrides or {},
+        overrides=overrides,
         pseudo_family=pseudo_family,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
         spin_type=unwrap_enum(spin_type, SpinType),
