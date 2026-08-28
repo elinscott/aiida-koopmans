@@ -155,6 +155,8 @@ def generate_upf_data(aiida_profile):
         # aiida-wannier90-workflows' pseudo utilities: ``<PP_HEADER`` and its
         # ``/>`` sit on their own lines (sharing a line with the ``<UPF>``
         # root tag loses the attributes) and ``has_so`` is required.
+        # ``core_correction`` is required too: the kcp.x box-grid derivation
+        # refuses a header that does not declare it.
         # ``number_of_wfc`` is what the projected-DOS gate reads;
         # ``with_pswfc=False`` drops it along with the ``PP_PSWFC`` block (a
         # pseudo without atomic wavefunctions).
@@ -163,7 +165,8 @@ def generate_upf_data(aiida_profile):
         content = (
             f'<UPF version="2.0.1">\n'
             f'<PP_HEADER\nelement="{element}"\n'
-            f'z_valence="{z_valence}"\nhas_so="F"\n{wfc_attribute}/>\n'
+            f'z_valence="{z_valence}"\nhas_so="F"\ncore_correction="F"\n'
+            f"{wfc_attribute}/>\n"
             f"{pswfc_block}"
             f"</UPF>\n"
         )

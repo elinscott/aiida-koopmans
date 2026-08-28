@@ -381,6 +381,7 @@ def MlwfInitialization(
     # --- B3: dft_dummy — save-skeleton writer on the supercell ---
     base = kcp_base_inputs(
         supercell,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,

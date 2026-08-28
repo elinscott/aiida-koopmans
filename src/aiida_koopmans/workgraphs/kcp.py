@@ -36,7 +36,7 @@ from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
-from aiida_koopmans.calculations.kcp_inputs import build_kcp_inputs
+from aiida_koopmans.calculations.kcp_inputs import autogenerate_nrb, build_kcp_inputs
 from aiida_koopmans.functionals import Correction
 from aiida_koopmans.ml import MLDescriptor, RadialBasis, resolve_radial_basis
 from aiida_koopmans.parallelization import (
@@ -205,10 +205,15 @@ class KcpBaseInputs:
     """Cell-, basis-, and electron-count inputs shared by every kcp.x step.
 
     Each parameter builder takes one ``KcpBaseInputs`` (built once per
-    workgraph from ``structure`` + electron-count outputs) plus its
-    step-specific kwargs. ``nbnd`` is intentionally *not* here —
+    workgraph from ``structure`` + ``pseudos`` + electron-count outputs)
+    plus its step-specific kwargs. ``nbnd`` is intentionally *not* here —
     DFT/KI/PZ steps need it but alpha-step (dft_n±1) builders strip it,
     so it stays a step-level kwarg.
+
+    ``nr{1,2,3}b`` is the kcp.x small-box grid, unset unless a pseudo
+    carries core corrections. It lives here so it is derived once, from
+    the pseudos, and reaches every step through the same socket the rest
+    of the basis travels on.
 
     A frozen ``dataclass`` rather than a ``TypedDict``: aiida-workgraph
     routes dataclass-typed sockets through ``structured_to_dict`` →
@@ -228,6 +233,9 @@ class KcpBaseInputs:
     nelup: int | None = None
     neldw: int | None = None
     tot_magnetization: int | None = None
+    nr1b: int | None = None
+    nr2b: int | None = None
+    nr3b: int | None = None
 
 
 class KcpNamelistOverrides(TypedDict, total=False):
@@ -1046,6 +1054,7 @@ def InitializeOrbitals(
     """
     base = kcp_base_inputs(
         structure,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
@@ -1937,6 +1946,7 @@ def RunFinalKI(
         _validate_alpha_screening(alphas, nelup=nelup, neldw=neldw, nbnd=nbnd)
     base = kcp_base_inputs(
         structure,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
@@ -2031,6 +2041,7 @@ def ComputeFilledOrbitalScreeningParameter(
     """
     base = kcp_base_inputs(
         structure,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
@@ -2718,6 +2729,7 @@ def ComputeScreeningParameters(
 
     base = kcp_base_inputs(
         structure,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
@@ -2905,6 +2917,7 @@ def PredictScreeningParameters(
 
     base = kcp_base_inputs(
         structure,
+        pseudos,
         nspin=nspin,
         nelec=nelec,
         nelup=nelup,
@@ -3381,6 +3394,7 @@ def _stage_wannier_seed(
 
 def kcp_base_inputs(
     structure: orm.StructureData,
+    pseudos: dict[str, UpfData],
     *,
     nspin: int,
     nelec: int,
@@ -3393,10 +3407,14 @@ def kcp_base_inputs(
     """Assemble the shared :class:`KcpBaseInputs` payload from a structure.
 
     ``mt_correction`` and ``ntyp`` are derived from the structure
-    (``not any(structure.pbc)`` and ``len(structure.kinds)``); the rest
+    (``not any(structure.pbc)`` and ``len(structure.kinds)``); the
+    ``nr{1,2,3}b`` box grid from the structure, the pseudos and the
+    cutoffs (unset unless a pseudo carries core corrections); the rest
     pass through unchanged. Callers in the workgraph layer build this
     once per step group and forward it to each ``_build_*`` invocation.
     """
+    nrb = autogenerate_nrb(structure, pseudos, ecutwfc=ecutwfc, ecutrho=ecutrho)
+    nr1b, nr2b, nr3b = nrb if nrb is not None else (None, None, None)
     return KcpBaseInputs(
         ecutwfc=ecutwfc,
         ecutrho=ecutrho,
@@ -3407,6 +3425,9 @@ def kcp_base_inputs(
         tot_magnetization=tot_magnetization,
         mt_correction=not any(structure.pbc),
         ntyp=len(structure.kinds),
+        nr1b=nr1b,
+        nr2b=nr2b,
+        nr3b=nr3b,
     )
 
 
@@ -3456,6 +3477,13 @@ def build_dft_parameters(
             system["neldw"] = base.neldw
         if base.tot_magnetization is not None:
             system["tot_magnetization"] = base.tot_magnetization
+    # kcp.x refuses to run a core-corrected pseudo without the small-box
+    # grid; ``kcp_base_inputs`` derived it, so every step built from this
+    # ``base`` carries the same values.
+    for key in ("nr1b", "nr2b", "nr3b"):
+        value = getattr(base, key)
+        if value is not None:
+            system[key] = value
     # ``ndr`` and ``ndw`` are owned by the CalcJob (see
     # ``KcpCalculation._inject_owned_keys``) — the builders deliberately
     # leave them unset so there's only one source of truth.

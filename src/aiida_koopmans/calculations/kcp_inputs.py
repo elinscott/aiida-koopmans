@@ -1,8 +1,8 @@
 """Input assembly for the kcp.x CalcJob.
 
-Builds the kwargs dict a ``task(KcpCalculation)`` step takes, including
-the ``SYSTEM.nr{1,2,3}b`` box-grid autogeneration kcp.x needs when a
-pseudopotential carries core corrections.
+Builds the kwargs dict a ``task(KcpCalculation)`` step takes, and derives
+the ``SYSTEM.nr{1,2,3}b`` box grid kcp.x needs when a pseudopotential
+carries core corrections.
 """
 
 from __future__ import annotations
@@ -40,12 +40,33 @@ def _good_fft(nr: int) -> int:
     return nr
 
 
-def _autogenerate_nrb(
+def _core_corrected(pseudo: UpfData) -> bool:
+    """Return True when ``pseudo`` declares non-linear core corrections.
+
+    Raise when the flag cannot be read: a pseudo we cannot inspect must not
+    pass as no-NLCC, because that is how a run reaches kcp.x with the box
+    grid unset.
+    """
+    from upf_tools import header_from_str
+
+    header = header_from_str(pseudo.get_content())
+    if "core_correction" not in header:
+        raise ValueError(
+            f"{pseudo.filename} has a UPF header that does not declare "
+            "core_correction. Supply a pseudopotential whose header carries it, "
+            "or set SYSTEM.nr1b/nr2b/nr3b yourself in the kcp.x overrides."
+        )
+    return bool(header["core_correction"])
+
+
+def autogenerate_nrb(
     structure: orm.StructureData,
     pseudos: dict[str, UpfData],
-    parameters: dict[str, Any],
-) -> None:
-    """Fill ``SYSTEM.nr{1,2,3}b`` when any pseudo carries core corrections.
+    *,
+    ecutwfc: float,
+    ecutrho: float | None = None,
+) -> tuple[int, int, int] | None:
+    """Return ``SYSTEM.nr{1,2,3}b``, or None when no pseudo carries core corrections.
 
     kcp.x aborts with
     "nr1b, nr2b, nr3b must be given for ultrasoft and core corrected pp"
@@ -53,30 +74,17 @@ def _autogenerate_nrb(
     unset (bites e.g. PseudoDojo; SG15 has no NLCC). The conservative
     guess is the full density-grid dimensions scaled by
     ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
-    cutoff radius is <= 2.6 Bohr). User-supplied values always win.
+    cutoff radius is <= 2.6 Bohr). ``ecutrho`` falls back to
+    ``4 * ecutwfc`` when unset, as QE does.
     """
     from qe_tools import CONSTANTS
-    from upf_to_json import upf_to_json
-
-    system = parameters.setdefault("SYSTEM", {})
-    if all(system.get(key) is not None for key in ("nr1b", "nr2b", "nr3b")):
-        return
-
-    def _core_corrected(pseudo: UpfData) -> bool:
-        try:
-            header = upf_to_json(pseudo.get_content(), pseudo.filename)["pseudo_potential"][
-                "header"
-            ]
-        except Exception:
-            # Unparseable UPF (e.g. minimal test fixtures): treat as no-NLCC.
-            # Not a silent-corruption risk — a real core-corrected pseudo that
-            # slips through makes kcp.x abort loudly with its own
-            # "nr1b, nr2b, nr3b must be given" error.
-            return False
-        return bool(header["core_correction"])
 
     if not any(_core_corrected(pseudo) for pseudo in pseudos.values()):
-        return
+        return None
+
+    # A graph input arrives as a wrapt proxy around the float; numpy's ufuncs
+    # refuse it ("no callable sqrt method"), so coerce before the arithmetic.
+    ecutrho = float(ecutrho) if ecutrho else 4.0 * float(ecutwfc)
 
     angstrom_to_bohr = 1.0 / CONSTANTS.bohr_to_ang
     cell = np.array(structure.cell, dtype=float)
@@ -84,7 +92,6 @@ def _autogenerate_nrb(
     # Reduced lattice vectors ("at" in QE), dimensionless in units of alat.
     at = cell * angstrom_to_bohr / alat_bohr
 
-    ecutrho = float(system.get("ecutrho") or 4.0 * system["ecutwfc"])
     # Density-grid dimensions, as QE derives them:
     # nr_i = 2 * int( sqrt(ecutrho) / (2 pi / alat) * |at_i| ) + 1
     nr = [
@@ -92,8 +99,11 @@ def _autogenerate_nrb(
         for vec in at
     ]
     rc_safe = 3.0
-    for key, vec, nr_i in zip(("nr1b", "nr2b", "nr3b"), at, nr, strict=True):
-        system[key] = _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
+    nrb = [
+        _good_fft(int(nr_i * 2.0 * rc_safe / (np.linalg.norm(vec) * alat_bohr)))
+        for vec, nr_i in zip(at, nr, strict=True)
+    ]
+    return (nrb[0], nrb[1], nrb[2])
 
 
 def build_kcp_inputs(
@@ -148,7 +158,6 @@ def build_kcp_inputs(
     beyond the stdout and CRASH defaults, fed to the CalcJob's ``settings``
     port.
     """
-    _autogenerate_nrb(structure, pseudos, parameters)
     inputs: dict[str, Any] = {
         "code": code,
         "structure": structure,
