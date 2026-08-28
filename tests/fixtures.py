@@ -862,3 +862,32 @@ def si_external_projector_tables() -> dict:
             {"l": 1, "frozen": False},
         ]
     }
+
+
+def namelist_model(
+    name: str,
+    fields: dict[str, tuple[object, object]],
+    forced: frozenset[str] = frozenset(),
+) -> type:
+    """Return a pydantic model of a namelist's keywords, minus the forced ones.
+
+    ``fields`` maps a keyword to ``(annotation, default)``; ``...`` as the
+    default makes the keyword required. A keyword named in ``forced`` gets no
+    field, so writing it is refused as unknown rather than accepted and
+    overwritten later.
+
+    The model forbids extra keys: a socket exists only for a declared field,
+    so a keyword with no field must not slip through as data.
+
+    :raises ValueError: ``forced`` names a keyword ``fields`` does not declare.
+    """
+    from pydantic import ConfigDict, create_model
+
+    unknown = set(forced) - set(fields)
+    if unknown:
+        raise ValueError(
+            f"{name}: forced keywords {sorted(unknown)} are not in fields "
+            f"{sorted(fields)}; forced names a keyword the namelist declares."
+        )
+    kept = {key: value for key, value in fields.items() if key not in forced}
+    return create_model(name, __config__=ConfigDict(extra="forbid"), **kept)
