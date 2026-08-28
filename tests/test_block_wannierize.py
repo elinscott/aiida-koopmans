@@ -1374,9 +1374,8 @@ class TestWannierizeBlockBuild:
         """The koopmans-seeded wannier90 minimisation settings land with no caller override.
 
         ``aiida_koopmans.owned_keywords.SEEDED_VALUES["wannier90"]`` is
-        seeded on every route that Wannierises a block, not only DFPT's
-        (legacy: ``koopmans/settings/_wannier90.py`` applies the same six to
-        every wannier90 calculator regardless of workflow). The WANNIERIZE
+        seeded on every route that Wannierises a block, not only DFPT's. The
+        WANNIERIZE
         task and the DSCF Wannier-init route both call
         :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
         with no wannier90-seeding layer of their own, so building

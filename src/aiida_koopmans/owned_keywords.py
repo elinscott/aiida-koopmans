@@ -179,11 +179,9 @@ OWNED: dict[str, frozenset[str]] = {
 #: schema description.
 #:
 #: The six ``wannier90`` entries are seeded on every route that Wannierises a
-#: block — koopmans' own long-standing minimisation settings, not something
-#: specific to the DFPT chain (legacy: ``koopmans/settings/_wannier90.py``,
-#: applied to every wannier90 calculator regardless of workflow). Seeding
-#: happens once, in :func:`aiida_koopmans.workgraphs.block_wannierize._builder_overrides`,
-#: the one place every route's per-block wannier90 builder passes through.
+#: block, once, in
+#: :func:`aiida_koopmans.workgraphs.block_wannierize._builder_overrides`, the
+#: one place every route's per-block wannier90 builder passes through.
 #:
 #: ``pw.SYSTEM.starting_magnetization`` is seeded but absent here: the value
 #: the route writes depends on the spin regime at runtime, so there is no
