@@ -565,7 +565,9 @@ class TestSinglepointDFPTBuild:
 
         # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
         # DFPT perturbations are spin-dependent): both PW runs are forced to
-        # nspin=2 / tot_magnetization=0, and the nscf drops symmetry.
+        # nspin=2 / tot_magnetization=0. The nscf's own symmetry drop is
+        # RunWannierGroundState's invariant, not this route's -- see
+        # test_scf_nscf_recipe.py's TestRecipeIsShared.
         pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
         scf_system = pw_overrides["scf"]["pw"]["parameters"]["SYSTEM"]
         nscf_system = pw_overrides["nscf"]["pw"]["parameters"]["SYSTEM"]
@@ -577,8 +579,6 @@ class TestSinglepointDFPTBuild:
         assert scf_system["tot_magnetization"] == 0
         assert nscf_system["nspin"] == 2
         assert nscf_system["tot_magnetization"] == 0
-        assert nscf_system["nosym"] is True
-        assert nscf_system["noinv"] is True
 
         # pw2wannier90 must read the up channel of the nspin=2 scratch, and
         # the wannier90 runs must write the files kcw.x consumes.

@@ -258,8 +258,10 @@ SEEDED: dict[str, frozenset[str]] = _merge_seeded()
 #: known gap: the input file still advertises them, and stating one is
 #: honoured on some steps and silently discarded on others.
 #:
-#: * ``nosym`` / ``noinv``: forced on the DFPT chain's nscf, which must
-#:   sample the unreduced mesh wannier90 expects, and left alone on its scf.
+#: * ``nosym`` / ``noinv``: forced on the Wannier ground state's nscf
+#:   (:func:`~aiida_koopmans.workgraphs.wannier_ground_state.RunWannierGroundState`,
+#:   both the block and DFPT routes), which must sample the unreduced mesh
+#:   wannier90 expects, and left alone on its scf.
 ROUTE_CONDITIONAL: dict[str, frozenset[str]] = {
     "pw.SYSTEM": frozenset({"nosym", "noinv"}),
 }

@@ -16,8 +16,9 @@ from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from aiida_koopmans.workgraphs.pw import RunPwBands, RunScfNscf
+from aiida_koopmans.workgraphs.pw import RunPwBands
 from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 from tests.fixtures import explicit_block
 
 
@@ -169,12 +170,12 @@ class TestSplitRouteBandsStepOccupations:
         _assert_smeared(_system(task, "pw"))
 
 
-class TestRunScfNscfOccupations:
-    """``RunScfNscf`` honours ``electronic_type`` on both of its steps."""
+class TestRunWannierGroundStateOccupations:
+    """``RunWannierGroundState`` honours ``electronic_type`` on both of its steps."""
 
     @staticmethod
     def _build(fake_cutoffs_family, silicon_structure, kmesh, pw_code, **kwargs):
-        return RunScfNscf.build(
+        return RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
