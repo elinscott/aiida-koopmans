@@ -12,7 +12,7 @@ from __future__ import annotations
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
 
-from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 from tests.fixtures import explicit_block
 
 

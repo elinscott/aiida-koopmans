@@ -16,8 +16,9 @@ from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs import unwrap_enum
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
-from aiida_koopmans.workgraphs.pw import RunPwBands, RunWannierGroundState
+from aiida_koopmans.workgraphs.pw import RunPwBands
 from aiida_koopmans.workgraphs.wannier90 import Wannierize
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 from tests.fixtures import explicit_block
 
 

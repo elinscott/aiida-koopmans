@@ -56,7 +56,7 @@ class TestRunWannierGroundStateEnforcement:
         self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
     ):
         """A k2-shaped nscf override (no calculation key) resolves to 'nscf'."""
-        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
         wg = RunWannierGroundState.build(
             pw_code=pw_code,
@@ -71,7 +71,7 @@ class TestRunWannierGroundStateEnforcement:
     def test_conflicting_nscf_override_raises(
         self, fake_cutoffs_family, silicon_structure, kmesh, pw_code
     ):
-        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
         with pytest.raises(ValueError, match=r"'nscf' step"):
             RunWannierGroundState.build(
@@ -92,12 +92,14 @@ class TestRunWannierGroundStateEnforcement:
         what today's koopmans main injects into every pw override) then reaches
         the nscf task unchanged, which is the defect this PR backstops.
         """
-        from aiida_koopmans.workgraphs import pw as pw_module
+        from aiida_koopmans.workgraphs import wannier_ground_state as wannier_ground_state_module
 
         monkeypatch.setattr(
-            pw_module, "enforce_step_calculation", lambda params, step, expected: params
+            wannier_ground_state_module,
+            "enforce_step_calculation",
+            lambda params, step, expected: params,
         )
-        wg = pw_module.RunWannierGroundState.build(
+        wg = wannier_ground_state_module.RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,

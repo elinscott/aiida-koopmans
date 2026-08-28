@@ -106,7 +106,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunWannierGroundState
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -126,6 +126,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     Wannier90Code,
     projected_dos_supported,
 )
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
 
 class DfptCodes(TypedDict):
@@ -1093,8 +1094,9 @@ def SinglepointDFPTWorkflow(
     dielectric chain's ground state samples the same.
 
     The workflow has three stages: compute the ground state (one shared
-    scf + nscf via :func:`~aiida_koopmans.workgraphs.pw.RunWannierGroundState`, whose
-    nscf always samples the full k-point set kcw.x needs), Wannierize each
+    scf + nscf via
+    :func:`~aiida_koopmans.workgraphs.wannier_ground_state.RunWannierGroundState`,
+    whose nscf always samples the full k-point set kcw.x needs), Wannierize each
     spin channel's occupied and empty blocks (:func:`WannierizeBlocks`),
     and run the kcw.x chain per spin
     channel (:func:`RunDFPT`). ``manifolds`` — a dict keyed by spin channel

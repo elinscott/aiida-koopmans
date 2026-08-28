@@ -1,7 +1,7 @@
 """Workgraphs that wrap aiida-quantumespresso.pw workchains."""
 
 import copy
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
@@ -11,7 +11,6 @@ from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 from aiida_workgraph.utils import get_dict_from_builder
 
-from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -47,17 +46,6 @@ class ScfBandsOutputs(TypedDict):
 
     scf_parameters: dict
     band_structure: orm.BandsData
-
-
-class ScfNscfOutputs(TypedDict):
-    """Outputs of a chained SCF + NSCF PwBaseWorkChain run."""
-
-    scf_remote_folder: orm.RemoteData
-    nscf_remote_folder: orm.RemoteData
-    nscf_retrieved: orm.FolderData
-    nscf_output_parameters: dict
-    nscf_output_band: orm.BandsData
-    nscf_output_kpoints: NotRequired[orm.KpointsData]
 
 
 #: Annotation for the pw.x code as the workflows that run scf + nscf wire it.
@@ -333,141 +321,4 @@ def RunPwBands(
     return ScfBandsOutputs(
         scf_parameters=output.scf_parameters,
         band_structure=output.band_structure,
-    )
-
-
-@task.graph
-def RunWannierGroundState(
-    pw_code: orm.AbstractCode,
-    structure: orm.StructureData,
-    pseudo_family: str | None = None,
-    protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
-    parallelization: ParallelizationDict | None = None,
-    scf_kpoints: orm.KpointsData | None = None,
-    nscf_kpoints: orm.KpointsData | None = None,
-    electronic_type: ElectronicType = ElectronicType.INSULATOR,
-) -> ScfNscfOutputs:
-    """Run the Wannier ground state: two chained PwBaseWorkChain steps, scf then nscf.
-
-    Every Wannierization starts from this pair. Its only two callers,
-    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
-    and :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow`,
-    both Wannierize; a route that does not (the molecular DSCF KS-init,
-    which runs kcp.x's own ground state, or plain DFT bands/eps) does not
-    call it.
-
-    Both steps are seeded from
-    ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``, so the NSCF
-    carries the invariants a Wannierization needs — ``diago_full_acc`` for
-    the empty states, ``startingpot = 'file'`` off the SCF density, and the
-    k-points listed in wannier90's own order — from the same recipe
-    ``Wannier90WorkChain`` runs itself. The NSCF also always runs on the
-    full, symmetry-unreduced k-list wannier90 orders: ``nosym`` / ``noinv``
-    are forced on top of any override, since a caller cannot switch off the
-    grid wannier90 needs. Each step samples the Brillouin zone on the mesh
-    it is given, falling back to the protocol's ``kpoints_distance`` when
-    none is.
-
-    The pw.x spin regime comes from ``overrides``, not from a ``spin_type``
-    argument: callers force ``nspin`` / ``noncolin`` / ``lspinorb`` on top
-    of the merged parameters.
-
-    Overrides are split by namespace: ``overrides["scf"]`` applies to the
-    SCF step and ``overrides["nscf"]`` applies to the NSCF step.
-
-    Args:
-        pw_code: The Code instance configured for the quantumespresso.pw plugin.
-        structure: The StructureData instance to use.
-        pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
-            If not specified, the protocol default is used.
-        protocol: One of ``moderate`` (the default), ``precise`` or
-            ``fast``; anything else raises. The recipe resolves the name
-            against ``Wannier90WorkChain``'s protocols, not pw.x's.
-        overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
-        parallelization: Per-code parallelization mapping (keyed by code name);
-            the ``pw`` entry sets the scf/nscf pw.x ``metadata.options`` and
-            ``-npool``.
-        scf_kpoints: Explicit k-points for the SCF step, replacing the
-            protocol's ``kpoints_distance``. Leave unset only where no
-            mesh is prescribed and the protocol should choose one.
-        nscf_kpoints: Explicit k-points for the NSCF step, replacing the
-            protocol's ``kpoints_distance``. A mesh is expanded to the
-            explicit list in wannier90's k-point order; an explicit list is
-            used as given.
-        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
-            Koopmans functionals treat insulators exclusively, and kcw.x
-            refuses non-fixed occupations outright.
-
-    Returns:
-        Dict with remote folders and retrieved data from both steps.
-    """
-    from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
-
-    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
-    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-    overrides = overrides or {}
-
-    # Inject pseudo_family as a top-level override for both steps
-    inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
-    merge_parallelization_into_overrides(
-        overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
-    )
-
-    # Each step owns its ``CONTROL.calculation``, stamped into the overrides
-    # the recipe merges on top of the protocol so a conflicting explicit
-    # value raises rather than being dropped.
-    for namespace, calculation in (("scf", "scf"), ("nscf", "nscf")):
-        enforce_step_calculation(
-            overrides.setdefault(namespace, {}).setdefault("pw", {}).setdefault("parameters", {}),
-            namespace,
-            calculation,
-        )
-
-    # wannier90 reads the eigenstates on the full, symmetry-unreduced grid
-    # it orders itself; force that on top of the merged overrides so a
-    # caller's own nosym/noinv (or the protocol's default) cannot switch it
-    # off.
-    nscf_system = overrides["nscf"]["pw"]["parameters"].setdefault("SYSTEM", {})
-    nscf_system.update(owned("pw.SYSTEM", {"nosym": True, "noinv": True}))
-
-    # ``spin_type`` stays at its default: the regimes our callers run
-    # (collinear, noncollinear, spin-orbit) are forced through ``overrides``
-    # instead, so the recipe never reaches its SOC refusal.
-    scf_builder, nscf_builder = Wannier90WorkChain.get_scf_nscf_builders_from_protocol(
-        pw_code,
-        structure=structure,
-        kpoints=nscf_kpoints,
-        protocol=protocol,
-        overrides={key: overrides[key] for key in ("scf", "nscf") if key in overrides},
-        electronic_type=unwrap_enum(electronic_type, ElectronicType),
-    )
-
-    scf_data = _finish_pw_base_step(
-        get_dict_from_builder(scf_builder), step="scf", display="SCF", kpoints=scf_kpoints
-    )
-    scf_outputs = PwBaseStep(**scf_data)
-
-    # The recipe pins the nscf k-points itself, expanding a mesh into
-    # wannier90's order, so re-pin what it settled on rather than the
-    # caller's node; that also drops the ``kpoints_force_parity`` which only
-    # qualifies a distance.
-    nscf_data = get_dict_from_builder(nscf_builder)
-    nscf_data = _finish_pw_base_step(
-        nscf_data,
-        step="nscf",
-        display="NSCF",
-        kpoints=nscf_data.get("kpoints", nscf_kpoints),
-    )
-    nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
-    nscf_outputs = PwBaseStep(**nscf_data)
-
-    return ScfNscfOutputs(
-        scf_remote_folder=scf_outputs["remote_folder"],
-        nscf_remote_folder=nscf_outputs["remote_folder"],
-        nscf_retrieved=nscf_outputs["retrieved"],
-        nscf_output_parameters=nscf_outputs["output_parameters"],
-        nscf_output_band=nscf_outputs["output_band"],
-        nscf_output_kpoints=nscf_outputs["output_kpoints"],
     )

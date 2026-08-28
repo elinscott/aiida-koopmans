@@ -65,7 +65,7 @@ class TestRunWannierGroundState:
     """The scf + nscf pair the DFPT chain and the block Wannierisation share."""
 
     def _build(self, fake_cutoffs_family, silicon_structure, kmesh, pw_code, overrides=None):
-        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
         return RunWannierGroundState.build(
             pw_code=pw_code,
@@ -101,9 +101,10 @@ class TestRunWannierGroundState:
         keyword nor overrules a caller value.
         """
         from aiida_koopmans.workgraphs import pw as pw_module
+        from aiida_koopmans.workgraphs import wannier_ground_state as wannier_ground_state_module
 
         monkeypatch.setattr(pw_module, "force_pw_verbosity", lambda pw_inputs: None)
-        wg = pw_module.RunWannierGroundState.build(
+        wg = wannier_ground_state_module.RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,

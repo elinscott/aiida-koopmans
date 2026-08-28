@@ -85,7 +85,7 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import name_step, stamp_wannier90_pp_namespace, unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunWannierGroundState, run_bands_step
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
@@ -100,6 +100,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     projected_dos_supported,
     require_path_labels,
 )
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
 
 class WannierizeBlockCodes(TypedDict):
@@ -666,7 +667,7 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     touch this shape.
 
     ``scf`` / ``nscf`` are already in upstream shape (they feed
-    :func:`~aiida_koopmans.workgraphs.pw.RunWannierGroundState` verbatim) and pass
+    :func:`~aiida_koopmans.workgraphs.wannier_ground_state.RunWannierGroundState` verbatim) and pass
     through unwrapped: :meth:`Wannier90WorkChain.get_builder_from_protocol`
     reads them at this same top-level key and forwards them into its own
     nested ``PwBaseWorkChain.get_builder_from_protocol`` calls. Without this,

@@ -41,7 +41,7 @@ class TestRunWannierGroundState:
         self, fake_cutoffs_family, silicon_structure, kmesh, kpath, pw_code
     ):
         """The SCF samples ``scf_kpoints``; the NSCF keeps its own k-points."""
-        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
         wg = RunWannierGroundState.build(
             pw_code=pw_code,
@@ -69,7 +69,7 @@ class TestRunWannierGroundState:
         Callers that prescribe no mesh must keep working, so setting one
         cannot become mandatory by accident.
         """
-        from aiida_koopmans.workgraphs.pw import RunWannierGroundState
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
         wg = RunWannierGroundState.build(
             pw_code=pw_code,
