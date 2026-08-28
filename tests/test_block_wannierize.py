@@ -555,6 +555,102 @@ class TestBlockWannierizeGraphBuild:
         assert "bands" not in names
         assert "projwfc" not in names
 
+    def test_scf_remote_folder_alone_still_runs_the_nscf_through_the_ground_state(
+        self, wannier_codes, silicon_structure, kmesh, scf_remote, fake_cutoffs_family
+    ):
+        """``scf_remote_folder`` without ``nscf_remote_folder`` still runs the nscf.
+
+        The discriminating check: the same ``scf_nscf`` ground state the
+        internal route builds is here too, handed the caller's density —
+        unlike the ``nscf_remote_folder`` path, which skips it entirely and
+        reuses an existing nscf whole. What that ground state does with the
+        density (nscf only, no scf) is pinned in
+        ``test_scf_nscf_recipe.py``.
+        """
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            scf_remote_folder=scf_remote,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "scf_nscf" in names, names
+        ground_state = {t.name: t for t in wg.tasks}["scf_nscf"]
+        assert ground_state.inputs["scf_remote_folder"].value.uuid == scf_remote.uuid
+        assert wg.outputs["nscf"]["remote_folder"]._links
+
+    def test_no_scf_remote_folder_leaves_the_ground_state_to_run_its_own_scf(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """Negative control: the default route hands the ground state no density."""
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        ground_state = {t.name: t for t in wg.tasks}["scf_nscf"]
+        assert ground_state.inputs["scf_remote_folder"].value is None
+        assert not ground_state.inputs["scf_remote_folder"]._links
+
+    def test_scf_remote_folder_alone_does_not_re_expose_the_callers_own_scf(
+        self, wannier_codes, silicon_structure, kmesh, scf_remote, fake_cutoffs_family
+    ):
+        """The caller already owns ``scf_remote``; nothing new to echo out."""
+        wg = WannierizeBlocks.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            scf_remote_folder=scf_remote,
+        )
+        assert not wg.outputs["scf_remote_folder"]._links
+
+    def test_internal_scf_exposes_its_own_scf_remote_folder(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """The default (no external scratch) route echoes its own scf density out.
+
+        A second :func:`WannierizeBlocks` call on a denser mesh threads
+        this out as its own ``scf_remote_folder`` input.
+        """
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        assert wg.outputs["scf_remote_folder"]._links
+        links = wg.outputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in links] == ["scf_nscf"]
+
+    def test_scf_remote_folder_alone_unlocks_the_quality_check(
+        self, pdos_codes, silicon_structure, kmesh, labelled_kpath, scf_remote, fake_cutoffs_family
+    ):
+        """The quality-check bands / projwfc steps read ``scf_remote`` directly."""
+        wg = WannierizeBlocks.build(
+            codes=pdos_codes,
+            structure=silicon_structure,
+            blocks=_silicon_blocks(),
+            kpoints=kmesh,
+            pseudo_family=fake_cutoffs_family.label,
+            scf_remote_folder=scf_remote,
+            interpolation_kpoints=labelled_kpath,
+        )
+        names = [t.name for t in wg.tasks]
+        assert names.count("bands") == 1
+        assert names.count("projwfc") == 1
+        bands_task = wg.tasks["bands"]
+        assert bands_task.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid
+
+    def test_scf_remote_folder_alone_rejects_scf_kpoints(
+        self, wannier_codes, silicon_structure, kmesh, scf_remote
+    ):
+        """No scf runs here, so a coarse-mesh ``scf_kpoints`` would be silently ignored."""
+        with pytest.raises(ValueError, match="an external scf_remote_folder"):
+            WannierizeBlocks.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                blocks=_silicon_blocks(),
+                kpoints=kmesh,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                scf_remote_folder=scf_remote,
+                scf_kpoints=kmesh,
+            )
+
 
 # ----------------------------------------------------------------------
 # Split mode: loud validation and the unified-output gate
@@ -651,6 +747,15 @@ class TestSplitMode:
         with pytest.raises(ValueError, match="external"):
             self._build_split(
                 auto_codes, silicon_structure, kmesh, kpath, nscf_remote_folder=nscf_remote
+            )
+
+    def test_split_with_external_scf_scratch_raises(
+        self, auto_codes, silicon_structure, kmesh, kpath, scf_remote
+    ):
+        """The bands step needs the internal scf even when only the scf is external."""
+        with pytest.raises(ValueError, match="external `scf_remote_folder`"):
+            self._build_split(
+                auto_codes, silicon_structure, kmesh, kpath, scf_remote_folder=scf_remote
             )
 
     def test_split_without_mp_grid_raises(self, auto_codes, silicon_structure, kmesh, kpath):

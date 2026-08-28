@@ -1,7 +1,8 @@
 """Block-by-block Wannierisation of a periodic system.
 
-A single shared scf + nscf is run once (via :func:`RunWannierGroundState`, or skipped
-entirely when the caller supplies an existing ``nscf_remote_folder``), then
+A single shared scf + nscf is run once (via :func:`RunWannierGroundState` --
+its nscf half alone when the caller supplies an ``scf_remote_folder``, or
+nothing at all when it supplies an ``nscf_remote_folder``), then
 each projection block (occupied / empty manifold, per spin) is Wannierised
 in its own ``Wannier90WorkChain`` that *skips* scf and nscf and reads the
 shared nscf scratch directly. The per-block fan-out is a native ``for``
@@ -52,7 +53,7 @@ require.
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 import warnings
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -100,7 +101,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     projected_dos_supported,
     require_path_labels,
 )
-from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState, ScfNscfOutputs
 
 
 class WannierizeBlockCodes(TypedDict):
@@ -610,16 +611,27 @@ class WannierizeBlocksOutputs(TypedDict):
       final-gauge in both modes.
     * ``nscf`` -- the shared nscf :class:`PwOutputs` so the supercell fold
       can read ``nscf["remote_folder"]`` (the nscf scratch every block was
-      built on). Absent when the caller supplied its own
-      ``nscf_remote_folder`` and the internal scf + nscf was skipped.
-    * ``bands`` -- the pw.x ``bands`` run along the input k-path, off the
-      internal scf density, as a :class:`PwOutputs` namespace
-      (``output_band`` holds the explicit eigenvalues the Wannier
-      interpolation is judged against). One run serves both modes: split
-      mode always runs it along ``bands_kpoints`` (the group detection
-      reads its eigenvalues), plain mode runs it along
-      ``interpolation_kpoints`` when given. Absent with an external
-      ``nscf_remote_folder``, which carries no scf density to run it from.
+      built on). Populated whenever an nscf actually ran here: the internal
+      scf + nscf pair, or the nscf-only run off a caller's own
+      ``scf_remote_folder`` (see that argument). Absent only when the
+      caller supplied its own ``nscf_remote_folder`` and no nscf ran here
+      either.
+    * ``scf_remote_folder`` -- the internal scf's own ``RemoteData``,
+      populated only when the internal scf + nscf pair ran here (never
+      alongside a caller-supplied ``scf_remote_folder`` or
+      ``nscf_remote_folder``, which already own that node). Feeds a
+      second :func:`WannierizeBlocks` call's own ``scf_remote_folder``
+      input.
+    * ``bands`` -- the pw.x ``bands`` run along the input k-path, off
+      whichever scf density this call had -- the internal scf, or a
+      caller's ``scf_remote_folder`` (with or without ``nscf_remote_folder``
+      alongside it) -- as a :class:`PwOutputs` namespace (``output_band``
+      holds the explicit eigenvalues the Wannier interpolation is judged
+      against). One run serves both modes: split mode always runs it along
+      ``bands_kpoints`` (the group detection reads its eigenvalues), plain
+      mode runs it along ``interpolation_kpoints`` when given. Absent with
+      an external ``nscf_remote_folder`` and no ``scf_remote_folder``,
+      which carries no scf density to run it from.
     * ``projwfc`` -- the projected DOS computed off the ``bands`` run's
       scratch (:class:`~aiida_koopmans.workgraphs.wannier90.ProjwfcOutputs`,
       projections resolved along the path). Present exactly when the
@@ -649,6 +661,7 @@ class WannierizeBlocksOutputs(TypedDict):
     centres: list
     spreads: list
     nscf: NotRequired[PwOutputs]
+    scf_remote_folder: NotRequired[orm.RemoteData]
     bands: NotRequired[PwOutputs]
     projwfc: NotRequired[ProjwfcOutputs]
     groups: NotRequired[list[list[int]]]
@@ -1148,22 +1161,25 @@ def _maybe_emit_orbital_partition(
 def _reject_inputs_an_external_scratch_ignores(
     overrides: WannierizeOverrides,
     scf_kpoints: orm.KpointsData | None,
+    *,
+    source: str,
 ) -> None:
-    """Reject an input to the internal scf that an external nscf scratch skips.
+    """Reject an input to the internal scf that an external scratch skips.
 
     ``overrides["scf"]`` / ``overrides["nscf"]`` are not rejected here: an
-    external scratch skips the *internal* shared scf + nscf, but both
-    namespaces still reach every per-block :func:`WannierizeBlock` call
-    below (see :func:`_builder_overrides`) — the only way a pseudo family
-    that recommends no cutoffs can satisfy the nested
-    ``Wannier90WorkChain.get_builder_from_protocol`` call there. Only
-    ``scf_kpoints`` has no consumer left once the internal scf is skipped.
+    external scratch skips the *internal* scf (an ``nscf_remote_folder``
+    skips the nscf too), but both namespaces still reach every per-block
+    :func:`WannierizeBlock` call below (see :func:`_builder_overrides`) —
+    the only way a pseudo family that recommends no cutoffs can satisfy the
+    nested ``Wannier90WorkChain.get_builder_from_protocol`` call there.
+    Only ``scf_kpoints`` has no consumer left once the internal scf is
+    skipped. ``source`` names what was given instead, for the error.
     """
     if scf_kpoints is not None:
         raise ValueError(
-            "scf_kpoints was given together with an external "
-            "nscf_remote_folder; no scf runs here, so the mesh would be "
-            "silently ignored. Set it on whoever ran the scf."
+            f"scf_kpoints was given together with {source}; no scf runs "
+            "here, so the mesh would be silently ignored. Set it on "
+            "whoever ran the scf."
         )
 
 
@@ -1171,6 +1187,7 @@ def _resolve_split_mode(
     blocks: list[ProjectionBlock],
     mp_grid: list[int] | None,
     nscf_remote_folder: orm.RemoteData | None,
+    scf_remote_folder: orm.RemoteData | None,
     split_threshold: float | None,
     bands_kpoints: orm.KpointsData | None,
     num_occ_bands: int | None,
@@ -1231,6 +1248,12 @@ def _resolve_split_mode(
             "bands step the detection reads runs off the internal scf's remote "
             "folder, and an external nscf scratch carries no scf density to run "
             "it from."
+        )
+    if scf_remote_folder is not None:
+        raise ValueError(
+            "Split mode cannot build on an external `scf_remote_folder`: the "
+            "bands step the detection reads runs off the internal scf, which "
+            "an external scf density skips here."
         )
     disentangling = [
         str(block["label"]) for block in blocks if int(block["num_bands"]) > int(block["num_wann"])
@@ -1313,6 +1336,45 @@ def _run_explicit_bands_and_dos_steps(
     return bands_outputs, projwfc_outputs
 
 
+def _reuse_external_nscf_scratch(
+    codes: WannierizeBlocksCodes,
+    structure: orm.StructureData,
+    nscf_remote_folder: orm.RemoteData,
+    scf_remote_folder: orm.RemoteData | None,
+    interpolation_kpoints: orm.KpointsData | None,
+    nscf_bands: orm.BandsData | None,
+    overrides: WannierizeOverrides,
+    pseudo_family: str | None,
+    protocol: str | None,
+    electronic_type: ElectronicType,
+    parallelization: ParallelizationDict | None,
+) -> tuple[orm.RemoteData, orm.BandsData | None, PwOutputs | None, ProjwfcOutputs | None]:
+    """Wire ``nscf_remote_folder`` through; the quality check reads ``scf_remote_folder``.
+
+    A plain graph-assembly helper: it must be called inside a
+    ``@task.graph`` body. Runs no scf or nscf itself. With
+    ``scf_remote_folder`` given, also runs the quality-check bands /
+    projwfc pair off it. Returns ``(nscf_scratch, block_bands,
+    bands_outputs, projwfc_outputs)``.
+    """
+    bands_outputs = None
+    projwfc_outputs = None
+    if scf_remote_folder is not None:
+        bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
+            codes=codes,
+            structure=structure,
+            bands_kpoints=None,
+            interpolation_kpoints=interpolation_kpoints,
+            scf_remote_folder=scf_remote_folder,
+            nscf_overrides=overrides.get("nscf"),
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            electronic_type=electronic_type,
+            parallelization=parallelization,
+        )
+    return nscf_remote_folder, nscf_bands, bands_outputs, projwfc_outputs
+
+
 def _detect_split_groups(
     bands_outputs: PwOutputs | None,
     num_occ_bands: int | None,
@@ -1354,6 +1416,30 @@ def _wire_quality_check_outputs(
         outputs["bands"] = bands_outputs
     if projwfc_outputs is not None:
         outputs["projwfc"] = projwfc_outputs
+
+
+def _wire_scf_nscf_outputs(
+    outputs: WannierizeBlocksOutputs,
+    scf_nscf: ScfNscfOutputs | None,
+    nscf_scratch: orm.RemoteData | None,
+    *,
+    expose_scf: bool,
+) -> None:
+    """Wire the ``nscf`` / ``scf_remote_folder`` outputs when the ground state ran here.
+
+    ``scf_nscf`` is ``None`` only when the caller supplied its own
+    ``nscf_remote_folder``, so no nscf ran here. ``expose_scf`` is false
+    when the density came in from the caller, who already owns that node.
+    """
+    if scf_nscf is None:
+        return
+    outputs["nscf"] = PwOutputs(
+        remote_folder=cast("orm.RemoteData", nscf_scratch),
+        output_parameters=scf_nscf["nscf_output_parameters"],
+        output_band=scf_nscf["nscf_output_band"],
+    )
+    if expose_scf:
+        outputs["scf_remote_folder"] = scf_nscf["scf_remote_folder"]
 
 
 @task.graph
@@ -1442,8 +1528,8 @@ def WannierizeBlocks(
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
             keys (``scf`` / ``nscf`` pw-protocol dicts feed
-            :func:`RunWannierGroundState` when the internal scf + nscf runs; with an
-            external ``nscf_remote_folder`` they instead reach every
+            :func:`RunWannierGroundState` whenever the ground state runs here;
+            with an external ``nscf_remote_folder`` they instead reach every
             per-block wannier builder's nested ``get_builder_from_protocol``
             call, unused otherwise — see :func:`_builder_overrides`;
             ``wannier90`` / ``pw2wannier90`` flat keyword dicts feed every
@@ -1461,12 +1547,12 @@ def WannierizeBlocks(
             bands step. Without ``scf_remote_folder`` alongside it, the
             quality-check ``bands`` / ``projwfc`` outputs stay absent (no
             scf density to run the quality-check off).
-        scf_remote_folder: paired with ``nscf_remote_folder``, the matching
-            scf scratch — its density is what the quality-check ``bands``
-            step reads. Lets a caller who shares one scf + nscf across
-            several ``WannierizeBlocks`` calls still get the quality check
-            on each, off the one scf run. Ignored (and irrelevant) when the
-            internal scf + nscf runs instead.
+        scf_remote_folder: a converged scf on this structure, skipping the
+            internal scf either way. Given alone, :func:`RunWannierGroundState`
+            runs its nscf half on ``kpoints`` off this density -- the same
+            nscf the internal pair runs -- populating the ``nscf`` output
+            namespace. Paired with ``nscf_remote_folder``, only feeds the
+            quality-check ``bands`` step. Refused in split mode.
         nscf_bands: the nscf eigenvalues. A disentangling block's frozen
             window is checked against them, so a ``dis_froz_max`` that would
             freeze more bands than the block Wannierises is rejected here
@@ -1522,8 +1608,9 @@ def WannierizeBlocks(
         quality-check run and its ``projwfc`` projected DOS (when they ran),
         the ``groups`` detection output (split mode), the ``orbitals``
         initial partition (only when every block carries a ``filled``
-        stamp), and (only when the scf + nscf ran here) the shared ``nscf``
-        outputs.
+        stamp), the shared ``nscf`` outputs (whenever an nscf ran here),
+        and ``scf_remote_folder`` (only when the internal scf + nscf ran
+        here, for a later caller to reuse the density).
     """
     overrides = overrides or {}
     validate_parallelization(parallelization)
@@ -1538,6 +1625,7 @@ def WannierizeBlocks(
         blocks=blocks,
         mp_grid=mp_grid,
         nscf_remote_folder=nscf_remote_folder,
+        scf_remote_folder=scf_remote_folder,
         split_threshold=split_threshold,
         bands_kpoints=bands_kpoints,
         num_occ_bands=num_occ_bands,
@@ -1556,24 +1644,31 @@ def WannierizeBlocks(
         # scf scratch (``scf_remote_folder``), which lets the run happen off
         # it. The per-block Wannier interpolation (which reads only the nscf
         # scratch) runs either way.
-        _reject_inputs_an_external_scratch_ignores(overrides, scf_kpoints)
+        _reject_inputs_an_external_scratch_ignores(
+            overrides, scf_kpoints, source="an external nscf_remote_folder"
+        )
         scf_nscf = None
-        nscf_scratch = nscf_remote_folder
-        block_bands = nscf_bands
-        if scf_remote_folder is not None:
-            bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
-                codes=codes,
-                structure=structure,
-                bands_kpoints=None,
-                interpolation_kpoints=interpolation_kpoints,
-                scf_remote_folder=scf_remote_folder,
-                nscf_overrides=overrides.get("nscf"),
-                pseudo_family=pseudo_family,
-                protocol=protocol,
-                electronic_type=electronic_type,
-                parallelization=parallelization,
-            )
+        nscf_scratch, block_bands, bands_outputs, projwfc_outputs = _reuse_external_nscf_scratch(
+            codes=codes,
+            structure=structure,
+            nscf_remote_folder=nscf_remote_folder,
+            scf_remote_folder=scf_remote_folder,
+            interpolation_kpoints=interpolation_kpoints,
+            nscf_bands=nscf_bands,
+            overrides=overrides,
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            electronic_type=electronic_type,
+            parallelization=parallelization,
+        )
     else:
+        # With ``scf_remote_folder`` the caller supplies a converged scf on
+        # this structure and the ground state runs its nscf alone off that
+        # density; ``_resolve_split_mode`` above rejects split mode there.
+        if scf_remote_folder is not None:
+            _reject_inputs_an_external_scratch_ignores(
+                overrides, scf_kpoints, source="an external scf_remote_folder"
+            )
         scf_nscf_overrides: dict[str, Any] = {}
         if "scf" in overrides:
             scf_nscf_overrides["scf"] = overrides["scf"]
@@ -1591,6 +1686,7 @@ def WannierizeBlocks(
             # grid (not the protocol's kpoints_distance-derived one).
             nscf_kpoints=kpoints,
             scf_kpoints=scf_kpoints,
+            scf_remote_folder=scf_remote_folder,
             parallelization=parallelization,
             metadata={"call_link_label": "scf_nscf", "label": "Ground state"},
         )
@@ -1601,9 +1697,9 @@ def WannierizeBlocks(
         block_bands = nscf_bands if nscf_bands is not None else scf_nscf["nscf_output_band"]
 
         # --- quality-check / detection bands run (at most one per graph) ---
-        # Nested under the internal scf + nscf on purpose: the run reads
-        # this scf's remote folder (split mode rejects an external scratch,
-        # and plain mode skips the run without an internal scf). Runs along
+        # Nested under the ground state on purpose: the run reads the scf
+        # density it was built on (split mode rejects an external scratch,
+        # and plain mode skips the run without a density). Runs along
         # ``bands_kpoints`` when given — required in split mode, where it
         # doubles as the detection input — and falls back to
         # ``interpolation_kpoints`` otherwise, as the explicit eigenvalues
@@ -1616,7 +1712,14 @@ def WannierizeBlocks(
             structure=structure,
             bands_kpoints=bands_kpoints,
             interpolation_kpoints=interpolation_kpoints,
-            scf_remote_folder=scf_nscf["scf_remote_folder"],
+            # The caller's own node when it supplied one: reading it back
+            # off ``scf_nscf`` would queue this run behind the nscf for the
+            # same density.
+            scf_remote_folder=(
+                scf_remote_folder
+                if scf_remote_folder is not None
+                else scf_nscf["scf_remote_folder"]
+            ),
             nscf_overrides=overrides.get("nscf"),
             pseudo_family=pseudo_family,
             protocol=protocol,
@@ -1727,10 +1830,5 @@ def WannierizeBlocks(
     _wire_quality_check_outputs(outputs, bands_outputs, projwfc_outputs)
     if split:
         outputs["groups"] = detect.result
-    if scf_nscf is not None:
-        outputs["nscf"] = PwOutputs(
-            remote_folder=nscf_scratch,
-            output_parameters=scf_nscf["nscf_output_parameters"],
-            output_band=scf_nscf["nscf_output_band"],
-        )
+    _wire_scf_nscf_outputs(outputs, scf_nscf, nscf_scratch, expose_scf=scf_remote_folder is None)
     return outputs

@@ -314,6 +314,189 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
             ), (member, missing)
 
 
+class TestKoopmansDSCFSmoothInterpolationBuild:
+    """``smooth_kpoints`` / ``smooth_mp_grid`` add the denser-mesh wannierization.
+
+    ``_wannierize_smooth_mesh`` (``workgraphs/kcp.py``) is otherwise only
+    exercised through its ``do_smooth=False`` early return — every other
+    ``KoopmansDSCFWorkflow`` build in this module omits ``kpath`` or the
+    smooth mesh inputs. These build the outer graph with both, on the same
+    periodic-mlwfs route ``TestKoopmansDSCFPeriodicMlwfsBuild`` covers.
+    """
+
+    @staticmethod
+    def _build(
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+        *,
+        smooth: bool,
+    ):
+        from aiida.orm import KpointsData
+
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        inputs = {
+            "structure": periodic_ozone_structure,
+            "pseudo_family": ozone_pseudo_family,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "nspin": 2,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.MLWFS,
+            "codes": {**mlwf_codes, "kcp": kcp_code},
+            "blocks": _ozone_blocks(),
+            "kgrid": [2, 1, 1],
+            "kpoints": kmesh,
+            "kpath": labelled_kpath,
+        }
+        if smooth:
+            dense = KpointsData()
+            dense.set_kpoints(np.zeros((8, 3)))
+            inputs.update(
+                smooth_kpoints=dense,
+                smooth_mp_grid=[4, 1, 1],
+                unfold_and_interpolate={"smooth_int_factor": [2, 1, 1]},
+            )
+        return KoopmansDSCFWorkflow.build(**inputs)
+
+    def test_a_denser_mesh_adds_the_second_wannierization(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            labelled_kpath,
+            smooth=True,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "wannierize_smooth" in names, names
+
+    def test_the_dense_wannierization_reuses_the_coarse_scf_density(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        """The dense wannierization skips its own scf, off the init route's converged one.
+
+        The mp_grid assertion is one discriminating check: passing the
+        coarse mesh's own dimensions there instead of ``smooth_mp_grid``
+        would build without error but wannierize the wrong grid. The
+        ``scf_remote_folder`` link is the other: it must trace to the
+        initialisation wannierization's own scf, not a fresh one built
+        here. What the dense wannierization then does with that density —
+        skip its own scf and run the recipe's nscf alone — is a
+        construction-level concern of ``WannierizeBlocks`` and the ground
+        state it calls, covered in ``test_block_wannierize.py`` and
+        ``test_scf_nscf_recipe.py``.
+        """
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            labelled_kpath,
+            smooth=True,
+        )
+        task = {t.name: t for t in wg.tasks}["wannierize_smooth"]
+        assert task.inputs["mp_grid"].value == [4, 1, 1]
+        scf_links = task.inputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in scf_links] == ["wannier_initialization"]
+        assert [link.from_socket._name for link in scf_links] == ["scf_remote_folder"]
+        assert not task.inputs["scf_kpoints"]._links
+
+    def test_its_blocks_reach_the_interpolation(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            labelled_kpath,
+            smooth=True,
+        )
+        interpolate = {t.name: t for t in wg.tasks}["interpolate_band_structure"]
+        assert interpolate.inputs["smooth_block_wannierizations"]._links
+
+    def test_without_a_denser_mesh_no_second_wannierization_runs(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        """Negative control: a ``kpath`` alone still asks for interpolation, not smoothing."""
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            labelled_kpath,
+            smooth=False,
+        )
+        names = [t.name for t in wg.tasks]
+        assert "wannierize_smooth" not in names, names
+        interpolate = {t.name: t for t in wg.tasks}["interpolate_band_structure"]
+        assert not interpolate.inputs["smooth_block_wannierizations"]._links
+
+    def test_the_graph_survives_a_dict_round_trip(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        """The smooth wannierization's blocks output is a typed dynamic namespace.
+
+        Those have broken ``from_dict`` before, and ``wg.run()``
+        reconstructs the graph through exactly this round-trip before
+        executing anything.
+        """
+        from tests.fixtures import assert_graph_roundtrips
+
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            labelled_kpath,
+            smooth=True,
+        )
+        assert_graph_roundtrips(wg)
+
+
 class TestWannierOverridesThreading:
     """``wannier_overrides`` reach the wannierize step unchanged."""
 

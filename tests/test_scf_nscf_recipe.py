@@ -9,6 +9,8 @@ materialized ``PwBaseWorkChain`` inputs.
 
 from __future__ import annotations
 
+import pytest
+from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
 
@@ -188,3 +190,115 @@ class TestCallersDoNotForceSymmetryThemselves:
             wg.tasks["scf_nscf"].inputs["overrides"].value["nscf"]["pw"]["parameters"]["SYSTEM"]
         )
         assert nscf_system["nosym"] is False
+
+
+def _plain(value):
+    """Reduce a socket value to something comparable across two builds.
+
+    Nodes the builders create fresh each build (``parameters``,
+    ``kpoints``, ``max_iterations``) compare by content; nodes loaded from
+    the profile (the structure, the code, the pseudos) compare by uuid.
+    """
+    if isinstance(value, orm.Dict):
+        return value.get_dict()
+    if isinstance(value, orm.BaseType):
+        return value.value
+    if isinstance(value, orm.KpointsData):
+        try:
+            return ("list", value.get_kpoints().tolist())
+        except AttributeError:
+            return ("mesh", value.get_kpoints_mesh())
+    if isinstance(value, orm.Node):
+        return value.uuid
+    return value
+
+
+def _inputs(socket):
+    """Reduce a task's input namespace to a nested dict of plain values."""
+    if hasattr(socket, "_sockets"):
+        return {name: _inputs(child) for name, child in socket._sockets.items()}
+    return _plain(socket.value)
+
+
+class TestAnExternalDensitySkipsTheScf:
+    """``scf_remote_folder`` runs the recipe's nscf alone off a given density.
+
+    The dense-mesh re-Wannierization the smooth interpolation needs: the
+    coarse run's density is already converged, so only the nscf is left to
+    run -- and it must be the recipe's nscf, not a second hand-built one.
+    """
+
+    @staticmethod
+    def _build(pw_code, structure, family, kpath, scf_remote_folder=None):
+        return RunWannierGroundState.build(
+            pw_code=pw_code,
+            structure=structure,
+            pseudo_family=family.label,
+            nscf_kpoints=kpath,
+            scf_remote_folder=scf_remote_folder,
+        )
+
+    def test_no_scf_step_is_built(
+        self, fake_cutoffs_family, silicon_structure, kpath, pw_code, scf_remote
+    ):
+        """The given density replaces the scf run, rather than seeding one."""
+        wg = self._build(pw_code, silicon_structure, fake_cutoffs_family, kpath, scf_remote)
+        names = [t.name for t in wg.tasks]
+        assert "scf" not in names, names
+        assert "nscf" in names, names
+
+    def test_the_nscf_restarts_from_the_given_density(
+        self, fake_cutoffs_family, silicon_structure, kpath, pw_code, scf_remote
+    ):
+        wg = self._build(pw_code, silicon_structure, fake_cutoffs_family, kpath, scf_remote)
+        nscf = wg.tasks["nscf"]
+        assert nscf.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid
+        assert _parameters(nscf)["CONTROL"]["calculation"] == "nscf"
+
+    def test_the_given_density_comes_back_out(
+        self, fake_cutoffs_family, silicon_structure, kpath, pw_code, scf_remote
+    ):
+        """``scf_remote_folder`` is an output in both modes, so consumers read one socket."""
+        wg = self._build(pw_code, silicon_structure, fake_cutoffs_family, kpath, scf_remote)
+        links = wg.outputs["scf_remote_folder"]._links
+        assert [link.from_socket._name for link in links] == ["scf_remote_folder"]
+        assert [link.from_task.name for link in links] == ["graph_inputs"]
+
+    def test_an_scf_mesh_alongside_the_density_is_refused(
+        self, fake_cutoffs_family, silicon_structure, kmesh, kpath, pw_code, scf_remote
+    ):
+        """No scf runs to sample ``scf_kpoints``, so asking for one raises."""
+        with pytest.raises(ValueError, match="scf_kpoints"):
+            RunWannierGroundState.build(
+                pw_code=pw_code,
+                structure=silicon_structure,
+                pseudo_family=fake_cutoffs_family.label,
+                nscf_kpoints=kpath,
+                scf_kpoints=kmesh,
+                scf_remote_folder=scf_remote,
+            )
+
+    def test_the_nscf_is_otherwise_the_internal_route_s_nscf(
+        self, fake_cutoffs_family, silicon_structure, kpath, pw_code, scf_remote
+    ):
+        """The discriminating check: only the parent folder differs.
+
+        A hand-built nscf would drift from the recipe's silently -- a
+        missing ``diago_full_acc``, a different ``nbnd``, its own
+        ``startingpot``. Comparing every input against the internal route's
+        own nscf catches any such divergence without listing the keywords
+        here.
+        """
+        external = self._build(pw_code, silicon_structure, fake_cutoffs_family, kpath, scf_remote)
+        internal = self._build(pw_code, silicon_structure, fake_cutoffs_family, kpath)
+
+        external_inputs = _inputs(external.tasks["nscf"].inputs)
+        internal_inputs = _inputs(internal.tasks["nscf"].inputs)
+
+        # The internal route's parent folder is a socket on its own scf
+        # step, so it has no value to compare; that difference is the point.
+        assert external_inputs["pw"].pop("parent_folder") == scf_remote.uuid
+        assert internal_inputs["pw"].pop("parent_folder") is None
+        assert internal.tasks["nscf"].inputs["pw"]["parent_folder"]._links
+
+        assert external_inputs == internal_inputs

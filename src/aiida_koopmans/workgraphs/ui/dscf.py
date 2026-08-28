@@ -9,6 +9,11 @@ structure whose reference energy is the valence-band maximum.
 
 Manifold membership and band order come from the ``merge_groups`` partition
 the initialisation wannierization emitted, never from the block labels.
+
+Passing a second, denser-mesh wannierization of the same blocks switches on
+the smooth-interpolation correction: each manifold's DFT Hamiltonian is
+removed from the Koopmans one in real space and its denser-mesh counterpart
+added back in k-space.
 """
 
 # No ``from __future__ import annotations``: stringified annotations hide
@@ -33,6 +38,7 @@ from aiida_koopmans.workgraphs.ui import (
     compute_dos_from_bands,
     interpolate_bands,
 )
+from aiida_koopmans.workgraphs.utils.wannier_merge import merge_wannier_hr_file_contents
 
 
 class DscfBandStructureOutputs(TypedDict):
@@ -68,6 +74,21 @@ def extract_koopmans_hamiltonian(
         )
     content = retrieved.base.repository.get_object_content(name, mode="rb")
     return orm.SinglefileData(io.BytesIO(content), filename=name)
+
+
+@task.calcfunction
+def manifold_hamiltonian(**hr_files: orm.SinglefileData) -> orm.SinglefileData:
+    """Combine a manifold's per-block Wannier Hamiltonians into one file.
+
+    Keys are read in sorted order, so a caller keying them ``b00``,
+    ``b01``, ... states the manifold's band order — the order
+    :func:`collect_wannier_functions` concatenates the centres in. The
+    combined Hamiltonian is block-diagonal: the blocks were Wannierized
+    independently, so no matrix element couples them.
+    """
+    contents = [hr_files[key].get_content("r") for key in sorted(hr_files)]
+    merged = merge_wannier_hr_file_contents(contents)
+    return orm.SinglefileData(io.StringIO(merged), filename="aiida_hr.dat")
 
 
 @task(outputs=["energies", "reference"])
@@ -151,6 +172,21 @@ def _select_manifold(merge_groups: list, *, filled: bool, spin: SpinChannel) -> 
     return blocks
 
 
+def _dft_hamiltonian(blocks: list, wannierizations, *, link_label: str):
+    """Return the socket carrying one manifold's DFT Hamiltonian file.
+
+    A one-block manifold is its block's ``_hr.dat`` unchanged; several
+    blocks are combined block-diagonally in band order.
+    """
+    hr_files = {
+        f"b{index:02d}": wannierizations[block["label"]]["hr_file"]
+        for index, block in enumerate(blocks)
+    }
+    if len(hr_files) == 1:
+        return next(iter(hr_files.values()))
+    return manifold_hamiltonian(**hr_files, metadata={"call_link_label": link_label}).result
+
+
 def _interpolate_manifold(
     blocks: list,
     *,
@@ -158,6 +194,7 @@ def _interpolate_manifold(
     filled: bool,
     spin_index: int,
     block_wannierizations,
+    smooth_block_wannierizations,
     koopmans_ham_retrieved,
     structure,
     kpath,
@@ -167,7 +204,10 @@ def _interpolate_manifold(
     """Add the tasks interpolating one manifold; return its eigenvalue socket.
 
     The centres come from each block's parsed wannier90 output, keyed so
-    lexicographic key order is the manifold's band order.
+    lexicographic key order is the manifold's band order. A denser-mesh
+    wannierization switches on the smooth-interpolation correction, which
+    needs the coarse DFT Hamiltonian as well as the dense one; without it
+    neither reaches the interpolation.
     """
     hamiltonian = extract_koopmans_hamiltonian(
         retrieved=koopmans_ham_retrieved,
@@ -183,6 +223,19 @@ def _interpolate_manifold(
         metadata={"call_link_label": f"collect_{label}_centres"},
     )
 
+    smooth_kwargs = {}
+    if smooth_block_wannierizations is not None:
+        smooth_kwargs = {
+            "dft_ham_file": _dft_hamiltonian(
+                blocks, block_wannierizations, link_label=f"merge_{label}_dft_hamiltonian"
+            ),
+            "dft_smooth_ham_file": _dft_hamiltonian(
+                blocks,
+                smooth_block_wannierizations,
+                link_label=f"merge_{label}_smooth_dft_hamiltonian",
+            ),
+        }
+
     return interpolate_bands(
         kc_ham_file=hamiltonian,
         centres=wannier_functions["centres"],
@@ -191,6 +244,7 @@ def _interpolate_manifold(
         kgrid=[int(n) for n in kgrid],
         use_ws_distance=bool(use_ws_distance),
         metadata={"call_link_label": f"interpolate_{label}"},
+        **smooth_kwargs,
     ).result
 
 
@@ -202,6 +256,7 @@ def DscfBandStructureTask(
     koopmans_ham_retrieved: orm.FolderData,
     kgrid: list[int],
     kpath: orm.KpointsData,
+    smooth_block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
     spin_polarized: bool = False,
     use_ws_distance: bool = True,
     do_dos: bool = True,
@@ -222,6 +277,12 @@ def DscfBandStructureTask(
             manifold membership and band order.
         block_wannierizations: the per-block wannierization outputs, keyed
             by block label.
+        smooth_block_wannierizations: the same blocks Wannierized on a
+            denser mesh, keyed by the same labels. Present asks for the
+            smooth-interpolation correction: each manifold's DFT
+            Hamiltonian is subtracted in real space and its dense
+            counterpart added back in k-space. Absent interpolates the
+            Koopmans Hamiltonian alone.
         koopmans_ham_retrieved: the final KI's retrieved folder, holding
             the ``ham_occ_?.dat`` / ``ham_emp_?.dat`` files.
         kgrid: the Monkhorst-Pack grid, which is also the supercell's
@@ -244,6 +305,7 @@ def DscfBandStructureTask(
                 # channel of an unpolarized run), 2 = down.
                 spin_index=2 if spin == SpinChannel.DOWN else 1,
                 block_wannierizations=block_wannierizations,
+                smooth_block_wannierizations=smooth_block_wannierizations,
                 koopmans_ham_retrieved=koopmans_ham_retrieved,
                 structure=structure,
                 kpath=kpath,

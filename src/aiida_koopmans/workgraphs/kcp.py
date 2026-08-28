@@ -29,6 +29,7 @@ from typing import Annotated, Any, NotRequired, TypedDict, cast
 import numpy as np
 from aiida import orm
 from aiida_pseudo.data.pseudo.upf import UpfData
+from aiida_quantumespresso.common.types import SpinType
 from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
@@ -54,6 +55,7 @@ from aiida_koopmans.variational_orbitals import (
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
+    WannierizeBlocks,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -1119,6 +1121,8 @@ def KoopmansDSCFWorkflow(
     mp_correction: bool | None = None,
     eps_inf: float | None = None,
     kpath: orm.KpointsData | None = None,
+    smooth_kpoints: orm.KpointsData | None = None,
+    smooth_mp_grid: list[int] | None = None,
     unfold_and_interpolate: dict | None = None,
     plotting: dict | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
@@ -1187,6 +1191,15 @@ def KoopmansDSCFWorkflow(
     (``use_ws_distance``, ``do_dos``) and the ``plotting`` DOS window
     shape the result.
 
+    ``unfold_and_interpolate.smooth_int_factor`` above 1 adds the
+    smooth-interpolation correction: the blocks are Wannierized a second
+    time on the denser mesh the caller states as ``smooth_kpoints``
+    (explicit k-point list) plus ``smooth_mp_grid`` (its Monkhorst-Pack
+    dimensions), and each manifold's coarse DFT Hamiltonian is swapped
+    for that denser one inside the interpolation. The second
+    wannierization depends on nothing the KI chain produces, so it runs
+    alongside the screening.
+
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
@@ -1212,8 +1225,11 @@ def KoopmansDSCFWorkflow(
         kpoints=kpoints,
         kpath=kpath,
     )
-    ui_use_ws_distance, ui_do_dos = _resolve_band_interpolation_knobs(
-        unfold_and_interpolate, kpath=kpath
+    ui_use_ws_distance, ui_do_dos, ui_do_smooth = _resolve_band_interpolation_knobs(
+        unfold_and_interpolate,
+        kpath=kpath,
+        smooth_kpoints=smooth_kpoints,
+        smooth_mp_grid=smooth_mp_grid,
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
@@ -1298,6 +1314,9 @@ def KoopmansDSCFWorkflow(
     nscf_remote_folder = None
     block_wannierizations = None
     merge_groups = None
+    # The same blocks Wannierized on the denser mesh, when the
+    # smooth-interpolation correction was asked for.
+    smooth_block_wannierizations = None
     if wannier_init:
         init = MlwfInitialization(
             # Wired unconditionally: MlwfInitialization's own MlwfInitCodes
@@ -1342,6 +1361,20 @@ def KoopmansDSCFWorkflow(
         nscf_remote_folder = init["nscf_remote_folder"]
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
+        smooth_block_wannierizations = _wannierize_smooth_mesh(
+            do_smooth=ui_do_smooth,
+            codes=codes,
+            structure=structure,
+            blocks=blocks,
+            smooth_kpoints=smooth_kpoints,
+            smooth_mp_grid=smooth_mp_grid,
+            scf_remote_folder=init["scf_remote_folder"],
+            pseudo_family=pseudo_family,
+            wannier_protocol=wannier_protocol,
+            wannier_overrides=wannier_overrides,
+            spin_polarized=spin_polarized,
+            parallelization=parallelization,
+        )
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -1644,10 +1677,11 @@ def KoopmansDSCFWorkflow(
     if kpath is not None:
         bands = _interpolate_bands(
             structure=structure,
-            merge_groups=merge_groups,
-            block_wannierizations=block_wannierizations,
+            merge_groups=cast("list", merge_groups),
+            block_wannierizations=cast("dict", block_wannierizations),
+            smooth_block_wannierizations=smooth_block_wannierizations,
             koopmans_ham_retrieved=ki_final["retrieved"],
-            kgrid=kgrid,
+            kgrid=cast("list[int]", kgrid),
             kpath=kpath,
             spin_polarized=spin_polarized,
             use_ws_distance=ui_use_ws_distance,
@@ -1661,14 +1695,64 @@ def KoopmansDSCFWorkflow(
     return outputs
 
 
+def _wannierize_smooth_mesh(
+    *,
+    do_smooth: bool,
+    codes: Any,
+    structure: orm.StructureData,
+    blocks: Any,
+    smooth_kpoints: Any,
+    smooth_mp_grid: Any,
+    scf_remote_folder: Any,
+    pseudo_family: str,
+    wannier_protocol: str | None,
+    wannier_overrides: WannierizeOverrides | None,
+    spin_polarized: bool,
+    parallelization: ParallelizationDict | None,
+) -> Any:
+    """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
+
+    Returns ``None`` without ``do_smooth``. Called from the
+    ``KoopmansDSCFWorkflow`` body, so the task it creates joins that
+    graph. It depends on nothing the KI chain produces, so it runs
+    alongside the screening.
+
+    ``scf_remote_folder`` must be a converged scf on ``structure``:
+    :func:`WannierizeBlocks` skips its own scf and runs only a fresh
+    nscf on ``smooth_kpoints`` off it.
+    """
+    if not do_smooth:
+        return None
+    smooth = WannierizeBlocks(
+        codes={
+            "pw": reference(codes, "pw"),
+            "pw2wannier90": reference(codes, "pw2wannier90"),
+            "wannier90": reference(codes, "wannier90"),
+        },
+        structure=structure,
+        blocks=blocks,
+        kpoints=smooth_kpoints,
+        mp_grid=list(smooth_mp_grid),
+        scf_remote_folder=scf_remote_folder,
+        pseudo_family=pseudo_family,
+        protocol=wannier_protocol,
+        overrides=wannier_overrides,
+        spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+        parallelization=parallelization,
+        metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
+    )
+    return smooth["blocks"]
+
+
 def _interpolate_bands(
     *,
     structure: orm.StructureData,
-    merge_groups: Any,
-    block_wannierizations: Any,
-    koopmans_ham_retrieved: Any,
-    kgrid: Any,
-    kpath: Any,
+    merge_groups: list,
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    smooth_block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None,
+    koopmans_ham_retrieved: orm.FolderData,
+    kgrid: list[int],
+    kpath: orm.KpointsData,
     spin_polarized: bool,
     use_ws_distance: bool,
     do_dos: bool,
@@ -1683,6 +1767,7 @@ def _interpolate_bands(
         structure=structure,
         merge_groups=merge_groups,
         block_wannierizations=block_wannierizations,
+        smooth_block_wannierizations=smooth_block_wannierizations,
         koopmans_ham_retrieved=koopmans_ham_retrieved,
         kgrid=kgrid,
         kpath=kpath,
@@ -2909,15 +2994,19 @@ def PredictScreeningParameters(
 
 
 def _resolve_band_interpolation_knobs(
-    knobs: dict | None, *, kpath: orm.KpointsData | None
-) -> tuple[bool, bool]:
-    """Return ``(use_ws_distance, do_dos)``, rejecting settings that cannot take effect.
+    knobs: dict | None,
+    *,
+    kpath: orm.KpointsData | None,
+    smooth_kpoints: orm.KpointsData | None,
+    smooth_mp_grid: list[int] | None,
+) -> tuple[bool, bool, bool]:
+    """Return ``(use_ws_distance, do_dos, do_smooth)``, rejecting inert settings.
 
     ``smooth_int_factor`` above 1 in any direction asks for the
     smooth-interpolation method, which replaces the DFT part of the
-    Koopmans Hamiltonian with one wannierized on a denser mesh. The
-    interpolation accepts both Hamiltonians; the denser-grid
-    wannierization that produces the second one is not written.
+    Koopmans Hamiltonian with one wannierized on a denser mesh; the caller
+    states that mesh through ``smooth_kpoints`` and ``smooth_mp_grid``, and
+    both are then required.
     """
     settings = dict(knobs) if knobs else {}
     if settings and kpath is None:
@@ -2927,13 +3016,32 @@ def _resolve_band_interpolation_knobs(
             "interpolate along, or drop the settings."
         )
     factor = settings.get("smooth_int_factor")
-    if factor is not None and any(int(f) > 1 for f in factor):
-        raise NotImplementedError(
-            f"unfold_and_interpolate.smooth_int_factor={list(factor)!r} asks for the "
-            "smooth-interpolation method, which needs a second wannierization on the "
-            "denser mesh; that pass is not ported. Set smooth_int_factor to 1."
+    do_smooth = factor is not None and any(int(f) > 1 for f in factor)
+    missing = [
+        name
+        for name, value in (
+            ("smooth_kpoints", smooth_kpoints),
+            ("smooth_mp_grid", smooth_mp_grid),
         )
-    return bool(settings.get("use_ws_distance", True)), bool(settings.get("do_dos", True))
+        if value is None
+    ]
+    if do_smooth and missing:
+        raise ValueError(
+            f"unfold_and_interpolate.smooth_int_factor={list(cast('list', factor))!r} asks for "
+            "the smooth-interpolation method, which wannierizes a denser mesh; pass that "
+            f"mesh as {' and '.join(missing)}."
+        )
+    if not do_smooth and len(missing) < 2:
+        raise ValueError(
+            "`smooth_kpoints` / `smooth_mp_grid` state the denser mesh the "
+            "smooth-interpolation method wannierizes, and this run asks for no such "
+            "method. Set unfold_and_interpolate.smooth_int_factor above 1, or drop them."
+        )
+    return (
+        bool(settings.get("use_ws_distance", True)),
+        bool(settings.get("do_dos", True)),
+        do_smooth,
+    )
 
 
 def _validate_scope(
