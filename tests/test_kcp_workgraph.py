@@ -1090,6 +1090,7 @@ class TestKoopmansDSCFGraphBuild:
             pseudos=pseudos,
             base=kcp_base_inputs(
                 ozone_structure,
+                pseudos,
                 nspin=2,
                 nelec=18,
                 nelup=9,
@@ -1186,6 +1187,7 @@ class TestKoopmansDSCFGraphBuild:
             pseudos=pseudos,
             base=kcp_base_inputs(
                 ozone_structure,
+                pseudos,
                 nspin=2,
                 nelec=18,
                 nelup=9,
@@ -1422,6 +1424,58 @@ class TestKoopmansDSCFGraphBuild:
                 "down": [0.6] * max(0, nbnd - neldw),
             },
         )
+
+    def test_empty_iter_source_carries_the_box_grid_of_a_core_corrected_pseudo(
+        self, generate_full_upf_data
+    ):
+        """Every empty-branch parameter dict must carry ``SYSTEM.nr{1,2,3}b``.
+
+        kcp.x refuses a core-corrected pseudo whose small-box grid is
+        unset ("nr1b, nr2b, nr3b must be given for ultrasoft and core
+        corrected pp"). The empty branch bakes its three parameter dicts
+        here, away from the ``build_kcp_inputs`` call, so it is the one
+        that can reach kcp.x without them.
+        """
+        from aiida.orm import StructureData
+
+        from aiida_koopmans.workgraphs.kcp import (
+            build_empty_iter_source,
+            kcp_base_inputs,
+        )
+        from aiida_koopmans.workgraphs.variational_orbitals import (
+            enumerate_variational_orbitals,
+        )
+
+        structure = StructureData(cell=[[10.0, 0, 0], [0, 10.0, 0], [0, 0, 10.0]], pbc=True)
+        structure.append_atom(position=[0.0, 0.0, 0.0], symbols="O", name="O")
+        pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
+        base = kcp_base_inputs(
+            structure,
+            pseudos,
+            nspin=2,
+            nelec=18,
+            nelup=9,
+            neldw=9,
+            tot_magnetization=None,
+            ecutwfc=30.0,
+            ecutrho=120.0,
+        )
+        orbitals = enumerate_variational_orbitals(nelup=9, neldw=9, nbnd=10, spin_polarized=True)
+        source = build_empty_iter_source(
+            base=base,
+            nbnd=10,
+            orbitals=orbitals,
+            empty_alphas={"up": [0.6], "down": [0.6]},
+        )
+        assert source, "no empty orbitals to check"
+        for key, item in source.items():
+            for which in ("dummy_parameters", "pz_parameters", "n_plus_1_parameters"):
+                system = item[which]["SYSTEM"]
+                assert (system["nr1b"], system["nr2b"], system["nr3b"]) == (24, 24, 24), (
+                    key,
+                    which,
+                    system,
+                )
 
     def test_empty_iter_source_swaps_when_post_addition_violates_constraint(self):
         """DOWN-channel empty + closed-shell-effective counts: swap is needed.
