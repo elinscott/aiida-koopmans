@@ -1,16 +1,16 @@
 """Unit tests for the kcp.x input assembler (``calculations/kcp_inputs.py``).
 
 Covers the FFT-dimension arithmetic and the ``SYSTEM.nr{1,2,3}b`` box-grid
-autogeneration in isolation from any CalcJob; ``build_kcp_inputs`` itself is
+derivation in isolation from any CalcJob; ``build_kcp_inputs`` itself is
 exercised by the workgraph tests that build real ``KcpStep`` inputs.
 """
 
 from __future__ import annotations
 
 from aiida_koopmans.calculations.kcp_inputs import (
-    _autogenerate_nrb,
     _fft_dimension_allowed,
     _good_fft,
+    autogenerate_nrb,
     build_kcp_inputs,
 )
 
@@ -38,33 +38,37 @@ class TestGoodFft:
 
 
 class TestAutogenerateNrb:
-    def test_user_supplied_nrb_is_left_untouched(self, ozone_structure, ozone_real_pseudos):
-        parameters = {"SYSTEM": {"nr1b": 10, "nr2b": 10, "nr3b": 10}}
-        _autogenerate_nrb(ozone_structure, ozone_real_pseudos, parameters)
-        assert parameters["SYSTEM"] == {"nr1b": 10, "nr2b": 10, "nr3b": 10}
-
-    def test_no_core_corrected_pseudo_leaves_nrb_unset(
-        self, ozone_structure, generate_full_upf_data
-    ):
+    def test_no_core_corrected_pseudo_returns_none(self, ozone_structure, generate_full_upf_data):
         pseudos = {"O": generate_full_upf_data("O", core_correction=False)}
-        parameters = {"SYSTEM": {"ecutwfc": 30.0}}
-        _autogenerate_nrb(ozone_structure, pseudos, parameters)
-        assert "nr1b" not in parameters["SYSTEM"]
+        assert autogenerate_nrb(ozone_structure, pseudos, ecutwfc=30.0, ecutrho=120.0) is None
 
-    def test_core_corrected_pseudo_fills_in_the_box_grid(self, generate_full_upf_data):
+    def test_core_corrected_pseudo_gives_the_box_grid(self, generate_full_upf_data):
         from aiida.orm import StructureData
 
-        # A 10 Angstrom cubic cell with ecutwfc=30 gives nr1b=nr2b=nr3b=24
+        # A 10 Angstrom cubic cell with ecutrho=120 gives nr1b=nr2b=nr3b=24
         # by the formula in the docstring (rc_safe=3 Bohr): computed
         # independently and pinned here as a golden value.
         structure = StructureData(cell=[[10.0, 0, 0], [0, 10.0, 0], [0, 0, 10.0]], pbc=True)
         structure.append_atom(position=[0.0, 0.0, 0.0], symbols="O", name="O")
         pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
-        parameters = {"SYSTEM": {"ecutwfc": 30.0}}
-        _autogenerate_nrb(structure, pseudos, parameters)
-        assert parameters["SYSTEM"]["nr1b"] == 24
-        assert parameters["SYSTEM"]["nr2b"] == 24
-        assert parameters["SYSTEM"]["nr3b"] == 24
+        assert autogenerate_nrb(structure, pseudos, ecutwfc=30.0, ecutrho=120.0) == (24, 24, 24)
+
+    def test_an_unreadable_pseudo_is_not_silently_no_nlcc(self, ozone_structure):
+        """Anything but an incomplete UPF header propagates.
+
+        A pseudo we cannot inspect must not pass as "no core correction":
+        that is how a run reaches kcp.x with the box grid unset.
+        """
+        import pytest
+
+        class Unreadable:
+            filename = "O.upf"
+
+            def get_content(self):
+                raise OSError("no repository file")
+
+        with pytest.raises(OSError):
+            autogenerate_nrb(ozone_structure, {"O": Unreadable()}, ecutwfc=30.0, ecutrho=120.0)
 
 
 class TestBuildKcpInputs:
@@ -80,3 +84,21 @@ class TestBuildKcpInputs:
             parent_folder_evcfixed=dummy_remote,
         )
         assert inputs["parent_folder_evcfixed"] is dummy_remote
+
+    def test_leaves_the_callers_parameters_dict_alone(
+        self, ozone_structure, ozone_real_pseudos, kcp_code
+    ):
+        """``build_kcp_inputs`` must not mutate the dict it is handed.
+
+        Inside a ``@task.graph`` body a socket-fed dict is passed on by
+        reference to its upstream node, so an in-place edit never reaches
+        the CalcJob's stored inputs. Nothing here may rely on one.
+        """
+        parameters = {"SYSTEM": {"ecutwfc": 30.0}}
+        build_kcp_inputs(
+            code=kcp_code,
+            structure=ozone_structure,
+            parameters=parameters,
+            pseudos=ozone_real_pseudos,
+        )
+        assert parameters == {"SYSTEM": {"ecutwfc": 30.0}}
