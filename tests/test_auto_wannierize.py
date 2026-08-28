@@ -876,7 +876,7 @@ class TestOverridesForwarding:
     def test_scf_and_nscf_overrides_reach_the_shared_pair(
         self, auto_codes, silicon_structure, kmesh, kpath, fake_cutoffs_family
     ):
-        """``overrides['scf']`` / ``overrides['nscf']`` forward to RunScfNscf."""
+        """``overrides['scf']`` / ``overrides['nscf']`` forward to RunWannierGroundState."""
         blocks = [explicit_block("block_1", range(1, 5), ["Si: sp3"])]
         overrides = {
             "scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 30.0}}}},

@@ -1,6 +1,6 @@
 """Block-by-block Wannierisation of a periodic system.
 
-A single shared scf + nscf is run once (via :func:`RunScfNscf`, or skipped
+A single shared scf + nscf is run once (via :func:`RunWannierGroundState`, or skipped
 entirely when the caller supplies an existing ``nscf_remote_folder``), then
 each projection block (occupied / empty manifold, per spin) is Wannierised
 in its own ``Wannier90WorkChain`` that *skips* scf and nscf and reads the
@@ -85,7 +85,7 @@ from aiida_koopmans.projections import (
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import VariationalOrbital
 from aiida_koopmans.workgraphs import name_step, stamp_wannier90_pp_namespace, unwrap_enum
-from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, RunScfNscf, run_bands_step
+from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs, run_bands_step
 from aiida_koopmans.workgraphs.variational_orbitals import (
     initial_orbital_partition,
     ordered_block_specs,
@@ -100,6 +100,7 @@ from aiida_koopmans.workgraphs.wannier90 import (
     projected_dos_supported,
     require_path_labels,
 )
+from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
 
 class WannierizeBlockCodes(TypedDict):
@@ -502,7 +503,7 @@ class WannierizeOverrides(TypedDict, total=False):
 
     * ``scf`` / ``nscf`` — ``PwBaseWorkChain``-protocol override dicts for
       the shared scf/nscf pair (upstream shape, consumed verbatim by
-      :func:`RunScfNscf`).
+      :func:`RunWannierGroundState`).
     * ``wannier90`` — a flat ``.win`` keyword dict (e.g.
       ``{"dis_froz_max": 10.6}``) applied to every block's wannier90.
     * ``pw2wannier90`` — a flat ``INPUTPP`` keyword dict (e.g.
@@ -666,7 +667,7 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     touch this shape.
 
     ``scf`` / ``nscf`` are already in upstream shape (they feed
-    :func:`~aiida_koopmans.workgraphs.pw.RunScfNscf` verbatim) and pass
+    :func:`~aiida_koopmans.workgraphs.wannier_ground_state.RunWannierGroundState` verbatim) and pass
     through unwrapped: :meth:`Wannier90WorkChain.get_builder_from_protocol`
     reads them at this same top-level key and forwards them into its own
     nested ``PwBaseWorkChain.get_builder_from_protocol`` calls. Without this,
@@ -1355,7 +1356,7 @@ def WannierizeBlocks(
 ) -> WannierizeBlocksOutputs:
     """Wannierise a periodic system block-by-block off one shared scf + nscf.
 
-    A single :func:`RunScfNscf` runs scf + nscf once; every projection
+    A single :func:`RunWannierGroundState` runs scf + nscf once; every projection
     block is then Wannierised in its own ``Wannier90WorkChain`` that skips
     scf / nscf and reads the shared nscf scratch (``nscf["remote_folder"]``).
     The per-block fan-out is a native ``for`` loop over ``blocks`` inside this
@@ -1412,7 +1413,7 @@ def WannierizeBlocks(
         protocol: protocol name passed to both builders.
         overrides: optional :class:`WannierizeOverrides` — flat, semantic
             keys (``scf`` / ``nscf`` pw-protocol dicts feed
-            :func:`RunScfNscf` when the internal scf + nscf runs; with an
+            :func:`RunWannierGroundState` when the internal scf + nscf runs; with an
             external ``nscf_remote_folder`` they instead reach every
             per-block wannier builder's nested ``get_builder_from_protocol``
             call, unused otherwise — see :func:`_builder_overrides`;
@@ -1550,7 +1551,7 @@ def WannierizeBlocks(
         if "nscf" in overrides:
             scf_nscf_overrides["nscf"] = overrides["nscf"]
 
-        scf_nscf = RunScfNscf(
+        scf_nscf = RunWannierGroundState(
             pw_code=reference(codes, "pw"),
             structure=structure,
             pseudo_family=pseudo_family,
