@@ -76,22 +76,42 @@ class TestAutogenerateNrb:
         pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
         assert autogenerate_nrb(structure, pseudos, ecutwfc=30.0, ecutrho=None) == (24, 24, 24)
 
-    def test_an_unreadable_pseudo_is_not_silently_no_nlcc(self, ozone_structure):
-        """Anything but an incomplete UPF header propagates.
+    def test_a_real_upf_missing_other_header_fields_still_reads_the_flag(self, ozone_structure):
+        """A header field we do not read must not decide the answer.
 
-        A pseudo we cannot inspect must not pass as "no core correction":
-        that is how a run reaches kcp.x with the box grid unset.
+        ``has_so`` is absent from plenty of scalar-relativistic UPFs; the
+        core-correction flag is right there next to it either way.
         """
+        import io
+
+        from aiida_pseudo.data.pseudo.upf import UpfData
+
+        content = (
+            '<UPF version="2.0.1">\n<PP_HEADER\nelement="O"\nz_valence="6.0"\n'
+            'core_correction="T"\npseudo_type="NC"\nmesh_size="3"\n'
+            'is_ultrasoft="F"\nnumber_of_wfc="1"\n/>\n</UPF>\n'
+        )
+        pseudo = {"O": UpfData(io.BytesIO(content.encode()), filename="O.upf")}
+        assert autogenerate_nrb(ozone_structure, pseudo, ecutwfc=30.0, ecutrho=120.0) is not None
+
+    def test_a_pseudo_we_cannot_inspect_is_not_silently_no_nlcc(self, ozone_structure):
+        """A header without the flag raises, naming what to change.
+
+        Assuming no core correction is how a run reaches kcp.x with the box
+        grid unset — the failure this derivation exists to prevent.
+        """
+        import io
+
         import pytest
+        from aiida_pseudo.data.pseudo.upf import UpfData
 
-        class Unreadable:
-            filename = "O.upf"
-
-            def get_content(self):
-                raise OSError("no repository file")
-
-        with pytest.raises(OSError):
-            autogenerate_nrb(ozone_structure, {"O": Unreadable()}, ecutwfc=30.0, ecutrho=120.0)
+        content = (
+            '<UPF version="2.0.1">\n<PP_HEADER\nelement="O"\nz_valence="6.0"\n'
+            'has_so="F"\n/>\n</UPF>\n'
+        )
+        pseudo = {"O": UpfData(io.BytesIO(content.encode()), filename="O.upf")}
+        with pytest.raises(ValueError, match="nr1b"):
+            autogenerate_nrb(ozone_structure, pseudo, ecutwfc=30.0, ecutrho=120.0)
 
 
 class TestBuildKcpInputs:

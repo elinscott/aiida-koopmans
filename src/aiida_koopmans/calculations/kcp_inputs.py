@@ -41,17 +41,21 @@ def _good_fft(nr: int) -> int:
 
 
 def _core_corrected(pseudo: UpfData) -> bool:
-    """Return True when ``pseudo`` declares non-linear core corrections."""
-    from upf_to_json import upf_to_json
+    """Return True when ``pseudo`` declares non-linear core corrections.
 
-    try:
-        header = upf_to_json(pseudo.get_content(), pseudo.filename)["pseudo_potential"]["header"]
-    except KeyError:
-        # An incomplete UPF header (the minimal test fixtures omit
-        # ``number_of_proj``, ``mesh_size``, ...): no NLCC flag to read.
-        # Every other failure propagates — a pseudo we cannot inspect must
-        # not pass silently as no-NLCC.
-        return False
+    Raise when the flag cannot be read: a pseudo we cannot inspect must not
+    pass as no-NLCC, because that is how a run reaches kcp.x with the box
+    grid unset.
+    """
+    from upf_tools import header_from_str
+
+    header = header_from_str(pseudo.get_content())
+    if "core_correction" not in header:
+        raise ValueError(
+            f"{pseudo.filename} has a UPF header that does not declare "
+            "core_correction. Supply a pseudopotential whose header carries it, "
+            "or set SYSTEM.nr1b/nr2b/nr3b yourself in the kcp.x overrides."
+        )
     return bool(header["core_correction"])
 
 
