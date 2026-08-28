@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from aiida_koopmans.owned_keywords import OWNED, ROUTE_CONDITIONAL, SEEDED, owned, seeded
+from aiida_koopmans.owned_keywords import (
+    OWNED,
+    ROUTE_CONDITIONAL,
+    SEEDED,
+    SEEDED_VALUES,
+    owned,
+    seeded,
+)
 
 
 def test_owned_accepts_a_declared_keyword():
@@ -15,6 +22,29 @@ def test_owned_accepts_a_declared_keyword():
 def test_seeded_accepts_a_declared_keyword():
     literal = {"num_iter": 10000}
     assert seeded("wannier90", literal) is literal
+
+
+def test_seeded_rejects_a_value_that_disagrees_with_the_roster():
+    # koopmans reads SEEDED_VALUES as the generated field's default, so a
+    # route literal that disagrees would make the schema lie about what the
+    # route actually seeds.
+    with pytest.raises(ValueError, match=r"kcw\.SCREEN tr2=1e-10.*roster: 1e-18"):
+        seeded("kcw.SCREEN", {"tr2": 1e-10})
+
+
+def test_seeded_accepts_a_keyword_with_no_roster_value():
+    # pw.SYSTEM.starting_magnetization is seeded by name only: the route's
+    # value depends on the spin regime at runtime, so SEEDED_VALUES carries
+    # no entry for it and seeded() cannot value-check it.
+    literal = {"starting_magnetization": 0.1}
+    assert seeded("pw.SYSTEM", literal) is literal
+
+
+def test_every_seeded_keyword_with_a_roster_value_is_in_seeded():
+    # SEEDED_VALUES is a source for SEEDED, not a separate registry: every
+    # keyword it pins must also be an accepted name.
+    for block, values in SEEDED_VALUES.items():
+        assert set(values) <= SEEDED[block], block
 
 
 def test_owned_rejects_an_unclassified_keyword():

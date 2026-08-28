@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from aiida_wannier90_workflows.common.types import WannierProjectionType
 
+from aiida_koopmans.owned_keywords import SEEDED_VALUES
 from aiida_koopmans.workgraphs.wannier90 import RunProjwfc, Wannierize
 from tests.fixtures import (
     assert_graph_roundtrips,
@@ -87,6 +88,53 @@ class TestWannierizeGraphBuild:
                 external_projectors=si_external_projector_tables(),
                 exclude_semicore=True,
             )
+
+    def test_seeded_wannier90_defaults_reach_the_whole_manifold_run_with_no_override(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        """The koopmans-seeded wannier90 minimisation settings land with no caller override.
+
+        This whole-manifold route drives ``Wannier90WorkChain`` straight off
+        ``get_builder_from_protocol``, unlike the per-block route
+        (``block_wannierize.WannierizeBlock``, covered by
+        ``tests/test_block_wannierize.py``'s
+        ``TestWannierizeBlockBuild.test_seeded_wannier90_defaults_reach_the_block_with_no_override``),
+        so it needs its own seeding call site and its own coverage.
+        """
+        wg = Wannierize.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        inputs = wg.tasks["Wannier90WorkChain"].inputs["wannier90"]["wannier90"]
+        params = inputs["parameters"].value.get_dict()
+        for name, value in SEEDED_VALUES["wannier90"].items():
+            assert params[name] == value, name
+
+    def test_a_wannier90_override_wins_over_the_seeded_default_on_the_whole_manifold_run(
+        self, fake_cutoffs_family, silicon_structure, wannier_codes
+    ):
+        """A caller's own ``wannier90`` override replaces the seeded default.
+
+        Negative control for the seeding above: were the seeded value forced
+        rather than merged underneath the caller's, this override would be
+        silently discarded instead of landing in the ``.win``.
+        """
+        wg = Wannierize.build(
+            codes=wannier_codes,
+            structure=silicon_structure,
+            pseudo_family=fake_cutoffs_family.label,
+            overrides={"wannier90": {"wannier90": {"parameters": {"num_iter": 42}}}},
+        )
+        inputs = wg.tasks["Wannier90WorkChain"].inputs["wannier90"]["wannier90"]
+        params = inputs["parameters"].value.get_dict()
+        assert params["num_iter"] == 42
+        # The caller touched only num_iter; its SEEDED_VALUES siblings still
+        # carry the seeded default.
+        for name, value in SEEDED_VALUES["wannier90"].items():
+            if name == "num_iter":
+                continue
+            assert params[name] == value, name
 
 
 class TestBandInterpolation:

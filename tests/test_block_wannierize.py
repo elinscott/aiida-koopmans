@@ -1473,6 +1473,60 @@ class TestWannierizeBlockBuild:
         projections = task.inputs["wannier90"]["wannier90"]["projections"].value
         assert list(projections) == ["Si: sp3"]
 
+    def test_seeded_wannier90_defaults_reach_the_block_with_no_override(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """The koopmans-seeded wannier90 minimisation settings land with no caller override.
+
+        ``aiida_koopmans.owned_keywords.SEEDED_VALUES["wannier90"]`` is
+        seeded on every route that Wannierises a block, not only DFPT's. The
+        WANNIERIZE
+        task and the DSCF Wannier-init route both call
+        :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+        with no wannier90-seeding layer of their own, so building
+        :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlock`
+        directly with no override, as here, is structurally what either
+        route does.
+        """
+        from aiida_koopmans.owned_keywords import SEEDED_VALUES
+
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        wg = self._build_block(
+            wannier_codes, silicon_structure, kmesh, nscf_scratch, block, fake_cutoffs_family.label
+        )
+        params = self._w90_parameters(wg)
+        for name, value in SEEDED_VALUES["wannier90"].items():
+            assert params[name] == value, name
+
+    def test_a_per_block_wannier90_override_wins_over_the_seeded_default(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A caller's per-block ``wannier90`` override replaces the seeded default."""
+        from aiida_koopmans.owned_keywords import SEEDED_VALUES
+
+        block = explicit_block(
+            "block_1", range(1, 5), projections=["Si: sp3"], filled=True, num_bands=4
+        )
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+            overrides={"wannier90": {"num_iter": 42}},
+        )
+        params = self._w90_parameters(wg)
+        assert params["num_iter"] == 42
+        # The caller touched only num_iter; its SEEDED_VALUES siblings still
+        # carry the seeded default.
+        for name, value in SEEDED_VALUES["wannier90"].items():
+            if name == "num_iter":
+                continue
+            assert params[name] == value, name
+
     def test_cutoffless_family_needs_scf_nscf_cutoffs_threaded(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffless_family
     ):
