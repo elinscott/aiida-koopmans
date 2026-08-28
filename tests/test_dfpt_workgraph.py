@@ -232,6 +232,39 @@ class TestKoopmansDFPTTaskBuild:
         assert "screen" in names
         assert "ham" in names
 
+    def test_seeded_kcw_defaults_match_the_roster(self, dfpt_codes, nscf_remote, occ_retrieved):
+        """The route's seeded kcw.x literals equal SEEDED_VALUES.
+
+        ``seeded()`` already refuses to build a graph whose literal
+        disagrees with the roster (a route regression would raise before
+        ``RunDFPT.build`` even returns); this test additionally pins the
+        built parameters against the roster koopmans reads as the generated
+        field's default, so the schema and the route stay in sync under a
+        future refactor that stops routing a namelist through ``seeded()``.
+        """
+        from aiida_koopmans.owned_keywords import SEEDED_VALUES
+
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+        )
+        screen_params = wg.tasks["screen"].inputs["parameters"].value
+        for name, value in SEEDED_VALUES["kcw.CONTROL"].items():
+            assert screen_params["CONTROL"][name] == value, name
+        for name, value in SEEDED_VALUES["kcw.WANNIER"].items():
+            assert screen_params["WANNIER"][name] == value, name
+        for name, value in SEEDED_VALUES["kcw.SCREEN"].items():
+            assert screen_params["SCREEN"][name] == value, name
+
+        ham_params = wg.tasks["ham"].inputs["parameters"].value
+        for name, value in SEEDED_VALUES["kcw.HAM"].items():
+            assert ham_params["HAM"][name] == value, name
+
     @pytest.mark.parametrize("check_spread", [True, False])
     def test_check_spread_input_controls_the_namelist(
         self, dfpt_codes, nscf_remote, occ_retrieved, check_spread
@@ -555,6 +588,14 @@ class TestSinglepointDFPTBuild:
         w90_params = w90_overrides["wannier90"].value
         assert w90_params["write_u_matrices"] is True
         assert w90_params["write_xyz"] is True
+
+        # The route's seeded wannier90 literals equal
+        # aiida_koopmans.owned_keywords.SEEDED_VALUES, which koopmans reads
+        # as the generated field's default.
+        from aiida_koopmans.owned_keywords import SEEDED_VALUES
+
+        for name, value in SEEDED_VALUES["wannier90"].items():
+            assert w90_params[name] == value, name
 
         # The wannierization reuses the shared scratch (no internal scf+nscf)
         # and sees the channel's blocks in band order: occupied then empty.

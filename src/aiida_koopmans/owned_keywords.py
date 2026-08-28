@@ -24,6 +24,7 @@ __all__ = [
     "OWNED",
     "ROUTE_CONDITIONAL",
     "SEEDED",
+    "SEEDED_VALUES",
     "owned",
     "reject_owned",
     "seeded",
@@ -171,58 +172,58 @@ OWNED: dict[str, frozenset[str]] = {
     ),
 }
 
-#: Keywords a route writes as a starting value that a caller value replaces.
+#: Keywords a route writes as a starting value that a caller value replaces,
+#: mapped to that value for the ones where every route seeds the same
+#: literal. ``koopmans`` reads a keyword's roster value as the generated
+#: field's default, alongside kcw.x's own default in the schema description.
+#:
+#: ``pw.SYSTEM.starting_magnetization`` is seeded but absent here: the value
+#: the route writes depends on the spin regime at runtime, so there is no
+#: single default to check or publish. Its name still authorizes it to
+#: :func:`seeded`, through :data:`SEEDED` below.
+SEEDED_VALUES: dict[str, dict[str, Any]] = {
+    "kcw.CONTROL": {
+        # Verbosity enough to print the per-orbital screening breakdown,
+        # and the full (non-RPA) response; a caller may ask for either.
+        "kcw_iverbosity": 1,
+        "lrpa": False,
+    },
+    "kcw.WANNIER": {
+        # kcw.x re-derives the KS eigenvalues as a gauge cross-check.
+        "check_ks": True,
+    },
+    "kcw.SCREEN": {
+        # Linear-response convergence settings.
+        "tr2": 1.0e-18,
+        "nmix": 4,
+        "niter": 33,
+    },
+    "kcw.HAM": {
+        # Hamiltonian assembly settings: the Wigner-Seitz weighting, the
+        # kcw_hr file the unfold-and-interpolate step reads, and the
+        # on-site approximation (off, i.e. the full Hamiltonian).
+        "use_ws_distance": True,
+        "write_hr": True,
+        "on_site_only": False,
+    },
+    "wannier90": {
+        # Minimisation settings tuned for reproducible Wannier centres.
+        "guiding_centres": True,
+        "num_iter": 10000,
+        "num_cg_steps": 5,
+        "conv_tol": 1.0e-10,
+        "conv_window": 5,
+        "dis_conv_tol": 1.0e-10,
+    },
+}
+
+#: Names of keywords a route writes as a starting value that a caller value
+#: replaces. :data:`SEEDED_VALUES`' keywords plus
+#: ``pw.SYSTEM.starting_magnetization`` (seeded, but with no single roster
+#: value — see above).
 SEEDED: dict[str, frozenset[str]] = {
-    "pw.SYSTEM": frozenset(
-        {
-            # A tiny moment so QE runs its spin-accounting branch; a
-            # genuinely magnetic system states its own.
-            "starting_magnetization",
-        }
-    ),
-    "kcw.CONTROL": frozenset(
-        {
-            # Verbosity enough to print the per-orbital screening breakdown,
-            # and the full (non-RPA) response; a caller may ask for either.
-            "kcw_iverbosity",
-            "lrpa",
-        }
-    ),
-    "kcw.WANNIER": frozenset(
-        {
-            # kcw.x re-derives the KS eigenvalues as a gauge cross-check.
-            "check_ks",
-        }
-    ),
-    "kcw.SCREEN": frozenset(
-        {
-            # Linear-response convergence settings.
-            "tr2",
-            "nmix",
-            "niter",
-        }
-    ),
-    "kcw.HAM": frozenset(
-        {
-            # Hamiltonian assembly settings: the Wigner-Seitz weighting, the
-            # kcw_hr file the unfold-and-interpolate step reads, and the
-            # on-site approximation (off, i.e. the full Hamiltonian).
-            "use_ws_distance",
-            "write_hr",
-            "on_site_only",
-        }
-    ),
-    "wannier90": frozenset(
-        {
-            # Minimisation settings tuned for reproducible Wannier centres.
-            "guiding_centres",
-            "num_iter",
-            "num_cg_steps",
-            "conv_tol",
-            "conv_window",
-            "dis_conv_tol",
-        }
-    ),
+    "pw.SYSTEM": frozenset({"starting_magnetization"}),
+    **{block: frozenset(values) for block, values in SEEDED_VALUES.items()},
 }
 
 #: Keywords a route forces on one step while leaving them settable on
@@ -259,6 +260,11 @@ def owned[T: Mapping[str, Any]](block: str, keywords: T) -> T:
 def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
     """Return ``keywords`` after checking every one of them is seeded.
 
+    A keyword with a roster entry in :data:`SEEDED_VALUES` must also match
+    that entry's value: the roster is what ``koopmans`` reads as the
+    generated field's default, so a route literal that disagrees would make
+    the schema lie about what the route actually seeds.
+
     Args:
         block: The input-file block the keywords belong to, as keyed in
             :data:`SEEDED`.
@@ -269,9 +275,25 @@ def seeded[T: Mapping[str, Any]](block: str, keywords: T) -> T:
         ``keywords``, unchanged.
 
     Raises:
-        ValueError: If a keyword is classified neither seeded nor conditional.
+        ValueError: If a keyword is classified neither seeded nor
+            conditional, or if a keyword's value disagrees with its
+            :data:`SEEDED_VALUES` entry.
     """
     _check(block, keywords, SEEDED, "seeds")
+    roster = SEEDED_VALUES.get(block, {})
+    mismatched = sorted(
+        name for name, value in keywords.items() if name in roster and roster[name] != value
+    )
+    if mismatched:
+        detail = ", ".join(
+            f"{name}={keywords[name]!r} (roster: {roster[name]!r})" for name in mismatched
+        )
+        raise ValueError(
+            f"{block} {detail} disagrees with "
+            f"aiida_koopmans.owned_keywords.SEEDED_VALUES. Update SEEDED_VALUES to match "
+            f"the route's literal, or fix the route: koopmans reads SEEDED_VALUES as the "
+            f"generated field's default, so the two must agree."
+        )
     return keywords
 
 
