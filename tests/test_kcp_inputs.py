@@ -86,13 +86,18 @@ class TestAutogenerateNrb:
 
         from aiida_pseudo.data.pseudo.upf import UpfData
 
-        content = (
+        with_has_so = (
             '<UPF version="2.0.1">\n<PP_HEADER\nelement="O"\nz_valence="6.0"\n'
-            'core_correction="T"\npseudo_type="NC"\nmesh_size="3"\n'
+            'has_so="F"\ncore_correction="T"\npseudo_type="NC"\nmesh_size="3"\n'
             'is_ultrasoft="F"\nnumber_of_wfc="1"\n/>\n</UPF>\n'
         )
-        pseudo = {"O": UpfData(io.BytesIO(content.encode()), filename="O.upf")}
-        assert autogenerate_nrb(ozone_structure, pseudo, ecutwfc=30.0, ecutrho=120.0) is not None
+        without = with_has_so.replace('has_so="F"\n', "")
+
+        def nrb(content):
+            pseudo = UpfData(io.BytesIO(content.encode()), filename="O.upf")
+            return autogenerate_nrb(ozone_structure, {"O": pseudo}, ecutwfc=30.0, ecutrho=120.0)
+
+        assert nrb(without) == nrb(with_has_so) is not None
 
     def test_a_pseudo_we_cannot_inspect_is_not_silently_no_nlcc(self, ozone_structure):
         """A header without the flag raises, naming what to change.
