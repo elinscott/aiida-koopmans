@@ -9,6 +9,7 @@ materialized ``PwBaseWorkChain`` inputs.
 
 from __future__ import annotations
 
+import pytest
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType
 from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
@@ -262,6 +263,20 @@ class TestAnExternalDensitySkipsTheScf:
         links = wg.outputs["scf_remote_folder"]._links
         assert [link.from_socket._name for link in links] == ["scf_remote_folder"]
         assert [link.from_task.name for link in links] == ["graph_inputs"]
+
+    def test_an_scf_mesh_alongside_the_density_is_refused(
+        self, fake_cutoffs_family, silicon_structure, kmesh, kpath, pw_code, scf_remote
+    ):
+        """No scf runs to sample ``scf_kpoints``, so asking for one raises."""
+        with pytest.raises(ValueError, match="scf_kpoints"):
+            RunWannierGroundState.build(
+                pw_code=pw_code,
+                structure=silicon_structure,
+                pseudo_family=fake_cutoffs_family.label,
+                nscf_kpoints=kpath,
+                scf_kpoints=kmesh,
+                scf_remote_folder=scf_remote,
+            )
 
     def test_the_nscf_is_otherwise_the_internal_route_s_nscf(
         self, fake_cutoffs_family, silicon_structure, kpath, pw_code, scf_remote

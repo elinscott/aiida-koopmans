@@ -16,8 +16,9 @@ quickest way to see a complete set of arguments in context.
 Ground state, bands, and spectra
 ================================
 
-``RunScfNscf`` and ``RunPwBands`` (``workgraphs.pw``) chain
-``PwBaseWorkChain`` and ``PwBandsWorkChain`` from ``aiida-quantumespresso``,
+``RunWannierGroundState`` (``workgraphs.wannier_ground_state``) and
+``RunPwBands`` (``workgraphs.pw``) chain ``PwBaseWorkChain`` and
+``PwBandsWorkChain`` from ``aiida-quantumespresso``,
 stamping each step's ``CONTROL.calculation`` and pinning its k-point mesh
 rather than letting a later merge decide either. ``RunPdos``
 (``workgraphs.pdos``) wraps ``PdosWorkChain``. ``DielectricTask``

@@ -19,7 +19,7 @@ from aiida_koopmans.workgraphs.pw import PwBaseStep, _finish_pw_base_step
 
 
 class ScfNscfOutputs(TypedDict):
-    """Outputs of a chained SCF + NSCF PwBaseWorkChain run."""
+    """Outputs of the Wannier ground state: an NSCF run, and the SCF density it read."""
 
     scf_remote_folder: orm.RemoteData
     nscf_remote_folder: orm.RemoteData
@@ -42,16 +42,17 @@ def RunWannierGroundState(
     scf_remote_folder: orm.RemoteData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
-    """Run the Wannier ground state: chained PwBaseWorkChain scf and nscf steps.
+    """Run the Wannier ground state a Wannierization reads its eigenstates from.
 
-    Every Wannierization starts from this pair. Its only two callers,
+    An NSCF ``PwBaseWorkChain``, preceded by an SCF step unless
+    ``scf_remote_folder`` supplies the density. Its only two callers,
     :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
     and :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow`,
     both Wannierize; a route that does not (the molecular DSCF KS-init,
     which runs kcp.x's own ground state, or plain DFT bands/eps) does not
     call it.
 
-    Both steps are seeded from
+    Both builders come from
     ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``, so the NSCF
     carries the invariants a Wannierization needs — ``diago_full_acc`` for
     the empty states, ``startingpot = 'file'`` off the SCF density, and the
@@ -72,9 +73,7 @@ def RunWannierGroundState(
 
     With ``scf_remote_folder`` given, no SCF runs: only the recipe's NSCF
     builder is used, reading that density as its ``pw.parent_folder``. The
-    NSCF is the same one the internal pair runs, invariants and all, so a
-    caller re-Wannierizing on a denser mesh gets the recipe's NSCF rather
-    than a second hand-built one.
+    NSCF is the same one the internal pair runs, invariants and all.
 
     Args:
         pw_code: The Code instance configured for the quantumespresso.pw plugin.
@@ -98,14 +97,19 @@ def RunWannierGroundState(
             used as given.
         scf_remote_folder: A converged SCF scratch on ``structure``. Given,
             the SCF step is skipped and the NSCF restarts from this density;
-            ``scf_remote_folder`` comes back out unchanged, so a consumer
-            reads one output whichever mode ran.
+            ``scf_remote_folder`` comes back out unchanged. The recipe builds
+            both builders either way, so ``overrides["scf"]`` must still
+            satisfy the protocol builder: a pseudo family recommending no
+            cutoffs needs ``ecutwfc``/``ecutrho`` here as much as in the
+            running mode, and without them this graph raises when it runs,
+            not when it is built.
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
 
     Returns:
-        Dict with remote folders and retrieved data from both steps.
+        Dict with the SCF density and the NSCF's remote folder, retrieved
+        data, parameters, bands and k-points.
 
     Raises:
         ValueError: If ``scf_kpoints`` is given alongside
