@@ -555,15 +555,17 @@ class TestBlockWannierizeGraphBuild:
         assert "bands" not in names
         assert "projwfc" not in names
 
-    def test_scf_remote_folder_alone_skips_the_scf_and_runs_a_fresh_nscf(
+    def test_scf_remote_folder_alone_still_runs_the_nscf_through_the_ground_state(
         self, wannier_codes, silicon_structure, kmesh, scf_remote, fake_cutoffs_family
     ):
         """``scf_remote_folder`` without ``nscf_remote_folder`` still runs the nscf.
 
-        The discriminating check: no ``scf_nscf`` task (no internal scf),
-        but a fresh ``nscf`` task exists and reads its density from
-        ``scf_remote`` — unlike the ``nscf_remote_folder`` path, which
-        skips the nscf too and reuses an existing one whole.
+        The discriminating check: the same ``scf_nscf`` ground state the
+        internal route builds is here too, handed the caller's density —
+        unlike the ``nscf_remote_folder`` path, which skips it entirely and
+        reuses an existing nscf whole. What that ground state does with the
+        density (nscf only, no scf) is pinned in
+        ``test_scf_nscf_recipe.py``.
         """
         wg = WannierizeBlocks.build(
             codes=wannier_codes,
@@ -574,15 +576,19 @@ class TestBlockWannierizeGraphBuild:
             scf_remote_folder=scf_remote,
         )
         names = [t.name for t in wg.tasks]
-        assert "scf_nscf" not in names
-        assert "nscf" in names, names
-        nscf_task = {t.name: t for t in wg.tasks}["nscf"]
-        assert nscf_task.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid
-        assert (
-            nscf_task.inputs["pw"]["parameters"].value.get_dict()["CONTROL"]["calculation"]
-            == "nscf"
-        )
+        assert "scf_nscf" in names, names
+        ground_state = {t.name: t for t in wg.tasks}["scf_nscf"]
+        assert ground_state.inputs["scf_remote_folder"].value.uuid == scf_remote.uuid
         assert wg.outputs["nscf"]["remote_folder"]._links
+
+    def test_no_scf_remote_folder_leaves_the_ground_state_to_run_its_own_scf(
+        self, wannier_codes, silicon_structure, kmesh
+    ):
+        """Negative control: the default route hands the ground state no density."""
+        wg = _build(wannier_codes, silicon_structure, _silicon_blocks(), kmesh)
+        ground_state = {t.name: t for t in wg.tasks}["scf_nscf"]
+        assert ground_state.inputs["scf_remote_folder"].value is None
+        assert not ground_state.inputs["scf_remote_folder"]._links
 
     def test_scf_remote_folder_alone_does_not_re_expose_the_callers_own_scf(
         self, wannier_codes, silicon_structure, kmesh, scf_remote, fake_cutoffs_family

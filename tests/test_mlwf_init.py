@@ -401,10 +401,11 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
         would build without error but wannierize the wrong grid. The
         ``scf_remote_folder`` link is the other: it must trace to the
         initialisation wannierization's own scf, not a fresh one built
-        here. ``wannierize_smooth`` is itself a nested ``WannierizeBlocks``
-        graph, so its own internal choice between an ``scf_nscf`` and a
-        bare ``nscf`` step is a construction-level ``WannierizeBlocks``
-        concern, covered directly in ``test_block_wannierize.py``.
+        here. What the dense wannierization then does with that density —
+        skip its own scf and run the recipe's nscf alone — is a
+        construction-level concern of ``WannierizeBlocks`` and the ground
+        state it calls, covered in ``test_block_wannierize.py`` and
+        ``test_scf_nscf_recipe.py``.
         """
         wg = self._build(
             periodic_ozone_structure,

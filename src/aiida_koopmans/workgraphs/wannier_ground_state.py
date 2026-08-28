@@ -39,9 +39,10 @@ def RunWannierGroundState(
     parallelization: ParallelizationDict | None = None,
     scf_kpoints: orm.KpointsData | None = None,
     nscf_kpoints: orm.KpointsData | None = None,
+    scf_remote_folder: orm.RemoteData | None = None,
     electronic_type: ElectronicType = ElectronicType.INSULATOR,
 ) -> ScfNscfOutputs:
-    """Run the Wannier ground state: two chained PwBaseWorkChain steps, scf then nscf.
+    """Run the Wannier ground state: chained PwBaseWorkChain scf and nscf steps.
 
     Every Wannierization starts from this pair. Its only two callers,
     :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
@@ -69,6 +70,12 @@ def RunWannierGroundState(
     Overrides are split by namespace: ``overrides["scf"]`` applies to the
     SCF step and ``overrides["nscf"]`` applies to the NSCF step.
 
+    With ``scf_remote_folder`` given, no SCF runs: only the recipe's NSCF
+    builder is used, reading that density as its ``pw.parent_folder``. The
+    NSCF is the same one the internal pair runs, invariants and all, so a
+    caller re-Wannierizing on a denser mesh gets the recipe's NSCF rather
+    than a second hand-built one.
+
     Args:
         pw_code: The Code instance configured for the quantumespresso.pw plugin.
         structure: The StructureData instance to use.
@@ -83,17 +90,26 @@ def RunWannierGroundState(
             ``-npool``.
         scf_kpoints: Explicit k-points for the SCF step, replacing the
             protocol's ``kpoints_distance``. Leave unset only where no
-            mesh is prescribed and the protocol should choose one.
+            mesh is prescribed and the protocol should choose one. Rejected
+            together with ``scf_remote_folder``, which runs no SCF.
         nscf_kpoints: Explicit k-points for the NSCF step, replacing the
             protocol's ``kpoints_distance``. A mesh is expanded to the
             explicit list in wannier90's k-point order; an explicit list is
             used as given.
+        scf_remote_folder: A converged SCF scratch on ``structure``. Given,
+            the SCF step is skipped and the NSCF restarts from this density;
+            ``scf_remote_folder`` comes back out unchanged, so a consumer
+            reads one output whichever mode ran.
         electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
             Koopmans functionals treat insulators exclusively, and kcw.x
             refuses non-fixed occupations outright.
 
     Returns:
         Dict with remote folders and retrieved data from both steps.
+
+    Raises:
+        ValueError: If ``scf_kpoints`` is given alongside
+            ``scf_remote_folder``, where no SCF runs to sample it.
     """
     from aiida_wannier90_workflows.workflows.wannier90 import Wannier90WorkChain
 
@@ -101,6 +117,13 @@ def RunWannierGroundState(
     # protocol builder's pseudo-family QueryBuilder can bind it.
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
     overrides = overrides or {}
+
+    if scf_remote_folder is not None and scf_kpoints is not None:
+        raise ValueError(
+            "scf_kpoints was given together with scf_remote_folder; no scf "
+            "runs here, so the mesh would be silently ignored. Set it on "
+            "whoever ran the scf."
+        )
 
     # Inject pseudo_family as a top-level override for both steps
     inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
@@ -137,10 +160,13 @@ def RunWannierGroundState(
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
 
-    scf_data = _finish_pw_base_step(
-        get_dict_from_builder(scf_builder), step="scf", display="SCF", kpoints=scf_kpoints
-    )
-    scf_outputs = PwBaseStep(**scf_data)
+    # An external density skips the scf step; the recipe still builds both
+    # builders (they are independent), and the scf half is discarded.
+    if scf_remote_folder is None:
+        scf_data = _finish_pw_base_step(
+            get_dict_from_builder(scf_builder), step="scf", display="SCF", kpoints=scf_kpoints
+        )
+        scf_remote_folder = PwBaseStep(**scf_data)["remote_folder"]
 
     # The recipe pins the nscf k-points itself, expanding a mesh into
     # wannier90's order, so re-pin what it settled on rather than the
@@ -153,11 +179,11 @@ def RunWannierGroundState(
         display="NSCF",
         kpoints=nscf_data.get("kpoints", nscf_kpoints),
     )
-    nscf_data["pw"]["parent_folder"] = scf_outputs["remote_folder"]
+    nscf_data["pw"]["parent_folder"] = scf_remote_folder
     nscf_outputs = PwBaseStep(**nscf_data)
 
     return ScfNscfOutputs(
-        scf_remote_folder=scf_outputs["remote_folder"],
+        scf_remote_folder=scf_remote_folder,
         nscf_remote_folder=nscf_outputs["remote_folder"],
         nscf_retrieved=nscf_outputs["retrieved"],
         nscf_output_parameters=nscf_outputs["output_parameters"],
