@@ -60,7 +60,7 @@ def autogenerate_nrb(
     pseudos: dict[str, UpfData],
     *,
     ecutwfc: float,
-    ecutrho: float,
+    ecutrho: float | None = None,
 ) -> tuple[int, int, int] | None:
     """Return ``SYSTEM.nr{1,2,3}b``, or None when no pseudo carries core corrections.
 
@@ -70,12 +70,17 @@ def autogenerate_nrb(
     unset (bites e.g. PseudoDojo; SG15 has no NLCC). The conservative
     guess is the full density-grid dimensions scaled by
     ``2 * rc_safe / L_i`` with ``rc_safe = 3`` Bohr (every PseudoDojo
-    cutoff radius is <= 2.6 Bohr).
+    cutoff radius is <= 2.6 Bohr). ``ecutrho`` falls back to
+    ``4 * ecutwfc`` when unset, as QE does.
     """
     from qe_tools import CONSTANTS
 
     if not any(_core_corrected(pseudo) for pseudo in pseudos.values()):
         return None
+
+    # A graph input arrives as a wrapt proxy around the float; numpy's ufuncs
+    # refuse it ("no callable sqrt method"), so coerce before the arithmetic.
+    ecutrho = float(ecutrho) if ecutrho else 4.0 * float(ecutwfc)
 
     angstrom_to_bohr = 1.0 / CONSTANTS.bohr_to_ang
     cell = np.array(structure.cell, dtype=float)

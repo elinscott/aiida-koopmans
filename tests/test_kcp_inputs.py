@@ -53,6 +53,29 @@ class TestAutogenerateNrb:
         pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
         assert autogenerate_nrb(structure, pseudos, ecutwfc=30.0, ecutrho=120.0) == (24, 24, 24)
 
+    def test_accepts_the_wrapped_cutoffs_a_graph_input_arrives_as(self, generate_full_upf_data):
+        """Cutoffs read off a socket are wrapt proxies, which numpy's ufuncs refuse."""
+        from aiida.orm import StructureData
+        from node_graph.socket import TaggedValue
+
+        structure = StructureData(cell=[[10.0, 0, 0], [0, 10.0, 0], [0, 0, 10.0]], pbc=True)
+        structure.append_atom(position=[0.0, 0.0, 0.0], symbols="O", name="O")
+        pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
+        assert autogenerate_nrb(
+            structure,
+            pseudos,
+            ecutwfc=TaggedValue(30.0),
+            ecutrho=TaggedValue(120.0),
+        ) == (24, 24, 24)
+
+    def test_falls_back_to_four_times_ecutwfc_without_ecutrho(self, generate_full_upf_data):
+        from aiida.orm import StructureData
+
+        structure = StructureData(cell=[[10.0, 0, 0], [0, 10.0, 0], [0, 0, 10.0]], pbc=True)
+        structure.append_atom(position=[0.0, 0.0, 0.0], symbols="O", name="O")
+        pseudos = {"O": generate_full_upf_data("O", core_correction=True)}
+        assert autogenerate_nrb(structure, pseudos, ecutwfc=30.0, ecutrho=None) == (24, 24, 24)
+
     def test_an_unreadable_pseudo_is_not_silently_no_nlcc(self, ozone_structure):
         """Anything but an incomplete UPF header propagates.
 
