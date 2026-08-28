@@ -1,6 +1,6 @@
 """Tests for the mesh an SCF step samples.
 
-Three graphs take an SCF mesh — ``RunScfNscf``, ``RunPwBands`` and
+Three graphs take an SCF mesh — ``RunWannierGroundState``, ``RunPwBands`` and
 ``DielectricTask`` — and each is checked on the materialized
 ``PwBaseWorkChain`` inputs: an explicit mesh must displace the protocol's
 ``kpoints_distance``, and no mesh must leave the protocol in charge. The
@@ -36,14 +36,14 @@ def _silicon_blocks() -> list[ExplicitProjectionBlock]:
     ]
 
 
-class TestRunScfNscf:
+class TestRunWannierGroundState:
     def test_explicit_mesh_displaces_the_protocol_distance(
         self, fake_cutoffs_family, silicon_structure, kmesh, kpath, pw_code
     ):
         """The SCF samples ``scf_kpoints``; the NSCF keeps its own k-points."""
-        from aiida_koopmans.workgraphs.pw import RunScfNscf
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,
@@ -69,9 +69,9 @@ class TestRunScfNscf:
         Callers that prescribe no mesh must keep working, so setting one
         cannot become mandatory by accident.
         """
-        from aiida_koopmans.workgraphs.pw import RunScfNscf
+        from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
 
-        wg = RunScfNscf.build(
+        wg = RunWannierGroundState.build(
             pw_code=pw_code,
             structure=silicon_structure,
             pseudo_family=fake_cutoffs_family.label,

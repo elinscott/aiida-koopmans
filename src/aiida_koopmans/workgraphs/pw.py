@@ -1,7 +1,7 @@
 """Workgraphs that wrap aiida-quantumespresso.pw workchains."""
 
 import copy
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
@@ -48,17 +48,6 @@ class ScfBandsOutputs(TypedDict):
     band_structure: orm.BandsData
 
 
-class ScfNscfOutputs(TypedDict):
-    """Outputs of a chained SCF + NSCF PwBaseWorkChain run."""
-
-    scf_remote_folder: orm.RemoteData
-    nscf_remote_folder: orm.RemoteData
-    nscf_retrieved: orm.FolderData
-    nscf_output_parameters: dict
-    nscf_output_band: orm.BandsData
-    nscf_output_kpoints: NotRequired[orm.KpointsData]
-
-
 #: Annotation for the pw.x code as the workflows that run scf + nscf wire it.
 PwCode = Annotated[
     orm.AbstractCode,
@@ -79,6 +68,53 @@ PwBaseStep = task(PwBaseWorkChain)
 PwBandsStep = task(PwBandsWorkChain)
 
 
+def _finish_pw_base_step(
+    builder: Any,
+    *,
+    step: str,
+    display: str,
+    kpoints: orm.KpointsData | None = None,
+    parent_folder: Any = None,
+    parallelization: ParallelizationDict | None = None,
+) -> dict[str, Any]:
+    """Turn a built ``PwBaseWorkChain`` builder into one step's task inputs.
+
+    The post-build half every pw.x step of this package shares: drop
+    ``clean_workdir`` (the graph owns the scratch), stamp
+    ``CONTROL.verbosity``, replace the protocol's distance-derived mesh with
+    ``kpoints``, wire ``parent_folder`` and the per-code parallelization,
+    and name the step for a reader.
+
+    ``display`` names the step on both the workchain and the pw.x
+    calculation it wraps, so the step is named whichever of the two a
+    restart leaves visible.
+
+    Args:
+        builder: A ``PwBaseWorkChain`` builder, or its flattened inputs.
+        step: The step's ``call_link_label``.
+        display: The name a reader sees.
+        kpoints: The mesh (or explicit list) the step samples.
+        parent_folder: The scratch the step restarts from.
+        parallelization: Per-code parallelization mapping.
+
+    Returns:
+        The step's inputs, ready to pass to ``PwBaseStep``.
+    """
+    data = builder if isinstance(builder, dict) else get_dict_from_builder(builder)
+    data.pop("clean_workdir", None)
+    pw_inputs = data["pw"]
+    force_pw_verbosity(pw_inputs)
+    pin_kpoints(data, kpoints)
+    if parent_folder is not None:
+        pw_inputs["parent_folder"] = parent_folder
+    if parallelization is not None:
+        merge_parallelization_into_inputs(pw_inputs, parallelization, "pw")
+    data.setdefault("metadata", {})["call_link_label"] = step
+    name_step(data, display)
+    name_step(pw_inputs, display)
+    return data
+
+
 def assemble_pw_base_step(
     pw_code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -95,17 +131,12 @@ def assemble_pw_base_step(
 ) -> Any:
     """Assemble one ``PwBaseWorkChain`` step inside a graph body.
 
-    Build the step from the protocol builder with ``overrides`` merged on
-    top, stamp its ``CONTROL.calculation`` (raising on a conflicting
-    explicit value) and its ``CONTROL.verbosity``, replace the protocol's
-    distance-derived mesh with
-    ``kpoints`` when given, wire ``parent_folder``, and add the step to the
-    surrounding graph under ``call_link_label``. A plain graph-assembly
-    helper: it must be called inside a ``@task.graph`` body.
-
-    ``display`` names the step for a reader: it is set on both the
-    workchain and the pw.x calculation it wraps, so the step is named
-    whichever of the two a restart leaves visible.
+    Stamp the step's ``CONTROL.calculation`` into ``overrides`` (raising on
+    a conflicting explicit value), build the step from the protocol builder
+    with those overrides merged on top, finish it with
+    :func:`_finish_pw_base_step`, and add it to the surrounding graph under
+    ``call_link_label``. A plain graph-assembly helper: it must be called
+    inside a ``@task.graph`` body.
     """
     overrides = overrides or {}
     enforce_step_calculation(
@@ -120,17 +151,14 @@ def assemble_pw_base_step(
         overrides=overrides,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
     )
-    data = get_dict_from_builder(builder)
-    data.pop("clean_workdir", None)
-    force_pw_verbosity(data["pw"])
-    pin_kpoints(data, kpoints)
-    if parent_folder is not None:
-        data["pw"]["parent_folder"] = parent_folder
-    if parallelization is not None:
-        merge_parallelization_into_inputs(data["pw"], parallelization, "pw")
-    data.setdefault("metadata", {})["call_link_label"] = call_link_label
-    name_step(data, display)
-    name_step(data["pw"], display)
+    data = _finish_pw_base_step(
+        builder,
+        step=call_link_label,
+        display=display,
+        kpoints=kpoints,
+        parent_folder=parent_folder,
+        parallelization=parallelization,
+    )
     return PwBaseStep(**data)
 
 
@@ -258,7 +286,9 @@ def RunPwBands(
         structure: The StructureData instance to use.
         pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
             If not specified, the protocol default is used.
-        protocol: Protocol to use. If not specified, the default will be used.
+        protocol: One of ``moderate`` (the default), ``precise`` or
+            ``fast``; anything else raises. The recipe resolves the name
+            against ``Wannier90WorkChain``'s protocols, not pw.x's.
         overrides: Optional dictionary of inputs to override protocol defaults.
         parallelization: Per-code parallelization mapping (keyed by code name);
             the ``pw`` entry sets the scf/bands pw.x ``metadata.options`` and
@@ -338,98 +368,4 @@ def RunPwBands(
     return ScfBandsOutputs(
         scf_parameters=output.scf_parameters,
         band_structure=output.band_structure,
-    )
-
-
-@task.graph
-def RunScfNscf(
-    pw_code: orm.AbstractCode,
-    structure: orm.StructureData,
-    pseudo_family: str | None = None,
-    protocol: str | None = None,
-    overrides: dict[str, Any] | None = None,
-    parallelization: ParallelizationDict | None = None,
-    scf_kpoints: orm.KpointsData | None = None,
-    nscf_kpoints: orm.KpointsData | None = None,
-    electronic_type: ElectronicType = ElectronicType.INSULATOR,
-) -> ScfNscfOutputs:
-    """Run SCF + NSCF using two PwBaseWorkChain steps.
-
-    Each step samples the Brillouin zone on the mesh it is given, falling
-    back to the protocol's ``kpoints_distance`` when none is. The NSCF step
-    reuses the SCF charge density via ``parent_folder`` and sets
-    ``calculation = 'nscf'``.
-
-    Overrides are split by namespace: ``overrides["scf"]`` applies to the
-    SCF step and ``overrides["nscf"]`` applies to the NSCF step.
-
-    Args:
-        pw_code: The Code instance configured for the quantumespresso.pw plugin.
-        structure: The StructureData instance to use.
-        pseudo_family: Pseudo family label (e.g. ``"PseudoDojo/0.4/PBE/SR/standard/upf"``).
-            If not specified, the protocol default is used.
-        protocol: Protocol to use. If not specified, the default will be used.
-        overrides: Optional dictionary with ``"scf"`` and/or ``"nscf"`` keys.
-        parallelization: Per-code parallelization mapping (keyed by code name);
-            the ``pw`` entry sets the scf/nscf pw.x ``metadata.options`` and
-            ``-npool``.
-        scf_kpoints: Explicit k-points for the SCF step, replacing the
-            protocol's ``kpoints_distance``. Leave unset only where no
-            mesh is prescribed and the protocol should choose one.
-        nscf_kpoints: Explicit k-points for the NSCF step, replacing the
-            protocol's ``kpoints_distance``. A wannierisation NSCF must run
-            on the full (symmetry-unreduced) grid in the k-point order the
-            downstream wannier90 expects.
-        electronic_type: Defaults to ``INSULATOR`` (fixed occupations):
-            Koopmans functionals treat insulators exclusively, and kcw.x
-            refuses non-fixed occupations outright.
-
-    Returns:
-        Dict with remote folders and retrieved data from both steps.
-    """
-    # A graph input arrives as a wrapt proxy; coerce to a plain str so the
-    # protocol builder's pseudo-family QueryBuilder can bind it.
-    pseudo_family = str(pseudo_family) if pseudo_family is not None else None
-    overrides = overrides or {}
-
-    # Inject pseudo_family as a top-level override for both steps
-    inject_pseudo_family(overrides, pseudo_family, ("scf", "nscf"))
-    merge_parallelization_into_overrides(
-        overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
-    )
-    scf_outputs = assemble_pw_base_step(
-        pw_code,
-        structure,
-        calculation="scf",
-        call_link_label="scf",
-        display="SCF",
-        overrides=overrides.setdefault("scf", {}),
-        protocol=protocol,
-        electronic_type=electronic_type,
-        kpoints=scf_kpoints,
-    )
-
-    # The nscf reuses the scf density; an explicit mesh (when given) must
-    # replace the protocol's distance-derived one — a wannierisation nscf
-    # runs on the full grid in the downstream wannier90's k-order.
-    nscf_outputs = assemble_pw_base_step(
-        pw_code,
-        structure,
-        calculation="nscf",
-        call_link_label="nscf",
-        display="NSCF",
-        overrides=overrides.setdefault("nscf", {}),
-        protocol=protocol,
-        electronic_type=electronic_type,
-        kpoints=nscf_kpoints,
-        parent_folder=scf_outputs["remote_folder"],
-    )
-
-    return ScfNscfOutputs(
-        scf_remote_folder=scf_outputs["remote_folder"],
-        nscf_remote_folder=nscf_outputs["remote_folder"],
-        nscf_retrieved=nscf_outputs["retrieved"],
-        nscf_output_parameters=nscf_outputs["output_parameters"],
-        nscf_output_band=nscf_outputs["output_band"],
-        nscf_output_kpoints=nscf_outputs["output_kpoints"],
     )
