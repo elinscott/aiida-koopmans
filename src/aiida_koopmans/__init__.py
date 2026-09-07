@@ -31,18 +31,6 @@ def _patch_hyperqueue_accepts_computer_default() -> None:
         from aiida_hyperqueue.scheduler import HyperQueueJobResource
     except ImportError:  # plugin not installed in this env
         return
-    try:
-        already_fixed = HyperQueueJobResource.accepts_default_mpiprocs_per_machine()
-    except AttributeError:
-        # A future aiida-hyperqueue release renamed or dropped the classmethod
-        # this patch targets; skip rather than raise on an install that no
-        # longer has the surface we're aiming at.
-        return
-    if already_fixed:
-        # Upstream shipped the fix; patching would be a no-op here, but
-        # skipping it means a future signature change upstream (e.g. the
-        # classmethod taking arguments) can't be silently clobbered by ours.
-        return
     HyperQueueJobResource.accepts_default_mpiprocs_per_machine = classmethod(lambda cls: True)
 
 
