@@ -303,6 +303,41 @@ def test_spin_component_rejects_spinor():
         _spin_component(SpinChannel.SPINOR)
 
 
+class TestSeedDecomposeOptions:
+    """``_seed_decompose_options`` merges rather than replaces the caller's options.
+
+    ``fan_out_block_descriptors`` builds the decompose CalcJob's inputs
+    directly (no protocol builder to inherit a default ``resources`` from),
+    so it seeds one -- but must not drop options a caller already set, such
+    as a future ``max_wallclock_seconds``/``account``/``queue_name``.
+    """
+
+    def test_no_existing_options_gets_the_default_resources(self):
+        from aiida_koopmans.workgraphs.ml import _DEFAULT_CALCJOB_OPTIONS, _seed_decompose_options
+
+        assert _seed_decompose_options(None) == _DEFAULT_CALCJOB_OPTIONS
+        assert _seed_decompose_options({}) == _DEFAULT_CALCJOB_OPTIONS
+
+    def test_caller_options_survive_the_seed(self):
+        from aiida_koopmans.workgraphs.ml import _seed_decompose_options
+
+        merged = _seed_decompose_options(
+            {"max_wallclock_seconds": 3600, "account": "my-account", "queue_name": "regular"}
+        )
+        assert merged == {
+            "resources": {"num_machines": 1, "num_mpiprocs_per_machine": 1},
+            "max_wallclock_seconds": 3600,
+            "account": "my-account",
+            "queue_name": "regular",
+        }
+
+    def test_caller_resources_win_over_the_default(self):
+        from aiida_koopmans.workgraphs.ml import _seed_decompose_options
+
+        merged = _seed_decompose_options({"resources": {"num_machines": 2}})
+        assert merged == {"resources": {"num_machines": 2}}
+
+
 def test_compute_block_descriptors_returns_cross_power(aiida_profile):
     """`compute_block_descriptors` cross-powers a block's decompose arrays."""
     import numpy as np

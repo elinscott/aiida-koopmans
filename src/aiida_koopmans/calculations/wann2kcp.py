@@ -104,9 +104,12 @@ class Wann2kcpCalculation(KoopmansStdoutCalculation):
             resources = value["metadata"]["options"]["resources"]
         except (KeyError, TypeError):
             return None
-        nprocs = resources.get("tot_num_mpiprocs") or (
-            resources.get("num_machines", 1) * resources.get("num_mpiprocs_per_machine", 1)
-        )
+        code = value.get("code")
+        computer = code.computer if code is not None else None
+        try:
+            nprocs = cls._resolve_total_mpiprocs(resources, computer)
+        except ValueError as exc:
+            return str(exc)
         if nprocs > 1:
             return (
                 "wann2kcp.x must run on a single MPI rank "
