@@ -44,7 +44,9 @@ class CodeParallelization(TypedDict, total=False):
     command line; ``omp`` sets the per-rank OpenMP/BLAS thread count via a
     ``metadata.options.prepend_text`` export block (overriding the
     computer-level pin of one thread); ``max_wallclock_seconds`` sets
-    ``metadata.options.max_wallclock_seconds``, already converted to seconds.
+    ``metadata.options.max_wallclock_seconds``, already converted to seconds;
+    ``account`` and ``queue_name`` set ``metadata.options.account`` /
+    ``metadata.options.queue_name`` for a scheduler that requires them.
     Every field is optional (``total=False``); an absent one means the
     QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization`` pydantic
     model that produces these dicts.
@@ -55,6 +57,8 @@ class CodeParallelization(TypedDict, total=False):
     pd: bool
     omp: int
     max_wallclock_seconds: int
+    account: str
+    queue_name: str
 
 
 # Per-code parallelization mapping threaded into every top-level graph: a plain
@@ -111,6 +115,27 @@ def validate_parallelization(parallelization: ParallelizationDict | None) -> Non
         )
 
 
+def _scalar_options(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return the plain, every-code options in ``cfg``: omp, walltime, account, queue.
+
+    These carry no per-code support matrix, unlike ``npool``/``pd``.
+    """
+    options: dict[str, Any] = {}
+    omp = cfg.get("omp")
+    max_wallclock_seconds = cfg.get("max_wallclock_seconds")
+    account = cfg.get("account")
+    queue_name = cfg.get("queue_name")
+    if omp is not None:
+        options["prepend_text"] = omp_prepend_text(omp)
+    if max_wallclock_seconds is not None:
+        options["max_wallclock_seconds"] = int(max_wallclock_seconds)
+    if account is not None:
+        options["account"] = account
+    if queue_name is not None:
+        options["queue_name"] = queue_name
+    return options
+
+
 def resolve_parallelization(
     parallelization: ParallelizationDict | None, code: CodeName, *, pools: bool = True
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -119,11 +144,13 @@ def resolve_parallelization(
     ``parallelization`` is keyed by code name; each value is a plain dict with
     optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
     (k-point pools -> ``-npool``), ``pd`` (pencil decomposition -> ``-pd true``),
-    ``omp`` (per-rank BLAS threads -> ``metadata.options.prepend_text``), and
-    ``max_wallclock_seconds`` (-> ``metadata.options.max_wallclock_seconds``).
-    The two command-line flags are emitted npool-before-pd. Unlike npool/pd,
-    ``omp`` and ``max_wallclock_seconds`` are plain options accepted for every
-    code — no support matrix.
+    ``omp`` (per-rank BLAS threads -> ``metadata.options.prepend_text``),
+    ``max_wallclock_seconds`` (-> ``metadata.options.max_wallclock_seconds``),
+    and ``account``/``queue_name`` (-> ``metadata.options.account`` /
+    ``metadata.options.queue_name``). The two command-line flags are emitted
+    npool-before-pd. Unlike npool/pd, ``omp``, ``max_wallclock_seconds``,
+    ``account`` and ``queue_name`` are plain options accepted for every code —
+    no support matrix.
 
     ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
     pools even though the code generally does (the kcw.x ham step).
@@ -140,8 +167,6 @@ def resolve_parallelization(
     ntasks = cfg.get("ntasks")
     npool = cfg.get("npool")
     pd = cfg.get("pd")
-    omp = cfg.get("omp")
-    max_wallclock_seconds = cfg.get("max_wallclock_seconds")
     if ntasks is not None:
         # ``num_machines`` + ``num_mpiprocs_per_machine`` is the one resource
         # shape every scheduler in play accepts: native for the node-counting
@@ -149,10 +174,7 @@ def resolve_parallelization(
         # (its own class ignores ``tot_num_mpiprocs``, silently yielding
         # single-rank jobs).
         options = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": int(ntasks)}}
-    if omp is not None:
-        options["prepend_text"] = omp_prepend_text(omp)
-    if max_wallclock_seconds is not None:
-        options["max_wallclock_seconds"] = int(max_wallclock_seconds)
+    options.update(_scalar_options(cfg))
     cmdline: list[str] = []
     if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:

@@ -175,6 +175,56 @@ class TestWalltime:
         assert inputs["metadata"]["call_link_label"] == "scf"
 
 
+class TestAccountAndQueue:
+    def test_account_and_queue_name_reach_options(self):
+        options, settings = resolve_parallelization(
+            {"kcw": {"account": "my-account", "queue_name": "regular"}}, "kcw"
+        )
+        assert options == {"account": "my-account", "queue_name": "regular"}
+        assert settings == {}
+
+    @pytest.mark.parametrize("code", list(CODE_NAMES))
+    def test_accepted_for_every_code(self, code):
+        """Accept account/queue_name for every code — no support matrix, unlike npool/pd."""
+        options, _ = resolve_parallelization({code: {"account": "acct", "queue_name": "q"}}, code)
+        assert options == {"account": "acct", "queue_name": "q"}
+
+    def test_absent_keys_leave_options_untouched(self):
+        inputs = {"metadata": {"options": {"resources": {"num_machines": 1}}}}
+        merge_parallelization_into_inputs(inputs, {"pw": {"ntasks": 4}}, "pw")
+        assert "account" not in inputs["metadata"]["options"]
+        assert "queue_name" not in inputs["metadata"]["options"]
+
+    def test_merged_not_overwritten_when_caller_already_has_options(self):
+        """A caller-supplied prepend_text and resources survive the merge alongside the new keys."""
+        inputs = {
+            "metadata": {
+                "options": {
+                    "prepend_text": "module load qe",
+                    "resources": {"num_machines": 1, "num_mpiprocs_per_machine": 2},
+                }
+            }
+        }
+        merge_parallelization_into_inputs(
+            inputs, {"pw": {"account": "my-account", "queue_name": "regular"}}, "pw"
+        )
+        options = inputs["metadata"]["options"]
+        assert options["prepend_text"] == "module load qe"
+        assert options["resources"] == {"num_machines": 1, "num_mpiprocs_per_machine": 2}
+        assert options["account"] == "my-account"
+        assert options["queue_name"] == "regular"
+
+    def test_reaches_a_representative_calcjob_step(self):
+        """Both keys land on metadata.options for a non-pw step's own input namespace."""
+        inputs = {"metadata": {"call_link_label": "screen"}, "settings": {}}
+        merge_parallelization_into_inputs(
+            inputs, {"kcw": {"account": "my-account", "queue_name": "regular"}}, "kcw"
+        )
+        assert inputs["metadata"]["options"]["account"] == "my-account"
+        assert inputs["metadata"]["options"]["queue_name"] == "regular"
+        assert inputs["metadata"]["call_link_label"] == "screen"
+
+
 class TestApplyToCalcJob:
     def test_merges_and_preserves_existing(self):
         inputs = {"metadata": {"call_link_label": "screen"}, "settings": {"a": 1}}
