@@ -7,10 +7,10 @@ their spin-up / spin-down nspin=2 counterparts. The tests exercise:
 * the pure byte-substitution helper (no AiiDA profile);
 * the calcfunction end-to-end against trivial ``RemoteData`` inputs
   pointing at on-disk fixtures, over ``core.local`` transport; and
-* the same end-to-end run over a genuine ``core.ssh`` transport (paramiko
-  SFTP + remote ``cp``), and a check that the scratch output is staged
-  under the ``AuthInfo`` work directory rather than a hardcoded local
-  path — the two properties a raw-filesystem implementation cannot have.
+* that every file access goes through the transport and the scratch
+  output is staged under the ``AuthInfo`` work directory rather than a
+  hardcoded local path — two properties a raw-filesystem implementation
+  cannot have.
 """
 
 from __future__ import annotations
