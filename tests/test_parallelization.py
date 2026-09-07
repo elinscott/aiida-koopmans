@@ -134,6 +134,47 @@ class TestOmp:
         assert options["prepend_text"] == omp_prepend_text(2)
 
 
+class TestWalltime:
+    def test_max_wallclock_seconds_reaches_options(self):
+        options, settings = resolve_parallelization({"pw": {"max_wallclock_seconds": 3600}}, "pw")
+        assert options == {"max_wallclock_seconds": 3600}
+        assert settings == {}
+
+    @pytest.mark.parametrize("code", list(CODE_NAMES))
+    def test_accepted_for_every_code(self, code):
+        """Accept max_wallclock_seconds for every code — no support matrix, unlike npool/pd."""
+        options, _ = resolve_parallelization({code: {"max_wallclock_seconds": 1800}}, code)
+        assert options == {"max_wallclock_seconds": 1800}
+
+    def test_absent_key_leaves_options_untouched(self):
+        inputs = {"metadata": {"options": {"resources": {"num_machines": 1}}}}
+        merge_parallelization_into_inputs(inputs, {"pw": {"ntasks": 4}}, "pw")
+        assert "max_wallclock_seconds" not in inputs["metadata"]["options"]
+
+    def test_merged_not_overwritten_when_caller_already_has_options(self):
+        """A caller-supplied prepend_text and resources survive the merge alongside the new key."""
+        inputs = {
+            "metadata": {
+                "options": {
+                    "prepend_text": "module load qe",
+                    "resources": {"num_machines": 1, "num_mpiprocs_per_machine": 2},
+                }
+            }
+        }
+        merge_parallelization_into_inputs(inputs, {"pw": {"max_wallclock_seconds": 7200}}, "pw")
+        options = inputs["metadata"]["options"]
+        assert options["prepend_text"] == "module load qe"
+        assert options["resources"] == {"num_machines": 1, "num_mpiprocs_per_machine": 2}
+        assert options["max_wallclock_seconds"] == 7200
+
+    def test_reaches_a_representative_calcjob_step(self):
+        """The key lands on metadata.options for a pw.x step's own input namespace."""
+        inputs = {"metadata": {"call_link_label": "scf"}, "settings": {}}
+        merge_parallelization_into_inputs(inputs, {"pw": {"max_wallclock_seconds": 43200}}, "pw")
+        assert inputs["metadata"]["options"]["max_wallclock_seconds"] == 43200
+        assert inputs["metadata"]["call_link_label"] == "scf"
+
+
 class TestApplyToCalcJob:
     def test_merges_and_preserves_existing(self):
         inputs = {"metadata": {"call_link_label": "screen"}, "settings": {"a": 1}}

@@ -37,21 +37,24 @@ CODE_NAMES: tuple[str, ...] = get_args(CodeName)
 
 
 class CodeParallelization(TypedDict, total=False):
-    """One code's parallelization directive: MPI ranks, k-point pools, pencil decomp, threads.
+    """One code's parallelization directive: ranks, pools, pencil decomp, threads, walltime.
 
     ``ntasks`` sets ``metadata.options.resources`` (``num_mpiprocs_per_machine``);
     ``npool`` becomes ``-npool`` and ``pd`` becomes ``-pd true`` on the QE
     command line; ``omp`` sets the per-rank OpenMP/BLAS thread count via a
     ``metadata.options.prepend_text`` export block (overriding the
-    computer-level pin of one thread). Every field is optional
-    (``total=False``); an absent one means the QE/AiiDA default. Mirrors the
-    koopmans2 ``CodeParallelization`` pydantic model that produces these dicts.
+    computer-level pin of one thread); ``max_wallclock_seconds`` sets
+    ``metadata.options.max_wallclock_seconds``, already converted to seconds.
+    Every field is optional (``total=False``); an absent one means the
+    QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization`` pydantic
+    model that produces these dicts.
     """
 
     ntasks: int
     npool: int
     pd: bool
     omp: int
+    max_wallclock_seconds: int
 
 
 # Per-code parallelization mapping threaded into every top-level graph: a plain
@@ -116,10 +119,11 @@ def resolve_parallelization(
     ``parallelization`` is keyed by code name; each value is a plain dict with
     optional ``ntasks`` (MPI ranks -> ``metadata.options.resources``), ``npool``
     (k-point pools -> ``-npool``), ``pd`` (pencil decomposition -> ``-pd true``),
-    and ``omp`` (per-rank BLAS threads -> ``metadata.options.prepend_text``).
+    ``omp`` (per-rank BLAS threads -> ``metadata.options.prepend_text``), and
+    ``max_wallclock_seconds`` (-> ``metadata.options.max_wallclock_seconds``).
     The two command-line flags are emitted npool-before-pd. Unlike npool/pd,
-    ``omp`` is a plain environment knob accepted for every code — no support
-    matrix.
+    ``omp`` and ``max_wallclock_seconds`` are plain options accepted for every
+    code — no support matrix.
 
     ``pools=False`` suppresses ``-npool`` for a step whose executable takes no
     pools even though the code generally does (the kcw.x ham step).
@@ -137,6 +141,7 @@ def resolve_parallelization(
     npool = cfg.get("npool")
     pd = cfg.get("pd")
     omp = cfg.get("omp")
+    max_wallclock_seconds = cfg.get("max_wallclock_seconds")
     if ntasks is not None:
         # ``num_machines`` + ``num_mpiprocs_per_machine`` is the one resource
         # shape every scheduler in play accepts: native for the node-counting
@@ -146,6 +151,8 @@ def resolve_parallelization(
         options = {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": int(ntasks)}}
     if omp is not None:
         options["prepend_text"] = omp_prepend_text(omp)
+    if max_wallclock_seconds is not None:
+        options["max_wallclock_seconds"] = int(max_wallclock_seconds)
     cmdline: list[str] = []
     if npool is not None and pools:
         if code not in POOL_SUPPORTING_CODES:
