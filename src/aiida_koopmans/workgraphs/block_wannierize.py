@@ -616,12 +616,12 @@ class WannierizeBlocksOutputs(TypedDict):
       ``scf_remote_folder`` (see that argument). Absent only when the
       caller supplied its own ``nscf_remote_folder`` and no nscf ran here
       either.
-    * ``scf_remote_folder`` -- the internal scf's own ``RemoteData``,
-      populated only when the internal scf + nscf pair ran here (never
-      alongside a caller-supplied ``scf_remote_folder`` or
-      ``nscf_remote_folder``, which already own that node). Feeds a
-      second :func:`WannierizeBlocks` call's own ``scf_remote_folder``
-      input.
+    * ``scf_remote_folder`` -- the scf density the nscf ran on: the
+      internal scf's own ``RemoteData`` when it ran here, or a caller's
+      own ``scf_remote_folder`` passed straight through. Populated
+      whenever an nscf ran here (see ``nscf`` above); absent under the
+      same condition ``nscf`` is absent. Feeds a second
+      :func:`WannierizeBlocks` call's own ``scf_remote_folder`` input.
     * ``bands`` -- the pw.x ``bands`` run along the input k-path, off
       whichever scf density this call had -- the internal scf, or a
       caller's ``scf_remote_folder`` (with or without ``nscf_remote_folder``
@@ -1383,18 +1383,16 @@ def _wire_scf_nscf_outputs(
     outputs: WannierizeBlocksOutputs,
     scf_nscf: ScfNscfOutputs | None,
     nscf_scratch: orm.RemoteData | None,
-    *,
-    expose_scf: bool,
 ) -> None:
-    """Wire the ``nscf`` / ``scf_remote_folder`` outputs when the ground state ran here.
+    """Wire the ``nscf`` / ``scf_remote_folder`` outputs when an nscf ran here.
 
     ``scf_nscf`` is ``None`` only when the caller supplied its own
-    ``nscf_remote_folder``, so no nscf ran here. ``expose_scf`` is true
-    when :func:`RunWannierGroundState` ran its own internal scf here (the
-    caller passed no ``scf_remote_folder`` of its own), so the density it
-    produced is exposed for a later caller to reuse; it is false when the
-    caller already supplied ``scf_remote_folder``, since that caller
-    already owns the node and re-exposing it would be redundant.
+    ``nscf_remote_folder``, so no nscf ran here and neither output is
+    set. Otherwise both are always exposed: ``scf_remote_folder`` is
+    :func:`RunWannierGroundState`'s own internal scf density when it ran
+    one, or the caller's own ``scf_remote_folder`` passed straight
+    through when it didn't. A caller that already owns that node simply
+    ignores the output.
     """
     if scf_nscf is None:
         return
@@ -1403,8 +1401,7 @@ def _wire_scf_nscf_outputs(
         output_parameters=scf_nscf["nscf_output_parameters"],
         output_band=scf_nscf["nscf_output_band"],
     )
-    if expose_scf:
-        outputs["scf_remote_folder"] = scf_nscf["scf_remote_folder"]
+    outputs["scf_remote_folder"] = scf_nscf["scf_remote_folder"]
 
 
 @task.graph
@@ -1800,5 +1797,5 @@ def WannierizeBlocks(
     _wire_quality_check_outputs(outputs, bands_outputs, projwfc_outputs)
     if split:
         outputs["groups"] = detect.result
-    _wire_scf_nscf_outputs(outputs, scf_nscf, nscf_scratch, expose_scf=scf_remote_folder is None)
+    _wire_scf_nscf_outputs(outputs, scf_nscf, nscf_scratch)
     return outputs

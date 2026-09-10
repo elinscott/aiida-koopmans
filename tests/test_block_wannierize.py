@@ -590,10 +590,14 @@ class TestBlockWannierizeGraphBuild:
         assert ground_state.inputs["scf_remote_folder"].value is None
         assert not ground_state.inputs["scf_remote_folder"]._links
 
-    def test_scf_remote_folder_alone_does_not_re_expose_the_callers_own_scf(
+    def test_scf_remote_folder_alone_is_also_exposed_as_output(
         self, wannier_codes, silicon_structure, kmesh, scf_remote, fake_cutoffs_family
     ):
-        """The caller already owns ``scf_remote``; nothing new to echo out."""
+        """The caller's own ``scf_remote`` is exposed too, alongside its ``nscf``.
+
+        Same shape as the internal-scf case below: a downstream caller
+        that already owns the node simply ignores this output.
+        """
         wg = WannierizeBlocks.build(
             codes=wannier_codes,
             structure=silicon_structure,
@@ -602,7 +606,8 @@ class TestBlockWannierizeGraphBuild:
             pseudo_family=fake_cutoffs_family.label,
             scf_remote_folder=scf_remote,
         )
-        assert not wg.outputs["scf_remote_folder"]._links
+        links = wg.outputs["scf_remote_folder"]._links
+        assert [link.from_task.name for link in links] == ["scf_nscf"]
 
     def test_internal_scf_exposes_its_own_scf_remote_folder(
         self, wannier_codes, silicon_structure, kmesh
