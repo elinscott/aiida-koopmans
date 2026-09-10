@@ -126,7 +126,10 @@ from aiida_koopmans.workgraphs.wannier90 import (
     Wannier90Code,
     projected_dos_supported,
 )
-from aiida_koopmans.workgraphs.wannier_ground_state import RunWannierGroundState
+from aiida_koopmans.workgraphs.wannier_ground_state import (
+    RunWannierGroundState,
+    ScfNscfOutputs,
+)
 
 
 class DfptCodes(TypedDict):
@@ -450,9 +453,16 @@ class KoopmansDFPTOutputs(TypedDict):
     :class:`ChannelResults` of that channel's kcw.x chain. Unpolarized and
     spinor runs populate the single key ``"none"``; collinear runs populate
     ``"up"`` and ``"down"``.
+
+    ``ground_state`` is the shared scf + nscf the channels Wannierize
+    against (:func:`~aiida_koopmans.workgraphs.wannier_ground_state.RunWannierGroundState`'s
+    own :class:`~aiida_koopmans.workgraphs.wannier_ground_state.ScfNscfOutputs`)
+    — the dense mesh and band structure a QP mapping needs, independent of
+    any one channel's kcw.x results.
     """
 
     channels: Annotated[dict, dynamic(ChannelResults)]
+    ground_state: ScfNscfOutputs
 
 
 class ManifoldBlocks(TypedDict):
@@ -1182,7 +1192,8 @@ def SinglepointDFPTWorkflow(
       ``derive_dfpt_manifolds(..., spin_channel=SPINOR)``).
 
     Each channel's results land under its key in the ``channels`` output
-    namespace.
+    namespace; the shared ground state's scf + nscf outputs land under
+    ``ground_state``, regardless of ``spin``.
 
     ``overrides`` is the flat :class:`WannierizeOverrides`: ``"scf"`` /
     ``"nscf"`` feed the shared PW steps, and ``"wannier90"`` /
@@ -1421,4 +1432,4 @@ def SinglepointDFPTWorkflow(
         # sockets into a fresh dict is not resolvable at execution time).
         channel_results[channel_key] = dfpt
 
-    return KoopmansDFPTOutputs(channels=channel_results)
+    return KoopmansDFPTOutputs(channels=channel_results, ground_state=scf_nscf)
