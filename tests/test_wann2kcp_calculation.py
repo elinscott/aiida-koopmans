@@ -281,3 +281,55 @@ def test_parallel_resources_rejected(fixture_sandbox, aiida_local_code_factory, 
     runner = get_manager().get_runner()
     with pytest.raises(ValueError, match="single MPI rank"):
         instantiate_process(runner, cls, **inputs)
+
+
+def test_parallel_resources_rejected_via_computer_default(aiida_computer, aiida_local_code_factory):
+    """A ``num_machines``-only resources dict is still checked against the computer default.
+
+    ``num_mpiprocs_per_machine`` is left for the computer to supply, so a
+    single-rank check that assumed ``1`` when it was absent would wrongly
+    accept an actually-4-rank job on a computer with
+    ``default_mpiprocs_per_machine=4``.
+    """
+    import pytest
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    computer = aiida_computer(label="remote-4-per-machine", default_mpiprocs_per_machine=4)
+    code = aiida_local_code_factory(
+        executable="true", entry_point="koopmans.wann2kcp", computer=computer
+    )
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+    cls = CalculationFactory("koopmans.wann2kcp")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="single MPI rank"):
+        instantiate_process(runner, cls, **inputs)
+
+
+def test_underdetermined_resources_raise_clear_error(aiida_computer, aiida_local_code_factory):
+    """No explicit process count and no computer default is a clear input error, not a silent 1."""
+    import pytest
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    computer = aiida_computer(label="remote-no-default", default_mpiprocs_per_machine=None)
+    code = aiida_local_code_factory(
+        executable="true", entry_point="koopmans.wann2kcp", computer=computer
+    )
+    inputs = {
+        "code": code,
+        "parameters": orm.Dict(dict={"wan_mode": "wannier2kcp"}),
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+    cls = CalculationFactory("koopmans.wann2kcp")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="cannot determine the MPI process count"):
+        instantiate_process(runner, cls, **inputs)

@@ -376,6 +376,19 @@ def _spin_component(group_spin: Any) -> str | None:
     return None if spin == SpinChannel.NONE else spin.value
 
 
+def _seed_decompose_options(existing_options: dict[str, Any] | None) -> dict[str, Any]:
+    """Fill in the decompose pass's fallback ``resources``, keeping any caller options.
+
+    The decompose route builds its CalcJob inputs directly (no protocol
+    builder to inherit a default from), so ``resources`` must be seeded or
+    the pass cannot run. Merged rather than assigned outright: any options
+    the caller already set on ``metadata`` (e.g. a future
+    ``max_wallclock_seconds``/``account``/``queue_name``) survive instead of
+    being replaced by the bare default.
+    """
+    return {**_DEFAULT_CALCJOB_OPTIONS, **(existing_options or {})}
+
+
 class PowerSpectrumDatasetOutputs(TypedDict):
     """Outputs of :func:`PowerSpectrumDatasetWorkflow`.
 
@@ -562,7 +575,9 @@ def fan_out_block_descriptors(
                 ).result
             # Seed the resources first so the pass is runnable with no
             # parallelization block; a supplied one overwrites them.
-            decompose_inputs["metadata"]["options"] = dict(_DEFAULT_CALCJOB_OPTIONS)
+            decompose_inputs["metadata"]["options"] = _seed_decompose_options(
+                decompose_inputs["metadata"].get("options")
+            )
             # ``pools=False``: a shared ``pw2wannier90.npool`` is aimed at the
             # wannierization's own pw2wannier90 pass, which does parallelize
             # over k-point pools; the decompose pass does not, and aborts if

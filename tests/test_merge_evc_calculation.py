@@ -109,3 +109,58 @@ def test_merge_evc_full_calc_info(
     # Merged output + stdout retrieved.
     assert "evcw.dat" in calc_info.retrieve_list
     assert "aiida.out" in calc_info.retrieve_list
+
+
+# ----------------------------------------------------------------------
+# Single-rank validation
+# ----------------------------------------------------------------------
+
+
+def test_parallel_resources_rejected(aiida_local_code_factory):
+    """More than one MPI rank fails input validation (serial concatenation tool)."""
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    code = aiida_local_code_factory(executable="true", entry_point="koopmans.merge_evc")
+    inputs = {
+        "code": code,
+        "kgrid": orm.List(list=[2, 2, 2]),
+        "dest_filename": orm.Str("evcw.dat"),
+        "source_files": {},
+        "metadata": {"options": {"resources": {"num_machines": 1, "num_mpiprocs_per_machine": 4}}},
+    }
+    cls = CalculationFactory("koopmans.merge_evc")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="single MPI rank"):
+        instantiate_process(runner, cls, **inputs)
+
+
+def test_parallel_resources_rejected_via_computer_default(aiida_computer, aiida_local_code_factory):
+    """A ``num_machines``-only resources dict is checked against the computer default.
+
+    Without resolving through ``default_mpiprocs_per_machine`` this would
+    undercount to ``num_machines * 1`` and wrongly accept an actually-4-rank
+    job on a computer configured with 4 processes per machine.
+    """
+    from aiida import orm
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida.plugins import CalculationFactory
+
+    computer = aiida_computer(label="merge-evc-remote-4", default_mpiprocs_per_machine=4)
+    code = aiida_local_code_factory(
+        executable="true", entry_point="koopmans.merge_evc", computer=computer
+    )
+    inputs = {
+        "code": code,
+        "kgrid": orm.List(list=[2, 2, 2]),
+        "dest_filename": orm.Str("evcw.dat"),
+        "source_files": {},
+        "metadata": {"options": {"resources": {"num_machines": 1}}},
+    }
+    cls = CalculationFactory("koopmans.merge_evc")
+    runner = get_manager().get_runner()
+    with pytest.raises(ValueError, match="single MPI rank"):
+        instantiate_process(runner, cls, **inputs)

@@ -64,6 +64,34 @@ class KoopmansCalculation(CalcJob, abc.ABC):
             invalidates_cache=True,
         )
 
+    @staticmethod
+    def _resolve_total_mpiprocs(resources: dict, computer) -> int:
+        """Resolve the total MPI process count from ``metadata.options.resources``.
+
+        Mirrors the ``num_machines`` / ``num_mpiprocs_per_machine`` /
+        ``tot_num_mpiprocs`` resolution AiiDA's scheduler validation applies,
+        falling back to ``computer.get_default_mpiprocs_per_machine()`` when
+        ``num_mpiprocs_per_machine`` is not given directly -- the same source
+        a real submission would use. Raises rather than assuming a rank count
+        the resources do not actually determine.
+        """
+        tot_num_mpiprocs = resources.get("tot_num_mpiprocs")
+        if tot_num_mpiprocs:
+            return tot_num_mpiprocs
+        num_machines = resources.get("num_machines", 1)
+        num_mpiprocs_per_machine = resources.get("num_mpiprocs_per_machine")
+        if num_mpiprocs_per_machine is None and computer is not None:
+            num_mpiprocs_per_machine = computer.get_default_mpiprocs_per_machine()
+        if num_mpiprocs_per_machine is None:
+            computer_label = computer.label if computer is not None else "?"
+            raise ValueError(
+                "cannot determine the MPI process count: `metadata.options.resources` sets "
+                "neither `num_mpiprocs_per_machine` nor `tot_num_mpiprocs`, and computer "
+                f"`{computer_label}` has no `default_mpiprocs_per_machine`. Set one of these "
+                "in `metadata.options.resources` or configure the computer default."
+            )
+        return num_machines * num_mpiprocs_per_machine
+
     def _make_code_info(self, cmdline_params: list[str] | None = None) -> CodeInfo:
         """Build the single-code ``CodeInfo`` for this calc.
 
