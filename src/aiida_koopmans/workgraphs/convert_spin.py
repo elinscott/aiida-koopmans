@@ -24,20 +24,23 @@ files — no QE binary is invoked. The substitutions are:
 * (down channel only) ``ispin="1"`` → ``ispin="2"``
 
 Implemented as ``@task.calcfunction`` (rather than a full ``CalcJob``)
-because the operation is pure local file substitution with no external
-binary involvement. ``calcfunction`` accepts ``RemoteData`` nodes
-directly and AiiDA-core's process-function machinery happily stores a
-freshly-built ``RemoteData`` as the output, providing full provenance
-via a ``CalcFunctionNode``.
+because the operation never invokes an external binary — it is pure
+directory restructuring and byte substitution, so there is no code to
+schedule. All file access goes through the parent folders' own AiiDA
+transport (``RemoteData.get_authinfo().get_transport()``), the same
+mechanism a ``CalcJob`` uses to stage its inputs, so the calcfunction
+works unchanged for ``core.local``, ``core.ssh``, or any other
+transport plugin — it never assumes the two parents live on the
+machine running the daemon.
 """
 
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
+import uuid
+from pathlib import Path, PurePosixPath
 
 from aiida import orm
-from aiida.manage import get_config
+from aiida.common.folders import SandboxFolder
 from aiida_workgraph import task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
@@ -79,18 +82,21 @@ def _convert_spin1_to_spin2_bytes(content: bytes) -> tuple[bytes, bytes]:
     return up, down
 
 
-def _scratch_root() -> Path:
-    """Return the stable scratch root for convert-spin outputs.
+def _remote_scratch_root(transport, authinfo) -> PurePosixPath:
+    """Return the stable remote scratch root for convert-spin outputs.
 
-    Lives under the AiiDA config directory so it persists for the life
-    of the AiiDA install (unlike ``tempfile.mkdtemp`` which uses the
-    OS temp dir and can be wiped by ``systemd-tmpfiles``). Downstream
-    consumers (the spin-2 restart ``KcpCalculation``) symlink into
-    this directory via ``parent_folder``, so the path must remain
-    readable for the lifetime of the surrounding workflow.
+    Lives under the ``AuthInfo``'s configured work directory (the same
+    directory a ``CalcJob`` uploads into) so it persists for the life of
+    the AiiDA install and survives whichever computer the two parent
+    folders live on — unlike ``tempfile.mkdtemp`` on the local machine,
+    which is meaningless once the parents are remote. Downstream
+    consumers (the spin-2 restart ``KcpCalculation``) symlink into this
+    directory via ``parent_folder``, so the path must remain readable
+    for the lifetime of the surrounding workflow.
     """
-    root = Path(get_config().dirpath) / "scratch" / "koopmans" / "convert_spin"
-    root.mkdir(parents=True, exist_ok=True)
+    workdir = authinfo.get_workdir().format(username=transport.whoami())
+    root = PurePosixPath(workdir) / "scratch" / "koopmans" / "convert_spin"
+    transport.makedirs(str(root), ignore_existing=True)
     return root
 
 
@@ -129,57 +135,78 @@ def convert_spin1_to_spin2(
             f"computer; got {spin1_computer.label} and {spin2_computer.label}."
         )
 
-    spin1_remote_root = Path(spin1_parent_folder.get_remote_path())
-    spin1_k = spin1_remote_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME / _K_SUBDIR
-    spin1_save = spin1_k.parent
-    if not spin1_save.exists():
-        raise FileNotFoundError(
-            f"Expected nspin=1 save directory does not exist at {spin1_save}. "
-            "Did you point ``spin1_parent_folder`` at the right kcp.x run?"
-        )
+    authinfo = spin1_parent_folder.get_authinfo()
+    with authinfo.get_transport() as transport:
+        spin1_remote_root = PurePosixPath(spin1_parent_folder.get_remote_path())
+        spin1_k = spin1_remote_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME / _K_SUBDIR
+        spin1_save = spin1_k.parent
+        if not transport.isdir(str(spin1_save)):
+            raise FileNotFoundError(
+                f"Expected nspin=1 save directory does not exist at {spin1_save}. "
+                "Did you point ``spin1_parent_folder`` at the right kcp.x run?"
+            )
 
-    dummy_remote_root = Path(spin2_dummy_parent_folder.get_remote_path())
-    dummy_save = dummy_remote_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME
-    if not dummy_save.exists():
-        raise FileNotFoundError(
-            f"Expected nspin=2 dummy save directory does not exist at {dummy_save}. "
-            "Did you point ``spin2_dummy_parent_folder`` at the right kcp.x run?"
-        )
+        dummy_remote_root = PurePosixPath(spin2_dummy_parent_folder.get_remote_path())
+        dummy_save = dummy_remote_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME
+        if not transport.isdir(str(dummy_save)):
+            raise FileNotFoundError(
+                f"Expected nspin=2 dummy save directory does not exist at {dummy_save}. "
+                "Did you point ``spin2_dummy_parent_folder`` at the right kcp.x run?"
+            )
 
-    # Stable, per-call output directory under the AiiDA config dir.
-    # ``mkdtemp`` here just picks a unique name; we explicitly do *not*
-    # use the OS temp dir (which can be auto-pruned).
-    import tempfile
+        # Stable, per-call output directory under the AuthInfo work directory.
+        # ``uuid4`` here just picks a unique name; the directory is created
+        # explicitly (``makedirs``) rather than relying on ``copytree`` to lay
+        # down missing parents, since the ssh transport's ``copytree`` shells
+        # out to ``cp -r`` which -- unlike ``shutil.copytree`` -- does not
+        # create intermediate directories.
+        scratch_root = _remote_scratch_root(transport, authinfo)
+        new_root = scratch_root / f"convert_spin1_to_spin2_{uuid.uuid4().hex}"
+        new_save = new_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME
+        new_k = new_save / _K_SUBDIR
+        transport.makedirs(str(new_save.parent))
 
-    new_root = Path(tempfile.mkdtemp(prefix="convert_spin1_to_spin2_", dir=str(_scratch_root())))
-    new_save = new_root / _OUTPUT_SUBFOLDER / _SAVE_DIRNAME
-    new_k = new_save / _K_SUBDIR
-    new_k.mkdir(parents=True)
+        # Start from the dummy's nspin=2 save skeleton — copies in density,
+        # charge, XML metadata, plus placeholder per-channel wfc files that
+        # we overwrite below with the converted content from the spin1
+        # parent. ``new_save`` must not exist yet: both the local and ssh
+        # transports nest the source inside an existing destination
+        # directory instead of copying its contents into it.
+        transport.copytree(str(dummy_save), str(new_save))
 
-    # Start from the dummy's nspin=2 save skeleton — copies in density,
-    # charge, XML metadata, plus placeholder per-channel wfc files that
-    # we will overwrite below with the converted content from the spin1 parent.
-    shutil.copytree(dummy_save, new_save, dirs_exist_ok=True)
+        # Now overlay the converted wavefunctions. Each file is round-tripped
+        # through a local scratch file (get -> substitute -> put) since
+        # neither transport exposes a bytes-in-bytes-out API; this is the
+        # same ``SandboxFolder``-staged get/put idiom
+        # ``Transport.copy_from_remote_to_remote`` uses to move files
+        # between two remotes via the local machine.
+        converted_any = False
+        with SandboxFolder() as sandbox:
+            local_src = Path(sandbox.get_abs_path("src"))
+            local_up = Path(sandbox.get_abs_path("up"))
+            local_down = Path(sandbox.get_abs_path("down"))
+            for spin1_name, up_name, down_name in _CONVERSION_MAP:
+                src = spin1_k / spin1_name
+                if not transport.path_exists(str(src)):
+                    # Only convert files that actually exist on the parent.
+                    # The map is a superset of what kcp.x emits in any given
+                    # run.
+                    continue
+                transport.getfile(str(src), str(local_src))
+                content = local_src.read_bytes()
+                up_bytes, down_bytes = _convert_spin1_to_spin2_bytes(content)
 
-    # Now overlay the converted wavefunctions.
-    converted_any = False
-    for spin1_name, up_name, down_name in _CONVERSION_MAP:
-        src = spin1_k / spin1_name
-        if not src.exists():
-            # Only convert files that actually exist on the parent. The
-            # map is a superset of what kcp.x emits in any given run.
-            continue
-        content = src.read_bytes()
-        up_bytes, down_bytes = _convert_spin1_to_spin2_bytes(content)
-        (new_k / up_name).write_bytes(up_bytes)
-        (new_k / down_name).write_bytes(down_bytes)
-        converted_any = True
+                local_up.write_bytes(up_bytes)
+                transport.putfile(str(local_up), str(new_k / up_name))
+                local_down.write_bytes(down_bytes)
+                transport.putfile(str(local_down), str(new_k / down_name))
+                converted_any = True
 
-    if not converted_any:
-        raise FileNotFoundError(
-            f"No known nspin=1 wavefunction files were found under {spin1_k}. "
-            "Expected at least one of: " + ", ".join(name for name, _, _ in _CONVERSION_MAP)
-        )
+        if not converted_any:
+            raise FileNotFoundError(
+                f"No known nspin=1 wavefunction files were found under {spin1_k}. "
+                "Expected at least one of: " + ", ".join(name for name, _, _ in _CONVERSION_MAP)
+            )
 
     # Build a fresh (unstored) RemoteData and hand it back. AiiDA's
     # process-function machinery calls ``self.out("remote_folder", ...)``
