@@ -88,8 +88,13 @@ def generate_qp_database(
     ``(n_grid_kpoints, n_bands)``.
 
     ``nscf_output_band`` is the ``output_band`` of the nscf run that
-    produced the kcw.x k-point grid. ``BandsData.get_array('kpoints')``
-    returns crystal (reciprocal-lattice-fraction) coordinates by default
+    produced the kcw.x k-point grid, and must carry the same number of
+    k-points as the ``ki_eigenvalues_on_grid`` / ``ks_eigenvalues_on_grid``
+    rows -- a mismatch means the two inputs come from different runs, and
+    k2y's own k-point matching would otherwise mis-associate the surplus
+    rows against a stale index rather than fail loudly.
+    ``BandsData.get_array('kpoints')`` returns crystal
+    (reciprocal-lattice-fraction) coordinates by default
     (``KpointsData.get_kpoints(cartesian=False)``), which is the
     coordinate system k2y's k-point matching expects.
     """
@@ -100,6 +105,16 @@ def generate_qp_database(
             f"`ham_output_parameters` is missing {missing} -- pass the "
             "`output_parameters` of a `ham`-mode kcw.x run, not `wann2kcw` or `screen`."
         )
+
+    n_nscf_kpoints = nscf_output_band.get_array("kpoints").shape[0]
+    for key in _REQUIRED_HAM_KEYS:
+        n_grid_kpoints = np.asarray(params[key]).shape[0]
+        if n_grid_kpoints != n_nscf_kpoints:
+            raise ValueError(
+                f"`{key}` has {n_grid_kpoints} k-points but `nscf_output_band` has "
+                f"{n_nscf_kpoints} -- pass the `output_band` of the same kcw.x `ham` "
+                "run's own seeding nscf, not some other run's grid."
+            )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         save_dir = Path(tmpdir)

@@ -14,26 +14,40 @@ SAVE directory, reading the KI/KS grids out of ``output_parameters``,
 reading the k-points out of ``output_band``) from k2y's own mapping
 math, which is k2y's own test suite's job, not ours.
 
-The fixture data (``tests/data/bse/``, ``tests/parsers/fixtures/kcw_ham/
-bse_si/``) is copied from k2y's own ``tests/data/`` (a real 2x2x2-grid,
-20-band kcw.x ``ham`` run on silicon): ``ns.db1`` (284 KiB), ``ndb.kindx``
-(65 KiB -- one of the two SAVE siblings ``generate_qp_database`` reads
-the SERIAL_NUMBER match from; the other, ``ndb.gops``, is 3 MiB and
-skipped to keep this fixture small -- ``ndb.kindx`` alone carries the
-same HEAD_VERSION/HEAD_REVISION/SERIAL_NUMBER variables), ``Si.scf.in``
-(1 KiB, its K_POINTS crystal card copied into ``IBZ_KPOINTS_CRYSTAL``
-below) and the kcw.x ``ham`` stdout (20 KiB, reused as a
-``koopmans.kcw_ham`` parser fixture so ``ham_output_parameters`` below
-is genuinely parsed, not hand-built).
+``tests/data/bse/ns.db1`` (284 KiB) and ``ndb.kindx`` (65 KiB -- one of
+the two SAVE siblings ``generate_qp_database`` reads the SERIAL_NUMBER
+match from; the other, ``ndb.gops``, is 3 MiB and skipped to keep this
+fixture small -- ``ndb.kindx`` alone carries the same HEAD_VERSION/
+HEAD_REVISION/SERIAL_NUMBER variables) are copied from k2y's own
+``tests/data/``: a real yambo p2y run on silicon, on a 4x4x4 Monkhorst-Pack
+grid (8 IBZ k-points expanding to the full 64-point BZ).
+
+The kcw.x side of k2y's own fixture pair (``Si.scf.in``, the ``ham``
+stdout reused below as ``ham_output_parameters``) ran a *different*,
+coarser 2x2x2 grid (8 k-points total) -- only 8 of ns.db1's 64 points
+coincide with it, so pairing the two directly would leave k2y's
+k-point matching to silently fall back to a stale index for the other
+56 (see :class:`TestGenerateQpDatabaseRefusals`, which now catches
+exactly this mismatch). ``ham_output_parameters`` below is kept only
+for :func:`test_ham_output_parameters_has_the_expected_shape`, a
+Dict-shape contract check -- the discriminating tests instead build a
+``synthetic_ham_output_parameters`` / ``synthetic_nscf_output_band``
+pair on ns.db1's *own* 64-point grid (derived the same way k2y's
+``generate_mappings`` derives it, via yambopy's
+``YamboElectronsDB.expand_kpoints`` + ``car_red``), so every k-point
+genuinely matches.
 
 k2y's own ``tests/data/ref_ndb.QP`` is deliberately not used as a
-reference here: reproducing it locally (feeding the same fixture through
-k2y's ``generate_mappings()``) gives a ``QP_kpts`` of shape ``(3, 8)`` --
-the *un*-expanded IBZ grid -- while the installed k2y (legacy-extra,
-b284fca) always expands to the full 64-point BZ per its own
-``generate_mappings`` docstring and the k2y-core test suite's
-``N_FULL_KPTS = 64`` constant. ``ref_ndb.QP`` predates that full-BZ-
-expansion fix and is not representative of current k2y output.
+reference here. Reproducing it locally -- feeding the *same* ``bse_si``
+fixture pair through k2y's ``generate_mappings()`` -- gives a
+``QP_kpts`` of shape ``(3, 64)``, the full-BZ expansion, matching the
+installed k2y (legacy-extra, b284fca)'s own ``generate_mappings``
+docstring and the k2y-core test suite's ``N_FULL_KPTS = 64`` constant.
+``ref_ndb.QP`` itself reports ``QP_kpts`` of shape ``(3, 8)`` -- the
+un-expanded IBZ grid -- while its own ``QP_E`` still carries 1,280 rows
+(20 bands x 64 k-points): internally inconsistent, and not reproducible
+from the fixture it ships beside. It predates the full-BZ-expansion fix
+and is not representative of current k2y output.
 """
 
 from __future__ import annotations
@@ -48,16 +62,18 @@ pytest.importorskip("k2y")
 
 import netCDF4
 from k2y.k2y import KcwQpDatabaseGenerator
+from yambopy import YamboElectronsDB
+from yambopy.lattice import car_red
 
 from aiida_koopmans.workgraphs.bse import generate_qp_database
 
 DATA_DIR = Path(__file__).parent / "data" / "bse"
 
 #: The K_POINTS crystal card from ``tests/data/bse/Si.scf.in`` -- the 2x2x2
-#: IBZ grid the ``bse_si`` kcw.x ``ham`` fixture interpolated on. Stands in
-#: for a real nscf run's ``output_band``: ``BandsData.get_array('kpoints')``
-#: reports crystal fractional coordinates by default, the same coordinates
-#: this K_POINTS card already lists.
+#: grid the ``bse_si`` kcw.x ``ham`` fixture ran on. Used only by
+#: :func:`test_ham_output_parameters_has_the_expected_shape`; the
+#: discriminating tests below use ``synthetic_nscf_output_band`` instead
+#: (see the module docstring for why).
 IBZ_KPOINTS_CRYSTAL = [
     [0.0, 0.0, 0.0],
     [0.0, 0.0, 0.5],
@@ -86,6 +102,7 @@ def yambo_save() -> orm.FolderData:
 
 @pytest.fixture
 def nscf_output_band() -> orm.BandsData:
+    """Build the real ``bse_si`` kcw.x ``ham`` fixture's own 2x2x2 grid."""
     bands = orm.BandsData()
     bands.set_kpoints(np.array(IBZ_KPOINTS_CRYSTAL))
     return bands.store()
@@ -112,7 +129,52 @@ def ham_output_parameters(
     return results["output_parameters"]
 
 
-def _direct_k2y_qp_db(save_dir: Path, params: dict, output_path: Path) -> None:
+@pytest.fixture
+def yambo_kpoints_crystal() -> np.ndarray:
+    """Return the 64 k-points ``ns.db1``'s own grid expands to, in crystal coordinates.
+
+    Derived the same way k2y's own ``generate_mappings`` derives them (via
+    yambopy's ``YamboElectronsDB.expand_kpoints`` + ``car_red``), so a
+    synthetic kcw grid built from this array genuinely matches every one
+    of ns.db1's 64 yambo k-points -- unlike the real ``bse_si`` kcw.x
+    ``ham`` fixture's 2x2x2 grid (see the module docstring).
+    """
+    db = YamboElectronsDB.from_db_file(folder=str(DATA_DIR), Expand=True)
+    expanded, _, _ = db.expand_kpoints()
+    return car_red(expanded, db.rlat).astype(float)
+
+
+@pytest.fixture
+def synthetic_nscf_output_band(yambo_kpoints_crystal) -> orm.BandsData:
+    """Build a 64-point ``output_band`` matching ``ns.db1``'s own expanded grid."""
+    bands = orm.BandsData()
+    bands.set_kpoints(yambo_kpoints_crystal)
+    return bands.store()
+
+
+@pytest.fixture
+def synthetic_ham_output_parameters(yambo_kpoints_crystal) -> orm.Dict:
+    """Synthetic KI/KS eigenvalues on the 64-point grid ``ns.db1`` expects.
+
+    Not a real kcw.x output: no fixture pairs a real ``ham`` run with
+    ``ns.db1``'s own 4x4x4 grid (see the module docstring), so this
+    hand-picks 4 occupied + 4 empty bands, KS a few eV either side of a
+    gap and KI shifted by a small Koopmans correction, both varying
+    slightly across k-points so the two grids are not degenerate.
+    """
+    n_kpoints = len(yambo_kpoints_crystal)
+    k = np.arange(n_kpoints)[:, None]
+    band = np.arange(4)[None, :]
+    ks = np.concatenate([-5.0 + 0.01 * k + 0.1 * band, 1.0 + 0.01 * k + 0.1 * band], axis=1)
+    ki = ks + np.concatenate([np.full((n_kpoints, 4), -0.3), np.full((n_kpoints, 4), 0.3)], axis=1)
+    return orm.Dict(
+        {"ki_eigenvalues_on_grid": ki.tolist(), "ks_eigenvalues_on_grid": ks.tolist()}
+    ).store()
+
+
+def _direct_k2y_qp_db(
+    save_dir: Path, params: dict, kpoints_grid: np.ndarray, output_path: Path
+) -> None:
     """Build an ``ndb.QP`` by calling k2y directly on the fixture's own values.
 
     Mirrors what :func:`generate_qp_database` does with the same inputs,
@@ -122,7 +184,7 @@ def _direct_k2y_qp_db(save_dir: Path, params: dict, output_path: Path) -> None:
     generator = KcwQpDatabaseGenerator(ns_db1=str(save_dir / "ns.db1"))
     generator.eigenvalues_KI = np.array(params["ki_eigenvalues_on_grid"])
     generator.eigenvalues_KS = np.array(params["ks_eigenvalues_on_grid"])
-    generator.kpoints_grid_kcw = np.array(IBZ_KPOINTS_CRYSTAL)
+    generator.kpoints_grid_kcw = np.array(kpoints_grid)
     generator.kpoints_type = "crystal"
     generator.generate_mappings()
     generator.generate_QP_db(str(output_path))
@@ -130,12 +192,18 @@ def _direct_k2y_qp_db(save_dir: Path, params: dict, output_path: Path) -> None:
 
 class TestGenerateQpDatabase:
     def test_matches_a_direct_k2y_call(
-        self, aiida_profile, yambo_save, ham_output_parameters, nscf_output_band, tmp_path
+        self,
+        aiida_profile,
+        yambo_save,
+        synthetic_ham_output_parameters,
+        synthetic_nscf_output_band,
+        yambo_kpoints_crystal,
+        tmp_path,
     ):
         produced = generate_qp_database._callable(
             yambo_save=yambo_save,
-            ham_output_parameters=ham_output_parameters,
-            nscf_output_band=nscf_output_band,
+            ham_output_parameters=synthetic_ham_output_parameters,
+            nscf_output_band=synthetic_nscf_output_band,
         )
         produced_path = tmp_path / "produced_ndb.QP"
         produced_path.write_bytes(produced.get_content(mode="rb"))
@@ -145,7 +213,12 @@ class TestGenerateQpDatabase:
         for name in ("ns.db1", "ndb.kindx"):
             (reference_dir / name).write_bytes((DATA_DIR / name).read_bytes())
         reference_path = tmp_path / "reference_ndb.QP"
-        _direct_k2y_qp_db(reference_dir, ham_output_parameters.get_dict(), reference_path)
+        _direct_k2y_qp_db(
+            reference_dir,
+            synthetic_ham_output_parameters.get_dict(),
+            yambo_kpoints_crystal,
+            reference_path,
+        )
 
         with (
             netCDF4.Dataset(produced_path) as produced_ds,
@@ -170,26 +243,46 @@ class TestGenerateQpDatabase:
         assert produced_path.read_bytes() != b""
 
     def test_shape_and_scale_are_physically_sane(
-        self, aiida_profile, yambo_save, ham_output_parameters, nscf_output_band
+        self,
+        aiida_profile,
+        yambo_save,
+        synthetic_ham_output_parameters,
+        synthetic_nscf_output_band,
     ):
         """Sanity check independent of the direct-call reference above."""
         produced = generate_qp_database._callable(
             yambo_save=yambo_save,
-            ham_output_parameters=ham_output_parameters,
-            nscf_output_band=nscf_output_band,
+            ham_output_parameters=synthetic_ham_output_parameters,
+            nscf_output_band=synthetic_nscf_output_band,
         )
         with netCDF4.Dataset("in-memory", memory=produced.get_content(mode="rb")) as ds:
-            n_bands = 20  # tests/data/bse fixture: 4 occ + 4 emp Wannier + 12 unscreened KS
-            n_kpoints_full_bz = 64  # 2x2x2 MP grid, 8 IBZ points expanded
+            n_bands = 8  # synthetic_ham_output_parameters: 4 occ + 4 empty
+            n_kpoints_full_bz = 64  # ns.db1's own 4x4x4 grid, 8 IBZ points expanded
             n_states = n_bands * n_kpoints_full_bz
             pars = np.asarray(ds.variables["PARS"][:]).flatten()
             assert int(pars[0]) == n_bands
             assert int(pars[1]) == n_kpoints_full_bz
             assert int(pars[2]) == n_states
             qp_e = np.asarray(ds.variables["QP_E"][:, 0])
-            # Ha, silicon KI valence/conduction states: a few eV either side of
-            # the gap, well inside +/-3 Ha.
+            # Ha; synthetic_ham_output_parameters picks eV values a few eV
+            # either side of a gap, well inside +/-3 Ha once converted.
             assert np.all(np.abs(qp_e) < 3.0)
+
+
+def test_ham_output_parameters_has_the_expected_shape(aiida_profile, ham_output_parameters):
+    """Dict-shape contract check for the real ``bse_si`` kcw.x ``ham`` fixture.
+
+    Independent of :class:`TestGenerateQpDatabase` above: this fixture's
+    2x2x2 grid does not match ``ns.db1``'s 4x4x4 grid (see the module
+    docstring), so it is not used to build an ``ndb.QP`` here -- only to
+    confirm the ``koopmans.kcw_ham`` parser produces the KI/KS shape
+    :func:`generate_qp_database` expects.
+    """
+    params = ham_output_parameters.get_dict()
+    # bse_si fixture: 2x2x2 grid, 4 occ + 4 emp Wannier + 12 unscreened KS.
+    n_kpoints, n_bands = 8, 20
+    assert np.asarray(params["ki_eigenvalues_on_grid"]).shape == (n_kpoints, n_bands)
+    assert np.asarray(params["ks_eigenvalues_on_grid"]).shape == (n_kpoints, n_bands)
 
 
 class TestGenerateQpDatabaseRefusals:
@@ -211,6 +304,24 @@ class TestGenerateQpDatabaseRefusals:
                 yambo_save=empty_folder,
                 ham_output_parameters=ham_output_parameters,
                 nscf_output_band=nscf_output_band,
+            )
+
+    def test_mismatched_grid_sizes_are_refused(
+        self, aiida_profile, yambo_save, ham_output_parameters, synthetic_nscf_output_band
+    ):
+        """The real 2x2x2 ``ham`` fixture paired with ns.db1's 4x4x4 grid is refused.
+
+        Pairing these two (8 eigenvalue rows against a 64-point
+        ``nscf_output_band``) is exactly the mismatch the module docstring
+        describes: without this guard, k2y's own k-point matching would
+        silently fall back to a stale index for the 56 unmatched rows
+        instead of failing.
+        """
+        with pytest.raises(ValueError, match="k-points"):
+            generate_qp_database._callable(
+                yambo_save=yambo_save,
+                ham_output_parameters=ham_output_parameters,
+                nscf_output_band=synthetic_nscf_output_band,
             )
 
 
