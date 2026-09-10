@@ -36,11 +36,11 @@ machine running the daemon.
 
 from __future__ import annotations
 
-import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
 from aiida import orm
+from aiida.common.folders import SandboxFolder
 from aiida_workgraph import task
 
 from aiida_koopmans.calculations.kcp import KcpCalculation
@@ -175,15 +175,16 @@ def convert_spin1_to_spin2(
         transport.copytree(str(dummy_save), str(new_save))
 
         # Now overlay the converted wavefunctions. Each file is round-tripped
-        # through a local temp file (get -> substitute -> put) since neither
-        # transport exposes a bytes-in-bytes-out API; this is the same
-        # staging idiom a CalcJob uses to move files onto/off of a remote.
+        # through a local scratch file (get -> substitute -> put) since
+        # neither transport exposes a bytes-in-bytes-out API; this is the
+        # same ``SandboxFolder``-staged get/put idiom
+        # ``Transport.copy_from_remote_to_remote`` uses to move files
+        # between two remotes via the local machine.
         converted_any = False
-        with tempfile.TemporaryDirectory() as local_tmp:
-            local_tmp_path = Path(local_tmp)
-            local_src = local_tmp_path / "src"
-            local_up = local_tmp_path / "up"
-            local_down = local_tmp_path / "down"
+        with SandboxFolder() as sandbox:
+            local_src = Path(sandbox.get_abs_path("src"))
+            local_up = Path(sandbox.get_abs_path("up"))
+            local_down = Path(sandbox.get_abs_path("down"))
             for spin1_name, up_name, down_name in _CONVERSION_MAP:
                 src = spin1_k / spin1_name
                 if not transport.path_exists(str(src)):
