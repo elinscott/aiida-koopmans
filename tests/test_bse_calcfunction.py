@@ -10,9 +10,13 @@ builds the same ``ndb.QP`` two ways from the same inputs -- once through
 the calcfunction, once by calling ``KcwQpDatabaseGenerator`` directly on
 the same arrays -- and diffs every netCDF variable. That isolates the
 calcfunction's own data threading (unpacking ``yambo_save`` to a temp
-SAVE directory, reading the KI/KS grids out of ``output_parameters``,
-reading the k-points out of ``output_band``) from k2y's own mapping
-math, which is k2y's own test suite's job, not ours.
+SAVE directory, reading the requested eigenvalue grid out of
+``output_parameters``, reading the k-points out of ``output_band``) from
+k2y's own mapping math, which is k2y's own test suite's job, not ours.
+It is parametrized over ``eigenvalues`` ('ki'/'pki'): the synthetic
+``ham_output_parameters`` fixture gives the two flavors distinct shifts,
+so reading the wrong ``output_parameters`` key would fail the parity
+comparison.
 
 ``tests/data/bse/ns.db1`` (284 KiB) and ``ndb.kindx`` (65 KiB -- one of
 the two SAVE siblings ``generate_qp_database`` reads the SERIAL_NUMBER
@@ -154,26 +158,33 @@ def synthetic_nscf_output_band(yambo_kpoints_crystal) -> orm.BandsData:
 
 @pytest.fixture
 def synthetic_ham_output_parameters(yambo_kpoints_crystal) -> orm.Dict:
-    """Synthetic KI/KS eigenvalues on the 64-point grid ``ns.db1`` expects.
+    """Synthetic KI/pKI/KS eigenvalues on the 64-point grid ``ns.db1`` expects.
 
     Not a real kcw.x output: no fixture pairs a real ``ham`` run with
     ``ns.db1``'s own 4x4x4 grid (see the module docstring), so this
     hand-picks 4 occupied + 4 empty bands, KS a few eV either side of a
-    gap and KI shifted by a small Koopmans correction, both varying
-    slightly across k-points so the two grids are not degenerate.
+    gap, KI shifted by a small Koopmans correction and pKI shifted by a
+    *different* one -- both varying slightly across k-points -- so the
+    two grids are not degenerate and picking the wrong key is
+    detectable.
     """
     n_kpoints = len(yambo_kpoints_crystal)
     k = np.arange(n_kpoints)[:, None]
     band = np.arange(4)[None, :]
     ks = np.concatenate([-5.0 + 0.01 * k + 0.1 * band, 1.0 + 0.01 * k + 0.1 * band], axis=1)
     ki = ks + np.concatenate([np.full((n_kpoints, 4), -0.3), np.full((n_kpoints, 4), 0.3)], axis=1)
+    pki = ks + np.concatenate([np.full((n_kpoints, 4), -0.5), np.full((n_kpoints, 4), 0.5)], axis=1)
     return orm.Dict(
-        {"ki_eigenvalues_on_grid": ki.tolist(), "ks_eigenvalues_on_grid": ks.tolist()}
+        {
+            "ki_eigenvalues_on_grid": ki.tolist(),
+            "pki_eigenvalues_on_grid": pki.tolist(),
+            "ks_eigenvalues_on_grid": ks.tolist(),
+        }
     ).store()
 
 
 def _direct_k2y_qp_db(
-    save_dir: Path, params: dict, kpoints_grid: np.ndarray, output_path: Path
+    save_dir: Path, params: dict, kpoints_grid: np.ndarray, output_path: Path, eigenvalue_key: str
 ) -> None:
     """Build an ``ndb.QP`` by calling k2y directly on the fixture's own values.
 
@@ -182,7 +193,7 @@ def _direct_k2y_qp_db(
     the calcfunction's output is checked against.
     """
     generator = KcwQpDatabaseGenerator(ns_db1=str(save_dir / "ns.db1"))
-    generator.eigenvalues_KI = np.array(params["ki_eigenvalues_on_grid"])
+    generator.eigenvalues_KI = np.array(params[eigenvalue_key])
     generator.eigenvalues_KS = np.array(params["ks_eigenvalues_on_grid"])
     generator.kpoints_grid_kcw = np.array(kpoints_grid)
     generator.kpoints_type = "crystal"
@@ -191,8 +202,10 @@ def _direct_k2y_qp_db(
 
 
 class TestGenerateQpDatabase:
+    @pytest.mark.parametrize("flavor", ["ki", "pki"])
     def test_matches_a_direct_k2y_call(
         self,
+        flavor,
         aiida_profile,
         yambo_save,
         synthetic_ham_output_parameters,
@@ -200,24 +213,32 @@ class TestGenerateQpDatabase:
         yambo_kpoints_crystal,
         tmp_path,
     ):
+        """Parametrized over both eigenvalue flavors: picking the wrong key fails.
+
+        ``synthetic_ham_output_parameters`` gives ``ki`` and ``pki`` distinct
+        shifts, so a calcfunction that read the wrong ``output_parameters``
+        key would diverge from the reference built with the requested one.
+        """
         produced = generate_qp_database._callable(
             yambo_save=yambo_save,
             ham_output_parameters=synthetic_ham_output_parameters,
             nscf_output_band=synthetic_nscf_output_band,
+            eigenvalues=orm.Str(flavor),
         )
-        produced_path = tmp_path / "produced_ndb.QP"
+        produced_path = tmp_path / f"produced_{flavor}_ndb.QP"
         produced_path.write_bytes(produced.get_content(mode="rb"))
 
-        reference_dir = tmp_path / "reference_save"
+        reference_dir = tmp_path / f"reference_save_{flavor}"
         reference_dir.mkdir()
         for name in ("ns.db1", "ndb.kindx"):
             (reference_dir / name).write_bytes((DATA_DIR / name).read_bytes())
-        reference_path = tmp_path / "reference_ndb.QP"
+        reference_path = tmp_path / f"reference_{flavor}_ndb.QP"
         _direct_k2y_qp_db(
             reference_dir,
             synthetic_ham_output_parameters.get_dict(),
             yambo_kpoints_crystal,
             reference_path,
+            f"{flavor}_eigenvalues_on_grid",
         )
 
         with (
@@ -254,6 +275,7 @@ class TestGenerateQpDatabase:
             yambo_save=yambo_save,
             ham_output_parameters=synthetic_ham_output_parameters,
             nscf_output_band=synthetic_nscf_output_band,
+            eigenvalues=orm.Str("ki"),
         )
         with netCDF4.Dataset("in-memory", memory=produced.get_content(mode="rb")) as ds:
             n_bands = 8  # synthetic_ham_output_parameters: 4 occ + 4 empty
@@ -293,6 +315,7 @@ class TestGenerateQpDatabaseRefusals:
                 yambo_save=yambo_save,
                 ham_output_parameters=bad_params,
                 nscf_output_band=nscf_output_band,
+                eigenvalues=orm.Str("ki"),
             )
 
     def test_missing_ns_db1_is_refused(
@@ -304,6 +327,7 @@ class TestGenerateQpDatabaseRefusals:
                 yambo_save=empty_folder,
                 ham_output_parameters=ham_output_parameters,
                 nscf_output_band=nscf_output_band,
+                eigenvalues=orm.Str("ki"),
             )
 
     def test_mismatched_grid_sizes_are_refused(
@@ -322,7 +346,37 @@ class TestGenerateQpDatabaseRefusals:
                 yambo_save=yambo_save,
                 ham_output_parameters=ham_output_parameters,
                 nscf_output_band=synthetic_nscf_output_band,
+                eigenvalues=orm.Str("ki"),
             )
+
+    def test_bad_eigenvalues_value_is_refused(
+        self, aiida_profile, yambo_save, ham_output_parameters, nscf_output_band
+    ):
+        with pytest.raises(ValueError, match="kipz"):
+            generate_qp_database._callable(
+                yambo_save=yambo_save,
+                ham_output_parameters=ham_output_parameters,
+                nscf_output_band=nscf_output_band,
+                eigenvalues=orm.Str("kipz"),
+            )
+
+    def test_pki_request_against_a_ki_only_run_names_the_keys_present(
+        self, aiida_profile, yambo_save, ham_output_parameters, nscf_output_band
+    ):
+        """``ham_output_parameters`` is the real ``bse_si`` fixture: KI/KS only.
+
+        Requesting ``pki`` against it is exactly the scenario the missing-key
+        refusal exists for -- a run that computed KI but not pKI.
+        """
+        with pytest.raises(ValueError, match="pki_eigenvalues_on_grid") as excinfo:
+            generate_qp_database._callable(
+                yambo_save=yambo_save,
+                ham_output_parameters=ham_output_parameters,
+                nscf_output_band=nscf_output_band,
+                eigenvalues=orm.Str("pki"),
+            )
+        assert "ki_eigenvalues_on_grid" in str(excinfo.value)
+        assert "ks_eigenvalues_on_grid" in str(excinfo.value)
 
 
 def test_generate_qp_database_builds_inside_a_graph(
@@ -338,5 +392,6 @@ def test_generate_qp_database_builds_inside_a_graph(
         yambo_save=yambo_save,
         ham_output_parameters=ham_output_parameters,
         nscf_output_band=nscf_output_band,
+        eigenvalues=orm.Str("ki"),
     )
     assert "qp_database" in wg.tasks
