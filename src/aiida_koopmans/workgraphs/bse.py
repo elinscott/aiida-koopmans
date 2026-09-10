@@ -28,12 +28,12 @@ step it will call.
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 
-import tempfile
 from pathlib import Path
 from typing import Annotated, TypedDict
 
 import numpy as np
 from aiida import orm
+from aiida.common.folders import SandboxFolder
 from aiida_workgraph import task
 from aiida_workgraph.socket_spec import SocketMeta
 
@@ -134,17 +134,19 @@ def generate_qp_database(
                 "run's own seeding nscf, not some other run's grid."
             )
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        save_dir = Path(tmpdir)
+    # SandboxFolder, not ``tempfile`` directly: AiiDA's own local-scratch
+    # abstraction for this get-then-consume shape (see ``convert_spin``'s
+    # get/put staging), auto-erased on exit like ``TemporaryDirectory``.
+    with SandboxFolder() as sandbox:
         for filename in yambo_save.base.repository.list_object_names():
             with yambo_save.base.repository.open(filename, "rb") as handle:
-                (save_dir / filename).write_bytes(handle.read())
-        ns_db1 = save_dir / "ns.db1"
-        if not ns_db1.exists():
+                Path(sandbox.get_abs_path(filename)).write_bytes(handle.read())
+        if "ns.db1" not in yambo_save.base.repository.list_object_names():
             raise ValueError(
                 "`yambo_save` has no `ns.db1` -- pass the p2y (yambo init) run's "
                 "retrieved folder, not some other calculation's."
             )
+        ns_db1 = sandbox.get_abs_path("ns.db1")
 
         generator = KcwQpDatabaseGenerator(ns_db1=str(ns_db1))
         generator.eigenvalues_KI = np.array(params[eigenvalue_key])
@@ -153,6 +155,6 @@ def generate_qp_database(
         generator.kpoints_type = "crystal"
         generator.generate_mappings()
 
-        qp_path = save_dir / "ndb.QP"
+        qp_path = sandbox.get_abs_path("ndb.QP")
         generator.generate_QP_db(str(qp_path))
         return orm.SinglefileData(file=str(qp_path), filename="ndb.QP")
