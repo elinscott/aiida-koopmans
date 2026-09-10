@@ -32,7 +32,7 @@ here subclasses ``WorkChain``.
     PwBaseStep = task(PwBaseWorkChain)
 
     @task.graph
-    def RunScfNscf(code, structure, overrides=None) -> ScfNscfOutputs:
+    def RunWannierGroundState(code, structure, overrides=None) -> ScfNscfOutputs:
         builder = PwBaseWorkChain.get_builder_from_protocol(code, structure)
         scf_inputs = get_dict_from_builder(builder)
         scf_inputs.pop("clean_workdir", None)
@@ -100,8 +100,8 @@ Naming
 
 Case says what a call creates. **PascalCase** for anything whose call creates
 a process node: verb-first ``@task.graph`` builders (``WannierizeBlock``,
-``RunScfNscf``, ``ComputeOrbitalScreeningParameters``), with the
-``Workflow`` suffix reserved for the entry points a dispatcher calls, and
+``RunWannierGroundState``, ``ComputeOrbitalScreeningParameters``), with
+the ``Workflow`` suffix reserved for the entry points a dispatcher calls, and
 ``Step``-suffixed ``task(WorkChain)`` or ``task(CalcJob)`` constants
 (``KcpStep``, ``PwBaseStep``). **snake_case** for leaf ``@task``,
 calcfunction, and workfunction computations (``compute_alpha_from_dscf``).

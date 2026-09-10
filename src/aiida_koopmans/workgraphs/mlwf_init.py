@@ -102,6 +102,9 @@ class MlwfInitializationOutputs(TypedDict):
     * ``nscf_remote_folder`` — the shared primitive-cell nscf scratch every
       block was Wannierised off; the ``parent_folder`` a downstream
       pw2wannier90 ``wan_mode='decompose'`` pass reads.
+    * ``scf_remote_folder`` — the primitive-cell scf scratch the nscf ran
+      off. A smooth-interpolation re-wannierization on a denser mesh
+      passes this as its own ``scf_remote_folder`` input.
     * ``block_wannierizations`` — the per-block Wannierisation outputs
       (keyed by block label), each holding the ``retrieved`` folder with
       ``aiida_u.mat`` / ``aiida_centres.xyz`` the decompose pass needs.
@@ -117,6 +120,7 @@ class MlwfInitializationOutputs(TypedDict):
     evc_occupied2: orm.SinglefileData
     report: dict
     nscf_remote_folder: orm.RemoteData
+    scf_remote_folder: orm.RemoteData
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
     merge_groups: list
 
@@ -434,6 +438,7 @@ def MlwfInitialization(
         evc_occupied2=fold["evc_occupied2"],
         report=report.result,
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
+        scf_remote_folder=wannierize["scf_remote_folder"],
         block_wannierizations=wannierize["blocks"],
         merge_groups=emit_merge_groups(
             merge_groups=merge_groups, metadata={"call_link_label": "merge_groups"}
