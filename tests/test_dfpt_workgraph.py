@@ -563,6 +563,20 @@ class TestSinglepointDFPTBuild:
         for expected in ("alphas", "screen_parameters", "ham_parameters", "bands"):
             assert expected in result_keys
 
+        # The shared ground state's scf + nscf outputs surface at the top
+        # level, independent of the per-channel kcw.x results -- a BSE
+        # composition needs the dense-nscf band structure without picking
+        # it back out of any one channel.
+        ground_state_keys = [s._name for s in wg.outputs.ground_state]
+        for expected in (
+            "scf_remote_folder",
+            "nscf_remote_folder",
+            "nscf_retrieved",
+            "nscf_output_parameters",
+            "nscf_output_band",
+        ):
+            assert expected in ground_state_keys
+
         # kcw.x needs an nspin=2 scratch even for closed-shell systems (the
         # DFPT perturbations are spin-dependent): both PW runs are forced to
         # nspin=2 / tot_magnetization=0. The nscf's own symmetry drop is
@@ -860,6 +874,11 @@ class TestSinglepointDFPTBuild:
             result_keys = [s._name for s in wg.outputs.channels[key]]
             assert "alphas" in result_keys
             assert "ham_parameters" in result_keys
+
+        # One shared ground state feeds both channels, so ``ground_state``
+        # stays a single namespace rather than fanning out per channel.
+        ground_state_keys = [s._name for s in wg.outputs.ground_state]
+        assert "nscf_output_band" in ground_state_keys
 
         # nspin=2 is still forced, but the magnetization is the caller's.
         pw_overrides = wg.tasks["scf_nscf"].inputs["overrides"].value
