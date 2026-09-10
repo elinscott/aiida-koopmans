@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "yambopy", git = "https://github.com/yambo-code/yambopy?rev=ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d" }]
+overrides = [{ name = "yambopy", specifier = ">=0.7.1" }]
 
 [[package]]
 name = "accessible-pygments"
@@ -115,7 +115,7 @@ requires-dist = [
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
     { name = "furo", marker = "extra == 'docs'" },
-    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=b284fca3ca119501e701d1d8e6fc828a41a0322a" },
+    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
     { name = "node-graph", editable = "../node-graph" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
@@ -126,7 +126,7 @@ requires-dist = [
     { name = "sphinxcontrib-details-directive", marker = "extra == 'docs'" },
     { name = "upf-tools", editable = "../upf-tools" },
     { name = "wannier90-input", specifier = ">=0.0.2" },
-    { name = "yambopy", git = "https://github.com/yambo-code/yambopy?rev=ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d" },
+    { name = "yambopy", specifier = ">=0.7.1" },
 ]
 provides-extras = ["docs", "pre-commit"]
 
@@ -1298,7 +1298,7 @@ wheels = [
 [[package]]
 name = "k2y"
 version = "0.1.0"
-source = { git = "https://github.com/elinscott/k2y?rev=b284fca3ca119501e701d1d8e6fc828a41a0322a#b284fca3ca119501e701d1d8e6fc828a41a0322a" }
+source = { git = "https://github.com/elinscott/k2y?rev=eb67d2ab5669bc7e351f3821ea0f6ac437b49d11#eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" }
 dependencies = [
     { name = "ase" },
     { name = "click" },
@@ -3345,7 +3345,7 @@ wheels = [
 [[package]]
 name = "yambopy"
 version = "0.7.1"
-source = { git = "https://github.com/yambo-code/yambopy?rev=ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d#ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h5py" },
     { name = "lxml" },
@@ -3361,6 +3361,10 @@ dependencies = [
     { name = "spglib" },
     { name = "spgrep" },
     { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/45/d6f8305b0a5119e4c592b7e9ad11fb971781e093657fac74d1f2d870e4cc/yambopy-0.7.1.tar.gz", hash = "sha256:c9a003192aef8c95e62c872f05aa43d78b208a8292a0542768e1d2954b7539fb", size = 6766509, upload-time = "2026-03-13T14:20:06.403Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/9c/2e03dd6f48c986fccff7a8b779d027906b11bea3ab2a9dd3148fee54e0b4/yambopy-0.7.1-py3-none-any.whl", hash = "sha256:48e47c13985037411eecf7a168e1fcf8d0719b99ed0acb6133ce69c41b829afb", size = 5992063, upload-time = "2026-03-13T14:20:03.97Z" },
 ]
 
 [[package]]
