@@ -1336,45 +1336,6 @@ def _run_explicit_bands_and_dos_steps(
     return bands_outputs, projwfc_outputs
 
 
-def _reuse_external_nscf_scratch(
-    codes: WannierizeBlocksCodes,
-    structure: orm.StructureData,
-    nscf_remote_folder: orm.RemoteData,
-    scf_remote_folder: orm.RemoteData | None,
-    interpolation_kpoints: orm.KpointsData | None,
-    nscf_bands: orm.BandsData | None,
-    overrides: WannierizeOverrides,
-    pseudo_family: str | None,
-    protocol: str | None,
-    electronic_type: ElectronicType,
-    parallelization: ParallelizationDict | None,
-) -> tuple[orm.RemoteData, orm.BandsData | None, PwOutputs | None, ProjwfcOutputs | None]:
-    """Wire ``nscf_remote_folder`` through; the quality check reads ``scf_remote_folder``.
-
-    A plain graph-assembly helper: it must be called inside a
-    ``@task.graph`` body. Runs no scf or nscf itself. With
-    ``scf_remote_folder`` given, also runs the quality-check bands /
-    projwfc pair off it. Returns ``(nscf_scratch, block_bands,
-    bands_outputs, projwfc_outputs)``.
-    """
-    bands_outputs = None
-    projwfc_outputs = None
-    if scf_remote_folder is not None:
-        bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
-            codes=codes,
-            structure=structure,
-            bands_kpoints=None,
-            interpolation_kpoints=interpolation_kpoints,
-            scf_remote_folder=scf_remote_folder,
-            nscf_overrides=overrides.get("nscf"),
-            pseudo_family=pseudo_family,
-            protocol=protocol,
-            electronic_type=electronic_type,
-            parallelization=parallelization,
-        )
-    return nscf_remote_folder, nscf_bands, bands_outputs, projwfc_outputs
-
-
 def _detect_split_groups(
     bands_outputs: PwOutputs | None,
     num_occ_bands: int | None,
@@ -1428,8 +1389,12 @@ def _wire_scf_nscf_outputs(
     """Wire the ``nscf`` / ``scf_remote_folder`` outputs when the ground state ran here.
 
     ``scf_nscf`` is ``None`` only when the caller supplied its own
-    ``nscf_remote_folder``, so no nscf ran here. ``expose_scf`` is false
-    when the density came in from the caller, who already owns that node.
+    ``nscf_remote_folder``, so no nscf ran here. ``expose_scf`` is true
+    when :func:`RunWannierGroundState` ran its own internal scf here (the
+    caller passed no ``scf_remote_folder`` of its own), so the density it
+    produced is exposed for a later caller to reuse; it is false when the
+    caller already supplied ``scf_remote_folder``, since that caller
+    already owns the node and re-exposing it would be redundant.
     """
     if scf_nscf is None:
         return
@@ -1648,19 +1613,24 @@ def WannierizeBlocks(
             overrides, scf_kpoints, source="an external nscf_remote_folder"
         )
         scf_nscf = None
-        nscf_scratch, block_bands, bands_outputs, projwfc_outputs = _reuse_external_nscf_scratch(
-            codes=codes,
-            structure=structure,
-            nscf_remote_folder=nscf_remote_folder,
-            scf_remote_folder=scf_remote_folder,
-            interpolation_kpoints=interpolation_kpoints,
-            nscf_bands=nscf_bands,
-            overrides=overrides,
-            pseudo_family=pseudo_family,
-            protocol=protocol,
-            electronic_type=electronic_type,
-            parallelization=parallelization,
-        )
+        nscf_scratch = nscf_remote_folder
+        block_bands = nscf_bands
+        # With the caller's own scf density, also run the quality-check
+        # bands / projwfc pair off it; without one, no density exists here
+        # to run it from, so neither step runs.
+        if scf_remote_folder is not None:
+            bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
+                codes=codes,
+                structure=structure,
+                bands_kpoints=None,
+                interpolation_kpoints=interpolation_kpoints,
+                scf_remote_folder=scf_remote_folder,
+                nscf_overrides=overrides.get("nscf"),
+                pseudo_family=pseudo_family,
+                protocol=protocol,
+                electronic_type=electronic_type,
+                parallelization=parallelization,
+            )
     else:
         # With ``scf_remote_folder`` the caller supplies a converged scf on
         # this structure and the ground state runs its nscf alone off that

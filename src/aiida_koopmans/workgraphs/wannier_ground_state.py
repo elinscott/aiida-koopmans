@@ -170,7 +170,8 @@ def RunWannierGroundState(
         scf_data = _finish_pw_base_step(
             get_dict_from_builder(scf_builder), step="scf", display="SCF", kpoints=scf_kpoints
         )
-        scf_remote_folder = PwBaseStep(**scf_data)["remote_folder"]
+        scf_step = PwBaseStep(**scf_data)
+        scf_remote_folder = scf_step["remote_folder"]
 
     # The recipe pins the nscf k-points itself, expanding a mesh into
     # wannier90's order, so re-pin what it settled on rather than the
