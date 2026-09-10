@@ -34,6 +34,17 @@ dependencies = [
     # Header-only UPF reads for the projected-DOS gate (header_from_str);
     # needs the not-yet-released 0.2.1, hence the uv source below.
     "upf-tools",
+    # BSE-with-Koopmans-eigenvalues support (workgraphs/bse.py): converts
+    # kcw.x KI eigenvalues into a yambo quasiparticle database. Intended
+    # pins, wired via `[tool.uv.sources]` in a follow-up PR:
+    #   k2y = elinscott/k2y@legacy-extra (b284fca)
+    #   aiida-yambo = mikibonacci/aiida-yambo @ a95794c55802d174207c69e957aaf958040342ee
+    #   yambopy = yambo-code/yambopy @ ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d
+    "k2y",
+    "aiida-yambo",
+    # uv ignores `[tool.uv.sources]` for transitive dependencies, so k2y's
+    # own yambopy pin would otherwise win; list it directly.
+    "yambopy",
 ]
 
 [project.optional-dependencies]
