@@ -35,13 +35,10 @@ dependencies = [
     # needs the not-yet-released 0.2.1, hence the uv source below.
     "upf-tools",
     # BSE-with-Koopmans-eigenvalues support (workgraphs/bse.py): converts
-    # kcw.x KI eigenvalues into a yambo quasiparticle database. Intended
-    # pins, wired via `[tool.uv.sources]` in a follow-up PR:
-    #   k2y = elinscott/k2y@legacy-extra (b284fca)
-    #   aiida-yambo = mikibonacci/aiida-yambo @ a95794c55802d174207c69e957aaf958040342ee
-    #   yambopy = yambo-code/yambopy @ ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d
+    # kcw.x KI eigenvalues into a yambo quasiparticle database. Pins live
+    # in `[tool.uv.sources]` below. `aiida-yambo` joins in the follow-up
+    # PR that wires the `RunBse` route -- nothing in this PR imports it.
     "k2y",
-    "aiida-yambo",
     # uv ignores `[tool.uv.sources]` for transitive dependencies, so k2y's
     # own yambopy pin would otherwise win; list it directly.
     "yambopy",
@@ -221,6 +218,19 @@ aiida-quantumespresso = { path = "../aiida-quantumespresso", editable = true }
 # install the v2.2.0 release from GitHub, pinned to the immutable sha that
 # matches a pre-quarantine local clone, until the releases reappear.
 aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = "5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
+# k2y is not on PyPI; pin the branch that expands QP_kpts to the full BZ
+# (see workgraphs/bse.py). yambopy is k2y's own dependency, listed above
+# to override the version k2y's metadata would otherwise pull in.
+k2y = { git = "https://github.com/elinscott/k2y", rev = "b284fca3ca119501e701d1d8e6fc828a41a0322a" }
+yambopy = { git = "https://github.com/yambo-code/yambopy", rev = "ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d" }
+
+[tool.uv]
+# k2y's own metadata pins a different yambopy fork/rev as a direct URL
+# dependency; `[tool.uv.sources]` alone cannot rewrite a URL another
+# package already pins, so force our own pin with an override.
+override-dependencies = [
+    "yambopy @ git+https://github.com/yambo-code/yambopy@ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d",
+]
 
 [tool.hatch.envs.docs]
 installer = "uv"
