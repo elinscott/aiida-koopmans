@@ -1775,7 +1775,7 @@ def _interpolate_bands(
         use_ws_distance=use_ws_distance,
         do_dos=do_dos,
         plotting=plotting,
-        metadata={"call_link_label": "interpolate_band_structure"},
+        metadata={"call_link_label": "interpolate_band_structure", "label": "Band interpolation"},
     )
     return interpolation
 
