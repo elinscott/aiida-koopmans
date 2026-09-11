@@ -569,18 +569,19 @@ class TestRunBetheSalpeterGraphBuild:
 
 
 class TestSinglepointBetheSalpeterWorkflow:
-    def test_protocol_and_protocol_qe_reach_run_bse_separately(
+    def test_protocol_reaches_dfpt_and_bse_at_one_value(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):
-        """``protocol`` must reach the nested RunBetheSalpeter call unchanged.
+        """A single ``protocol`` must reach the nested DFPT and BSE calls unchanged.
 
-        Landmine: an earlier wiring called ``RunBetheSalpeter(protocol=protocol_qe,
-        protocol_qe=protocol_qe, ...)``, silently discarding
-        ``SinglepointBetheSalpeterWorkflow``'s own ``protocol`` argument for the BSE
-        step. ``RunBetheSalpeter`` is a nested ``@task.graph`` call here, not a
-        ``.build()`` -- it shows up as a single ``"bse"`` task node whose
-        own ``protocol``/``protocol_qe`` input sockets carry exactly the
-        values this graph passed it, without RunBetheSalpeter's own body running.
+        There is no reason for the QE steps :func:`RunBetheSalpeter` runs to
+        differ in precision from the DFPT chain's own ground state, so
+        ``SinglepointBetheSalpeterWorkflow`` takes one ``protocol`` and drives
+        both the nested ``dfpt`` call and the nested ``bse`` call with it.
+        Both are nested ``@task.graph`` calls here, not ``.build()`` calls --
+        each shows up as a single task node whose own ``protocol`` input
+        socket carries exactly the value this graph passed it, without
+        either nested graph's own body running.
         """
         wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
@@ -591,11 +592,11 @@ class TestSinglepointBetheSalpeterWorkflow:
             pseudo_family=fake_cutoffs_family.label,
             overrides=_cutoff_overrides(),
             protocol="fast",
-            protocol_qe="precise",
         )
+        assert wg.tasks["dfpt"].inputs["protocol"].value == "fast"
         bse_task = wg.tasks["bse"]
         assert bse_task.inputs["protocol"].value == "fast"
-        assert bse_task.inputs["protocol_qe"].value == "precise"
+        assert "protocol_qe" not in bse_task.inputs
 
     def test_graph_composes_dfpt_and_bse(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family

@@ -306,7 +306,6 @@ def RunBetheSalpeter(
     eigenvalues: str = "ki",
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    protocol_qe: str | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> BetheSalpeterOutputs:
     """Run a yambo BSE spectrum seeded by Koopmans (KI) quasiparticle corrections.
@@ -357,10 +356,11 @@ def RunBetheSalpeter(
     past one rank, a k-point-only ``BS_CPU``/``BS_ROLEs`` MPI split (see
     :func:`_bse_mpi_roles`).
 
-    ``protocol_qe`` defaults to ``'moderate'`` on its own, independent of
-    ``protocol``: a caller passing ``protocol='precise'`` without also
-    setting ``protocol_qe`` still gets a ``'moderate'``-precision fresh
-    scf/nscf/p2y here.
+    ``protocol`` sets both the fresh scf/nscf/p2y's QE precision and yambo's
+    own BSE protocol -- there is no reason for the two to differ here: the
+    QE steps this route runs must match the DFPT chain's ground state, and
+    the BSE variables that matter come from ``bse_parameters``, with the
+    yambo protocol only supplying defaults. Defaults to ``'moderate'``.
 
     Raises:
         ValueError: If ``bse_parameters['variables']`` states an owned
@@ -439,7 +439,7 @@ def RunBetheSalpeter(
         pw_code=codes["pw"],
         preprocessing_code=codes["p2y"],
         code=codes["yambo"],
-        protocol_qe=protocol_qe or "moderate",
+        protocol_qe=protocol or "moderate",
         protocol=protocol or "moderate",
         structure=structure,
         pseudo_family=pseudo_family,
@@ -478,7 +478,7 @@ def RunBetheSalpeter(
         pw_code=codes["pw"],
         preprocessing_code=codes["p2y"],
         code=codes["yambo"],
-        protocol_qe=protocol_qe or "moderate",
+        protocol_qe=protocol or "moderate",
         protocol=protocol or "moderate",
         structure=structure,
         pseudo_family=pseudo_family,
@@ -628,7 +628,6 @@ def SinglepointBetheSalpeterWorkflow(
     scf_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    protocol_qe: str | None = None,
     overrides: WannierizeOverrides | None = None,
     eigenvalues: str = "ki",
     parallelization: ParallelizationDict | None = None,
@@ -659,10 +658,14 @@ def SinglepointBetheSalpeterWorkflow(
       not that the values under it were actually produced by that
       correction.
 
-    ``protocol`` reaches both chains: ``SinglepointDFPTWorkflow``'s own QE
-    protocol and :func:`RunBetheSalpeter`'s yambo protocol. ``protocol_qe`` sets only
-    the BSE route's own fresh scf/nscf/p2y -- pass it when that QE step
-    should run at a different precision than ``protocol``.
+    ``protocol`` reaches every QE step in both chains and yambo's own
+    protocol selection alike: ``SinglepointDFPTWorkflow``'s ground state,
+    :func:`RunBetheSalpeter`'s fresh scf/nscf/p2y, and its yambo BSE
+    protocol all run at the same value. There is no reason for this route's
+    QE precision to differ between the two chains -- the QE steps
+    :func:`RunBetheSalpeter` runs must match the DFPT chain's own ground
+    state -- and the BSE variables that matter come from ``bse_parameters``,
+    with the yambo protocol only supplying defaults.
     ``bse_parameters`` / ``eigenvalues`` / the BSE half of
     ``parallelization`` pass straight to :func:`RunBetheSalpeter`; every other
     argument passes straight to ``SinglepointDFPTWorkflow``.
@@ -710,7 +713,6 @@ def SinglepointBetheSalpeterWorkflow(
         eigenvalues=eigenvalues,
         pseudo_family=pseudo_family,
         protocol=protocol,
-        protocol_qe=protocol_qe,
         parallelization=parallelization,
         metadata={"call_link_label": "bse", "label": "BSE spectrum"},
     )
