@@ -1315,11 +1315,10 @@ def KoopmansDSCFWorkflow(
     nscf_remote_folder = None
     block_wannierizations = None
     merge_groups = None
-    # The initialization's pw.x nscf and kcp.x dft_init scalar outputs,
-    # which the interpolated band structure reads to align kcp.x's
-    # absolute energy scale to pw.x's; only the Wannier route runs both.
-    nscf_output_parameters = None
-    dft_init_output_parameters = None
+    # The shift from kcp.x's absolute energy scale to pw.x's, which the
+    # interpolated band structure adds to its eigenvalues; only the
+    # Wannier route's initialization check computes it.
+    pw_scale_offset = None
     # The same blocks Wannierized on the denser mesh, when the
     # smooth-interpolation correction was asked for.
     smooth_block_wannierizations = None
@@ -1367,8 +1366,7 @@ def KoopmansDSCFWorkflow(
         nscf_remote_folder = init["nscf_remote_folder"]
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
-        nscf_output_parameters = init["nscf_output_parameters"]
-        dft_init_output_parameters = init["dft_init_output_parameters"]
+        pw_scale_offset = init["pw_scale_offset"]
         smooth_block_wannierizations = _wannierize_smooth_mesh(
             do_smooth=ui_do_smooth,
             codes=codes,
@@ -1695,8 +1693,7 @@ def KoopmansDSCFWorkflow(
             use_ws_distance=ui_use_ws_distance,
             do_dos=ui_do_dos,
             plotting=plotting,
-            nscf_output_parameters=nscf_output_parameters,
-            dft_init_output_parameters=dft_init_output_parameters,
+            offset=pw_scale_offset,
         )
         outputs["band_structure"] = bands["band_structure"]
         outputs["band_structure_reference"] = bands["reference"]
@@ -1767,15 +1764,13 @@ def _interpolate_bands(
     use_ws_distance: bool,
     do_dos: bool,
     plotting: dict | None,
-    nscf_output_parameters: dict | None = None,
-    dft_init_output_parameters: dict | None = None,
+    offset: float | None = None,
 ) -> DscfBandStructureOutputs:
     """Run the unfold-and-interpolate stage and return its outputs.
 
     Returns ``band_structure`` and ``band_structure_reference`` always, and
-    ``dos`` only when ``do_dos``. ``nscf_output_parameters`` and
-    ``dft_init_output_parameters`` put the returned bands on pw.x's
-    absolute energy scale; see :func:`DscfBandStructureTask`.
+    ``dos`` only when ``do_dos``. ``offset`` puts the returned bands on
+    pw.x's absolute energy scale; see :func:`DscfBandStructureTask`.
     """
     interpolation = DscfBandStructureTask(
         structure=structure,
@@ -1789,8 +1784,7 @@ def _interpolate_bands(
         use_ws_distance=use_ws_distance,
         do_dos=do_dos,
         plotting=plotting,
-        nscf_output_parameters=nscf_output_parameters,
-        dft_init_output_parameters=dft_init_output_parameters,
+        offset=offset,
         metadata={"call_link_label": "interpolate_band_structure", "label": "Band interpolation"},
     )
     return interpolation

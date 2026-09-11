@@ -51,7 +51,7 @@ def _init_parameters(*, homo=-1.0, lumo=1.03, energies=(-100.0, -100.0)):
     }
 
 
-def _run_check(*, bands=None, init_parameters=None):
+def _run_check(*, bands=None, init_parameters=None, nscf_output_parameters=None):
     if bands is None:
         # PW gap of 2.0 eV: homo at -1.0, lumo at +1.0.
         bands = _bands_data(
@@ -60,8 +60,10 @@ def _run_check(*, bands=None, init_parameters=None):
         )
     if init_parameters is None:
         init_parameters = _init_parameters()
+    if nscf_output_parameters is None:
+        nscf_output_parameters = {"occupations": "fixed"}
     return check_wannier_initialization._callable(
-        nscf_output_parameters={},
+        nscf_output_parameters=nscf_output_parameters,
         nscf_bands=bands,
         init_output_parameters=init_parameters,
     )
@@ -70,9 +72,14 @@ def _run_check(*, bands=None, init_parameters=None):
 class TestCheckWannierInitialization:
     def test_consistent_run_returns_report(self, aiida_profile):
         # CP gap 2.03 eV vs PW gap 2.0 eV: within the 2% (0.04 eV) window.
-        report = _run_check()
+        report = _run_check()["report"]
         assert report["pw_gap"] == pytest.approx(2.0)
         assert report["cp_gap"] == pytest.approx(2.03)
+
+    def test_a_non_fixed_occupation_scheme_is_refused(self, aiida_profile):
+        """Negative control: the PW HOMO the check relies on needs a fixed occupation."""
+        with pytest.raises(ValueError, match="occupations"):
+            _run_check(nscf_output_parameters={"occupations": "smearing"})
 
     def test_gap_mismatch_raises(self, aiida_profile):
         # CP gap 2.2 eV vs PW gap 2.0 eV: 0.2 > 0.04 tolerance.
@@ -85,7 +92,9 @@ class TestCheckWannierInitialization:
             _run_check(init_parameters=_init_parameters(energies=(-100.1, -100.0)))
 
     def test_tiny_energy_drift_passes(self, aiida_profile):
-        report = _run_check(init_parameters=_init_parameters(energies=(-100.00000001, -100.0)))
+        report = _run_check(init_parameters=_init_parameters(energies=(-100.00000001, -100.0)))[
+            "report"
+        ]
         assert report["final_energy"] == pytest.approx(-100.0)
 
     def test_missing_occupations_raises(self, aiida_profile):
@@ -111,7 +120,7 @@ class TestCheckWannierInitialization:
             eigenvalues=[[[-2.0, -1.0, 1.5]], [[-2.5, -1.2, 1.0]]],
             occupations=[[[1.0, 1.0, 0.0]], [[1.0, 1.0, 0.0]]],
         )
-        report = _run_check(bands=bands)
+        report = _run_check(bands=bands)["report"]
         assert report["pw_gap"] == pytest.approx(2.0)
 
     def test_wrong_rank_raises(self, aiida_profile):
@@ -135,6 +144,35 @@ class TestCheckWannierInitialization:
         params["lumo_energy"] = None
         with pytest.raises(ValueError, match="no HOMO / LUMO"):
             _run_check(init_parameters=params)
+
+
+class TestCheckWannierInitializationOffset:
+    """The shift from kcp.x's absolute energy scale to pw.x's."""
+
+    def test_the_offset_is_pw_homo_minus_kcp_homo(self, aiida_profile):
+        # Silicon tutorial values: the PW HOMO sits at the insulator's
+        # valence-band maximum; kcp.x's own homo_energy sits 2.5315 eV
+        # lower on its own scale. The gap is held fixed across both codes
+        # so only the gap-consistency guard, not the offset, is exercised.
+        gap = 3.6634
+        pw_homo = 6.3366
+        cp_homo = 3.8051
+        bands = _bands_data(eigenvalues=[[pw_homo, pw_homo + gap]], occupations=[[2.0, 0.0]])
+        init_parameters = _init_parameters(homo=cp_homo, lumo=cp_homo + gap)
+        offset = _run_check(bands=bands, init_parameters=init_parameters)["offset"]
+        assert offset == pytest.approx(pw_homo - cp_homo)
+
+    def test_uses_the_cross_channel_pw_homo_for_spin_polarized_bands(self, aiida_profile):
+        """A per-channel HOMO would give a different (wrong) offset."""
+        bands = _bands_data(
+            eigenvalues=[[[-2.0, -1.0, 1.5]], [[-2.5, -1.2, 1.0]]],
+            occupations=[[[1.0, 1.0, 0.0]], [[1.0, 1.0, 0.0]]],
+        )
+        # Cross-channel PW HOMO is -1.0 (up channel), gap 2.0 eV; a
+        # per-channel HOMO would instead give -1.2.
+        init_parameters = _init_parameters(homo=-1.03, lumo=0.97)
+        offset = _run_check(bands=bands, init_parameters=init_parameters)["offset"]
+        assert offset == pytest.approx(-1.0 - (-1.03))
 
 
 # ----------------------------------------------------------------------
@@ -312,6 +350,48 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
             assert any(
                 path.endswith(f"wannier_initialization.codes.{member}") for path in missing
             ), (member, missing)
+
+
+class TestPwScaleOffsetWiring:
+    """The initialization check's ``offset`` reaches the band interpolation.
+
+    Kills two silent-zero-offset mutants: dropping the ``offset`` keyword
+    from the ``_interpolate_bands`` call (the link disappears), and wiring
+    a different or hardcoded source in its place (the link's origin task
+    or socket changes).
+    """
+
+    def test_the_interpolation_offset_comes_from_the_initialization_check(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        wg = KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={**mlwf_codes, "kcp": kcp_code},
+            blocks=_ozone_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+            kpath=labelled_kpath,
+        )
+        by_name = {t.name: t for t in wg.tasks}
+        links = by_name["interpolate_band_structure"].inputs["offset"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "wannier_initialization"
+        assert links[0].from_socket._name == "pw_scale_offset"
 
 
 class TestKoopmansDSCFSmoothInterpolationBuild:

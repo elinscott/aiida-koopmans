@@ -225,8 +225,8 @@ class TestManifoldFanOut:
             )
 
 
-class TestPwScaleOffsetWiring:
-    """``nscf_output_parameters`` + ``dft_init_output_parameters`` add the offset task."""
+class TestOffsetWiring:
+    """A supplied ``offset`` reaches the merge task; omitting it does not."""
 
     @staticmethod
     def _build(silicon_structure, **overrides):
@@ -247,32 +247,21 @@ class TestPwScaleOffsetWiring:
         inputs.update(overrides)
         return DscfBandStructureTask.build(**inputs)
 
-    def test_both_sockets_present_wires_the_offset_into_the_merge(self, silicon_structure):
-        wg = self._build(
-            silicon_structure,
-            nscf_output_parameters={"fermi_energy": 6.3366},
-            dft_init_output_parameters={"homo_energy": 3.8051},
-        )
-        assert "pw_scale_offset" in _task_names(wg)
+    def test_an_offset_reaches_the_merge_task(self, silicon_structure):
+        wg = self._build(silicon_structure, offset=2.5315)
         by_name = {task.name: task for task in wg.tasks}
         assert by_name["merge_manifold_energies"].inputs["offset"]._links
 
-    def test_without_either_socket_no_offset_task_is_added(self, silicon_structure):
-        """Negative control: kcp.x's own scale needs no offset task at all."""
+    def test_without_an_offset_the_merge_input_is_unlinked(self, silicon_structure):
+        """Negative control: kcp.x's own scale needs no offset link at all."""
         wg = self._build(silicon_structure)
-        assert "pw_scale_offset" not in _task_names(wg)
         by_name = {task.name: task for task in wg.tasks}
         assert not by_name["merge_manifold_energies"].inputs["offset"]._links
 
     def test_the_graph_survives_a_dict_round_trip(self, silicon_structure):
-        """The two new plain-dict sockets must not break reconstruction."""
         from tests.fixtures import assert_graph_roundtrips
 
-        wg = self._build(
-            silicon_structure,
-            nscf_output_parameters={"fermi_energy": 6.3366},
-            dft_init_output_parameters={"homo_energy": 3.8051},
-        )
+        wg = self._build(silicon_structure, offset=2.5315)
         assert_graph_roundtrips(wg)
 
 
@@ -368,11 +357,7 @@ class TestRunAgainstTheSiliconReference:
         input too without a separate execution.
         """
         offset = 2.5317
-        wg, expected = self._build(
-            si_reference,
-            nscf_output_parameters={"fermi_energy": 6.3366},
-            dft_init_output_parameters={"homo_energy": 6.3366 - offset},
-        )
+        wg, expected = self._build(si_reference, offset=offset)
 
         bands = wg.tasks.build_band_structure.outputs.result.value
         assert np.allclose(
@@ -491,48 +476,6 @@ class TestSmoothInterpolationWiring:
         assert sorted(task.name for task in restored.tasks) == sorted(
             task.name for task in wg.tasks
         )
-
-
-class TestComputePwScaleOffset:
-    """The shift from kcp.x's absolute energy scale to pw.x's."""
-
-    @staticmethod
-    def _offset(**kwargs):
-        from aiida_koopmans.workgraphs.ui.dscf import compute_pw_scale_offset
-
-        return compute_pw_scale_offset._callable(**kwargs)
-
-    def test_the_offset_is_pw_fermi_energy_minus_kcp_homo(self):
-        # Silicon tutorial values: pw.x reports the Fermi energy at the
-        # insulator's valence-band maximum; kcp.x's own homo_energy sits
-        # 2.5317 eV lower on its own scale.
-        offset = self._offset(
-            nscf_output_parameters={"fermi_energy": 6.3366},
-            dft_init_output_parameters={"homo_energy": 3.8051},
-        )
-        assert offset == pytest.approx(6.3366 - 3.8051)
-
-    def test_spin_polarized_uses_the_higher_channel(self):
-        """The offset is a code convention, identical for both channels."""
-        offset = self._offset(
-            nscf_output_parameters={"fermi_energy_up": 5.0, "fermi_energy_down": 6.0},
-            dft_init_output_parameters={"homo_energy": 4.0},
-        )
-        assert offset == pytest.approx(2.0)
-
-    def test_a_missing_pw_fermi_energy_names_itself(self):
-        with pytest.raises(ValueError, match="fermi_energy"):
-            self._offset(
-                nscf_output_parameters={},
-                dft_init_output_parameters={"homo_energy": 4.0},
-            )
-
-    def test_a_missing_kcp_homo_energy_names_itself(self):
-        with pytest.raises(ValueError, match="homo_energy"):
-            self._offset(
-                nscf_output_parameters={"fermi_energy": 6.0},
-                dft_init_output_parameters={},
-            )
 
 
 class TestMergeManifoldEnergies:
