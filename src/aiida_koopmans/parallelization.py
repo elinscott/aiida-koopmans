@@ -32,7 +32,9 @@ class ParallelizationError(ValueError):
 # (the koopmans2 parallelization schema imports it for its ``ALL_CODES``); the
 # ``CodeName`` ``Literal`` types dict keys / helper args so a typo is a static
 # error, and ``validate_parallelization`` catches one that slips in at runtime.
-CodeName = Literal["pw", "kcp", "kcw", "ph", "projwfc", "pw2wannier90", "wann2kcp", "wannier90"]
+CodeName = Literal[
+    "pw", "kcp", "kcw", "ph", "projwfc", "pw2wannier90", "wann2kcp", "wannier90", "yambo"
+]
 CODE_NAMES: tuple[str, ...] = get_args(CodeName)
 
 
@@ -78,7 +80,9 @@ ParallelizationDict = dict[CodeName, CodeParallelization]
 # flags at all, and wannier90 has no pool/pd concept. ``kcw`` accepts pools only
 # for its wann2kc / screen steps, not ham (``KCW/src/kcw_readin.f90`` rejects
 # pools for calculation='ham') — that per-step split is the ``pools`` argument
-# below, not a code-level fact.
+# below, not a code-level fact. ``yambo`` parallelizes over its own
+# k/eh/t roles (``BS_CPU``/``BS_ROLEs`` runcard variables), not ``-npool``/
+# ``-pd``, so it carries no pool or pd support here.
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 

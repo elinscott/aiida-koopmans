@@ -85,6 +85,7 @@ dependencies = [
     { name = "aiida-wannier90-workflows" },
     { name = "aiida-wannierjl" },
     { name = "aiida-workgraph" },
+    { name = "aiida-yambo" },
     { name = "k2y" },
     { name = "node-graph" },
     { name = "pydantic" },
@@ -114,6 +115,7 @@ requires-dist = [
     { name = "aiida-wannier90-workflows", editable = "../aiida-wannier90-workflows" },
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
+    { name = "aiida-yambo", git = "https://github.com/mikibonacci/aiida-yambo?rev=a95794c55802d174207c69e957aaf958040342ee" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "k2y", git = "https://github.com/elinscott/k2y?rev=eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
@@ -349,6 +351,22 @@ requires-dist = [
     { name = "types-tabulate", marker = "extra == 'pre-commit'", specifier = "~=0.9.0" },
 ]
 provides-extras = ["docs", "pre-commit", "tests"]
+
+[[package]]
+name = "aiida-yambo"
+version = "3.0.0"
+source = { git = "https://github.com/mikibonacci/aiida-yambo?rev=a95794c55802d174207c69e957aaf958040342ee#a95794c55802d174207c69e957aaf958040342ee" }
+dependencies = [
+    { name = "aiida-core", extra = ["atomic-tools"] },
+    { name = "aiida-quantumespresso" },
+    { name = "h5py" },
+    { name = "netcdf4" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyyaml" },
+    { name = "xarray" },
+    { name = "yambopy" },
+]
 
 [[package]]
 name = "aio-pika"
