@@ -69,7 +69,7 @@ from k2y.k2y import KcwQpDatabaseGenerator
 from yambopy import YamboElectronsDB
 from yambopy.lattice import car_red
 
-from aiida_koopmans.workgraphs.bse import generate_qp_database
+from aiida_koopmans.workgraphs.bethe_salpeter import generate_qp_database
 
 DATA_DIR = Path(__file__).parent / "data" / "bse"
 

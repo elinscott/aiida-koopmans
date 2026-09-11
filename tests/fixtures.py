@@ -244,7 +244,7 @@ def fake_cutoffs_family(aiida_profile, generate_upf_data):
 
 
 @pytest.fixture
-def fake_bse_cutoffs_family(aiida_profile, generate_upf_data):
+def fake_bethe_salpeter_cutoffs_family(aiida_profile, generate_upf_data):
     """Install a Si-only cutoffs family whose recommendation beats a 4x-ecutwfc floor.
 
     Recommends 50/300 Ry (set directly in Ry, sidestepping ``set_cutoffs``'s
@@ -256,11 +256,11 @@ def fake_bse_cutoffs_family(aiida_profile, generate_upf_data):
     Ry) would land on the same floored value whether or not the override's
     own ``ecutrho`` actually reached the builder -- this family's 300 Ry
     clears the floor (``4 * 48 = 192`` for the 48 Ry ``ecutwfc`` the BSE
-    tests' own ``nscf_output_parameters`` fixture carries), so a dropped
-    ``ecutrho`` override surfaces as the family's 300, not the run's 192.
+    tests' own default), so a dropped ``ecutrho`` override surfaces as the
+    family's 300, not the run's 192.
     """
     return install_cutoffs_family(
-        "FAKE/BSE/CUTOFFS/PBE/SR",
+        "FAKE/BETHE_SALPETER/CUTOFFS/PBE/SR",
         [generate_upf_data("Si", z_valence=4.0)],
         cutoffs={"Si": {"cutoff_wfc": 50.0, "cutoff_rho": 300.0}},
         unit="Ry",

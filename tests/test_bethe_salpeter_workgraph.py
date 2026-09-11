@@ -1,18 +1,19 @@
-"""Construction-level tests for :func:`RunBse` and :func:`SinglepointBSEWorkflow`.
+"""Construction-level tests for RunBetheSalpeter and SinglepointBetheSalpeterWorkflow.
 
 Build the graphs (no daemon, no real yambo/QE execution) and introspect the
 task list / wiring, mirroring the style of ``test_block_wannierize.py``.
 ``k2y`` and ``aiida_yambo`` are regular ``aiida-koopmans`` dependencies, but
 the plain canonical venv the rest of the suite runs against has not synced
-them in (see ``test_bse_calcfunction.py``): ``pytest.importorskip`` keeps
-this module a clean skip there, not a collection error. ``RunBse`` needs
-``aiida_yambo`` itself (``WorkflowFactory('yambo.yambo.yambowf')``), on top
-of the ``k2y`` import ``workgraphs/bse.py`` already makes at module scope.
+them in (see ``test_bethe_salpeter_calcfunction.py``): ``pytest.importorskip``
+keeps this module a clean skip there, not a collection error.
+``RunBetheSalpeter`` needs ``aiida_yambo`` itself
+(``WorkflowFactory('yambo.yambo.yambowf')``), on top of the ``k2y`` import
+``workgraphs/bethe_salpeter.py`` already makes at module scope.
 
 ``fake_cutoffs_family`` (not a bare ``"SSSP/..."`` string) is required
 here: unlike the block-wannierize / DFPT graphs, whose PW steps go through
 ``Wannier90WorkChain.get_scf_nscf_builders_from_protocol``,
-:func:`~aiida_koopmans.workgraphs.bse.RunBse` builds its scf/nscf steps
+:func:`~aiida_koopmans.workgraphs.bethe_salpeter.RunBetheSalpeter` builds its scf/nscf steps
 through ``YamboWorkflow.get_builder_from_protocol``, which calls
 ``PwBaseWorkChain.get_builder_from_protocol`` directly -- the strict path
 that looks the family up in the database regardless of whether the
@@ -27,7 +28,10 @@ import pytest
 pytest.importorskip("k2y")
 pytest.importorskip("aiida_yambo")
 
-from aiida_koopmans.workgraphs.bse import RunBse, SinglepointBSEWorkflow
+from aiida_koopmans.workgraphs.bethe_salpeter import (
+    RunBetheSalpeter,
+    SinglepointBetheSalpeterWorkflow,
+)
 from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 # ----------------------------------------------------------------------
@@ -37,7 +41,7 @@ from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 @pytest.fixture
 def bse_codes(aiida_localhost):
-    """Return a codes dict of stand-in nodes for :func:`RunBse` (pw, p2y, yambo)."""
+    """Return a codes dict of stand-in nodes for :func:`RunBetheSalpeter` (pw, p2y, yambo)."""
     from aiida.common.exceptions import NotExistent
     from aiida.orm import InstalledCode
 
@@ -61,19 +65,8 @@ def bse_codes(aiida_localhost):
 
 @pytest.fixture
 def bse_full_codes(dfpt_codes, bse_codes):
-    """Return the combined codes namespace :func:`SinglepointBSEWorkflow` needs."""
+    """Return the combined codes namespace :func:`SinglepointBetheSalpeterWorkflow` needs."""
     return {**dfpt_codes, "p2y": bse_codes["p2y"], "yambo": bse_codes["yambo"]}
-
-
-@pytest.fixture
-def nscf_output_parameters() -> dict:
-    """Return a koopmans nscf's parsed ``output_parameters`` (eV cutoffs).
-
-    653.06 / 2612.24 eV are 48 / 192 Ry (``qe_tools.CONSTANTS.hartree_to_ev
-    / 2`` converts back), a 1:4 wfc:rho ratio typical of a norm-conserving
-    pseudopotential.
-    """
-    return {"wfc_cutoff": 653.0665, "rho_cutoff": 2612.266}
 
 
 @pytest.fixture
@@ -126,30 +119,37 @@ def _manifolds():
     }
 
 
+def _cutoff_overrides(ecutwfc=48.0, ecutrho=192.0):
+    """Return the ``overrides`` shape carrying both pw cutoffs, as ``_pw_cutoffs_from`` reads it."""
+    return {"scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": ecutwfc, "ecutrho": ecutrho}}}}}
+
+
 # ----------------------------------------------------------------------
-# RunBse
+# RunBetheSalpeter
 # ----------------------------------------------------------------------
 
 
-class TestRunBseGraphBuild:
+class TestRunBetheSalpeterGraphBuild:
     def _build(
         self,
         bse_codes,
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         cutoffs_family,
+        ecutwfc=48.0,
+        ecutrho=192.0,
         **extra,
     ):
-        return RunBse.build(
+        return RunBetheSalpeter.build(
             codes=bse_codes,
             structure=silicon_structure,
             kpoints=kmesh,
             nscf_output_band=nscf_output_band,
-            nscf_output_parameters=nscf_output_parameters,
+            ecutwfc=ecutwfc,
+            ecutrho=ecutrho,
             ham_output_parameters=ham_output_parameters,
             bse_parameters=bse_parameters,
             pseudo_family=cutoffs_family.label,
@@ -162,7 +162,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -172,7 +171,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -189,10 +187,9 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
-        fake_bse_cutoffs_family,
+        fake_bethe_salpeter_cutoffs_family,
     ):
         """An ecutwfc-only override would leave ecutrho at the family's own recommendation.
 
@@ -200,10 +197,10 @@ class TestRunBseGraphBuild:
         top of the pseudo family's recommendation, and only skips that
         recommendation when both ``ecutwfc`` and ``ecutrho`` are present in
         the override together -- so both must reach every scf/nscf SYSTEM
-        namelist ``RunBse`` builds here (48 / 192 Ry, from
-        ``nscf_output_parameters``'s eV cutoffs), not just ``ecutwfc``.
+        namelist ``RunBetheSalpeter`` builds here (``_build``'s own 48 / 192 Ry
+        defaults), not just ``ecutwfc``.
 
-        ``fake_bse_cutoffs_family`` (50 / 300 Ry) rather than the plain
+        ``fake_bethe_salpeter_cutoffs_family`` (50 / 300 Ry) rather than the plain
         ``fake_cutoffs_family`` (30 / 240 eV, ~2.2 / 17.6 Ry) is required to
         catch a dropped ``ecutrho``: ``YamboWorkflow.get_builder_from_protocol``
         itself floors ``ecutrho`` at ``4 * ecutwfc`` (192 here), so a family
@@ -217,10 +214,9 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
-            fake_bse_cutoffs_family,
+            fake_bethe_salpeter_cutoffs_family,
         )
         for task_name in ("yambo_init", "bse"):
             for step in ("scf", "nscf"):
@@ -236,7 +232,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -246,7 +241,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -261,7 +255,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -269,7 +262,7 @@ class TestRunBseGraphBuild:
         """``parallelization['yambo']['ntasks']`` reaches both calc's resources.
 
         The BSE step alone also gets a k-point-only ``BS_CPU``/``BS_ROLEs``
-        split (see :func:`~aiida_koopmans.workgraphs.bse._bse_mpi_roles`) --
+        split (see :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles`) --
         yambo_init runs with ``INITIALISE=True`` and never reads those keys.
         """
         wg = self._build(
@@ -277,7 +270,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -302,7 +294,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -319,7 +310,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -339,7 +329,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         fake_cutoffs_family,
     ):
@@ -352,7 +341,7 @@ class TestRunBseGraphBuild:
         combination, via ``GbndRnge``, a GW-only leftover key
         ``YamboRestart.get_builder_from_protocol`` always sets and never
         drops for a ``'bse_*'`` protocol -- see
-        :data:`~aiida_koopmans.workgraphs.bse._GW_ONLY_RUNCARD_KEYS`). A
+        :data:`~aiida_koopmans.workgraphs.bethe_salpeter._GW_ONLY_RUNCARD_KEYS`). A
         ``BndsRnXs`` request *above* that default only reaches the BSE
         step's own override, not the init step's -- exercise that gap with
         a ``BndsRnXs`` upper bound past 300, matching the default's own
@@ -370,7 +359,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -391,7 +379,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -409,7 +396,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -426,7 +412,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -438,7 +423,6 @@ class TestRunBseGraphBuild:
                 silicon_structure,
                 kmesh,
                 nscf_output_band,
-                nscf_output_parameters,
                 ham_output_parameters,
                 bse_parameters,
                 fake_cutoffs_family,
@@ -456,7 +440,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -466,7 +449,7 @@ class TestRunBseGraphBuild:
 
         Not just an absent ``parallelization`` altogether -- ``ntasks: 1``
         stated explicitly takes a different path through
-        :func:`~aiida_koopmans.workgraphs.bse._bse_mpi_roles` (a present but
+        :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles` (a present but
         falsy-after-int-cast rank count, not a missing entry) and must reach
         the same result.
         """
@@ -475,7 +458,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -493,7 +475,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -503,7 +484,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -519,7 +499,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -532,7 +511,6 @@ class TestRunBseGraphBuild:
                 silicon_structure,
                 kmesh,
                 nscf_output_band,
-                nscf_output_parameters,
                 ham_output_parameters,
                 bse_parameters,
                 fake_cutoffs_family,
@@ -543,7 +521,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         bse_codes,
@@ -556,7 +533,6 @@ class TestRunBseGraphBuild:
                 silicon_structure,
                 kmesh,
                 nscf_output_band,
-                nscf_output_parameters,
                 ham_output_parameters,
                 bse_parameters,
                 fake_cutoffs_family,
@@ -568,7 +544,6 @@ class TestRunBseGraphBuild:
         silicon_structure,
         kmesh,
         nscf_output_band,
-        nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
         fake_cutoffs_family,
@@ -578,7 +553,6 @@ class TestRunBseGraphBuild:
             silicon_structure,
             kmesh,
             nscf_output_band,
-            nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
@@ -590,31 +564,32 @@ class TestRunBseGraphBuild:
 
 
 # ----------------------------------------------------------------------
-# SinglepointBSEWorkflow
+# SinglepointBetheSalpeterWorkflow
 # ----------------------------------------------------------------------
 
 
-class TestSinglepointBSEWorkflow:
+class TestSinglepointBetheSalpeterWorkflow:
     def test_protocol_and_protocol_qe_reach_run_bse_separately(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):
-        """``protocol`` must reach the nested RunBse call, not get replaced by ``protocol_qe``.
+        """``protocol`` must reach the nested RunBetheSalpeter call unchanged.
 
-        Landmine: an earlier wiring called ``RunBse(protocol=protocol_qe,
+        Landmine: an earlier wiring called ``RunBetheSalpeter(protocol=protocol_qe,
         protocol_qe=protocol_qe, ...)``, silently discarding
-        ``SinglepointBSEWorkflow``'s own ``protocol`` argument for the BSE
-        step. ``RunBse`` is a nested ``@task.graph`` call here, not a
+        ``SinglepointBetheSalpeterWorkflow``'s own ``protocol`` argument for the BSE
+        step. ``RunBetheSalpeter`` is a nested ``@task.graph`` call here, not a
         ``.build()`` -- it shows up as a single ``"bse"`` task node whose
         own ``protocol``/``protocol_qe`` input sockets carry exactly the
-        values this graph passed it, without RunBse's own body running.
+        values this graph passed it, without RunBetheSalpeter's own body running.
         """
-        wg = SinglepointBSEWorkflow.build(
+        wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
             manifolds=_manifolds(),
             kpoints=kmesh,
             bse_parameters=bse_parameters,
             pseudo_family=fake_cutoffs_family.label,
+            overrides=_cutoff_overrides(),
             protocol="fast",
             protocol_qe="precise",
         )
@@ -625,13 +600,14 @@ class TestSinglepointBSEWorkflow:
     def test_graph_composes_dfpt_and_bse(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):
-        wg = SinglepointBSEWorkflow.build(
+        wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
             manifolds=_manifolds(),
             kpoints=kmesh,
             bse_parameters=bse_parameters,
             pseudo_family=fake_cutoffs_family.label,
+            overrides=_cutoff_overrides(),
         )
         names = [t.name for t in wg.tasks]
         assert "dfpt" in names
@@ -643,7 +619,7 @@ class TestSinglepointBSEWorkflow:
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):
         with pytest.raises(NotImplementedError, match="spin='none'"):
-            SinglepointBSEWorkflow.build(
+            SinglepointBetheSalpeterWorkflow.build(
                 codes=bse_full_codes,
                 structure=silicon_structure,
                 manifolds={"up": _manifolds()["none"], "down": _manifolds()["none"]},
@@ -660,9 +636,23 @@ class TestSinglepointBSEWorkflow:
         molecule = StructureData(pbc=(False, False, False))
         molecule.append_atom(position=(0.0, 0.0, 0.0), symbols="Si", name="Si")
         with pytest.raises(NotImplementedError, match="periodic"):
-            SinglepointBSEWorkflow.build(
+            SinglepointBetheSalpeterWorkflow.build(
                 codes=bse_full_codes,
                 structure=molecule,
+                manifolds=_manifolds(),
+                kpoints=kmesh,
+                bse_parameters=bse_parameters,
+                pseudo_family=fake_cutoffs_family.label,
+            )
+
+    def test_missing_cutoffs_in_overrides_is_refused(
+        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
+    ):
+        """With neither cutoff in ``overrides``, the BSE step's own cutoffs cannot be built."""
+        with pytest.raises(ValueError, match=r"ecutwfc.*ecutrho|ecutrho.*ecutwfc"):
+            SinglepointBetheSalpeterWorkflow.build(
+                codes=bse_full_codes,
+                structure=silicon_structure,
                 manifolds=_manifolds(),
                 kpoints=kmesh,
                 bse_parameters=bse_parameters,
@@ -672,13 +662,14 @@ class TestSinglepointBSEWorkflow:
     def test_roundtrips_from_dict(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):
-        wg = SinglepointBSEWorkflow.build(
+        wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
             manifolds=_manifolds(),
             kpoints=kmesh,
             bse_parameters=bse_parameters,
             pseudo_family=fake_cutoffs_family.label,
+            overrides=_cutoff_overrides(),
         )
         from aiida_workgraph import WorkGraph
 

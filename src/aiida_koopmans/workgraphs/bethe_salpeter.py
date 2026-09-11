@@ -17,8 +17,8 @@ file route (re-parses a kcw.x stdout file and needs the optional
 former only wraps ``from_aiida`` for provenance; the latter writes its
 output to the current working directory).
 
-:func:`RunBse` wires pw.x -> p2y -> yambo init -> :func:`generate_qp_database`
--> yambo BSE into one ``@task.graph``; :func:`SinglepointBSEWorkflow` composes
+:func:`RunBetheSalpeter` wires pw.x -> p2y -> yambo init -> :func:`generate_qp_database`
+-> yambo BSE into one ``@task.graph``; :func:`SinglepointBetheSalpeterWorkflow` composes
 a :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow` in front of
 it, reading the ham step's eigenvalues and the shared ground state's nscf
 output straight off the DFPT chain's own outputs.
@@ -29,6 +29,7 @@ output straight off the DFPT chain's own outputs.
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 
+from collections.abc import Mapping
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
@@ -47,7 +48,6 @@ from aiida_workgraph.utils import get_dict_from_builder
 # import time and is safe to import at module scope.
 from k2y.k2y import KcwQpDatabaseGenerator
 from node_graph import reference
-from qe_tools import CONSTANTS
 
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
@@ -77,7 +77,7 @@ YamboCode = Annotated[
 ]
 
 
-class BseCodes(TypedDict):
+class BetheSalpeterCodes(TypedDict):
     """Codes the Koopmans-eigenvalues BSE route will need."""
 
     pw: PwCode
@@ -101,6 +101,52 @@ _KS_KEY = "ks_eigenvalues_on_grid"
 #: a BSE run; the k2y BSE example script strips them from the same builder
 #: output before submission.
 _GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
+
+#: Yambo BSE runcard variables :func:`RunBetheSalpeter` determines for itself:
+#: ``KfnQPdb`` points at the QP database it builds (see
+#: :func:`generate_qp_database`); ``BS_CPU``/``BS_ROLEs`` are the BSE step's
+#: own MPI role split, sized off the ``yambo`` parallelization entry's rank
+#: count (see :func:`_bse_mpi_roles`). Stating one in
+#: ``bse_parameters['variables']`` is refused.
+#:
+#: Mirrors :mod:`aiida_koopmans.owned_keywords`'s ``OWNED``/``owned``/
+#: ``reject_owned`` pattern (same roster shape, same refusal message) rather
+#: than joining that module's own ``OWNED``: that dict backs koopmans'
+#: generated input-file schema (``koopmans.input_file._codegen.generate``'s
+#: ``covered`` check requires every ``OWNED`` block to have a generated
+#: model), and koopmans has no yambo input-file block yet -- BSE is not wired
+#: into its dispatcher. Move this roster into ``OWNED`` once it does.
+_YAMBO_OWNED: frozenset[str] = frozenset({"KfnQPdb", "BS_CPU", "BS_ROLEs"})
+
+
+def _reject_owned_yambo(keywords: Mapping[str, Any]) -> None:
+    """Raise if the caller states a yambo runcard variable this route owns.
+
+    Raises:
+        ValueError: If ``keywords`` states a keyword in :data:`_YAMBO_OWNED`.
+    """
+    stated = sorted(set(keywords) & _YAMBO_OWNED)
+    if stated:
+        raise ValueError(
+            f"yambo {', '.join(stated)} is owned: the route determines it and forces "
+            f"its own value, so the value given here would be discarded. Drop it from "
+            f"bse_parameters."
+        )
+
+
+def _owned_yambo[T: Mapping[str, Any]](keywords: T) -> T:
+    """Return ``keywords`` after checking every one of them is an owned yambo keyword.
+
+    Raises:
+        ValueError: If a keyword is not in :data:`_YAMBO_OWNED`.
+    """
+    undeclared = sorted(set(keywords) - _YAMBO_OWNED)
+    if undeclared:
+        raise ValueError(
+            f"the route forces yambo {', '.join(undeclared)}, which _YAMBO_OWNED does "
+            f"not classify. Add it there."
+        )
+    return keywords
 
 
 @task.calcfunction
@@ -203,25 +249,12 @@ def _load_yambo_workflow() -> Any:
     node needs an already-loaded AiiDA profile, so importing
     ``aiida_yambo`` before one exists raises ``ConfigurationError``.
     Deferring the import to this function's first call from inside a
-    graph body -- never at ``bse.py`` import time -- keeps every route
+    graph body -- never at ``bethe_salpeter.py`` import time -- keeps every route
     that never touches BSE working with no profile loaded yet.
     """
     from aiida.plugins import WorkflowFactory
 
     return WorkflowFactory("yambo.yambo.yambowf")
-
-
-def _cutoffs_in_ry(nscf_output_parameters: dict) -> tuple[float, float]:
-    """Return ``(ecutwfc, ecutrho)`` in Ry from a pw.x run's parsed output.
-
-    ``output_parameters`` carries ``wfc_cutoff``/``rho_cutoff`` in eV (the
-    aiida-quantumespresso XML parser's own units); ``PwBaseWorkChain.
-    get_builder_from_protocol`` wants the Ry values pw.x's ``SYSTEM``
-    namelist takes.
-    """
-    params = dict((nscf_output_parameters or {}).items())
-    ry_to_ev = CONSTANTS.hartree_to_ev / 2
-    return params["wfc_cutoff"] / ry_to_ev, params["rho_cutoff"] / ry_to_ev
 
 
 def _bse_mpi_roles(parallelization: ParallelizationDict | None) -> dict[str, str]:
@@ -240,9 +273,10 @@ def _bse_mpi_roles(parallelization: ParallelizationDict | None) -> dict[str, str
     return {"BS_CPU": f"{int(ntasks)} 1 1", "BS_ROLEs": "k eh t"}
 
 
-class BseOutputs(TypedDict, total=False):
-    """Outputs of :func:`RunBse`: the BSE ``YamboWorkflow``'s own outputs, plus its QP database.
+class BetheSalpeterOutputs(TypedDict, total=False):
+    """Outputs of :func:`RunBetheSalpeter`.
 
+    The BSE ``YamboWorkflow``'s own outputs, plus its QP database.
     ``output_ywfl_parameters`` carries the ``additional_parsing``
     quantities (``lowest_exciton`` / ``brightest_exciton``); ``array_eps``
     the BSE absorption spectrum; ``array_excitonic_states`` the exciton
@@ -260,12 +294,13 @@ class BseOutputs(TypedDict, total=False):
 
 
 @task.graph
-def RunBse(
-    codes: BseCodes,
+def RunBetheSalpeter(
+    codes: BetheSalpeterCodes,
     structure: orm.StructureData,
     kpoints: orm.KpointsData,
     nscf_output_band: orm.BandsData,
-    nscf_output_parameters: dict,
+    ecutwfc: float,
+    ecutrho: float,
     ham_output_parameters: dict,
     bse_parameters: dict,
     eigenvalues: str = "ki",
@@ -273,7 +308,7 @@ def RunBse(
     protocol: str | None = None,
     protocol_qe: str | None = None,
     parallelization: ParallelizationDict | None = None,
-) -> BseOutputs:
+) -> BetheSalpeterOutputs:
     """Run a yambo BSE spectrum seeded by Koopmans (KI) quasiparticle corrections.
 
     A fresh scf -> nscf -> p2y ("yambo init") builds the yambo SAVE
@@ -285,11 +320,10 @@ def RunBse(
     ``ham_output_parameters``, the grid :func:`generate_qp_database` maps
     the Koopmans eigenvalues onto.
 
-    ``nscf_output_parameters`` is the koopmans nscf's own parsed
-    ``output_parameters`` (``wfc_cutoff`` / ``rho_cutoff``, in eV): both
-    reach the init and BSE steps' scf/nscf ``SYSTEM`` overrides in Ry.
-    ``PwBaseWorkChain.get_builder_from_protocol`` applies overrides on top
-    of the pseudo family's recommended cutoffs, and only skips that
+    ``ecutwfc`` / ``ecutrho`` are the koopmans nscf's own plane-wave cutoffs,
+    in Ry: both reach the init and BSE steps' scf/nscf ``SYSTEM`` overrides
+    directly. ``PwBaseWorkChain.get_builder_from_protocol`` applies overrides
+    on top of the pseudo family's recommended cutoffs, and only skips that
     recommendation when both ``ecutwfc`` and ``ecutrho`` are present in
     the override together -- passing ``ecutwfc`` alone still wins for
     ``ecutwfc`` itself, but leaves ``ecutrho`` at the family's own
@@ -308,14 +342,16 @@ def RunBse(
     ``BEnRange``, ``BEnSteps``, ``BDmRange``, each ``[value, unit]`` per
     yambopy's convention) and ``metadata`` (the BSE step's own scheduler
     options). ``variables['KfnQPdb']`` is this graph's own -- pointing at
-    the QP database it builds -- and refused if the caller states it. The
-    same ``arguments``/``variables`` also reach the init step (minus
-    ``KfnQPdb``), so its own nscf sees the same ``BndsRnXs`` as the BSE
-    step's: ``YamboWorkflow.get_builder_from_protocol`` sizes each nscf's
-    own ``nbnd`` off the runcard's requested band range, and a mismatch
-    between the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the BSE
-    step's nscf and p2y at run time, against a fresh SAVE that the
-    already-built quasiparticle database was not made from.
+    the QP database it builds -- and refused if the caller states it, as is
+    ``variables['BS_CPU']``/``['BS_ROLEs']`` (this graph's own MPI-role
+    split, below): both are in :data:`_YAMBO_OWNED`. The same
+    ``arguments``/``variables`` also reach the init step (minus ``KfnQPdb``),
+    so its own nscf sees the same ``BndsRnXs`` as the BSE step's:
+    ``YamboWorkflow.get_builder_from_protocol`` sizes each nscf's own
+    ``nbnd`` off the runcard's requested band range, and a mismatch between
+    the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the BSE step's nscf
+    and p2y at run time, against a fresh SAVE that the already-built
+    quasiparticle database was not made from.
     ``parallelization``'s ``pw`` entry reaches every scf/nscf pw.x step (init
     and BSE alike); its ``yambo`` entry sets the BSE step's rank count and,
     past one rank, a k-point-only ``BS_CPU``/``BS_ROLEs`` MPI split (see
@@ -327,7 +363,8 @@ def RunBse(
     scf/nscf/p2y here.
 
     Raises:
-        ValueError: If ``bse_parameters['variables']`` states ``KfnQPdb``.
+        ValueError: If ``bse_parameters['variables']`` states an owned
+            ``"yambo"`` keyword (``KfnQPdb``, ``BS_CPU``, ``BS_ROLEs``).
         NotImplementedError: If ``eigenvalues`` is ``'pki'``.
     """
     validate_parallelization(parallelization)
@@ -345,16 +382,11 @@ def RunBse(
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     variables = dict((bse_parameters or {}).get("variables", {}).items())
-    if "KfnQPdb" in variables:
-        raise ValueError(
-            "bse_parameters['variables'] states 'KfnQPdb' -- RunBse sets it itself, "
-            "pointing at the Koopmans QP database it builds. Remove it from bse_parameters."
-        )
+    _reject_owned_yambo(variables)
     arguments = list((bse_parameters or {}).get("arguments", []))
     bse_metadata = dict((bse_parameters or {}).get("metadata", {}).items())
 
-    ecutwfc, ecutrho = _cutoffs_in_ry(nscf_output_parameters)
-    cutoff_system = {"SYSTEM": {"ecutwfc": ecutwfc, "ecutrho": ecutrho}}
+    cutoff_system = {"SYSTEM": {"ecutwfc": float(ecutwfc), "ecutrho": float(ecutrho)}}
 
     try:
         mesh, _offset = kpoints.get_kpoints_mesh()
@@ -432,7 +464,7 @@ def RunBse(
         metadata={"call_link_label": "generate_qp_database"},
     ).result
 
-    bse_variables = {**variables, "KfnQPdb": "E < ./ndb.QP"}
+    bse_variables = {**variables, **_owned_yambo({"KfnQPdb": "E < ./ndb.QP"})}
     bse_overrides = {
         **_pw_overrides(),
         "yres": {
@@ -467,14 +499,14 @@ def RunBse(
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
     for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
         bse_params_dict["variables"].pop(gw_only_key, None)
-    bse_params_dict["variables"].update(_bse_mpi_roles(parallelization))
+    bse_params_dict["variables"].update(_owned_yambo(_bse_mpi_roles(parallelization)))
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")
     bse_data.setdefault("metadata", {})["call_link_label"] = "bse"
     bse = yambo_step(**bse_data)
 
-    return BseOutputs(
+    return BetheSalpeterOutputs(
         remote_folder=bse["remote_folder"],
         retrieved=bse["retrieved"],
         output_parameters=bse["output_parameters"],
@@ -485,8 +517,8 @@ def RunBse(
     )
 
 
-class BseSinglepointCodes(DfptCodes, BseCodes):  # type: ignore[misc]
-    """Codes for :func:`SinglepointBSEWorkflow`: the DFPT chain's codes plus BSE's own.
+class SinglepointBetheSalpeterCodes(DfptCodes, BetheSalpeterCodes):  # type: ignore[misc]
+    """Codes for :func:`SinglepointBetheSalpeterWorkflow`: the DFPT chain's codes plus BSE's own.
 
     Both parents declare ``pw`` as the same ``PwCode`` -- mypy flags any
     TypedDict multiple-inheritance merge that redeclares a field, even with
@@ -494,11 +526,14 @@ class BseSinglepointCodes(DfptCodes, BseCodes):  # type: ignore[misc]
     """
 
 
-class SinglepointBseOutputs(TypedDict):
-    """Outputs of :func:`SinglepointBSEWorkflow`: the DFPT chain's outputs, plus the BSE run."""
+class SinglepointBetheSalpeterOutputs(TypedDict):
+    """Outputs of :func:`SinglepointBetheSalpeterWorkflow`.
+
+    The DFPT chain's outputs, plus the BSE run.
+    """
 
     dfpt: KoopmansDFPTOutputs
-    bse: BseOutputs
+    bse: BetheSalpeterOutputs
 
 
 class SelectedChannelOutputs(TypedDict):
@@ -532,7 +567,7 @@ def SelectDfptChannel(
     )
 
 
-def _dfpt_codes_from(codes: BseSinglepointCodes) -> DfptCodes:
+def _dfpt_codes_from(codes: SinglepointBetheSalpeterCodes) -> DfptCodes:
     """Return :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow`'s codes namespace.
 
     Wires every code :class:`DfptCodes` requires, read off its own
@@ -550,17 +585,42 @@ def _dfpt_codes_from(codes: BseSinglepointCodes) -> DfptCodes:
     return cast("DfptCodes", dfpt_codes)
 
 
-def _bse_codes_from(codes: BseSinglepointCodes) -> BseCodes:
-    """Return :func:`RunBse`'s codes namespace out of the composed BSE codes."""
+def _bse_codes_from(codes: SinglepointBetheSalpeterCodes) -> BetheSalpeterCodes:
+    """Return :func:`RunBetheSalpeter`'s codes namespace out of the composed BSE codes."""
     bse_codes: dict[str, Any] = {
-        name: reference(codes, name) for name in BseCodes.__required_keys__
+        name: reference(codes, name) for name in BetheSalpeterCodes.__required_keys__
     }
-    return cast("BseCodes", bse_codes)
+    return cast("BetheSalpeterCodes", bse_codes)
+
+
+def _pw_cutoffs_from(overrides: WannierizeOverrides | None) -> tuple[float, float]:
+    """Return the shared ``(ecutwfc, ecutrho)`` in Ry out of the DFPT chain's own scf pw overrides.
+
+    ``overrides['scf']['pw']['parameters']['SYSTEM']`` is where a caller
+    already states both cutoffs for
+    :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow` (see
+    :func:`~aiida_koopmans.workgraphs.block_wannierize._builder_overrides`,
+    which reads the same namespace); :func:`RunBetheSalpeter`'s own fresh
+    scf/nscf reuses those values directly, rather than re-deriving them from
+    a parsed pw.x output.
+
+    Raises:
+        ValueError: If either cutoff is absent from the ``SYSTEM`` namelist.
+    """
+    system = (overrides or {}).get("scf", {}).get("pw", {}).get("parameters", {}).get("SYSTEM", {})
+    missing = [name for name in ("ecutwfc", "ecutrho") if name not in system]
+    if missing:
+        raise ValueError(
+            f"SinglepointBetheSalpeterWorkflow is missing {missing} in "
+            "overrides['scf']['pw']['parameters']['SYSTEM'] -- RunBetheSalpeter's own fresh "
+            "scf/nscf need the same cutoffs the DFPT chain runs on. Set both there."
+        )
+    return float(system["ecutwfc"]), float(system["ecutrho"])
 
 
 @task.graph
-def SinglepointBSEWorkflow(
-    codes: BseSinglepointCodes,
+def SinglepointBetheSalpeterWorkflow(
+    codes: SinglepointBetheSalpeterCodes,
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
@@ -572,12 +632,13 @@ def SinglepointBSEWorkflow(
     overrides: WannierizeOverrides | None = None,
     eigenvalues: str = "ki",
     parallelization: ParallelizationDict | None = None,
-) -> SinglepointBseOutputs:
+) -> SinglepointBetheSalpeterOutputs:
     """Run a Koopmans DFPT singlepoint, then a BSE spectrum seeded by its eigenvalues.
 
     Composes :func:`~aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow`
-    with :func:`RunBse`: the DFPT chain's shared ground state (its
-    ``nscf_output_band`` / ``nscf_output_parameters``) and the ``none``
+    with :func:`RunBetheSalpeter`: the DFPT chain's shared ground state's
+    ``nscf_output_band``, the ``ecutwfc``/``ecutrho`` already sitting in
+    ``overrides['scf']['pw']['parameters']['SYSTEM']``, and the ``none``
     channel's ``ham_parameters`` feed the BSE step directly, so a caller
     states the DFPT/wannierization inputs once.
 
@@ -586,7 +647,7 @@ def SinglepointBSEWorkflow(
     * ``spin`` is always ``NONE`` -- ``manifolds`` must carry exactly one
       ``"none"`` key. A collinear or spinor DFPT chain has no single
       channel for the BSE step to read; run
-      ``SinglepointDFPTWorkflow`` and :func:`RunBse` separately for those.
+      ``SinglepointDFPTWorkflow`` and :func:`RunBetheSalpeter` separately for those.
     * ``structure`` must be periodic in all three directions -- yambo's
       p2y step needs a periodic ground state; molecular BSE is
       unimplemented.
@@ -599,22 +660,23 @@ def SinglepointBSEWorkflow(
       correction.
 
     ``protocol`` reaches both chains: ``SinglepointDFPTWorkflow``'s own QE
-    protocol and :func:`RunBse`'s yambo protocol. ``protocol_qe`` sets only
+    protocol and :func:`RunBetheSalpeter`'s yambo protocol. ``protocol_qe`` sets only
     the BSE route's own fresh scf/nscf/p2y -- pass it when that QE step
     should run at a different precision than ``protocol``.
     ``bse_parameters`` / ``eigenvalues`` / the BSE half of
-    ``parallelization`` pass straight to :func:`RunBse`; every other
+    ``parallelization`` pass straight to :func:`RunBetheSalpeter`; every other
     argument passes straight to ``SinglepointDFPTWorkflow``.
     """
     if set(manifolds) != {"none"}:
         raise NotImplementedError(
-            "SinglepointBSEWorkflow only supports spin='none' (manifolds keyed by a "
+            "SinglepointBetheSalpeterWorkflow only supports spin='none' (manifolds keyed by a "
             f"single 'none' entry), got manifold keys {sorted(manifolds)}. Run "
-            "SinglepointDFPTWorkflow and RunBse separately for a collinear or spinor chain."
+            "SinglepointDFPTWorkflow and RunBetheSalpeter separately for a collinear or spinor "
+            "chain."
         )
     if not all(structure.pbc):
         raise NotImplementedError(
-            "SinglepointBSEWorkflow supports periodic structures only: yambo's p2y step "
+            "SinglepointBetheSalpeterWorkflow supports periodic structures only: yambo's p2y step "
             "needs a periodic ground state. Molecular BSE is unimplemented."
         )
 
@@ -635,12 +697,14 @@ def SinglepointBSEWorkflow(
         channel_key="none",
         metadata={"call_link_label": "select_channel"},
     )
-    bse = RunBse(
+    ecutwfc, ecutrho = _pw_cutoffs_from(overrides)
+    bse = RunBetheSalpeter(
         codes=_bse_codes_from(codes),
         structure=structure,
         kpoints=kpoints,
         nscf_output_band=dfpt["ground_state"]["nscf_output_band"],
-        nscf_output_parameters=dfpt["ground_state"]["nscf_output_parameters"],
+        ecutwfc=ecutwfc,
+        ecutrho=ecutrho,
         ham_output_parameters=channel["ham_parameters"],
         bse_parameters=bse_parameters,
         eigenvalues=eigenvalues,
@@ -650,4 +714,4 @@ def SinglepointBSEWorkflow(
         parallelization=parallelization,
         metadata={"call_link_label": "bse", "label": "BSE spectrum"},
     )
-    return SinglepointBseOutputs(dfpt=dfpt, bse=bse)
+    return SinglepointBetheSalpeterOutputs(dfpt=dfpt, bse=bse)
