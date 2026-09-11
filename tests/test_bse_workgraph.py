@@ -141,7 +141,7 @@ class TestRunBseGraphBuild:
         nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
-        fake_cutoffs_family,
+        cutoffs_family,
         **extra,
     ):
         return RunBse.build(
@@ -152,7 +152,7 @@ class TestRunBseGraphBuild:
             nscf_output_parameters=nscf_output_parameters,
             ham_output_parameters=ham_output_parameters,
             bse_parameters=bse_parameters,
-            pseudo_family=fake_cutoffs_family.label,
+            pseudo_family=cutoffs_family.label,
             **extra,
         )
 
@@ -192,15 +192,25 @@ class TestRunBseGraphBuild:
         nscf_output_parameters,
         ham_output_parameters,
         bse_parameters,
-        fake_cutoffs_family,
+        fake_bse_cutoffs_family,
     ):
-        """Landmine C: an ecutwfc-only override is replaced wholesale by the family's own.
+        """An ecutwfc-only override would leave ecutrho at the family's own recommendation.
 
-        Both ``ecutwfc`` and ``ecutrho`` must reach every scf/nscf SYSTEM
-        namelist ``PwBaseWorkChain.get_builder_from_protocol`` builds here
-        (48 / 192 Ry, from ``nscf_output_parameters``'s eV cutoffs), rather
-        than ``fake_cutoffs_family``'s own recommendation (30 / 240 Ry) --
-        confirming the override wins, not the family default.
+        ``PwBaseWorkChain.get_builder_from_protocol`` applies overrides on
+        top of the pseudo family's recommendation, and only skips that
+        recommendation when both ``ecutwfc`` and ``ecutrho`` are present in
+        the override together -- so both must reach every scf/nscf SYSTEM
+        namelist ``RunBse`` builds here (48 / 192 Ry, from
+        ``nscf_output_parameters``'s eV cutoffs), not just ``ecutwfc``.
+
+        ``fake_bse_cutoffs_family`` (50 / 300 Ry) rather than the plain
+        ``fake_cutoffs_family`` (30 / 240 eV, ~2.2 / 17.6 Ry) is required to
+        catch a dropped ``ecutrho``: ``YamboWorkflow.get_builder_from_protocol``
+        itself floors ``ecutrho`` at ``4 * ecutwfc`` (192 here), so a family
+        recommendation below that floor would land on the same 192 whether
+        or not the override's own ``ecutrho`` reached the builder -- only a
+        family recommendation above the floor (this fixture's 300) makes a
+        dropped override visible.
         """
         wg = self._build(
             bse_codes,
@@ -210,7 +220,7 @@ class TestRunBseGraphBuild:
             nscf_output_parameters,
             ham_output_parameters,
             bse_parameters,
-            fake_cutoffs_family,
+            fake_bse_cutoffs_family,
         )
         for task_name in ("yambo_init", "bse"):
             for step in ("scf", "nscf"):
@@ -286,7 +296,7 @@ class TestRunBseGraphBuild:
         assert bse_variables["BS_CPU"] == "4 1 1"
         assert bse_variables["BS_ROLEs"] == "k eh t"
 
-    def test_single_rank_omits_bs_roles(
+    def test_parallelization_pw_reaches_every_scf_nscf_pw_namespace(
         self,
         bse_codes,
         silicon_structure,
@@ -297,6 +307,13 @@ class TestRunBseGraphBuild:
         bse_parameters,
         fake_cutoffs_family,
     ):
+        """``parallelization['pw']`` must reach both steps' own scf/nscf pw.x runs.
+
+        The init and BSE steps each run their own fresh scf/nscf, pw.x
+        calculations like any other -- a caller's ``pw`` entry must not be
+        silently dropped just because only the yambo calc's own resources
+        were ever wired.
+        """
         wg = self._build(
             bse_codes,
             silicon_structure,
@@ -306,6 +323,163 @@ class TestRunBseGraphBuild:
             ham_output_parameters,
             bse_parameters,
             fake_cutoffs_family,
+            parallelization={"pw": {"ntasks": 3, "npool": 2}},
+        )
+        for task_name in ("yambo_init", "bse"):
+            for step in ("scf", "nscf"):
+                pw_inputs = wg.tasks[task_name].inputs[step]["pw"]
+                resources = pw_inputs["metadata"]["options"]["resources"].value
+                assert resources["num_mpiprocs_per_machine"] == 3
+                cmdline = pw_inputs["settings"].value.get_dict()["cmdline"]
+                assert cmdline == ["-npool", "2"]
+
+    def test_init_and_bse_nscf_nbnd_agree(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        nscf_output_parameters,
+        ham_output_parameters,
+        fake_cutoffs_family,
+    ):
+        """The init step's own nscf must be sized for the same bands the BSE step needs.
+
+        ``YamboWorkflow.get_builder_from_protocol`` sizes each step's own
+        nscf ``nbnd`` off its own runcard's requested band range: absent a
+        caller override, that range is a protocol-computed default (300
+        bands for this fixture's silicon/pseudo-family/moderate-protocol
+        combination, via ``GbndRnge``, a GW-only leftover key
+        ``YamboRestart.get_builder_from_protocol`` always sets and never
+        drops for a ``'bse_*'`` protocol -- see
+        :data:`~aiida_koopmans.workgraphs.bse._GW_ONLY_RUNCARD_KEYS`). A
+        ``BndsRnXs`` request *above* that default only reaches the BSE
+        step's own override, not the init step's -- exercise that gap with
+        a ``BndsRnXs`` upper bound past 300, matching the default's own
+        magnitude: a mismatch between the init and BSE steps' nscf ``nbnd``
+        makes ``YamboWorkflow`` redo the BSE step's nscf and p2y at run
+        time, against a fresh SAVE the already-built quasiparticle
+        database was never made from.
+        """
+        bse_parameters = {
+            "arguments": ["rim_cut"],
+            "variables": {"BndsRnXs": [[1, 500], ""]},
+        }
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            nscf_output_parameters,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        init_nbnd = (
+            wg.tasks["yambo_init"]
+            .inputs["nscf"]["pw"]["parameters"]
+            .value.get_dict()["SYSTEM"]["nbnd"]
+        )
+        bse_nbnd = (
+            wg.tasks["bse"].inputs["nscf"]["pw"]["parameters"].value.get_dict()["SYSTEM"]["nbnd"]
+        )
+        assert init_nbnd == bse_nbnd == 500
+
+    def test_bse_variables_carry_no_gw_only_keys(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        nscf_output_parameters,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """The BSE runcard must not carry protocol-derived GW-only leftover keys.
+
+        ``YamboRestart.get_builder_from_protocol`` computes ``GbndRnge``
+        from the pre-rename ``BndsRnXp`` before its own BSE branch pops
+        that key, and inherits ``GTermKind``/``FFTGvecs`` from its
+        protocol's ``default_inputs`` regardless of calc type -- none of
+        the three mean anything to a BSE run.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            nscf_output_parameters,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        bse_variables = (
+            wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
+        )
+        for gw_only_key in ("GbndRnge", "FFTGvecs", "GTermKind"):
+            assert gw_only_key not in bse_variables
+
+    def test_pki_eigenvalues_are_refused(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        nscf_output_parameters,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """``eigenvalues='pki'`` has no producing parser yet (aiida-koopmans#134)."""
+        with pytest.raises(NotImplementedError, match="pki"):
+            self._build(
+                bse_codes,
+                silicon_structure,
+                kmesh,
+                nscf_output_band,
+                nscf_output_parameters,
+                ham_output_parameters,
+                bse_parameters,
+                fake_cutoffs_family,
+                eigenvalues="pki",
+            )
+
+    @pytest.mark.parametrize(
+        "parallelization",
+        [None, {"yambo": {"ntasks": 1}}],
+        ids=["no-parallelization", "explicit-single-rank"],
+    )
+    def test_single_rank_omits_bs_roles(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        nscf_output_parameters,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+        parallelization,
+    ):
+        """A ``yambo`` entry present but at one rank must omit the MPI-role split too.
+
+        Not just an absent ``parallelization`` altogether -- ``ntasks: 1``
+        stated explicitly takes a different path through
+        :func:`~aiida_koopmans.workgraphs.bse._bse_mpi_roles` (a present but
+        falsy-after-int-cast rank count, not a missing entry) and must reach
+        the same result.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            nscf_output_parameters,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+            parallelization=parallelization,
         )
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]

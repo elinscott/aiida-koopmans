@@ -52,6 +52,7 @@ from qe_tools import CONSTANTS
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
+    merge_parallelization_into_overrides,
     resolve_parallelization,
     validate_parallelization,
 )
@@ -90,6 +91,16 @@ class BseCodes(TypedDict):
 #: k-point, one column per Wannier-Hamiltonian band, in eV.
 _EIGENVALUE_KEYS = {"ki": "ki_eigenvalues_on_grid", "pki": "pki_eigenvalues_on_grid"}
 _KS_KEY = "ks_eigenvalues_on_grid"
+
+#: Runcard keys ``YamboRestart.get_builder_from_protocol`` computes for a GW
+#: run (``GbndRnge``/``FFTGvecs``/``GTermKind``) and leaves behind even under
+#: a ``'bse_*'`` protocol: ``GbndRnge`` is assigned from the pre-rename
+#: ``BndsRnXp`` before the BSE branch pops that key, and ``GTermKind`` /
+#: ``FFTGvecs`` come from the protocol's own ``default_inputs``, applied to
+#: every protocol regardless of calc type. None of the three mean anything to
+#: a BSE run; the k2y BSE example script strips them from the same builder
+#: output before submission.
+_GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
 
 
 @task.calcfunction
@@ -263,7 +274,7 @@ def RunBse(
     protocol_qe: str | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> BseOutputs:
-    """Run a yambo BSE spectrum seeded by Koopmans (KI/pKI) quasiparticle corrections.
+    """Run a yambo BSE spectrum seeded by Koopmans (KI) quasiparticle corrections.
 
     A fresh scf -> nscf -> p2y ("yambo init") builds the yambo SAVE
     directory: the koopmans nscf cannot be reused, since kcw.x needs an
@@ -276,31 +287,56 @@ def RunBse(
 
     ``nscf_output_parameters`` is the koopmans nscf's own parsed
     ``output_parameters`` (``wfc_cutoff`` / ``rho_cutoff``, in eV): both
-    reach the init and BSE steps' scf/nscf ``SYSTEM`` overrides in Ry,
-    since ``PwBaseWorkChain.get_builder_from_protocol`` silently replaces
-    an ``ecutwfc``-only override with the pseudo family's own recommended
-    cutoffs unless ``ecutrho`` rides along with it.
+    reach the init and BSE steps' scf/nscf ``SYSTEM`` overrides in Ry.
+    ``PwBaseWorkChain.get_builder_from_protocol`` applies overrides on top
+    of the pseudo family's recommended cutoffs, and only skips that
+    recommendation when both ``ecutwfc`` and ``ecutrho`` are present in
+    the override together -- passing ``ecutwfc`` alone still wins for
+    ``ecutwfc`` itself, but leaves ``ecutrho`` at the family's own
+    recommendation instead of this run's.
 
     ``ham_output_parameters`` / ``nscf_output_band`` are a kcw.x ``ham``
     run's parsed ``output_parameters`` and its own seeding nscf's
     ``output_band`` (see :func:`generate_qp_database`, which this graph
-    calls); ``eigenvalues`` selects which Koopmans flavor ('ki'/'pki')
-    seeds the QP database.
+    calls). ``eigenvalues`` selects which Koopmans flavor seeds the QP
+    database; only ``'ki'`` is accepted here -- ``'pki'`` is refused, since
+    no ak2 kcw.x ``ham`` parser yet emits ``pki_eigenvalues_on_grid``
+    (tracked in aiida-koopmans#134).
 
     ``bse_parameters`` is the yambo BSE runcard's own ``arguments`` /
     ``variables`` (``BndsRnXs``, ``NGsBlkXs``, ``BSENGBlk``, ``BSEBands``,
     ``BEnRange``, ``BEnSteps``, ``BDmRange``, each ``[value, unit]`` per
     yambopy's convention) and ``metadata`` (the BSE step's own scheduler
     options). ``variables['KfnQPdb']`` is this graph's own -- pointing at
-    the QP database it builds -- and refused if the caller states it.
-    ``parallelization``'s ``yambo`` entry sets the BSE step's rank count
-    and, past one rank, a k-point-only ``BS_CPU``/``BS_ROLEs`` MPI split
-    (see :func:`_bse_mpi_roles`).
+    the QP database it builds -- and refused if the caller states it. The
+    same ``arguments``/``variables`` also reach the init step (minus
+    ``KfnQPdb``), so its own nscf sees the same ``BndsRnXs`` as the BSE
+    step's: ``YamboWorkflow.get_builder_from_protocol`` sizes each nscf's
+    own ``nbnd`` off the runcard's requested band range, and a mismatch
+    between the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the BSE
+    step's nscf and p2y at run time, against a fresh SAVE that the
+    already-built quasiparticle database was not made from.
+    ``parallelization``'s ``pw`` entry reaches every scf/nscf pw.x step (init
+    and BSE alike); its ``yambo`` entry sets the BSE step's rank count and,
+    past one rank, a k-point-only ``BS_CPU``/``BS_ROLEs`` MPI split (see
+    :func:`_bse_mpi_roles`).
+
+    ``protocol_qe`` defaults to ``'moderate'`` on its own, independent of
+    ``protocol``: a caller passing ``protocol='precise'`` without also
+    setting ``protocol_qe`` still gets a ``'moderate'``-precision fresh
+    scf/nscf/p2y here.
 
     Raises:
         ValueError: If ``bse_parameters['variables']`` states ``KfnQPdb``.
+        NotImplementedError: If ``eigenvalues`` is ``'pki'``.
     """
     validate_parallelization(parallelization)
+
+    if eigenvalues == "pki":
+        raise NotImplementedError(
+            "eigenvalues='pki' has no producing parser yet -- no ak2 kcw.x `ham` parser "
+            "emits `pki_eigenvalues_on_grid` (aiida-koopmans#134). Use 'ki'."
+        )
 
     # ``.build()`` executes graph bodies eagerly, where graph inputs arrive as
     # provenance-tagged proxies; the family label ends up bound as an SQL
@@ -333,15 +369,38 @@ def RunBse(
     yambo_workflow = _load_yambo_workflow()
     yambo_step = task(yambo_workflow)
 
-    init_overrides = {
-        "scf": {"pw": {"parameters": deepcopy(cutoff_system)}},
-        "nscf": {
-            "pw": {
-                "parameters": {
-                    **deepcopy(cutoff_system),
-                    "ELECTRONS": {"diagonalization": "cg"},
+    def _pw_overrides() -> dict[str, Any]:
+        """Return fresh scf/nscf ``pw`` overrides: both cutoffs, parallelization applied.
+
+        Built fresh per call: :func:`merge_parallelization_into_overrides`
+        mutates its ``overrides`` argument in place, and the init and BSE
+        steps each need their own dict.
+        """
+        overrides: dict[str, Any] = {
+            "scf": {"pw": {"parameters": deepcopy(cutoff_system)}},
+            "nscf": {
+                "pw": {
+                    "parameters": {
+                        **deepcopy(cutoff_system),
+                        "ELECTRONS": {"diagonalization": "cg"},
+                    },
                 },
             },
+        }
+        merge_parallelization_into_overrides(
+            overrides, parallelization, [(("scf", "pw"), "pw"), (("nscf", "pw"), "pw")]
+        )
+        return overrides
+
+    init_overrides = {
+        **_pw_overrides(),
+        # Same runcard variables the BSE step gets (minus 'KfnQPdb', which only
+        # the BSE step points at a QP database): both steps' nscf must agree on
+        # the band range YamboWorkflow.get_builder_from_protocol derives 'nbnd'
+        # from, or it redoes the BSE step's nscf+p2y at run time against a SAVE
+        # the QP database was never built from.
+        "yres": {
+            "yambo": {"parameters": {"arguments": arguments, "variables": deepcopy(variables)}},
         },
     }
     init_builder = yambo_workflow.get_builder_from_protocol(
@@ -375,15 +434,7 @@ def RunBse(
 
     bse_variables = {**variables, "KfnQPdb": "E < ./ndb.QP"}
     bse_overrides = {
-        "scf": {"pw": {"parameters": deepcopy(cutoff_system)}},
-        "nscf": {
-            "pw": {
-                "parameters": {
-                    **deepcopy(cutoff_system),
-                    "ELECTRONS": {"diagonalization": "cg"},
-                },
-            },
-        },
+        **_pw_overrides(),
         "yres": {
             "yambo": {
                 "parameters": {"arguments": arguments, "variables": bse_variables},
@@ -410,10 +461,12 @@ def RunBse(
     bse_data["additional_parsing"] = ["lowest_exciton", "brightest_exciton"]
 
     # ``get_builder_from_protocol`` already returns an ``orm.Dict`` for
-    # ``parameters``: rebuild it to add the MPI-role split, the same
-    # get-then-rebuild idiom the k2y BSE example script uses to strip
-    # GW-only keys from the same builder output.
+    # ``parameters``: rebuild it to strip the GW-only leftover keys and add
+    # the MPI-role split, the same get-then-rebuild idiom the k2y BSE example
+    # script uses on the same builder output.
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
+    for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
+        bse_params_dict["variables"].pop(gw_only_key, None)
     bse_params_dict["variables"].update(_bse_mpi_roles(parallelization))
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db

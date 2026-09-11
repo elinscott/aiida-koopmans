@@ -24,6 +24,7 @@ from tests.fixtures import (  # noqa: F401
     denser_kmesh,
     dfpt_codes,
     dfpt_pdos_codes,
+    fake_bse_cutoffs_family,
     fake_cutoffless_family,
     fake_cutoffs_family,
     fake_family_unreadable_upf,

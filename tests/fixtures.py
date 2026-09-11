@@ -243,8 +243,38 @@ def fake_cutoffs_family(aiida_profile, generate_upf_data):
     )
 
 
-def install_cutoffs_family(label, pseudos):
-    """Install (or fetch) a ``CutoffsPseudoPotentialFamily`` over ``pseudos``."""
+@pytest.fixture
+def fake_bse_cutoffs_family(aiida_profile, generate_upf_data):
+    """Install a Si-only cutoffs family whose recommendation beats a 4x-ecutwfc floor.
+
+    Recommends 50/300 Ry (set directly in Ry, sidestepping ``set_cutoffs``'s
+    own eV default). Needed wherever a build must tell an override that
+    supplies both cutoffs apart from one that only supplies ``ecutwfc``:
+    ``YamboWorkflow.get_builder_from_protocol`` floors ``ecutrho`` at
+    ``4 * ecutwfc`` regardless of the family, so a family recommendation
+    below that floor (like :func:`fake_cutoffs_family`'s 30/240 eV, ~2.2/17.6
+    Ry) would land on the same floored value whether or not the override's
+    own ``ecutrho`` actually reached the builder -- this family's 300 Ry
+    clears the floor (``4 * 48 = 192`` for the 48 Ry ``ecutwfc`` the BSE
+    tests' own ``nscf_output_parameters`` fixture carries), so a dropped
+    ``ecutrho`` override surfaces as the family's 300, not the run's 192.
+    """
+    return install_cutoffs_family(
+        "FAKE/BSE/CUTOFFS/PBE/SR",
+        [generate_upf_data("Si", z_valence=4.0)],
+        cutoffs={"Si": {"cutoff_wfc": 50.0, "cutoff_rho": 300.0}},
+        unit="Ry",
+    )
+
+
+def install_cutoffs_family(label, pseudos, cutoffs=None, unit=None):
+    """Install (or fetch) a ``CutoffsPseudoPotentialFamily`` over ``pseudos``.
+
+    ``cutoffs`` overrides the default 30/240 ``cutoff_wfc``/``cutoff_rho``
+    per element; ``unit`` is the energy unit those values (default or
+    supplied) are given in, passed straight to ``set_cutoffs`` (defaults to
+    eV, that method's own default, when not given).
+    """
     from aiida.common.exceptions import NotExistent
     from aiida_pseudo.groups.family import CutoffsPseudoPotentialFamily
 
@@ -256,10 +286,10 @@ def install_cutoffs_family(label, pseudos):
     family = CutoffsPseudoPotentialFamily(label=label)
     family.store()
     family.add_nodes([pseudo.store() for pseudo in pseudos])
-    family.set_cutoffs(
-        {pseudo.element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for pseudo in pseudos},
-        stringency="normal",
-    )
+    default_cutoffs = {
+        pseudo.element: {"cutoff_wfc": 30.0, "cutoff_rho": 240.0} for pseudo in pseudos
+    }
+    family.set_cutoffs(cutoffs or default_cutoffs, stringency="normal", unit=unit)
     return family
 
 
