@@ -34,12 +34,12 @@ dependencies = [
     # Header-only UPF reads for the projected-DOS gate (header_from_str);
     # needs the not-yet-released 0.2.1, hence the uv source below.
     "upf-tools",
-    # BSE-with-Koopmans-eigenvalues support (workgraphs/bse.py): converts
-    # kcw.x KI eigenvalues into a yambo quasiparticle database. Pins live
-    # in `[tool.uv.sources]` below. `aiida-yambo` joins in the follow-up
-    # PR that wires the `RunBse` route -- nothing in this PR imports it.
+    # BSE-with-Koopmans-eigenvalues support (workgraphs/bethe_salpeter.py):
+    # converts kcw.x KI eigenvalues into a yambo quasiparticle database and
+    # runs the BSE step itself. Pins live in `[tool.uv.sources]` below.
     "k2y",
-    # yambopy: imported directly by tests/test_bse_calcfunction.py.
+    "aiida-yambo",
+    # yambopy: imported directly by tests/test_bethe_salpeter_calcfunction.py.
     "yambopy>=0.7.1",
 ]
 
@@ -218,8 +218,11 @@ aiida-quantumespresso = { path = "../aiida-quantumespresso", editable = true }
 # matches a pre-quarantine local clone, until the releases reappear.
 aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = "5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
 # k2y is not on PyPI; pin the commit that expands QP_kpts to the full BZ
-# (see workgraphs/bse.py), now squashed onto k2y's own main.
+# (see workgraphs/bethe_salpeter.py), now squashed onto k2y's own main.
 k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a2abcf5d0b39f3a384" }
+# aiida-yambo is not on PyPI either; pin mikibonacci's fork at the commit
+# workgraphs/bethe_salpeter.py's RunBetheSalpeter was built and tested against.
+aiida-yambo = { git = "https://github.com/mikibonacci/aiida-yambo", rev = "a95794c55802d174207c69e957aaf958040342ee" }
 
 [tool.hatch.envs.docs]
 installer = "uv"

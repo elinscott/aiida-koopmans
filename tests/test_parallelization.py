@@ -69,12 +69,12 @@ class TestResolve:
         _, settings = resolve_parallelization({code: {"npool": 2, "pd": True}}, code)
         assert settings == {"cmdline": ["-npool", "2", "-pd", "true"]}
 
-    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90"])
+    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90", "yambo"])
     def test_npool_for_non_pool_code_raises(self, code):
         with pytest.raises(ValueError, match="does not parallelize over"):
             resolve_parallelization({code: {"npool": 2}}, code)
 
-    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90"])
+    @pytest.mark.parametrize("code", ["kcp", "wann2kcp", "wannier90", "yambo"])
     def test_pd_for_non_pd_code_raises(self, code):
         with pytest.raises(ValueError, match="pencil decomposition"):
             resolve_parallelization({code: {"pd": True}}, code)
