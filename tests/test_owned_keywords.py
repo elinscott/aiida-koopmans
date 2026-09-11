@@ -10,6 +10,7 @@ from aiida_koopmans.owned_keywords import (
     SEEDED,
     SEEDED_VALUES,
     owned,
+    reject_owned,
     seeded,
 )
 
@@ -17,6 +18,17 @@ from aiida_koopmans.owned_keywords import (
 def test_owned_accepts_a_declared_keyword():
     literal = {"epsil": True, "trans": False}
     assert owned("ph.INPUTPH", literal) is literal
+
+
+def test_yambo_roster_matches_bethe_salpeter_usage():
+    # bethe_salpeter.py forces KfnQPdb and, past one MPI rank, BS_CPU/BS_ROLEs;
+    # koopmans' calculator_parameters.yambo block claims the whole set for its
+    # own owned-keyword refusal (see koopmans.input_file.yambo._YAMBO_REASONS).
+    assert OWNED["yambo"] == frozenset(
+        {"KfnQPdb", "BSEQptR", "BS_CPU", "BS_ROLEs", "rim_cut", "WRbsWF", "NLCC"}
+    )
+    assert owned("yambo", {"KfnQPdb": "E < ./ndb.QP"}) == {"KfnQPdb": "E < ./ndb.QP"}
+    assert reject_owned("yambo", {"BndsRnXs": [[1, 20], ""]}) is None
 
 
 def test_seeded_accepts_a_declared_keyword():

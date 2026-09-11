@@ -170,6 +170,30 @@ OWNED: dict[str, frozenset[str]] = {
             "spin",
         }
     ),
+    "yambo": frozenset(
+        {
+            # bethe_salpeter.generate_qp_database builds this from the composed
+            # DFPT chain's kcw.x `ham` eigenvalues; no caller value reaches it.
+            "KfnQPdb",
+            # koopmans always computes an optical (momentum-transfer q = 0)
+            # spectrum.
+            "BSEQptR",
+            # The BSE step's own MPI role split, sized off the `yambo`
+            # parallelization entry's rank count.
+            "BS_CPU",
+            "BS_ROLEs",
+            # Runcard arguments the route always turns on: the random-
+            # integration-method Coulomb-divergence treatment, needed for any
+            # periodic BSE; writing the excitonic wavefunctions the
+            # additional-parsing quantities read; and non-linear-core-correction
+            # support, needed for a pseudopotential family that has it (as
+            # koopmans2's own PseudoDojo/SG15 defaults do) and harmless for one
+            # that does not.
+            "rim_cut",
+            "WRbsWF",
+            "NLCC",
+        }
+    ),
 }
 
 #: Keywords a route writes as a starting value that a caller value replaces,

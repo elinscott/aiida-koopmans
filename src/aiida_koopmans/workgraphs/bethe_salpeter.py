@@ -29,7 +29,6 @@ output straight off the DFPT chain's own outputs.
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 
-from collections.abc import Mapping
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
@@ -49,6 +48,7 @@ from aiida_workgraph.utils import get_dict_from_builder
 from k2y.k2y import KcwQpDatabaseGenerator
 from node_graph import reference
 
+from aiida_koopmans.owned_keywords import owned, reject_owned
 from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
@@ -101,52 +101,6 @@ _KS_KEY = "ks_eigenvalues_on_grid"
 #: a BSE run; the k2y BSE example script strips them from the same builder
 #: output before submission.
 _GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
-
-#: Yambo BSE runcard variables :func:`RunBetheSalpeter` determines for itself:
-#: ``KfnQPdb`` points at the QP database it builds (see
-#: :func:`generate_qp_database`); ``BS_CPU``/``BS_ROLEs`` are the BSE step's
-#: own MPI role split, sized off the ``yambo`` parallelization entry's rank
-#: count (see :func:`_bse_mpi_roles`). Stating one in
-#: ``bse_parameters['variables']`` is refused.
-#:
-#: Mirrors :mod:`aiida_koopmans.owned_keywords`'s ``OWNED``/``owned``/
-#: ``reject_owned`` pattern (same roster shape, same refusal message) rather
-#: than joining that module's own ``OWNED``: that dict backs koopmans'
-#: generated input-file schema (``koopmans.input_file._codegen.generate``'s
-#: ``covered`` check requires every ``OWNED`` block to have a generated
-#: model), and koopmans has no yambo input-file block yet -- BSE is not wired
-#: into its dispatcher. Move this roster into ``OWNED`` once it does.
-_YAMBO_OWNED: frozenset[str] = frozenset({"KfnQPdb", "BS_CPU", "BS_ROLEs"})
-
-
-def _reject_owned_yambo(keywords: Mapping[str, Any]) -> None:
-    """Raise if the caller states a yambo runcard variable this route owns.
-
-    Raises:
-        ValueError: If ``keywords`` states a keyword in :data:`_YAMBO_OWNED`.
-    """
-    stated = sorted(set(keywords) & _YAMBO_OWNED)
-    if stated:
-        raise ValueError(
-            f"yambo {', '.join(stated)} is owned: the route determines it and forces "
-            f"its own value, so the value given here would be discarded. Drop it from "
-            f"bse_parameters."
-        )
-
-
-def _owned_yambo[T: Mapping[str, Any]](keywords: T) -> T:
-    """Return ``keywords`` after checking every one of them is an owned yambo keyword.
-
-    Raises:
-        ValueError: If a keyword is not in :data:`_YAMBO_OWNED`.
-    """
-    undeclared = sorted(set(keywords) - _YAMBO_OWNED)
-    if undeclared:
-        raise ValueError(
-            f"the route forces yambo {', '.join(undeclared)}, which _YAMBO_OWNED does "
-            f"not classify. Add it there."
-        )
-    return keywords
 
 
 @task.calcfunction
@@ -343,7 +297,8 @@ def RunBetheSalpeter(
     options). ``variables['KfnQPdb']`` is this graph's own -- pointing at
     the QP database it builds -- and refused if the caller states it, as is
     ``variables['BS_CPU']``/``['BS_ROLEs']`` (this graph's own MPI-role
-    split, below): both are in :data:`_YAMBO_OWNED`. The same
+    split, below): both are in
+    :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry. The same
     ``arguments``/``variables`` also reach the init step (minus ``KfnQPdb``),
     so its own nscf sees the same ``BndsRnXs`` as the BSE step's:
     ``YamboWorkflow.get_builder_from_protocol`` sizes each nscf's own
@@ -382,7 +337,7 @@ def RunBetheSalpeter(
     pseudo_family = str(pseudo_family) if pseudo_family is not None else None
 
     variables = dict((bse_parameters or {}).get("variables", {}).items())
-    _reject_owned_yambo(variables)
+    reject_owned("yambo", variables)
     arguments = list((bse_parameters or {}).get("arguments", []))
     bse_metadata = dict((bse_parameters or {}).get("metadata", {}).items())
 
@@ -464,7 +419,7 @@ def RunBetheSalpeter(
         metadata={"call_link_label": "generate_qp_database"},
     ).result
 
-    bse_variables = {**variables, **_owned_yambo({"KfnQPdb": "E < ./ndb.QP"})}
+    bse_variables = {**variables, **owned("yambo", {"KfnQPdb": "E < ./ndb.QP"})}
     bse_overrides = {
         **_pw_overrides(),
         "yres": {
@@ -499,7 +454,7 @@ def RunBetheSalpeter(
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
     for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
         bse_params_dict["variables"].pop(gw_only_key, None)
-    bse_params_dict["variables"].update(_owned_yambo(_bse_mpi_roles(parallelization)))
+    bse_params_dict["variables"].update(owned("yambo", _bse_mpi_roles(parallelization)))
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")
