@@ -45,7 +45,10 @@ class DscfBandStructureOutputs(TypedDict):
     """Outputs of :func:`DscfBandStructureTask`.
 
     * ``band_structure`` — the interpolated Koopmans bands along the input
-      k-path, occupied then empty within each spin channel.
+      k-path, occupied then empty within each spin channel, on pw.x's
+      absolute energy scale (same convention as the DFPT route's kcw.x
+      bands) whenever the caller supplies ``nscf_output_parameters`` and
+      ``dft_init_output_parameters``; on kcp.x's own scale otherwise.
     * ``reference`` — the valence-band maximum in eV, for plot alignment.
     * ``dos`` — the bands' Gaussian-smearing total DOS, present only when
       ``do_dos``.
@@ -91,18 +94,55 @@ def manifold_hamiltonian(**hr_files: orm.SinglefileData) -> orm.SinglefileData:
     return orm.SinglefileData(io.StringIO(merged), filename="aiida_hr.dat")
 
 
+@task
+def compute_pw_scale_offset(
+    nscf_output_parameters: dict,
+    dft_init_output_parameters: dict,
+) -> float:
+    """Return the shift from kcp.x's absolute energy scale to pw.x's.
+
+    pw.x and kcp.x place the same LDA eigenvalues at different absolute
+    energies. For a fixed-occupation insulator pw.x's Fermi energy sits
+    exactly at the valence-band maximum, so the shift is that value minus
+    kcp.x's own ``homo_energy`` (the highest occupied level across both
+    spin channels, the same cross-channel value kcp.x prints — see
+    ``electrons.f90``). Identical for both spin channels, since it is a
+    code convention rather than a physical quantity.
+    """
+    pw_homo = nscf_output_parameters.get("fermi_energy")
+    if pw_homo is None:
+        up = nscf_output_parameters.get("fermi_energy_up")
+        down = nscf_output_parameters.get("fermi_energy_down")
+        if up is None or down is None:
+            raise ValueError(
+                "The nscf output reports neither `fermi_energy` nor both "
+                "`fermi_energy_up` / `fermi_energy_down`; cannot locate pw.x's "
+                "valence-band maximum to align the kcp.x energy scale."
+            )
+        pw_homo = max(up, down)
+    cp_homo = dft_init_output_parameters.get("homo_energy")
+    if cp_homo is None:
+        raise ValueError(
+            "The dft_init kcp.x output reports no `homo_energy`; cannot align "
+            "the kcp.x energy scale to pw.x's."
+        )
+    return float(pw_homo) - float(cp_homo)
+
+
 @task(outputs=["energies", "reference"])
 def merge_manifold_energies(
     occupied: list[list[float]],
     empty: list[list[float]],
     occupied_down: list[list[float]] | None = None,
     empty_down: list[list[float]] | None = None,
+    offset: float = 0.0,
 ) -> dict:
     """Concatenate per-manifold interpolated eigenvalues into one table.
 
     Within a spin channel the occupied and empty energies join along the
     band axis; both ``*_down`` inputs together add a leading spin axis.
-    ``reference`` is the highest occupied energy across the channels.
+    ``offset`` shifts every energy, so the returned ``reference`` (the
+    highest occupied energy across the channels) is shifted by it too.
     """
     if (occupied_down is None) != (empty_down is None):
         raise ValueError(
@@ -130,6 +170,8 @@ def merge_manifold_energies(
             )
         energies = np.stack([up, down])
         reference = float(max(occ.max(), np.asarray(occupied_down, dtype=float).max()))
+    energies = energies + offset
+    reference = reference + offset
     return {"energies": energies.tolist(), "reference": reference}
 
 
@@ -261,6 +303,8 @@ def DscfBandStructureTask(
     use_ws_distance: bool = True,
     do_dos: bool = True,
     plotting: dict | None = None,
+    nscf_output_parameters: dict | None = None,
+    dft_init_output_parameters: dict | None = None,
 ) -> DscfBandStructureOutputs:
     """Interpolate the Koopmans band structure of a periodic ΔSCF singlepoint.
 
@@ -289,6 +333,13 @@ def DscfBandStructureTask(
             repeat count along each lattice vector.
         kpath: the primitive-cell band path, in crystal coordinates.
         plotting: DOS shaping — ``degauss``, ``nstep``, ``Emin``, ``Emax``.
+        nscf_output_parameters: the initialization's primitive-cell nscf
+            output, read for pw.x's Fermi energy. Together with
+            ``dft_init_output_parameters`` shifts the returned bands onto
+            pw.x's absolute energy scale; leave both unset to keep kcp.x's
+            own scale.
+        dft_init_output_parameters: the initialization's ``dft_init``
+            kcp.x output, read for its ``homo_energy``.
     """
     spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
 
@@ -313,6 +364,14 @@ def DscfBandStructureTask(
                 use_ws_distance=use_ws_distance,
             )
 
+    offset_kwargs = {}
+    if nscf_output_parameters is not None and dft_init_output_parameters is not None:
+        offset_kwargs["offset"] = compute_pw_scale_offset(
+            nscf_output_parameters=nscf_output_parameters,
+            dft_init_output_parameters=dft_init_output_parameters,
+            metadata={"call_link_label": "pw_scale_offset"},
+        ).result
+
     first = SpinChannel.UP if spin_polarized else SpinChannel.NONE
     merged = merge_manifold_energies(
         occupied=energies_by_manifold[True, first],
@@ -320,6 +379,7 @@ def DscfBandStructureTask(
         occupied_down=energies_by_manifold.get((True, SpinChannel.DOWN)),
         empty_down=energies_by_manifold.get((False, SpinChannel.DOWN)),
         metadata={"call_link_label": "merge_manifold_energies"},
+        **offset_kwargs,
     )
 
     outputs = DscfBandStructureOutputs(

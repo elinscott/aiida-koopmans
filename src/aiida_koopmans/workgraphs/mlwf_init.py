@@ -113,6 +113,11 @@ class MlwfInitializationOutputs(TypedDict):
       per-manifold quantity downstream, so consumers that must line up
       per-orbital data with the manifolds take it from here rather than
       re-deriving it.
+    * ``nscf_output_parameters`` / ``dft_init_output_parameters`` — the
+      shared nscf's and the ``dft_init`` step's scalar outputs, which
+      between them carry pw.x's and kcp.x's highest occupied levels. A
+      downstream band interpolation reads these to align kcp.x's absolute
+      energy scale to pw.x's.
     """
 
     remote_folder: orm.RemoteData
@@ -123,6 +128,8 @@ class MlwfInitializationOutputs(TypedDict):
     scf_remote_folder: orm.RemoteData
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
     merge_groups: list
+    nscf_output_parameters: dict
+    dft_init_output_parameters: dict
 
 
 @task
@@ -443,4 +450,6 @@ def MlwfInitialization(
         merge_groups=emit_merge_groups(
             merge_groups=merge_groups, metadata={"call_link_label": "merge_groups"}
         ).result,
+        nscf_output_parameters=wannierize["nscf"]["output_parameters"],
+        dft_init_output_parameters=dft_init["output_parameters"],
     )
