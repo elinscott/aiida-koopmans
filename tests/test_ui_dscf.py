@@ -225,6 +225,46 @@ class TestManifoldFanOut:
             )
 
 
+class TestOffsetWiring:
+    """A supplied ``offset`` reaches the merge task; omitting it does not."""
+
+    @staticmethod
+    def _build(silicon_structure, **overrides):
+        from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureTask
+
+        inputs = {
+            "structure": silicon_structure,
+            "merge_groups": occ_emp_merge_groups(),
+            "block_wannierizations": {
+                label: block_wannierization(label, num_wann=2) for label in ("occ", "emp")
+            },
+            "koopmans_ham_retrieved": _retrieved_with_hamiltonians(
+                ["ham_occ_1.dat", "ham_emp_1.dat"]
+            ),
+            "kgrid": [2, 2, 2],
+            "kpath": _kpath(),
+        }
+        inputs.update(overrides)
+        return DscfBandStructureTask.build(**inputs)
+
+    def test_an_offset_reaches_the_merge_task(self, silicon_structure):
+        wg = self._build(silicon_structure, offset=2.5315)
+        by_name = {task.name: task for task in wg.tasks}
+        assert by_name["merge_manifold_energies"].inputs["offset"]._links
+
+    def test_without_an_offset_the_merge_input_is_unlinked(self, silicon_structure):
+        """Negative control: kcp.x's own scale needs no offset link at all."""
+        wg = self._build(silicon_structure)
+        by_name = {task.name: task for task in wg.tasks}
+        assert not by_name["merge_manifold_energies"].inputs["offset"]._links
+
+    def test_the_graph_survives_a_dict_round_trip(self, silicon_structure):
+        from tests.fixtures import assert_graph_roundtrips
+
+        wg = self._build(silicon_structure, offset=2.5315)
+        assert_graph_roundtrips(wg)
+
+
 class TestRunAgainstTheSiliconReference:
     """Execute the whole stage in-process on the stored silicon fixtures.
 
@@ -237,7 +277,8 @@ class TestRunAgainstTheSiliconReference:
     the extraction, the centre threading and the merge around it.
     """
 
-    def test_the_merged_bands_are_the_manifolds_concatenated(self, aiida_profile, si_reference):
+    @staticmethod
+    def _build(si_reference, **overrides):
         import io
         from pathlib import Path
 
@@ -270,18 +311,20 @@ class TestRunAgainstTheSiliconReference:
             }
         ).store()
 
-        wg = DscfBandStructureTask.build(
-            structure=structure,
-            merge_groups=occ_emp_merge_groups(),
-            block_wannierizations={
+        inputs = {
+            "structure": structure,
+            "merge_groups": occ_emp_merge_groups(),
+            "block_wannierizations": {
                 label: {**block_wannierization(label), "output_parameters": parsed}
                 for label in ("occ", "emp")
             },
-            koopmans_ham_retrieved=retrieved,
-            kgrid=list(si_reference["kgrid"]),
-            kpath=kpath,
-            do_dos=False,
-        )
+            "koopmans_ham_retrieved": retrieved,
+            "kgrid": list(si_reference["kgrid"]),
+            "kpath": kpath,
+            "do_dos": False,
+        }
+        inputs.update(overrides)
+        wg = DscfBandStructureTask.build(**inputs)
         wg.run()
 
         expected = ui_helpers.unfold_and_interpolate(
@@ -291,6 +334,11 @@ class TestRunAgainstTheSiliconReference:
             kgrid=tuple(int(n) for n in si_reference["kgrid"]),
             kpath_kpts=np.asarray(si_reference["kpath_kpts"], dtype=float),
         )
+        return wg, expected
+
+    def test_the_merged_bands_are_the_manifolds_concatenated(self, aiida_profile, si_reference):
+        wg, expected = self._build(si_reference)
+
         bands = wg.tasks.build_band_structure.outputs.result.value
         assert np.allclose(
             bands.get_bands(), np.concatenate([expected, expected], axis=1), atol=1e-10
@@ -299,6 +347,26 @@ class TestRunAgainstTheSiliconReference:
         # The valence-band maximum is the top of the occupied manifold.
         assert wg.tasks.merge_manifold_energies.outputs.reference.value == pytest.approx(
             float(expected.max())
+        )
+
+    def test_the_pw_scale_offset_shifts_bands_and_reference(self, aiida_profile, si_reference):
+        """Executed end to end: the offset must reach both merge outputs.
+
+        ``compute_dos_from_bands`` reads the same ``energies`` output the
+        assertion below checks, so a shift proven here reaches the DOS
+        input too without a separate execution.
+        """
+        offset = 2.5317
+        wg, expected = self._build(si_reference, offset=offset)
+
+        bands = wg.tasks.build_band_structure.outputs.result.value
+        assert np.allclose(
+            bands.get_bands(),
+            np.concatenate([expected, expected], axis=1) + offset,
+            atol=1e-10,
+        )
+        assert wg.tasks.merge_manifold_energies.outputs.reference.value == pytest.approx(
+            float(expected.max()) + offset
         )
 
 
@@ -418,6 +486,17 @@ class TestMergeManifoldEnergies:
         from aiida_koopmans.workgraphs.ui.dscf import merge_manifold_energies
 
         return merge_manifold_energies._callable(**kwargs)
+
+    def test_an_offset_shifts_both_energies_and_the_reference(self):
+        merged = self._merge(occupied=[[1.0, 2.0], [1.1, 2.1]], empty=[[5.0], [5.1]], offset=0.5)
+        assert merged["energies"] == [[1.5, 2.5, 5.5], [1.6, 2.6, 5.6]]
+        assert merged["reference"] == pytest.approx(2.6)
+
+    def test_the_default_offset_leaves_the_merge_unchanged(self):
+        """Negative control: an explicit zero offset is the same as none."""
+        assert self._merge(occupied=[[1.0]], empty=[[5.0]], offset=0.0) == self._merge(
+            occupied=[[1.0]], empty=[[5.0]]
+        )
 
     def test_occupied_then_empty_within_a_channel(self):
         merged = self._merge(occupied=[[1.0, 2.0], [1.1, 2.1]], empty=[[5.0], [5.1]])
