@@ -7,9 +7,6 @@ resolution-markers = [
     "sys_platform != 'win32'",
 ]
 
-[manifest]
-overrides = [{ name = "yambopy", specifier = ">=0.7.1" }]
-
 [[package]]
 name = "accessible-pygments"
 version = "0.0.5"
@@ -115,7 +112,7 @@ requires-dist = [
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
     { name = "furo", marker = "extra == 'docs'" },
-    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" },
+    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
     { name = "node-graph", editable = "../node-graph" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
@@ -1298,7 +1295,7 @@ wheels = [
 [[package]]
 name = "k2y"
 version = "0.1.0"
-source = { git = "https://github.com/elinscott/k2y?rev=eb67d2ab5669bc7e351f3821ea0f6ac437b49d11#eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" }
+source = { git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384#1c28647c9af21832751983a2abcf5d0b39f3a384" }
 dependencies = [
     { name = "ase" },
     { name = "click" },
