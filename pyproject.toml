@@ -39,10 +39,7 @@ dependencies = [
     # the BSE step itself. Pins live in `[tool.uv.sources]` below.
     "k2y",
     "aiida-yambo",
-    # uv ignores `[tool.uv.sources]` for transitive dependencies, so k2y's
-    # own yambopy pin would otherwise win; list it directly. PyPI's 0.7.1
-    # release is source-identical to the yambo-code/yambopy commit this
-    # project used to pin (verified by diffing the installed packages).
+    # yambopy: imported directly by tests/test_bse_calcfunction.py.
     "yambopy>=0.7.1",
 ]
 
@@ -222,21 +219,10 @@ aiida-quantumespresso = { path = "../aiida-quantumespresso", editable = true }
 aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = "5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
 # k2y is not on PyPI; pin the commit that expands QP_kpts to the full BZ
 # (see workgraphs/bse.py), now squashed onto k2y's own main.
-k2y = { git = "https://github.com/elinscott/k2y", rev = "eb67d2ab5669bc7e351f3821ea0f6ac437b49d11" }
+k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a2abcf5d0b39f3a384" }
 # aiida-yambo is not on PyPI either; pin mikibonacci's fork at the commit
 # workgraphs/bse.py's RunBse was built and tested against.
 aiida-yambo = { git = "https://github.com/mikibonacci/aiida-yambo", rev = "a95794c55802d174207c69e957aaf958040342ee" }
-
-[tool.uv]
-# k2y's own metadata still direct-URL-pins a different yambopy fork
-# (mikibonacci/yambopy@aiida-parsing) as of the rev pinned above;
-# `[tool.uv.sources]` alone cannot rewrite a URL another package already
-# pins, so force our own choice -- PyPI's release, source-identical to
-# the yambo-code/yambopy commit this project used to pin -- with an
-# override.
-override-dependencies = [
-    "yambopy>=0.7.1",
-]
 
 [tool.hatch.envs.docs]
 installer = "uv"
