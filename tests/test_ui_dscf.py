@@ -600,6 +600,10 @@ class TestTheWorkflowGatesOnTheBandPath:
         )
         names = [task.name for task in wg.tasks]
         assert "interpolate_band_structure" in names, names
+        assert (
+            wg.tasks["interpolate_band_structure"].inputs["metadata"]["label"].value
+            == "Band interpolation"
+        )
         # The stage reads Hamiltonians that exist only because the final KI
         # was asked to print them.
         final_ki = next(task for task in wg.tasks if task.name.startswith("RunFinalKI"))
