@@ -537,9 +537,13 @@ def SinglepointBSEWorkflow(
     * ``structure`` must be periodic in all three directions -- yambo's
       p2y step needs a periodic ground state; molecular BSE is
       unimplemented.
-    * A ``ham`` run that does not carry the requested ``eigenvalues``
-      flavor (a KIPZ- or PZ-corrected Hamiltonian, say) is refused by
-      :func:`generate_qp_database` itself, not here.
+    * The DFPT dispatcher's own correction-scope gap (``PKIPZ``/``PZ``/
+      ``ALL`` raise ``NotImplementedError`` upstream) is this route's only
+      guard against a wrongly-corrected ``ham`` run reaching
+      :func:`generate_qp_database`: that calcfunction checks only that the
+      requested ``eigenvalues`` key is *present* in ``ham_output_parameters``,
+      not that the values under it were actually produced by that
+      correction.
 
     ``protocol`` reaches both chains: ``SinglepointDFPTWorkflow``'s own QE
     protocol and :func:`RunBse`'s yambo protocol. ``protocol_qe`` sets only
