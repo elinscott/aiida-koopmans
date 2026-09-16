@@ -221,11 +221,13 @@ aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = 
 # (see workgraphs/bethe_salpeter.py), now squashed onto k2y's own main.
 k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a2abcf5d0b39f3a384" }
 # aiida-yambo is not on PyPI either; pin our fork's fix for the
-# _handle_parallelism_error/_handle_memory_error KeyError on a resource
-# class without num_cores_per_mpiproc, branched off mikibonacci's
-# new_cleanup at the commit workgraphs/bethe_salpeter.py's
-# RunBetheSalpeter was built and tested against.
-aiida-yambo = { git = "https://github.com/elinscott/aiida-yambo", rev = "705047a1444d3d953931451977aa5d250db97d19" }
+# _handle_parallelism_error/_handle_memory_error/fix_memory KeyError that
+# hits any multi-rank job whose caller never sets num_cores_per_mpiproc
+# (an optional NodeNumberJobResource field, not specific to one scheduler),
+# branched off mikibonacci's new_cleanup at the commit
+# workgraphs/bethe_salpeter.py's RunBetheSalpeter was built and tested
+# against.
+aiida-yambo = { git = "https://github.com/elinscott/aiida-yambo", rev = "7533d9bbe15ab117689fbad91664f99b3734efa1" }
 
 [tool.hatch.envs.docs]
 installer = "uv"

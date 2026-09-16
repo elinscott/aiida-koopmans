@@ -112,7 +112,7 @@ requires-dist = [
     { name = "aiida-wannier90-workflows", editable = "../aiida-wannier90-workflows" },
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
-    { name = "aiida-yambo", git = "https://github.com/elinscott/aiida-yambo?rev=705047a1444d3d953931451977aa5d250db97d19" },
+    { name = "aiida-yambo", git = "https://github.com/elinscott/aiida-yambo?rev=7533d9bbe15ab117689fbad91664f99b3734efa1" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "k2y", git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
@@ -352,7 +352,7 @@ provides-extras = ["docs", "pre-commit", "tests"]
 [[package]]
 name = "aiida-yambo"
 version = "3.0.0"
-source = { git = "https://github.com/elinscott/aiida-yambo?rev=705047a1444d3d953931451977aa5d250db97d19#705047a1444d3d953931451977aa5d250db97d19" }
+source = { git = "https://github.com/elinscott/aiida-yambo?rev=7533d9bbe15ab117689fbad91664f99b3734efa1#7533d9bbe15ab117689fbad91664f99b3734efa1" }
 dependencies = [
     { name = "aiida-core", extra = ["atomic-tools"] },
     { name = "aiida-quantumespresso" },
