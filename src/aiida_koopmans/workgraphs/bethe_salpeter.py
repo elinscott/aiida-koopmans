@@ -55,6 +55,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_overrides,
     validate_parallelization,
 )
+from aiida_koopmans.workgraphs import name_step
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
 from aiida_koopmans.workgraphs.dfpt import (
     ChannelResults,
@@ -411,7 +412,17 @@ def RunBetheSalpeter(
         {"INITIALISE": True, "ADDITIONAL_RETRIEVE_LIST": _QP_SERIAL_SOURCE_FILE}
     )
     merge_parallelization_into_inputs(init_data["yres"]["yambo"], parallelization, "yambo")
+    # Container-level labels: the progress table collapses a container
+    # holding a single leaf calculation into one row named by the
+    # container, not the calculation (see koopmans2's progress.py), so the
+    # label goes on the exposed PwBaseWorkChain/YamboRestart namespace
+    # itself, mirroring name_step's use for Wannier90BaseWorkChain in
+    # workgraphs/wannier90.py.
+    name_step(init_data["scf"], "SCF")
+    name_step(init_data["nscf"], "NSCF")
+    name_step(init_data["yres"], "p2y + setup")
     init_data.setdefault("metadata", {})["call_link_label"] = "yambo_init"
+    init_data["metadata"]["label"] = "Yambo initialization"
     init = yambo_step(**init_data)
 
     ham_params = dict((ham_output_parameters or {}).items())
@@ -420,7 +431,7 @@ def RunBetheSalpeter(
         ham_output_parameters=ham_params,
         nscf_output_band=nscf_output_band,
         eigenvalues=eigenvalues,
-        metadata={"call_link_label": "generate_qp_database"},
+        metadata={"call_link_label": "generate_qp_database", "label": "QP database"},
     ).result
 
     bse_variables = {**variables, **owned("yambo", {"KfnQPdb": "E < ./ndb.QP"})}
@@ -452,16 +463,18 @@ def RunBetheSalpeter(
     bse_data["additional_parsing"] = ["lowest_exciton", "brightest_exciton"]
 
     # ``get_builder_from_protocol`` already returns an ``orm.Dict`` for
-    # ``parameters``: rebuild it to strip the GW-only leftover keys and add
-    # the MPI-role split, the same get-then-rebuild idiom the k2y BSE example
-    # script uses on the same builder output.
+    # ``parameters``: rebuild it to strip the GW-only leftover keys, the
+    # same get-then-rebuild idiom the k2y BSE example script uses on the
+    # same builder output.
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
     for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
         bse_params_dict["variables"].pop(gw_only_key, None)
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")
+    name_step(bse_data["yres"], "BSE")
     bse_data.setdefault("metadata", {})["call_link_label"] = "bse"
+    bse_data["metadata"]["label"] = "BSE"
     bse = yambo_step(**bse_data)
 
     return BetheSalpeterOutputs(

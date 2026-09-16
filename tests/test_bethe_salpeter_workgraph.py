@@ -181,6 +181,58 @@ class TestRunBetheSalpeterGraphBuild:
         assert "generate_qp_database" in names
         assert_graph_roundtrips(wg)
 
+    def test_steps_are_named_for_the_progress_table(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """Every BSE step carries a display name, not the raw class name it would default to.
+
+        ``generate_qp_database`` is named at the task level only (it has no
+        nested scf/nscf/yres namespace). The init and BSE ``YamboWorkflow``
+        tasks are each named at the task level (what the top-level graph
+        row shows) and again on their own ``scf``/``nscf``/``yres``
+        namespaces: ``YamboWorkflow`` submits those through
+        ``exposed_inputs``, which carries the namespace's own ``metadata``
+        through to the child ``PwBaseWorkChain``/``YamboRestart`` -- the
+        same channel ``parallelization`` already reaches ``scf.pw``
+        through (see ``test_parallelization_pw_reaches_every_scf_nscf_pw_namespace``).
+        koopmans2's progress table collapses a container holding one leaf
+        calculation into a single row named by the container, so the label
+        belongs on ``scf``/``nscf``/``yres`` themselves, not on the calc
+        underneath (``scf.pw``, ``yres.yambo``).
+
+        The BSE task's own ``scf``/``nscf`` are deliberately left unlabeled:
+        it reruns a scf/nscf identical in kind to the init step's, and
+        only its own ``yres`` (the actual BSE calculation) needs a name.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        init = wg.tasks["yambo_init"].inputs
+        assert init["metadata"]["label"].value == "Yambo initialization"
+        assert init["scf"]["metadata"]["label"].value == "SCF"
+        assert init["nscf"]["metadata"]["label"].value == "NSCF"
+        assert init["yres"]["metadata"]["label"].value == "p2y + setup"
+
+        bse = wg.tasks["bse"].inputs
+        assert bse["metadata"]["label"].value == "BSE"
+        assert bse["yres"]["metadata"]["label"].value == "BSE"
+
+        qp_database = wg.tasks["generate_qp_database"].inputs
+        assert qp_database["metadata"]["label"].value == "QP database"
+
     def test_init_retrieves_ndb_kindx_for_the_qp_serial_number(
         self,
         bse_codes,
