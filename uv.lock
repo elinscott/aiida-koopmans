@@ -112,7 +112,7 @@ requires-dist = [
     { name = "aiida-wannier90-workflows", editable = "../aiida-wannier90-workflows" },
     { name = "aiida-wannierjl", editable = "../aiida-wannierjl" },
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
-    { name = "aiida-yambo", git = "https://github.com/elinscott/aiida-yambo?rev=7533d9bbe15ab117689fbad91664f99b3734efa1" },
+    { name = "aiida-yambo", git = "https://github.com/elinscott/aiida-yambo?rev=f42ad678d97b2f8f3060e1ccede2381b7425636d" },
     { name = "furo", marker = "extra == 'docs'" },
     { name = "k2y", git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
@@ -352,7 +352,7 @@ provides-extras = ["docs", "pre-commit", "tests"]
 [[package]]
 name = "aiida-yambo"
 version = "3.0.0"
-source = { git = "https://github.com/elinscott/aiida-yambo?rev=7533d9bbe15ab117689fbad91664f99b3734efa1#7533d9bbe15ab117689fbad91664f99b3734efa1" }
+source = { git = "https://github.com/elinscott/aiida-yambo?rev=f42ad678d97b2f8f3060e1ccede2381b7425636d#f42ad678d97b2f8f3060e1ccede2381b7425636d" }
 dependencies = [
     { name = "aiida-core", extra = ["atomic-tools"] },
     { name = "aiida-quantumespresso" },
@@ -3360,7 +3360,7 @@ wheels = [
 [[package]]
 name = "yambopy"
 version = "0.7.1"
-source = { git = "https://github.com/mikibonacci/yambopy?rev=aiida-parsing#ccbd7cbafa3e1b61786d1842663106fc0b1b9b0d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h5py" },
     { name = "lxml" },
@@ -3376,6 +3376,10 @@ dependencies = [
     { name = "spglib" },
     { name = "spgrep" },
     { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ac/45/d6f8305b0a5119e4c592b7e9ad11fb971781e093657fac74d1f2d870e4cc/yambopy-0.7.1.tar.gz", hash = "sha256:c9a003192aef8c95e62c872f05aa43d78b208a8292a0542768e1d2954b7539fb", size = 6766509, upload-time = "2026-03-13T14:20:06.403Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/9c/2e03dd6f48c986fccff7a8b779d027906b11bea3ab2a9dd3148fee54e0b4/yambopy-0.7.1-py3-none-any.whl", hash = "sha256:48e47c13985037411eecf7a168e1fcf8d0719b99ed0acb6133ce69c41b829afb", size = 5992063, upload-time = "2026-03-13T14:20:03.97Z" },
 ]
 
 [[package]]
