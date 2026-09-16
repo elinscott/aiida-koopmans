@@ -60,6 +60,7 @@ from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
 from aiida_koopmans.workgraphs.dfpt import (
     ChannelResults,
     DfptCodes,
+    KcwOverrides,
     KoopmansDFPTOutputs,
     ManifoldBlocks,
     SinglepointDFPTWorkflow,
@@ -585,6 +586,10 @@ def SinglepointBetheSalpeterWorkflow(
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
     eigenvalues: str = "ki",
+    eps_inf: float | str | None = None,
+    l_vcut: bool | None = None,
+    group_orbitals_tol: float | None = None,
+    kcw_overrides: KcwOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> SinglepointBetheSalpeterOutputs:
     """Run a Koopmans DFPT singlepoint, then a BSE spectrum seeded by its eigenvalues.
@@ -623,7 +628,10 @@ def SinglepointBetheSalpeterWorkflow(
     with the yambo protocol only supplying defaults.
     ``bse_parameters`` / ``eigenvalues`` / the BSE half of
     ``parallelization`` pass straight to :func:`RunBetheSalpeter`; every other
-    argument passes straight to ``SinglepointDFPTWorkflow``.
+    argument passes straight to ``SinglepointDFPTWorkflow`` -- including
+    ``eps_inf``, ``l_vcut``, ``group_orbitals_tol`` and ``kcw_overrides``,
+    which see no use here and reach the DFPT chain unchanged (see
+    ``SinglepointDFPTWorkflow`` for what each does).
     """
     if set(manifolds) != {"none"}:
         raise NotImplementedError(
@@ -647,6 +655,10 @@ def SinglepointBetheSalpeterWorkflow(
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=overrides,
+        eps_inf=eps_inf,
+        l_vcut=l_vcut,
+        group_orbitals_tol=group_orbitals_tol,
+        kcw_overrides=kcw_overrides,
         parallelization=parallelization,
         metadata={"call_link_label": "dfpt", "label": "Koopmans DFPT"},
     )

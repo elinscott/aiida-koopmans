@@ -676,3 +676,60 @@ class TestSinglepointBetheSalpeterWorkflow:
 
         rebuilt = WorkGraph.from_dict(wg.to_dict())
         assert {t.name for t in rebuilt.tasks} == {t.name for t in wg.tasks}
+
+    def test_dfpt_knobs_reach_the_nested_dfpt_call(
+        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
+    ):
+        """The DFPT knobs reach the nested DFPT call's own input sockets.
+
+        ``dfpt`` is a nested ``@task.graph`` call here, not a ``.build()``
+        call: it shows up as a single task node whose own input sockets
+        carry exactly the values this graph passed, without
+        ``SinglepointDFPTWorkflow``'s own body running -- so this checks
+        wiring, not the DFPT chain's own handling of each knob (already
+        covered by ``test_dfpt_workgraph.py``).
+        """
+        kcw_overrides = {"screen": {"tr2": 1.0e-16}}
+        wg = SinglepointBetheSalpeterWorkflow.build(
+            codes=bse_full_codes,
+            structure=silicon_structure,
+            manifolds=_manifolds(),
+            kpoints=kmesh,
+            bse_parameters=bse_parameters,
+            pseudo_family=fake_cutoffs_family.label,
+            overrides=_cutoff_overrides(),
+            eps_inf=5.3,
+            l_vcut=False,
+            group_orbitals_tol=0.05,
+            kcw_overrides=kcw_overrides,
+        )
+        dfpt_task = wg.tasks["dfpt"]
+        assert dfpt_task.inputs["eps_inf"].value == pytest.approx(5.3)
+        assert dfpt_task.inputs["l_vcut"].value == False  # noqa: E712 -- TaggedValue proxy, `is` fails
+        assert dfpt_task.inputs["group_orbitals_tol"].value == pytest.approx(0.05)
+        # ``kcw_overrides`` is a namespace socket (control/wannier/screen/ham
+        # sub-sockets), not a plain value -- check the one sub-key given.
+        assert dfpt_task.inputs["kcw_overrides"]["screen"].value == kcw_overrides["screen"]
+        assert dfpt_task.inputs["kcw_overrides"]["control"].value is None
+        assert dfpt_task.inputs["kcw_overrides"]["wannier"].value is None
+        assert dfpt_task.inputs["kcw_overrides"]["ham"].value is None
+
+    def test_dfpt_knobs_default_to_none(
+        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
+    ):
+        """Omitting the DFPT knobs leaves the nested call's sockets at their own defaults."""
+        wg = SinglepointBetheSalpeterWorkflow.build(
+            codes=bse_full_codes,
+            structure=silicon_structure,
+            manifolds=_manifolds(),
+            kpoints=kmesh,
+            bse_parameters=bse_parameters,
+            pseudo_family=fake_cutoffs_family.label,
+            overrides=_cutoff_overrides(),
+        )
+        dfpt_task = wg.tasks["dfpt"]
+        assert dfpt_task.inputs["eps_inf"].value is None
+        assert dfpt_task.inputs["l_vcut"].value is None
+        assert dfpt_task.inputs["group_orbitals_tol"].value is None
+        for sub in ("control", "wannier", "screen", "ham"):
+            assert dfpt_task.inputs["kcw_overrides"][sub].value is None
