@@ -112,10 +112,11 @@ _GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
 #: ``ADDITIONAL_RETRIEVE_LIST`` -- a single path, not a list of them:
 #: ``aiida_yambo.calculations.yambo.YamboCalculation`` appends the whole
 #: settings value as one ``CalcInfo.retrieve_list`` entry rather than
-#: extending by it, so more than one path here would reach AiiDA's retrieval
-#: step as a malformed entry. ``ndb.gops`` (~3 MB) also carries a serial but
-#: is not requested: ``ndb.kindx`` (~66 KB) is enough and far cheaper to
-#: retrieve.
+#: extending by it, so a list of paths here would reach AiiDA's retrieval
+#: step as that one entry, read as a ``(remote, local, depth)`` triple
+#: instead of a list of paths. ``ndb.gops`` (~3 MB) also carries a serial
+#: but is not requested: ``ndb.kindx`` (~27 KB in a live run) is enough
+#: and far cheaper to retrieve.
 _QP_SERIAL_SOURCE_FILE = "SAVE/ndb.kindx"
 
 
@@ -311,8 +312,14 @@ def RunBetheSalpeter(
     BSE step's nscf and p2y at run time, against a fresh SAVE that the
     already-built quasiparticle database was not made from.
     ``parallelization``'s ``pw`` entry reaches every scf/nscf pw.x step (init
-    and BSE alike); its ``yambo`` entry sets both yambo steps' rank count only
-    -- yambo's own runcard carries no MPI-role split.
+    and BSE alike); its ``yambo`` entry sets both yambo steps' rank count
+    only -- this route writes no MPI-role split onto yambo's own runcard.
+    Left unset, yambo builds its own parallel structure, which can itself
+    fail to find one for a small e/h phase space (this silicon example's
+    BSE bands fail yambo's own automatic structure at four, six, and eight
+    ranks, the same rank counts a k-only ``BS_CPU``/``BS_ROLEs`` split
+    fails at); a caller-set split reaches the runcard through
+    ``parallelization``'s ``yambo`` entry (aiida-koopmans#140).
 
     ``protocol`` sets both the fresh scf/nscf/p2y's QE precision and yambo's
     own BSE protocol -- there is no reason for the two to differ here: the

@@ -208,7 +208,8 @@ class TestRunBetheSalpeterGraphBuild:
         underneath (``scf.pw``, ``yres.yambo``).
 
         The BSE task's own ``scf``/``nscf`` are deliberately left unlabeled:
-        it reruns a scf/nscf identical in kind to the init step's, and
+        with ``parent_folder`` pointing at the init step's SAVE,
+        ``YamboWorkflow`` skips them and calls only ``YamboRestart``, so
         only its own ``yres`` (the actual BSE calculation) needs a name.
         """
         wg = self._build(
@@ -346,10 +347,14 @@ class TestRunBetheSalpeterGraphBuild:
     ):
         """``parallelization['yambo']['ntasks']`` reaches both calc's resources.
 
-        Neither step's runcard gets a ``BS_CPU``/``BS_ROLEs`` split: yambo
-        distributes the BSE work over its ranks itself, and a k-only split
-        can ask for more ranks than the k-mesh has irreducible points (the
-        live failure this route hit -- 4 ranks against a 3-point mesh).
+        Neither step's runcard gets a ``BS_CPU``/``BS_ROLEs`` split: this
+        route leaves yambo to build its own parallel structure instead. A
+        stated k-only split can ask for more ranks than the k-mesh has
+        irreducible points -- the live failure this route hit, 4 ranks
+        against a 3-point mesh -- but yambo's own automatic structure can
+        fail the same run the same way; this test only checks the runcard
+        the builder emits, not whether a given rank count actually runs
+        (that needs a live yambo run to discriminate).
         """
         wg = self._build(
             bse_codes,
@@ -531,11 +536,14 @@ class TestRunBetheSalpeterGraphBuild:
         fake_cutoffs_family,
         parallelization,
     ):
-        """No rank count writes ``BS_CPU``/``BS_ROLEs``: yambo distributes the BSE work itself.
+        """No rank count writes ``BS_CPU``/``BS_ROLEs`` onto the runcard, at any tested rank.
 
-        A k-only split can ask for more ranks than the k-mesh has irreducible
-        points -- the live failure this route hit (4 ranks against a 3-point
-        mesh) -- so this route never derives a split, at any rank count.
+        This route never derives a split itself -- a stated k-only split
+        can ask for more ranks than the k-mesh has irreducible points, the
+        live failure this route hit (4 ranks against a 3-point mesh). This
+        test only checks the runcard the builder emits; whether a given
+        rank count actually runs is a live-yambo question this test cannot
+        discriminate.
         """
         wg = self._build(
             bse_codes,
