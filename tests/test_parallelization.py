@@ -16,6 +16,7 @@ from aiida_koopmans.parallelization import (
     omp_prepend_text,
     resolve_parallelization,
     validate_parallelization,
+    yambo_runcard_variables,
 )
 
 
@@ -362,3 +363,29 @@ class TestDefaultsNameTheirRanks:
 
         resources = importlib.import_module(module)._DEFAULT_CALCJOB_OPTIONS["resources"]
         assert resources == {"num_machines": 1, "num_mpiprocs_per_machine": 1}
+
+
+class TestYamboRuncardVariables:
+    """``yambo_runcard_variables`` reads the ``runcard`` entry koopmans2 serializes."""
+
+    def test_none_and_empty_return_empty(self):
+        assert yambo_runcard_variables(None) == {}
+        assert yambo_runcard_variables({}) == {}
+
+    def test_no_yambo_entry_returns_empty(self):
+        assert yambo_runcard_variables({"pw": {"ntasks": 4}}) == {}
+
+    def test_yambo_entry_without_runcard_returns_empty(self):
+        assert yambo_runcard_variables({"yambo": {"ntasks": 4}}) == {}
+
+    def test_runcard_strings_pass_through(self):
+        runcard = {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
+        assert yambo_runcard_variables({"yambo": {"ntasks": 4, "runcard": runcard}}) == runcard
+
+    def test_returns_a_copy_not_the_same_dict(self):
+        """A caller mutating the result must not mutate the parallelization mapping."""
+        runcard = {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
+        parallelization = {"yambo": {"ntasks": 4, "runcard": runcard}}
+        result = yambo_runcard_variables(parallelization)
+        result["BS_CPU"] = "mutated"
+        assert parallelization["yambo"]["runcard"]["BS_CPU"] == "2 2"

@@ -49,9 +49,14 @@ class CodeParallelization(TypedDict, total=False):
     ``metadata.options.max_wallclock_seconds``, already converted to seconds;
     ``account`` and ``queue_name`` set ``metadata.options.account`` /
     ``metadata.options.queue_name`` for a scheduler that requires them.
+    ``runcard`` is yambo-only: a mapping of yambo runcard variable name
+    (``BS_CPU``/``BS_ROLEs``, ``X_and_IO_CPU``/``X_and_IO_ROLEs``,
+    ``DIP_CPU``/``DIP_ROLEs``) to its already-serialized string value, merged
+    into the BSE step's own runcard ``variables`` (see
+    :func:`yambo_runcard_variables` and ``workgraphs/bethe_salpeter.py``).
     Every field is optional (``total=False``); an absent one means the
-    QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization`` pydantic
-    model that produces these dicts.
+    QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization`` /
+    ``YamboParallelization`` pydantic models that produce these dicts.
     """
 
     ntasks: int
@@ -61,6 +66,7 @@ class CodeParallelization(TypedDict, total=False):
     max_wallclock_seconds: int
     account: str
     queue_name: str
+    runcard: dict[str, str]
 
 
 # Per-code parallelization mapping threaded into every top-level graph: a plain
@@ -81,9 +87,10 @@ ParallelizationDict = dict[CodeName, CodeParallelization]
 # for its wann2kc / screen steps, not ham (``KCW/src/kcw_readin.f90`` rejects
 # pools for calculation='ham') — that per-step split is the ``pools`` argument
 # below, not a code-level fact. ``yambo`` takes neither ``-npool`` nor ``-pd``;
-# its own runcard has a ``BS_CPU``/``BS_ROLEs`` k/eh/t role split, but
-# aiida-koopmans leaves it unset and lets yambo distribute the ranks itself
-# (see ``workgraphs/bethe_salpeter.py``).
+# its own runcard carries per-driver role splits (``BS_CPU``/``BS_ROLEs``,
+# ``X_and_IO_CPU``/``X_and_IO_ROLEs``, ``DIP_CPU``/``DIP_ROLEs``), left unset
+# unless the caller's ``parallelization.yambo`` names one (see
+# :func:`yambo_runcard_variables` and ``workgraphs/bethe_salpeter.py``).
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 
@@ -199,6 +206,24 @@ def resolve_parallelization(
         cmdline += ["-pd", "true"]
     settings: dict[str, Any] = {"cmdline": cmdline} if cmdline else {}
     return options, settings
+
+
+def yambo_runcard_variables(parallelization: ParallelizationDict | None) -> dict[str, str]:
+    """Return yambo's ``runcard`` entry (its ``*_CPU``/``*_ROLEs`` strings), or ``{}``.
+
+    Sourced from ``parallelization["yambo"]["runcard"]`` -- the koopmans2
+    ``YamboParallelization.as_mapping`` serialization of a caller's
+    ``bethe_salpeter``/``static_screening``/``dipoles`` role split. Empty
+    when ``yambo`` has no ``parallelization`` entry or no split was named,
+    which is when yambo distributes the corresponding work over its ranks
+    itself.
+    """
+    if not parallelization:
+        return {}
+    cfg = parallelization.get("yambo")
+    if not cfg:
+        return {}
+    return dict(cfg.get("runcard") or {})
 
 
 def _merge_into_namespace(

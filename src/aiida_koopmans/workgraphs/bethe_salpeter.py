@@ -54,6 +54,7 @@ from aiida_koopmans.parallelization import (
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
     validate_parallelization,
+    yambo_runcard_variables,
 )
 from aiida_koopmans.workgraphs import name_step
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
@@ -296,23 +297,29 @@ def RunBetheSalpeter(
     yambopy's convention) and ``metadata`` (the BSE step's own scheduler
     options). ``variables['KfnQPdb']`` is this graph's own -- pointing at
     the QP database it builds -- and refused if the caller states it, as are
-    ``variables['BS_CPU']``/``['BS_ROLEs']``: both are in
-    :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry, but this
-    graph never sets either -- it leaves yambo to distribute the BSE work over
-    the ranks itself. A stated k-only split can ask for more ranks than the
-    k-mesh has irreducible points (a run against a 2x2x2 symmorphic silicon
-    mesh, three points, aborted at four ranks with "USER parallel structure
-    does not fit the current run parameters"), and no other split has been
-    validated for this route yet. The same ``arguments``/``variables`` also
-    reach the init step (minus ``KfnQPdb``), so its own nscf sees the same
+    the six MPI-role-split keys (``BS_CPU``/``BS_ROLEs``,
+    ``X_and_IO_CPU``/``X_and_IO_ROLEs``, ``DIP_CPU``/``DIP_ROLEs``): all are in
+    :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry, set (if
+    at all) only through ``parallelization``'s ``yambo`` entry. Left unset,
+    yambo distributes the corresponding work over the ranks itself. A stated
+    k-only split can ask for more ranks than the k-mesh has irreducible
+    points (a run against a 2x2x2 symmorphic silicon mesh, three points,
+    aborted at four ranks with "USER parallel structure does not fit the
+    current run parameters") -- the caller's own responsibility once a split
+    is named. The same ``arguments``/``variables`` also
+    reach the init step (minus ``KfnQPdb`` and the role-split keys, which
+    only the BSE step's own runcard carries -- the init/p2y step runs no
+    parallel driver), so its own nscf sees the same
     ``BndsRnXs`` as the BSE step's: ``YamboWorkflow.get_builder_from_protocol``
     sizes each nscf's own ``nbnd`` off the runcard's requested band range, and
     a mismatch between the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the
     BSE step's nscf and p2y at run time, against a fresh SAVE that the
     already-built quasiparticle database was not made from.
     ``parallelization``'s ``pw`` entry reaches every scf/nscf pw.x step (init
-    and BSE alike); its ``yambo`` entry sets both yambo steps' rank count only
-    -- yambo's own runcard carries no MPI-role split.
+    and BSE alike); its ``yambo`` entry sets both yambo steps' rank count, and
+    (via :func:`~aiida_koopmans.parallelization.yambo_runcard_variables`) the
+    BSE step's own ``bethe_salpeter``/``static_screening``/``dipoles`` role
+    split, when the caller names one.
 
     ``protocol`` sets both the fresh scf/nscf/p2y's QE precision and yambo's
     own BSE protocol -- there is no reason for the two to differ here: the
@@ -322,7 +329,8 @@ def RunBetheSalpeter(
 
     Raises:
         ValueError: If ``bse_parameters['variables']`` states an owned
-            ``"yambo"`` keyword (``KfnQPdb``, ``BS_CPU``, ``BS_ROLEs``).
+            ``"yambo"`` keyword (``KfnQPdb`` or one of the six role-split
+            keys).
         NotImplementedError: If ``eigenvalues`` is ``'pki'``.
     """
     validate_parallelization(parallelization)
@@ -434,7 +442,13 @@ def RunBetheSalpeter(
         metadata={"call_link_label": "generate_qp_database", "label": "QP database"},
     ).result
 
-    bse_variables = {**variables, **owned("yambo", {"KfnQPdb": "E < ./ndb.QP"})}
+    bse_variables = {
+        **variables,
+        **owned(
+            "yambo",
+            {"KfnQPdb": "E < ./ndb.QP", **yambo_runcard_variables(parallelization)},
+        ),
+    }
     bse_overrides = {
         **_pw_overrides(),
         "yres": {

@@ -21,13 +21,27 @@ def test_owned_accepts_a_declared_keyword():
 
 
 def test_yambo_roster_matches_bethe_salpeter_usage():
-    # bethe_salpeter.py forces KfnQPdb; BS_CPU/BS_ROLEs are refused from the
-    # caller too, though the route never sets either itself -- it leaves
-    # yambo to distribute the BSE work over the ranks itself. koopmans'
-    # calculator_parameters.yambo block claims the whole set for its own
-    # owned-keyword refusal (see koopmans.input_file.yambo._YAMBO_REASONS).
+    # bethe_salpeter.py forces KfnQPdb; the six MPI-role-split keys are
+    # refused from the caller too, set (if at all) only through the
+    # koopmans2 parallelization.yambo schema and merged in by
+    # yambo_runcard_variables -- the route itself never states them
+    # literally. koopmans' calculator_parameters.yambo block claims the
+    # whole set for its own owned-keyword refusal (see
+    # koopmans.input_file.yambo._YAMBO_REASONS).
     assert OWNED["yambo"] == frozenset(
-        {"KfnQPdb", "BSEQptR", "BS_CPU", "BS_ROLEs", "rim_cut", "WRbsWF", "NLCC"}
+        {
+            "KfnQPdb",
+            "BSEQptR",
+            "BS_CPU",
+            "BS_ROLEs",
+            "X_and_IO_CPU",
+            "X_and_IO_ROLEs",
+            "DIP_CPU",
+            "DIP_ROLEs",
+            "rim_cut",
+            "WRbsWF",
+            "NLCC",
+        }
     )
     assert owned("yambo", {"KfnQPdb": "E < ./ndb.QP"}) == {"KfnQPdb": "E < ./ndb.QP"}
     assert reject_owned("yambo", {"BndsRnXs": [[1, 20], ""]}) is None
