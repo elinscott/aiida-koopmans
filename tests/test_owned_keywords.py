@@ -21,9 +21,11 @@ def test_owned_accepts_a_declared_keyword():
 
 
 def test_yambo_roster_matches_bethe_salpeter_usage():
-    # bethe_salpeter.py forces KfnQPdb and, past one MPI rank, BS_CPU/BS_ROLEs;
-    # koopmans' calculator_parameters.yambo block claims the whole set for its
-    # own owned-keyword refusal (see koopmans.input_file.yambo._YAMBO_REASONS).
+    # bethe_salpeter.py forces KfnQPdb; BS_CPU/BS_ROLEs are refused from the
+    # caller too, though the route never sets either itself -- it leaves
+    # yambo to distribute the BSE work over the ranks itself. koopmans'
+    # calculator_parameters.yambo block claims the whole set for its own
+    # owned-keyword refusal (see koopmans.input_file.yambo._YAMBO_REASONS).
     assert OWNED["yambo"] == frozenset(
         {"KfnQPdb", "BSEQptR", "BS_CPU", "BS_ROLEs", "rim_cut", "WRbsWF", "NLCC"}
     )

@@ -178,8 +178,9 @@ OWNED: dict[str, frozenset[str]] = {
             # koopmans always computes an optical (momentum-transfer q = 0)
             # spectrum.
             "BSEQptR",
-            # The BSE step's own MPI role split, sized off the `yambo`
-            # parallelization entry's rank count.
+            # yambo distributes the BSE work over the ranks itself; a caller
+            # value could ask for a split the k-mesh cannot support (see
+            # bethe_salpeter.RunBetheSalpeter).
             "BS_CPU",
             "BS_ROLEs",
             # Runcard arguments the route always turns on: the random-

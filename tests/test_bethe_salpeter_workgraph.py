@@ -181,6 +181,39 @@ class TestRunBetheSalpeterGraphBuild:
         assert "generate_qp_database" in names
         assert_graph_roundtrips(wg)
 
+    def test_init_retrieves_ndb_kindx_for_the_qp_serial_number(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """The init step's settings must ask for ``ndb.kindx`` alongside ``ns.db1``.
+
+        ``YamboCalculation.prepare_for_submission`` retrieves ``ns.db1``
+        unconditionally but not ``ndb.kindx``, and
+        :func:`~aiida_koopmans.workgraphs.bethe_salpeter.generate_qp_database`
+        reads the QP database's SERIAL_NUMBER off whichever of
+        ``ndb.gops``/``ndb.kindx`` k2y finds in the staged retrieved folder --
+        so the init step must retrieve one of them explicitly, or the
+        produced ``ndb.QP`` keeps the bundled template's own serial number
+        and yambo warns of a mismatch at BSE time.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        settings = wg.tasks["yambo_init"].inputs["yres"]["yambo"]["settings"].value.get_dict()
+        assert settings["ADDITIONAL_RETRIEVE_LIST"] == "SAVE/ndb.kindx"
+
     def test_init_and_bse_carry_both_cutoffs(
         self,
         bse_codes,
@@ -249,7 +282,7 @@ class TestRunBetheSalpeterGraphBuild:
             yambo_kpoints = wg.tasks[task_name].inputs["nscf"]["kpoints"].value
             assert list(yambo_kpoints.get_kpoints_mesh()[0]) == [2, 2, 2]
 
-    def test_parallelization_sets_ranks_on_both_yambo_steps_and_bs_roles_on_bse(
+    def test_parallelization_sets_ranks_on_both_yambo_steps_without_a_role_split(
         self,
         bse_codes,
         silicon_structure,
@@ -261,9 +294,10 @@ class TestRunBetheSalpeterGraphBuild:
     ):
         """``parallelization['yambo']['ntasks']`` reaches both calc's resources.
 
-        The BSE step alone also gets a k-point-only ``BS_CPU``/``BS_ROLEs``
-        split (see :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles`) --
-        yambo_init runs with ``INITIALISE=True`` and never reads those keys.
+        Neither step's runcard gets a ``BS_CPU``/``BS_ROLEs`` split: yambo
+        distributes the BSE work over its ranks itself, and a k-only split
+        can ask for more ranks than the k-mesh has irreducible points (the
+        live failure this route hit -- 4 ranks against a 3-point mesh).
         """
         wg = self._build(
             bse_codes,
@@ -285,8 +319,8 @@ class TestRunBetheSalpeterGraphBuild:
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
         )
-        assert bse_variables["BS_CPU"] == "4 1 1"
-        assert bse_variables["BS_ROLEs"] == "k eh t"
+        assert "BS_CPU" not in bse_variables
+        assert "BS_ROLEs" not in bse_variables
 
     def test_parallelization_pw_reaches_every_scf_nscf_pw_namespace(
         self,
@@ -431,10 +465,10 @@ class TestRunBetheSalpeterGraphBuild:
 
     @pytest.mark.parametrize(
         "parallelization",
-        [None, {"yambo": {"ntasks": 1}}],
-        ids=["no-parallelization", "explicit-single-rank"],
+        [None, {"yambo": {"ntasks": 1}}, {"yambo": {"ntasks": 4}}],
+        ids=["no-parallelization", "explicit-single-rank", "multi-rank"],
     )
-    def test_single_rank_omits_bs_roles(
+    def test_bs_roles_never_set(
         self,
         bse_codes,
         silicon_structure,
@@ -445,13 +479,11 @@ class TestRunBetheSalpeterGraphBuild:
         fake_cutoffs_family,
         parallelization,
     ):
-        """A ``yambo`` entry present but at one rank must omit the MPI-role split too.
+        """No rank count writes ``BS_CPU``/``BS_ROLEs``: yambo distributes the BSE work itself.
 
-        Not just an absent ``parallelization`` altogether -- ``ntasks: 1``
-        stated explicitly takes a different path through
-        :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles` (a present but
-        falsy-after-int-cast rank count, not a missing entry) and must reach
-        the same result.
+        A k-only split can ask for more ranks than the k-mesh has irreducible
+        points -- the live failure this route hit (4 ranks against a 3-point
+        mesh) -- so this route never derives a split, at any rank count.
         """
         wg = self._build(
             bse_codes,

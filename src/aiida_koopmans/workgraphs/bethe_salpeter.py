@@ -53,7 +53,6 @@ from aiida_koopmans.parallelization import (
     ParallelizationDict,
     merge_parallelization_into_inputs,
     merge_parallelization_into_overrides,
-    resolve_parallelization,
     validate_parallelization,
 )
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeOverrides
@@ -102,6 +101,21 @@ _KS_KEY = "ks_eigenvalues_on_grid"
 #: a BSE run; the k2y BSE example script strips them from the same builder
 #: output before submission.
 _GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
+
+#: A yambo ``ndb.QP`` carries a SERIAL_NUMBER stamped from the SAVE directory
+#: it was built against (k2y's ``KcwQpDatabaseGenerator`` reads it off
+#: ``ndb.kindx``); yambo's BSE step checks it against its own SAVE and warns
+#: on a mismatch. ``YamboCalculation.prepare_for_submission`` retrieves
+#: ``ns.db1`` unconditionally but not ``ndb.kindx``, so the init step's
+#: ``settings`` must ask for it explicitly through
+#: ``ADDITIONAL_RETRIEVE_LIST`` -- a single path, not a list of them:
+#: ``aiida_yambo.calculations.yambo.YamboCalculation`` appends the whole
+#: settings value as one ``CalcInfo.retrieve_list`` entry rather than
+#: extending by it, so more than one path here would reach AiiDA's retrieval
+#: step as a malformed entry. ``ndb.gops`` (~3 MB) also carries a serial but
+#: is not requested: ``ndb.kindx`` (~66 KB) is enough and far cheaper to
+#: retrieve.
+_QP_SERIAL_SOURCE_FILE = "SAVE/ndb.kindx"
 
 
 @task.calcfunction
@@ -212,22 +226,6 @@ def _load_yambo_workflow() -> Any:
     return WorkflowFactory("yambo.yambo.yambowf")
 
 
-def _bse_mpi_roles(parallelization: ParallelizationDict | None) -> dict[str, str]:
-    """Return yambo's ``BS_CPU``/``BS_ROLEs`` for the ``yambo`` entry's rank count.
-
-    Puts every rank on the ``k`` (k-point) role, leaving ``eh``/``t``
-    unsplit -- a safe default, not a tuned one; no BSE run has yet
-    benchmarked a split for this route. A missing or single-rank
-    ``yambo`` entry omits both keys, so yambo runs its own single-rank
-    default.
-    """
-    options, _ = resolve_parallelization(parallelization, "yambo")
-    ntasks = options.get("resources", {}).get("num_mpiprocs_per_machine")
-    if not ntasks or int(ntasks) <= 1:
-        return {}
-    return {"BS_CPU": f"{int(ntasks)} 1 1", "BS_ROLEs": "k eh t"}
-
-
 class BetheSalpeterOutputs(TypedDict, total=False):
     """Outputs of :func:`RunBetheSalpeter`.
 
@@ -296,21 +294,24 @@ def RunBetheSalpeter(
     ``BEnRange``, ``BEnSteps``, ``BDmRange``, each ``[value, unit]`` per
     yambopy's convention) and ``metadata`` (the BSE step's own scheduler
     options). ``variables['KfnQPdb']`` is this graph's own -- pointing at
-    the QP database it builds -- and refused if the caller states it, as is
-    ``variables['BS_CPU']``/``['BS_ROLEs']`` (this graph's own MPI-role
-    split, below): both are in
-    :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry. The same
-    ``arguments``/``variables`` also reach the init step (minus ``KfnQPdb``),
-    so its own nscf sees the same ``BndsRnXs`` as the BSE step's:
-    ``YamboWorkflow.get_builder_from_protocol`` sizes each nscf's own
-    ``nbnd`` off the runcard's requested band range, and a mismatch between
-    the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the BSE step's nscf
-    and p2y at run time, against a fresh SAVE that the already-built
-    quasiparticle database was not made from.
+    the QP database it builds -- and refused if the caller states it, as are
+    ``variables['BS_CPU']``/``['BS_ROLEs']``: both are in
+    :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry, but this
+    graph never sets either -- it leaves yambo to distribute the BSE work over
+    the ranks itself. A stated k-only split can ask for more ranks than the
+    k-mesh has irreducible points (a run against a 2x2x2 symmorphic silicon
+    mesh, three points, aborted at four ranks with "USER parallel structure
+    does not fit the current run parameters"), and no other split has been
+    validated for this route yet. The same ``arguments``/``variables`` also
+    reach the init step (minus ``KfnQPdb``), so its own nscf sees the same
+    ``BndsRnXs`` as the BSE step's: ``YamboWorkflow.get_builder_from_protocol``
+    sizes each nscf's own ``nbnd`` off the runcard's requested band range, and
+    a mismatch between the two nscf's ``nbnd`` makes ``YamboWorkflow`` redo the
+    BSE step's nscf and p2y at run time, against a fresh SAVE that the
+    already-built quasiparticle database was not made from.
     ``parallelization``'s ``pw`` entry reaches every scf/nscf pw.x step (init
-    and BSE alike); its ``yambo`` entry sets the BSE step's rank count and,
-    past one rank, a k-point-only ``BS_CPU``/``BS_ROLEs`` MPI split (see
-    :func:`_bse_mpi_roles`).
+    and BSE alike); its ``yambo`` entry sets both yambo steps' rank count only
+    -- yambo's own runcard carries no MPI-role split.
 
     ``protocol`` sets both the fresh scf/nscf/p2y's QE precision and yambo's
     own BSE protocol -- there is no reason for the two to differ here: the
@@ -406,7 +407,9 @@ def RunBetheSalpeter(
     init_data = get_dict_from_builder(init_builder)
     init_data.pop("clean_workdir", None)
     init_data["nscf"]["kpoints"] = yambo_kpoints
-    init_data["yres"]["yambo"]["settings"] = orm.Dict({"INITIALISE": True})
+    init_data["yres"]["yambo"]["settings"] = orm.Dict(
+        {"INITIALISE": True, "ADDITIONAL_RETRIEVE_LIST": _QP_SERIAL_SOURCE_FILE}
+    )
     merge_parallelization_into_inputs(init_data["yres"]["yambo"], parallelization, "yambo")
     init_data.setdefault("metadata", {})["call_link_label"] = "yambo_init"
     init = yambo_step(**init_data)
@@ -455,7 +458,6 @@ def RunBetheSalpeter(
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
     for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
         bse_params_dict["variables"].pop(gw_only_key, None)
-    bse_params_dict["variables"].update(owned("yambo", _bse_mpi_roles(parallelization)))
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")
