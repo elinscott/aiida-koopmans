@@ -220,9 +220,16 @@ aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = 
 # k2y is not on PyPI; pin the commit that expands QP_kpts to the full BZ
 # (see workgraphs/bethe_salpeter.py), now squashed onto k2y's own main.
 k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a2abcf5d0b39f3a384" }
-# aiida-yambo is not on PyPI either; pin mikibonacci's fork at the commit
-# workgraphs/bethe_salpeter.py's RunBetheSalpeter was built and tested against.
-aiida-yambo = { git = "https://github.com/mikibonacci/aiida-yambo", rev = "a95794c55802d174207c69e957aaf958040342ee" }
+# aiida-yambo is not on PyPI either; pin our fork's fix for the
+# _handle_parallelism_error/_handle_memory_error/fix_memory KeyError that
+# hits any multi-rank job whose caller never sets num_cores_per_mpiproc
+# (an optional NodeNumberJobResource field, not specific to one scheduler).
+# This rev also swaps the fork's own yambopy dependency from a git branch
+# to the equivalent PyPI release, so it no longer overrides the
+# yambopy>=0.7.1 pin above with a git source. Branched off mikibonacci's
+# new_cleanup at the commit workgraphs/bethe_salpeter.py's RunBetheSalpeter
+# was built and tested against.
+aiida-yambo = { git = "https://github.com/elinscott/aiida-yambo", rev = "79385a335481d2f3a83e29cc0c3572019648a78e" }
 
 [tool.hatch.envs.docs]
 installer = "uv"
