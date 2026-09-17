@@ -379,6 +379,52 @@ class TestRunBetheSalpeterGraphBuild:
         assert "BS_CPU" not in bse_variables
         assert "BS_ROLEs" not in bse_variables
 
+    def test_parallelization_yambo_role_split_reaches_the_bse_step_only(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """A named role split lands on the BSE step's own runcard, not the init step's.
+
+        The init/p2y step runs no parallel driver -- only the BSE step's
+        ``yres.yambo.parameters.variables`` carries the ``*_CPU``/``*_ROLEs``
+        strings :func:`~aiida_koopmans.parallelization.yambo_runcard_variables`
+        builds from ``parallelization['yambo']['bethe_salpeter']`` (a
+        role-name -> rank-count mapping).
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+            parallelization={
+                "yambo": {
+                    "ntasks": 4,
+                    "bethe_salpeter": {"k": 2, "eh": 2},
+                }
+            },
+        )
+        bse_variables = (
+            wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
+        )
+        assert bse_variables["BS_CPU"] == "2 2"
+        assert bse_variables["BS_ROLEs"] == "k eh"
+        init_variables = (
+            wg.tasks["yambo_init"]
+            .inputs["yres"]["yambo"]["parameters"]
+            .value.get_dict()["variables"]
+        )
+        assert "BS_CPU" not in init_variables
+        assert "BS_ROLEs" not in init_variables
+
     def test_parallelization_pw_reaches_every_scf_nscf_pw_namespace(
         self,
         bse_codes,

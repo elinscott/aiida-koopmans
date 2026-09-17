@@ -178,11 +178,16 @@ OWNED: dict[str, frozenset[str]] = {
             # koopmans always computes an optical (momentum-transfer q = 0)
             # spectrum.
             "BSEQptR",
-            # yambo distributes the BSE work over the ranks itself; a caller
-            # value could ask for a split the k-mesh cannot support (see
-            # bethe_salpeter.RunBetheSalpeter).
+            # Each driver's MPI role split is set through the koopmans2
+            # `parallelization.yambo` schema (`bethe_salpeter` /
+            # `static_screening` / `dipoles`), not this runcard block
+            # directly -- see aiida_koopmans.parallelization.yambo_runcard_variables.
             "BS_CPU",
             "BS_ROLEs",
+            "X_and_IO_CPU",
+            "X_and_IO_ROLEs",
+            "DIP_CPU",
+            "DIP_ROLEs",
             # Runcard arguments the route always turns on: the random-
             # integration-method Coulomb-divergence treatment, needed for any
             # periodic BSE; writing the excitonic wavefunctions the
