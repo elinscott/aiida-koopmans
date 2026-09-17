@@ -72,9 +72,9 @@ def _run_check(*, bands=None, init_parameters=None, nscf_output_parameters=None)
 class TestCheckWannierInitialization:
     def test_consistent_run_returns_report(self, aiida_profile):
         # CP gap 2.03 eV vs PW gap 2.0 eV: within the 2% (0.04 eV) window.
-        report = _run_check()["report"]
-        assert report["pw_gap"] == pytest.approx(2.0)
-        assert report["cp_gap"] == pytest.approx(2.03)
+        result = _run_check()
+        assert result["pw_gap"] == pytest.approx(2.0)
+        assert result["cp_gap"] == pytest.approx(2.03)
 
     def test_a_non_fixed_occupation_scheme_is_refused(self, aiida_profile):
         """Negative control: the PW HOMO the check relies on needs a fixed occupation."""
@@ -92,10 +92,8 @@ class TestCheckWannierInitialization:
             _run_check(init_parameters=_init_parameters(energies=(-100.1, -100.0)))
 
     def test_tiny_energy_drift_passes(self, aiida_profile):
-        report = _run_check(init_parameters=_init_parameters(energies=(-100.00000001, -100.0)))[
-            "report"
-        ]
-        assert report["final_energy"] == pytest.approx(-100.0)
+        result = _run_check(init_parameters=_init_parameters(energies=(-100.00000001, -100.0)))
+        assert result["final_energy"] == pytest.approx(-100.0)
 
     def test_missing_occupations_raises(self, aiida_profile):
         from aiida.orm import BandsData
@@ -120,8 +118,7 @@ class TestCheckWannierInitialization:
             eigenvalues=[[[-2.0, -1.0, 1.5]], [[-2.5, -1.2, 1.0]]],
             occupations=[[[1.0, 1.0, 0.0]], [[1.0, 1.0, 0.0]]],
         )
-        report = _run_check(bands=bands)["report"]
-        assert report["pw_gap"] == pytest.approx(2.0)
+        assert _run_check(bands=bands)["pw_gap"] == pytest.approx(2.0)
 
     def test_wrong_rank_raises(self, aiida_profile):
         from aiida.orm import BandsData

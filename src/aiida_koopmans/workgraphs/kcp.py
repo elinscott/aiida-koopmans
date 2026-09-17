@@ -1318,7 +1318,7 @@ def KoopmansDSCFWorkflow(
     # The shift from kcp.x's absolute energy scale to pw.x's, which the
     # interpolated band structure adds to its eigenvalues; only the
     # Wannier route's initialization check computes it.
-    pw_scale_offset = None
+    pw_scale_offset = 0.0
     # The same blocks Wannierized on the denser mesh, when the
     # smooth-interpolation correction was asked for.
     smooth_block_wannierizations = None
@@ -1764,7 +1764,7 @@ def _interpolate_bands(
     use_ws_distance: bool,
     do_dos: bool,
     plotting: dict | None,
-    offset: float | None = None,
+    offset: float = 0.0,
 ) -> DscfBandStructureOutputs:
     """Run the unfold-and-interpolate stage and return its outputs.
 

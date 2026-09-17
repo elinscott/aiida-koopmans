@@ -226,7 +226,7 @@ class TestManifoldFanOut:
 
 
 class TestOffsetWiring:
-    """A supplied ``offset`` reaches the merge task; omitting it does not."""
+    """The ``offset`` graph input reaches the merge task, defaulting to 0.0."""
 
     @staticmethod
     def _build(silicon_structure, **overrides):
@@ -252,11 +252,14 @@ class TestOffsetWiring:
         by_name = {task.name: task for task in wg.tasks}
         assert by_name["merge_manifold_energies"].inputs["offset"]._links
 
-    def test_without_an_offset_the_merge_input_is_unlinked(self, silicon_structure):
-        """Negative control: kcp.x's own scale needs no offset link at all."""
+    def test_without_an_offset_the_merge_task_gets_zero(self, silicon_structure):
+        """Negative control: no offset means kcp.x's own scale, i.e. a shift of 0.0."""
         wg = self._build(silicon_structure)
+        assert wg.inputs["offset"].value == 0.0
         by_name = {task.name: task for task in wg.tasks}
-        assert not by_name["merge_manifold_energies"].inputs["offset"]._links
+        links = by_name["merge_manifold_energies"].inputs["offset"]._links
+        assert len(links) == 1
+        assert links[0].from_socket._name == "offset"
 
     def test_the_graph_survives_a_dict_round_trip(self, silicon_structure):
         from tests.fixtures import assert_graph_roundtrips

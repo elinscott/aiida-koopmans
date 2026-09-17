@@ -97,8 +97,10 @@ class MlwfInitializationOutputs(TypedDict):
     * ``evc_occupied1`` / ``evc_occupied2`` — the folded occupied-manifold
       wavefunctions (merge_evc.x ``merged_file`` outputs) the trial KI
       stages into its read ``K00001``.
-    * ``report`` — the consistency-check numbers (PW/CP gaps and the
-      initial/final kcp.x energies).
+    * ``pw_gap`` / ``cp_gap`` — the pw.x nscf and kcp.x ``dft_init`` band
+      gaps the consistency check compared, in eV.
+    * ``initial_energy`` / ``final_energy`` — the kcp.x ``dft_init`` total
+      energy at its first CG step and at convergence, in eV.
     * ``nscf_remote_folder`` — the shared primitive-cell nscf scratch every
       block was Wannierised off; the ``parent_folder`` a downstream
       pw2wannier90 ``wan_mode='decompose'`` pass reads.
@@ -122,7 +124,10 @@ class MlwfInitializationOutputs(TypedDict):
     remote_folder: orm.RemoteData
     evc_occupied1: orm.SinglefileData
     evc_occupied2: orm.SinglefileData
-    report: dict
+    pw_gap: float
+    cp_gap: float
+    initial_energy: float
+    final_energy: float
     nscf_remote_folder: orm.RemoteData
     scf_remote_folder: orm.RemoteData
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
@@ -149,7 +154,10 @@ def emit_merge_groups(merge_groups: list) -> list:
     ]
 
 
-@task(deserializers=_BANDS_DESERIALIZERS, outputs=["report", "offset"])
+@task(
+    deserializers=_BANDS_DESERIALIZERS,
+    outputs=["pw_gap", "cp_gap", "initial_energy", "final_energy", "offset"],
+)
 def check_wannier_initialization(
     *,
     nscf_output_parameters: dict,
@@ -179,7 +187,8 @@ def check_wannier_initialization(
     channels, the same cross-channel pair kcp.x prints as its
     ``homo_energy`` / ``lumo_energy`` (MAX / MIN over the two channels in
     ``electrons.f90``). Any other rank is refused. Raises ``ValueError``
-    on violation; returns the compared numbers plus ``offset`` otherwise.
+    on violation; returns the compared numbers and ``offset`` otherwise,
+    each as its own output.
 
     ``offset`` is the shift from kcp.x's absolute energy scale to pw.x's:
     the PW HOMO computed above minus kcp.x's own ``homo_energy``.
@@ -244,12 +253,10 @@ def check_wannier_initialization(
         )
 
     return {
-        "report": {
-            "pw_gap": pw_gap,
-            "cp_gap": cp_gap,
-            "initial_energy": initial_energy,
-            "final_energy": final_energy,
-        },
+        "pw_gap": pw_gap,
+        "cp_gap": cp_gap,
+        "initial_energy": initial_energy,
+        "final_energy": final_energy,
         "offset": pw_homo - cp_homo,
     }
 
@@ -455,7 +462,10 @@ def MlwfInitialization(
         remote_folder=dft_init["remote_folder"],
         evc_occupied1=fold["evc_occupied1"],
         evc_occupied2=fold["evc_occupied2"],
-        report=check["report"],
+        pw_gap=check["pw_gap"],
+        cp_gap=check["cp_gap"],
+        initial_energy=check["initial_energy"],
+        final_energy=check["final_energy"],
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
         scf_remote_folder=wannierize["scf_remote_folder"],
         block_wannierizations=wannierize["blocks"],
