@@ -225,14 +225,14 @@ class TestRunBetheSalpeterGraphBuild:
         assert init["metadata"]["label"].value == "Yambo initialization"
         assert init["scf"]["metadata"]["label"].value == "SCF"
         assert init["nscf"]["metadata"]["label"].value == "NSCF"
-        assert init["yres"]["metadata"]["label"].value == "p2y + setup"
+        assert init["yres"]["metadata"]["label"].value == "Build yambo database"
 
         bse = wg.tasks["bse"].inputs
         assert bse["metadata"]["label"].value == "BSE"
         assert bse["yres"]["metadata"]["label"].value == "BSE"
 
         qp_database = wg.tasks["generate_qp_database"].inputs
-        assert qp_database["metadata"]["label"].value == "QP database"
+        assert qp_database["metadata"]["label"].value == "Quasiparticle database"
 
     def test_init_retrieves_ndb_kindx_for_the_qp_serial_number(
         self,
