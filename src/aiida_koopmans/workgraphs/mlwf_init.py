@@ -154,16 +154,31 @@ def emit_merge_groups(merge_groups: list) -> list:
     ]
 
 
-@task(
-    deserializers=_BANDS_DESERIALIZERS,
-    outputs=["pw_gap", "cp_gap", "initial_energy", "final_energy", "offset"],
-)
+class WannierInitializationCheckOutputs(TypedDict):
+    """Outputs of :func:`check_wannier_initialization`, all in eV.
+
+    * ``pw_gap`` / ``cp_gap`` — the pw.x nscf and kcp.x ``dft_init`` band
+      gaps the check compared.
+    * ``initial_energy`` / ``final_energy`` — the kcp.x ``dft_init`` total
+      energy at its first CG step and at convergence.
+    * ``offset`` — the shift from kcp.x's absolute energy scale to pw.x's:
+      the PW HOMO minus kcp.x's own ``homo_energy``.
+    """
+
+    pw_gap: float
+    cp_gap: float
+    initial_energy: float
+    final_energy: float
+    offset: float
+
+
+@task(deserializers=_BANDS_DESERIALIZERS)
 def check_wannier_initialization(
     *,
     nscf_output_parameters: dict,
     nscf_bands: orm.BandsData,
     init_output_parameters: dict,
-) -> dict:
+) -> WannierInitializationCheckOutputs:
     """Check the Wannier-seeded ``dft_init`` against the PW reference.
 
     Three guards, all fatal:
@@ -187,8 +202,8 @@ def check_wannier_initialization(
     channels, the same cross-channel pair kcp.x prints as its
     ``homo_energy`` / ``lumo_energy`` (MAX / MIN over the two channels in
     ``electrons.f90``). Any other rank is refused. Raises ``ValueError``
-    on violation; returns the compared numbers and ``offset`` otherwise,
-    each as its own output.
+    on violation; returns :class:`WannierInitializationCheckOutputs`
+    otherwise.
 
     ``offset`` is the shift from kcp.x's absolute energy scale to pw.x's:
     the PW HOMO computed above minus kcp.x's own ``homo_energy``.
@@ -252,13 +267,13 @@ def check_wannier_initialization(
             f"{initial_energy} {final_energy}"
         )
 
-    return {
-        "pw_gap": pw_gap,
-        "cp_gap": cp_gap,
-        "initial_energy": initial_energy,
-        "final_energy": final_energy,
-        "offset": pw_homo - cp_homo,
-    }
+    return WannierInitializationCheckOutputs(
+        pw_gap=pw_gap,
+        cp_gap=cp_gap,
+        initial_energy=initial_energy,
+        final_energy=final_energy,
+        offset=pw_homo - cp_homo,
+    )
 
 
 def _build_dft_dummy_parameters(base) -> dict[str, Any]:
