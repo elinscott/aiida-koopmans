@@ -291,6 +291,65 @@ class TestGenerateQpDatabase:
             assert np.all(np.abs(qp_e) < 3.0)
 
 
+class TestQpDatabaseSerialNumber:
+    """``ndb.QP``'s SERIAL_NUMBER must match the SAVE directory it targets.
+
+    yambo's BSE step checks a QP database's SERIAL_NUMBER against its own
+    SAVE and warns on a mismatch (accepted, warn-only, per
+    ``io_header.F``, but still a defect worth catching at construction
+    time): k2y's ``KcwQpDatabaseGenerator.generate_mappings`` injects the
+    serial from whichever of ``ndb.gops``/``ndb.kindx`` it finds beside
+    ``ns.db1`` in the staged SAVE directory, falling back to the bundled
+    template's own serial -- silently -- when neither is present.
+    """
+
+    def test_present_kindx_serial_reaches_the_qp_database(
+        self,
+        aiida_profile,
+        yambo_save,
+        synthetic_ham_output_parameters,
+        synthetic_nscf_output_band,
+    ):
+        """``yambo_save`` carries ``ndb.kindx`` -- the produced serial must match it."""
+        with netCDF4.Dataset(DATA_DIR / "ndb.kindx") as ds:
+            kindx_serial = np.asarray(ds.variables["SERIAL_NUMBER"][:])
+
+        produced = generate_qp_database._callable(
+            yambo_save=yambo_save,
+            ham_output_parameters=synthetic_ham_output_parameters,
+            nscf_output_band=synthetic_nscf_output_band,
+            eigenvalues=orm.Str("ki"),
+        )
+        with netCDF4.Dataset("in-memory", memory=produced.get_content(mode="rb")) as ds:
+            produced_serial = np.asarray(ds.variables["SERIAL_NUMBER"][:])
+        assert np.array_equal(produced_serial, kindx_serial)
+
+    def test_missing_kindx_and_gops_keeps_the_template_serial(
+        self,
+        aiida_profile,
+        synthetic_ham_output_parameters,
+        synthetic_nscf_output_band,
+    ):
+        """Neither ``ndb.gops`` nor ``ndb.kindx`` present: the bundled template serial survives.
+
+        k2y logs no warning for this fallback (see the class docstring) --
+        this test documents the silent behavior, not a defect this PR fixes.
+        """
+        ns_db1_only = _folder_with(["ns.db1"]).store()
+        with netCDF4.Dataset(str(KcwQpDatabaseGenerator.get_templateQP_filepath())) as ds:
+            template_serial = np.asarray(ds.variables["SERIAL_NUMBER"][:])
+
+        produced = generate_qp_database._callable(
+            yambo_save=ns_db1_only,
+            ham_output_parameters=synthetic_ham_output_parameters,
+            nscf_output_band=synthetic_nscf_output_band,
+            eigenvalues=orm.Str("ki"),
+        )
+        with netCDF4.Dataset("in-memory", memory=produced.get_content(mode="rb")) as ds:
+            produced_serial = np.asarray(ds.variables["SERIAL_NUMBER"][:])
+        assert np.array_equal(produced_serial, template_serial)
+
+
 def test_ham_output_parameters_has_the_expected_shape(aiida_profile, ham_output_parameters):
     """Dict-shape contract check for the real ``bse_si`` kcw.x ``ham`` fixture.
 

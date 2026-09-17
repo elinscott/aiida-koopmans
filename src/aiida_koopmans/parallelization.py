@@ -80,9 +80,10 @@ ParallelizationDict = dict[CodeName, CodeParallelization]
 # flags at all, and wannier90 has no pool/pd concept. ``kcw`` accepts pools only
 # for its wann2kc / screen steps, not ham (``KCW/src/kcw_readin.f90`` rejects
 # pools for calculation='ham') — that per-step split is the ``pools`` argument
-# below, not a code-level fact. ``yambo`` parallelizes over its own
-# k/eh/t roles (``BS_CPU``/``BS_ROLEs`` runcard variables), not ``-npool``/
-# ``-pd``, so it carries no pool or pd support here.
+# below, not a code-level fact. ``yambo`` takes neither ``-npool`` nor ``-pd``;
+# its own runcard has a ``BS_CPU``/``BS_ROLEs`` k/eh/t role split, but
+# aiida-koopmans leaves it unset and lets yambo distribute the ranks itself
+# (see ``workgraphs/bethe_salpeter.py``).
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 

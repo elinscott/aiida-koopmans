@@ -181,6 +181,92 @@ class TestRunBetheSalpeterGraphBuild:
         assert "generate_qp_database" in names
         assert_graph_roundtrips(wg)
 
+    def test_steps_are_named_for_the_progress_table(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """Every BSE step carries a display name, not the raw class name it would default to.
+
+        ``generate_qp_database`` is named at the task level only (it has no
+        nested scf/nscf/yres namespace). The init and BSE ``YamboWorkflow``
+        tasks are each named at the task level (what the top-level graph
+        row shows) and again on their own ``scf``/``nscf``/``yres``
+        namespaces: ``YamboWorkflow`` submits those through
+        ``exposed_inputs``, which carries the namespace's own ``metadata``
+        through to the child ``PwBaseWorkChain``/``YamboRestart`` -- the
+        same channel ``parallelization`` already reaches ``scf.pw``
+        through (see ``test_parallelization_pw_reaches_every_scf_nscf_pw_namespace``).
+        koopmans2's progress table collapses a container holding one leaf
+        calculation into a single row named by the container, so the label
+        belongs on ``scf``/``nscf``/``yres`` themselves, not on the calc
+        underneath (``scf.pw``, ``yres.yambo``).
+
+        The BSE task's own ``scf``/``nscf`` are deliberately left unlabeled:
+        with ``parent_folder`` pointing at the init step's SAVE,
+        ``YamboWorkflow`` skips them and calls only ``YamboRestart``, so
+        only its own ``yres`` (the actual BSE calculation) needs a name.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        init = wg.tasks["yambo_init"].inputs
+        assert init["metadata"]["label"].value == "Yambo initialization"
+        assert init["scf"]["metadata"]["label"].value == "SCF"
+        assert init["nscf"]["metadata"]["label"].value == "NSCF"
+        assert init["yres"]["metadata"]["label"].value == "Build yambo database"
+
+        bse = wg.tasks["bse"].inputs
+        assert bse["metadata"]["label"].value == "BSE"
+        assert bse["yres"]["metadata"]["label"].value == "BSE"
+
+        qp_database = wg.tasks["generate_qp_database"].inputs
+        assert qp_database["metadata"]["label"].value == "Quasiparticle database"
+
+    def test_init_retrieves_ndb_kindx_for_the_qp_serial_number(
+        self,
+        bse_codes,
+        silicon_structure,
+        kmesh,
+        nscf_output_band,
+        ham_output_parameters,
+        bse_parameters,
+        fake_cutoffs_family,
+    ):
+        """The init step's settings must ask for ``ndb.kindx`` alongside ``ns.db1``.
+
+        ``YamboCalculation.prepare_for_submission`` retrieves ``ns.db1``
+        unconditionally but not ``ndb.kindx``, and
+        :func:`~aiida_koopmans.workgraphs.bethe_salpeter.generate_qp_database`
+        reads the QP database's SERIAL_NUMBER off whichever of
+        ``ndb.gops``/``ndb.kindx`` k2y finds in the staged retrieved folder --
+        so the init step must retrieve one of them explicitly, or the
+        produced ``ndb.QP`` keeps the bundled template's own serial number
+        and yambo warns of a mismatch at BSE time.
+        """
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            bse_parameters,
+            fake_cutoffs_family,
+        )
+        settings = wg.tasks["yambo_init"].inputs["yres"]["yambo"]["settings"].value.get_dict()
+        assert settings["ADDITIONAL_RETRIEVE_LIST"] == "SAVE/ndb.kindx"
+
     def test_init_and_bse_carry_both_cutoffs(
         self,
         bse_codes,
@@ -249,7 +335,7 @@ class TestRunBetheSalpeterGraphBuild:
             yambo_kpoints = wg.tasks[task_name].inputs["nscf"]["kpoints"].value
             assert list(yambo_kpoints.get_kpoints_mesh()[0]) == [2, 2, 2]
 
-    def test_parallelization_sets_ranks_on_both_yambo_steps_and_bs_roles_on_bse(
+    def test_parallelization_sets_ranks_on_both_yambo_steps_without_a_role_split(
         self,
         bse_codes,
         silicon_structure,
@@ -261,9 +347,14 @@ class TestRunBetheSalpeterGraphBuild:
     ):
         """``parallelization['yambo']['ntasks']`` reaches both calc's resources.
 
-        The BSE step alone also gets a k-point-only ``BS_CPU``/``BS_ROLEs``
-        split (see :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles`) --
-        yambo_init runs with ``INITIALISE=True`` and never reads those keys.
+        Neither step's runcard gets a ``BS_CPU``/``BS_ROLEs`` split: this
+        route leaves yambo to build its own parallel structure instead. A
+        stated k-only split can ask for more ranks than the k-mesh has
+        irreducible points -- the live failure this route hit, 4 ranks
+        against a 3-point mesh -- but yambo's own automatic structure can
+        fail the same run the same way; this test only checks the runcard
+        the builder emits, not whether a given rank count actually runs
+        (that needs a live yambo run to discriminate).
         """
         wg = self._build(
             bse_codes,
@@ -285,8 +376,8 @@ class TestRunBetheSalpeterGraphBuild:
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
         )
-        assert bse_variables["BS_CPU"] == "4 1 1"
-        assert bse_variables["BS_ROLEs"] == "k eh t"
+        assert "BS_CPU" not in bse_variables
+        assert "BS_ROLEs" not in bse_variables
 
     def test_parallelization_pw_reaches_every_scf_nscf_pw_namespace(
         self,
@@ -431,10 +522,10 @@ class TestRunBetheSalpeterGraphBuild:
 
     @pytest.mark.parametrize(
         "parallelization",
-        [None, {"yambo": {"ntasks": 1}}],
-        ids=["no-parallelization", "explicit-single-rank"],
+        [None, {"yambo": {"ntasks": 1}}, {"yambo": {"ntasks": 4}}],
+        ids=["no-parallelization", "explicit-single-rank", "multi-rank"],
     )
-    def test_single_rank_omits_bs_roles(
+    def test_bs_roles_never_set(
         self,
         bse_codes,
         silicon_structure,
@@ -445,13 +536,14 @@ class TestRunBetheSalpeterGraphBuild:
         fake_cutoffs_family,
         parallelization,
     ):
-        """A ``yambo`` entry present but at one rank must omit the MPI-role split too.
+        """No rank count writes ``BS_CPU``/``BS_ROLEs`` onto the runcard, at any tested rank.
 
-        Not just an absent ``parallelization`` altogether -- ``ntasks: 1``
-        stated explicitly takes a different path through
-        :func:`~aiida_koopmans.workgraphs.bethe_salpeter._bse_mpi_roles` (a present but
-        falsy-after-int-cast rank count, not a missing entry) and must reach
-        the same result.
+        This route never derives a split itself -- a stated k-only split
+        can ask for more ranks than the k-mesh has irreducible points, the
+        live failure this route hit (4 ranks against a 3-point mesh). This
+        test only checks the runcard the builder emits; whether a given
+        rank count actually runs is a live-yambo question this test cannot
+        discriminate.
         """
         wg = self._build(
             bse_codes,
