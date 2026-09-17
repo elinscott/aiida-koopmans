@@ -275,6 +275,14 @@ class TestMlwfInitializationGraphBuild:
         ):
             assert expected in names, names
 
+        # The graph's `pw_scale_offset` output is the check's own `offset`
+        # socket: any other source (a literal, another socket) would let a
+        # zero or mistyped offset reach the band interpolation unnoticed.
+        links = wg.outputs["pw_scale_offset"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "consistency_check"
+        assert links[0].from_socket._name == "offset"
+
         # `wg.run()` reconstructs the graph from its serialized form before
         # executing; the nested WannierizeBlocks wiring must survive that.
         from tests.fixtures import assert_graph_roundtrips
