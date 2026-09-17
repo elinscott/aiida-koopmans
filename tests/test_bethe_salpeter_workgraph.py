@@ -379,7 +379,7 @@ class TestRunBetheSalpeterGraphBuild:
         assert "BS_CPU" not in bse_variables
         assert "BS_ROLEs" not in bse_variables
 
-    def test_parallelization_yambo_runcard_reaches_the_bse_step_only(
+    def test_parallelization_yambo_role_split_reaches_the_bse_step_only(
         self,
         bse_codes,
         silicon_structure,
@@ -393,8 +393,9 @@ class TestRunBetheSalpeterGraphBuild:
 
         The init/p2y step runs no parallel driver -- only the BSE step's
         ``yres.yambo.parameters.variables`` carries the ``*_CPU``/``*_ROLEs``
-        strings ``parallelization['yambo']['runcard']`` names (the shape
-        koopmans2's ``YamboParallelization.as_mapping`` serializes).
+        strings :func:`~aiida_koopmans.parallelization.yambo_runcard_variables`
+        builds from ``parallelization['yambo']['bethe_salpeter']`` (a
+        role-name -> rank-count mapping).
         """
         wg = self._build(
             bse_codes,
@@ -407,7 +408,7 @@ class TestRunBetheSalpeterGraphBuild:
             parallelization={
                 "yambo": {
                     "ntasks": 4,
-                    "runcard": {"BS_CPU": "2 2", "BS_ROLEs": "k eh"},
+                    "bethe_salpeter": {"k": 2, "eh": 2},
                 }
             },
         )

@@ -366,7 +366,7 @@ class TestDefaultsNameTheirRanks:
 
 
 class TestYamboRuncardVariables:
-    """``yambo_runcard_variables`` reads the ``runcard`` entry koopmans2 serializes."""
+    """``yambo_runcard_variables`` builds each driver's ``*_CPU``/``*_ROLEs`` strings."""
 
     def test_none_and_empty_return_empty(self):
         assert yambo_runcard_variables(None) == {}
@@ -375,17 +375,45 @@ class TestYamboRuncardVariables:
     def test_no_yambo_entry_returns_empty(self):
         assert yambo_runcard_variables({"pw": {"ntasks": 4}}) == {}
 
-    def test_yambo_entry_without_runcard_returns_empty(self):
+    def test_yambo_entry_without_any_driver_returns_empty(self):
         assert yambo_runcard_variables({"yambo": {"ntasks": 4}}) == {}
 
-    def test_runcard_strings_pass_through(self):
-        runcard = {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
-        assert yambo_runcard_variables({"yambo": {"ntasks": 4, "runcard": runcard}}) == runcard
+    def test_one_driver_only(self):
+        result = yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 2, "eh": 2}}})
+        assert result == {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
 
-    def test_returns_a_copy_not_the_same_dict(self):
-        """A caller mutating the result must not mutate the parallelization mapping."""
-        runcard = {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
-        parallelization = {"yambo": {"ntasks": 4, "runcard": runcard}}
-        result = yambo_runcard_variables(parallelization)
-        result["BS_CPU"] = "mutated"
-        assert parallelization["yambo"]["runcard"]["BS_CPU"] == "2 2"
+    def test_role_order_in_the_caller_dict_does_not_matter(self):
+        forward = yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 2, "eh": 2}}})
+        reversed_ = yambo_runcard_variables({"yambo": {"bethe_salpeter": {"eh": 2, "k": 2}}})
+        assert forward == reversed_ == {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
+
+    def test_omitted_roles_are_left_out_of_both_strings(self):
+        result = yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 4}}})
+        assert result == {"BS_CPU": "4", "BS_ROLEs": "k"}
+
+    def test_all_three_drivers(self):
+        result = yambo_runcard_variables(
+            {
+                "yambo": {
+                    "bethe_salpeter": {"k": 2, "eh": 2},
+                    "static_screening": {"q": 1, "k": 3},
+                    "dipoles": {"c": 2, "v": 2},
+                }
+            }
+        )
+        assert result == {
+            "BS_CPU": "2 2",
+            "BS_ROLEs": "k eh",
+            "X_and_IO_CPU": "1 3",
+            "X_and_IO_ROLEs": "q k",
+            "DIP_CPU": "2 2",
+            "DIP_ROLEs": "c v",
+        }
+
+    def test_unknown_role_raises_naming_the_driver_and_valid_roles(self):
+        with pytest.raises(ValueError, match=r"bethe_salpeter.*unknown role.*'q'.*valid roles"):
+            yambo_runcard_variables({"yambo": {"bethe_salpeter": {"q": 2}}})
+
+    def test_non_positive_rank_count_raises(self):
+        with pytest.raises(ValueError, match=r"bethe_salpeter.*non-positive.*'k'"):
+            yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 0}}})

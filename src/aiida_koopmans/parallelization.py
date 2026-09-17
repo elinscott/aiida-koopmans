@@ -9,7 +9,7 @@ builds.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, Literal, TypedDict, get_args
+from typing import Any, Literal, NotRequired, TypedDict, get_args
 
 
 class ParallelizationError(ValueError):
@@ -49,14 +49,16 @@ class CodeParallelization(TypedDict, total=False):
     ``metadata.options.max_wallclock_seconds``, already converted to seconds;
     ``account`` and ``queue_name`` set ``metadata.options.account`` /
     ``metadata.options.queue_name`` for a scheduler that requires them.
-    ``runcard`` is yambo-only: a mapping of yambo runcard variable name
-    (``BS_CPU``/``BS_ROLEs``, ``X_and_IO_CPU``/``X_and_IO_ROLEs``,
-    ``DIP_CPU``/``DIP_ROLEs``) to its already-serialized string value, merged
-    into the BSE step's own runcard ``variables`` (see
-    :func:`yambo_runcard_variables` and ``workgraphs/bethe_salpeter.py``).
-    Every field is optional (``total=False``); an absent one means the
-    QE/AiiDA default. Mirrors the koopmans2 ``CodeParallelization`` /
-    ``YamboParallelization`` pydantic models that produce these dicts.
+    ``bethe_salpeter``, ``static_screening`` and ``dipoles`` are yambo-only:
+    each maps a role name to its rank count for that driver's MPI split
+    (e.g. ``{"k": 2, "eh": 2}``), merged into the BSE step's own runcard
+    ``variables`` as that driver's ``*_CPU``/``*_ROLEs`` strings (see
+    :func:`yambo_runcard_variables`, :data:`YAMBO_ROLE_DRIVERS` and
+    ``workgraphs/bethe_salpeter.py``). A driver absent here is left to
+    yambo's own automatic parallel structure. Every field is optional
+    (``total=False``); an absent one means the QE/AiiDA default. Mirrors
+    the koopmans2 ``CodeParallelization`` / ``YamboParallelization``
+    pydantic models that produce these dicts.
     """
 
     ntasks: int
@@ -66,7 +68,9 @@ class CodeParallelization(TypedDict, total=False):
     max_wallclock_seconds: int
     account: str
     queue_name: str
-    runcard: dict[str, str]
+    bethe_salpeter: NotRequired[dict[str, int]]
+    static_screening: NotRequired[dict[str, int]]
+    dipoles: NotRequired[dict[str, int]]
 
 
 # Per-code parallelization mapping threaded into every top-level graph: a plain
@@ -93,6 +97,23 @@ ParallelizationDict = dict[CodeName, CodeParallelization]
 # :func:`yambo_runcard_variables` and ``workgraphs/bethe_salpeter.py``).
 POOL_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
 PD_SUPPORTING_CODES = frozenset({"pw", "ph", "projwfc", "pw2wannier90", "kcw"})
+
+
+#: The three yambo MPI drivers :class:`CodeParallelization` exposes a role
+#: split for, each mapped to its runcard variable prefix and the fixed
+#: role order yambo's own source pairs with a driver's ``*_CPU`` rank-count
+#: list. The order fixes count-to-role *pairing* only -- roles are matched
+#: by name, not position, so a caller's dict can name them in any order and
+#: :func:`yambo_runcard_variables` still emits ``*_CPU``/``*_ROLEs`` with the
+#: set roles in this order. Source-verified against yambo 5.3:
+#: ``PARALLEL_global_Response_T.F:32`` (bethe_salpeter, k/eh/t),
+#: ``PARALLEL_global_Response_G.F:45`` (static_screening, q/g/k/c/v),
+#: ``PARALLEL_global_DIPOLES.F:42`` (dipoles, k/c/v).
+YAMBO_ROLE_DRIVERS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "bethe_salpeter": ("BS", ("k", "eh", "t")),
+    "static_screening": ("X_and_IO", ("q", "g", "k", "c", "v")),
+    "dipoles": ("DIP", ("k", "c", "v")),
+}
 
 # Exported via metadata.options.prepend_text, which aiida-core assembles last
 # so it overrides the computer-level pin of 1 (an ``environment_variables``
@@ -209,21 +230,52 @@ def resolve_parallelization(
 
 
 def yambo_runcard_variables(parallelization: ParallelizationDict | None) -> dict[str, str]:
-    """Return yambo's ``runcard`` entry (its ``*_CPU``/``*_ROLEs`` strings), or ``{}``.
+    """Return yambo's per-driver ``*_CPU``/``*_ROLEs`` runcard strings, or ``{}``.
 
-    Sourced from ``parallelization["yambo"]["runcard"]`` -- the koopmans2
-    ``YamboParallelization.as_mapping`` serialization of a caller's
-    ``bethe_salpeter``/``static_screening``/``dipoles`` role split. Empty
-    when ``yambo`` has no ``parallelization`` entry or no split was named,
-    which is when yambo distributes the corresponding work over its ranks
-    itself.
+    Reads ``parallelization["yambo"]``'s ``bethe_salpeter``/``static_screening``/
+    ``dipoles`` entries (each a role-name -> rank-count mapping) and, for
+    each present, emits that driver's ``{prefix}_CPU`` (the set roles' rank
+    counts, space-joined) and ``{prefix}_ROLEs`` (the set roles' names,
+    space-joined), both in :data:`YAMBO_ROLE_DRIVERS`' fixed role order --
+    a role's position in the caller's dict does not matter, only its name.
+    An unset role is omitted from both strings. A driver absent from the
+    entry contributes nothing, which is when yambo distributes that work
+    over its own ranks itself.
+
+    Raises:
+        ValueError: If a driver's mapping names a role
+            :data:`YAMBO_ROLE_DRIVERS` does not list for it, or gives a
+            role a non-positive rank count.
     """
     if not parallelization:
         return {}
-    cfg = parallelization.get("yambo")
-    if not cfg:
+    cfg_entry = parallelization.get("yambo")
+    if not cfg_entry:
         return {}
-    return dict(cfg.get("runcard") or {})
+    # Rebuild into a plain dict, same as resolve_parallelization: a
+    # non-literal key lookup on a TypedDict otherwise types as object.
+    cfg: dict[str, Any] = dict(cfg_entry)
+    variables: dict[str, str] = {}
+    for driver, (prefix, role_order) in YAMBO_ROLE_DRIVERS.items():
+        roles = cfg.get(driver)
+        if not roles:
+            continue
+        unknown = sorted(set(roles) - set(role_order))
+        if unknown:
+            raise ValueError(
+                f"parallelization.yambo.{driver} names unknown role(s) {unknown}; "
+                f"valid roles for {driver!r} are {list(role_order)}."
+            )
+        non_positive = sorted(role for role, count in roles.items() if int(count) <= 0)
+        if non_positive:
+            raise ValueError(
+                f"parallelization.yambo.{driver} gives non-positive rank count(s) to "
+                f"role(s) {non_positive}; every named role needs a positive rank count."
+            )
+        set_roles = [role for role in role_order if role in roles]
+        variables[f"{prefix}_CPU"] = " ".join(str(int(roles[role])) for role in set_roles)
+        variables[f"{prefix}_ROLEs"] = " ".join(set_roles)
+    return variables
 
 
 def _merge_into_namespace(
