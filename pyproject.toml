@@ -229,7 +229,7 @@ k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a
 # yambopy>=0.7.1 pin above with a git source. Branched off mikibonacci's
 # new_cleanup at the commit workgraphs/bethe_salpeter.py's RunBetheSalpeter
 # was built and tested against.
-aiida-yambo = { git = "https://github.com/elinscott/aiida-yambo", rev = "f42ad678d97b2f8f3060e1ccede2381b7425636d" }
+aiida-yambo = { git = "https://github.com/elinscott/aiida-yambo", rev = "79385a335481d2f3a83e29cc0c3572019648a78e" }
 
 [tool.hatch.envs.docs]
 installer = "uv"
