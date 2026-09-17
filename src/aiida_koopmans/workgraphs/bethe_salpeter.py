@@ -433,7 +433,7 @@ def RunBetheSalpeter(
     # workgraphs/wannier90.py.
     name_step(init_data["scf"], "SCF")
     name_step(init_data["nscf"], "NSCF")
-    name_step(init_data["yres"], "p2y + setup")
+    name_step(init_data["yres"], "Build yambo database")
     init_data.setdefault("metadata", {})["call_link_label"] = "yambo_init"
     init_data["metadata"]["label"] = "Yambo initialization"
     init = yambo_step(**init_data)
@@ -444,7 +444,7 @@ def RunBetheSalpeter(
         ham_output_parameters=ham_params,
         nscf_output_band=nscf_output_band,
         eigenvalues=eigenvalues,
-        metadata={"call_link_label": "generate_qp_database", "label": "QP database"},
+        metadata={"call_link_label": "generate_qp_database", "label": "Quasiparticle database"},
     ).result
 
     bse_variables = {
