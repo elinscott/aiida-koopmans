@@ -114,7 +114,7 @@ requires-dist = [
     { name = "aiida-workgraph", editable = "../aiida-workgraph" },
     { name = "aiida-yambo", git = "https://github.com/elinscott/aiida-yambo?rev=79385a335481d2f3a83e29cc0c3572019648a78e" },
     { name = "furo", marker = "extra == 'docs'" },
-    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384" },
+    { name = "k2y", git = "https://github.com/elinscott/k2y?rev=c3f8d13b5c4d12dda37d6d3910d4b2c07f126863" },
     { name = "markupsafe", marker = "extra == 'docs'", specifier = "<2.1" },
     { name = "node-graph", editable = "../node-graph" },
     { name = "pre-commit", marker = "extra == 'pre-commit'", specifier = "~=3.5" },
@@ -1313,7 +1313,7 @@ wheels = [
 [[package]]
 name = "k2y"
 version = "0.1.0"
-source = { git = "https://github.com/elinscott/k2y?rev=1c28647c9af21832751983a2abcf5d0b39f3a384#1c28647c9af21832751983a2abcf5d0b39f3a384" }
+source = { git = "https://github.com/elinscott/k2y?rev=c3f8d13b5c4d12dda37d6d3910d4b2c07f126863#c3f8d13b5c4d12dda37d6d3910d4b2c07f126863" }
 dependencies = [
     { name = "ase" },
     { name = "click" },

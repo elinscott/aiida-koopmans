@@ -217,9 +217,12 @@ aiida-quantumespresso = { path = "../aiida-quantumespresso", editable = true }
 # install the v2.2.0 release from GitHub, pinned to the immutable sha that
 # matches a pre-quarantine local clone, until the releases reappear.
 aiida-wannier90 = { git = "https://github.com/aiidateam/aiida-wannier90", rev = "5b9436943fa04643ed44c7f6fd48b361e5470ef4" }
-# k2y is not on PyPI; pin the commit that expands QP_kpts to the full BZ
-# (see workgraphs/bethe_salpeter.py), now squashed onto k2y's own main.
-k2y = { git = "https://github.com/elinscott/k2y", rev = "1c28647c9af21832751983a2abcf5d0b39f3a384" }
+# k2y is not on PyPI; pin the commit that writes QP k-points in iku and
+# HEAD_D_LATT from the run's ns.db1 (see workgraphs/bethe_salpeter.py) —
+# previously yambo reported only 33% exact QP k-point matches and a
+# lattice-constant warning, and denser meshes would land energies on the
+# wrong k-points.
+k2y = { git = "https://github.com/elinscott/k2y", rev = "c3f8d13b5c4d12dda37d6d3910d4b2c07f126863" }
 # aiida-yambo is not on PyPI either; pin our fork's fix for the
 # _handle_parallelism_error/_handle_memory_error/fix_memory KeyError that
 # hits any multi-rank job whose caller never sets num_cores_per_mpiproc
