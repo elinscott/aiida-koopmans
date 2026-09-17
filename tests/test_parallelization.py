@@ -409,11 +409,3 @@ class TestYamboRuncardVariables:
             "DIP_CPU": "2 2",
             "DIP_ROLEs": "c v",
         }
-
-    def test_unknown_role_raises_naming_the_driver_and_valid_roles(self):
-        with pytest.raises(ValueError, match=r"bethe_salpeter.*unknown role.*'q'.*valid roles"):
-            yambo_runcard_variables({"yambo": {"bethe_salpeter": {"q": 2}}})
-
-    def test_non_positive_rank_count_raises(self):
-        with pytest.raises(ValueError, match=r"bethe_salpeter.*non-positive.*'k'"):
-            yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 0}}})
