@@ -45,7 +45,10 @@ class DscfBandStructureOutputs(TypedDict):
     """Outputs of :func:`DscfBandStructureTask`.
 
     * ``band_structure`` — the interpolated Koopmans bands along the input
-      k-path, occupied then empty within each spin channel.
+      k-path, occupied then empty within each spin channel, on pw.x's
+      absolute energy scale (same convention as the DFPT route's kcw.x
+      bands), ``offset`` having been added to every eigenvalue; an
+      ``offset`` of 0.0 leaves them on kcp.x's own scale.
     * ``reference`` — the valence-band maximum in eV, for plot alignment.
     * ``dos`` — the bands' Gaussian-smearing total DOS, present only when
       ``do_dos``.
@@ -97,12 +100,14 @@ def merge_manifold_energies(
     empty: list[list[float]],
     occupied_down: list[list[float]] | None = None,
     empty_down: list[list[float]] | None = None,
+    offset: float = 0.0,
 ) -> dict:
     """Concatenate per-manifold interpolated eigenvalues into one table.
 
     Within a spin channel the occupied and empty energies join along the
     band axis; both ``*_down`` inputs together add a leading spin axis.
-    ``reference`` is the highest occupied energy across the channels.
+    ``offset`` shifts every energy, so the returned ``reference`` (the
+    highest occupied energy across the channels) is shifted by it too.
     """
     if (occupied_down is None) != (empty_down is None):
         raise ValueError(
@@ -130,6 +135,8 @@ def merge_manifold_energies(
             )
         energies = np.stack([up, down])
         reference = float(max(occ.max(), np.asarray(occupied_down, dtype=float).max()))
+    energies = energies + offset
+    reference = reference + offset
     return {"energies": energies.tolist(), "reference": reference}
 
 
@@ -261,6 +268,7 @@ def DscfBandStructureTask(
     use_ws_distance: bool = True,
     do_dos: bool = True,
     plotting: dict | None = None,
+    offset: float = 0.0,
 ) -> DscfBandStructureOutputs:
     """Interpolate the Koopmans band structure of a periodic ΔSCF singlepoint.
 
@@ -289,6 +297,10 @@ def DscfBandStructureTask(
             repeat count along each lattice vector.
         kpath: the primitive-cell band path, in crystal coordinates.
         plotting: DOS shaping — ``degauss``, ``nstep``, ``Emin``, ``Emax``.
+        offset: the shift from kcp.x's absolute energy scale to pw.x's
+            (:func:`~aiida_koopmans.workgraphs.mlwf_init.check_wannier_initialization`'s
+            ``offset`` output), added to every returned eigenvalue and to
+            the reference. 0.0 keeps kcp.x's own scale.
     """
     spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
 
@@ -319,6 +331,7 @@ def DscfBandStructureTask(
         empty=energies_by_manifold[False, first],
         occupied_down=energies_by_manifold.get((True, SpinChannel.DOWN)),
         empty_down=energies_by_manifold.get((False, SpinChannel.DOWN)),
+        offset=offset,
         metadata={"call_link_label": "merge_manifold_energies"},
     )
 

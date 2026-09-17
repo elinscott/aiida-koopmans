@@ -97,8 +97,10 @@ class MlwfInitializationOutputs(TypedDict):
     * ``evc_occupied1`` / ``evc_occupied2`` — the folded occupied-manifold
       wavefunctions (merge_evc.x ``merged_file`` outputs) the trial KI
       stages into its read ``K00001``.
-    * ``report`` — the consistency-check numbers (PW/CP gaps and the
-      initial/final kcp.x energies).
+    * ``pw_gap`` / ``cp_gap`` — the pw.x nscf and kcp.x ``dft_init`` band
+      gaps the consistency check compared, in eV.
+    * ``initial_energy`` / ``final_energy`` — the kcp.x ``dft_init`` total
+      energy at its first CG step and at convergence, in eV.
     * ``nscf_remote_folder`` — the shared primitive-cell nscf scratch every
       block was Wannierised off; the ``parent_folder`` a downstream
       pw2wannier90 ``wan_mode='decompose'`` pass reads.
@@ -113,16 +115,24 @@ class MlwfInitializationOutputs(TypedDict):
       per-manifold quantity downstream, so consumers that must line up
       per-orbital data with the manifolds take it from here rather than
       re-deriving it.
+    * ``pw_scale_offset`` — the shift from kcp.x's absolute energy scale
+      to pw.x's, from the consistency check's own PW HOMO minus kcp.x's
+      ``homo_energy``. A downstream band interpolation adds it to put the
+      Koopmans bands on pw.x's absolute scale.
     """
 
     remote_folder: orm.RemoteData
     evc_occupied1: orm.SinglefileData
     evc_occupied2: orm.SinglefileData
-    report: dict
+    pw_gap: float
+    cp_gap: float
+    initial_energy: float
+    final_energy: float
     nscf_remote_folder: orm.RemoteData
     scf_remote_folder: orm.RemoteData
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
     merge_groups: list
+    pw_scale_offset: float
 
 
 @task
@@ -144,17 +154,38 @@ def emit_merge_groups(merge_groups: list) -> list:
     ]
 
 
+class WannierInitializationCheckOutputs(TypedDict):
+    """Outputs of :func:`check_wannier_initialization`, all in eV.
+
+    * ``pw_gap`` / ``cp_gap`` — the pw.x nscf and kcp.x ``dft_init`` band
+      gaps the check compared.
+    * ``initial_energy`` / ``final_energy`` — the kcp.x ``dft_init`` total
+      energy at its first CG step and at convergence.
+    * ``offset`` — the shift from kcp.x's absolute energy scale to pw.x's:
+      the PW HOMO minus kcp.x's own ``homo_energy``.
+    """
+
+    pw_gap: float
+    cp_gap: float
+    initial_energy: float
+    final_energy: float
+    offset: float
+
+
 @task(deserializers=_BANDS_DESERIALIZERS)
 def check_wannier_initialization(
     *,
     nscf_output_parameters: dict,
     nscf_bands: orm.BandsData,
     init_output_parameters: dict,
-) -> dict:
+) -> WannierInitializationCheckOutputs:
     """Check the Wannier-seeded ``dft_init`` against the PW reference.
 
-    Two guards, both fatal:
+    Three guards, all fatal:
 
+    * the nscf ran with fixed occupations — the PW HOMO this check (and
+      the pw.x-to-kcp.x energy-scale ``offset`` it returns) is only
+      defined there;
     * the kcp.x (CP) band gap must match the pw.x nscf gap to within 2% of
       the PW gap — a mismatch means the folded Wannier orbitals do not span
       the occupied manifold;
@@ -171,13 +202,22 @@ def check_wannier_initialization(
     channels, the same cross-channel pair kcp.x prints as its
     ``homo_energy`` / ``lumo_energy`` (MAX / MIN over the two channels in
     ``electrons.f90``). Any other rank is refused. Raises ``ValueError``
-    on violation; returns the compared numbers otherwise.
+    on violation; returns :class:`WannierInitializationCheckOutputs`
+    otherwise.
 
-    ``nscf_output_parameters`` is accepted (and recorded in provenance)
-    even though the gap comes from the bands array — it ties the check to
-    the nscf's scalar results should later diagnostics need them.
+    ``offset`` is the shift from kcp.x's absolute energy scale to pw.x's:
+    the PW HOMO computed above minus kcp.x's own ``homo_energy``.
+    Identical for both spin channels, since it is a code convention
+    rather than a physical quantity.
     """
-    del nscf_output_parameters  # provenance-only input for now
+    occupation_scheme = nscf_output_parameters.get("occupations")
+    if occupation_scheme != "fixed":
+        raise ValueError(
+            f"The nscf ran with `occupations = {occupation_scheme!r}`; the pw.x "
+            "HOMO this check (and the energy-scale offset it returns) is only "
+            "defined for fixed occupations. Set "
+            "`calculator_parameters.pw.system.occupations = fixed` in the input file."
+        )
     bands = nscf_bands.get_bands()
     if bands.ndim not in (2, 3):
         raise ValueError(
@@ -227,12 +267,13 @@ def check_wannier_initialization(
             f"{initial_energy} {final_energy}"
         )
 
-    return {
-        "pw_gap": pw_gap,
-        "cp_gap": cp_gap,
-        "initial_energy": initial_energy,
-        "final_energy": final_energy,
-    }
+    return WannierInitializationCheckOutputs(
+        pw_gap=pw_gap,
+        cp_gap=cp_gap,
+        initial_energy=initial_energy,
+        final_energy=final_energy,
+        offset=pw_homo - cp_homo,
+    )
 
 
 def _build_dft_dummy_parameters(base) -> dict[str, Any]:
@@ -425,7 +466,7 @@ def MlwfInitialization(
     # whose outputs (below) only resolve on success — that's the barrier
     # that keeps the screening pipeline from launching off a broken
     # initialisation.
-    report = check_wannier_initialization(
+    check = check_wannier_initialization(
         nscf_output_parameters=wannierize["nscf"]["output_parameters"],
         nscf_bands=wannierize["nscf"]["output_band"],
         init_output_parameters=dft_init["output_parameters"],
@@ -436,11 +477,15 @@ def MlwfInitialization(
         remote_folder=dft_init["remote_folder"],
         evc_occupied1=fold["evc_occupied1"],
         evc_occupied2=fold["evc_occupied2"],
-        report=report.result,
+        pw_gap=check["pw_gap"],
+        cp_gap=check["cp_gap"],
+        initial_energy=check["initial_energy"],
+        final_energy=check["final_energy"],
         nscf_remote_folder=wannierize["nscf"]["remote_folder"],
         scf_remote_folder=wannierize["scf_remote_folder"],
         block_wannierizations=wannierize["blocks"],
         merge_groups=emit_merge_groups(
             merge_groups=merge_groups, metadata={"call_link_label": "merge_groups"}
         ).result,
+        pw_scale_offset=check["offset"],
     )
