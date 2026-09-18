@@ -6,10 +6,11 @@ into per-group manifolds with
 `aiida-wannierjl <https://github.com/elinscott/aiida-wannierjl>`_
 (``Wannier.Tools.mrwf`` parallel transport, including the cubic b-vector
 stencil fallback), re-Wannierised group by group without disentanglement, and
-the per-group products (``_u.mat`` / ``_hr.dat`` / ``_centres.xyz``) merged
-back into one block-diagonal file set, alongside the ``_u_dis.mat`` the split
-rotations form (the parent's own gauge, which the block-diagonal ``_u.mat``
-of the re-Wannierised groups no longer carries).
+the per-group ``_hr.dat`` / ``_centres.xyz`` merged back into one
+block-diagonal file set. The block's ``_u.mat`` is not merged but composed:
+each group's re-Wannierised gauge carries only the rotation within its own
+manifold, so the split rotation that maps the parent's bands onto the group
+is composed onto it.
 
 The group detection is data-dependent (it reads the eigenvalues of a pw.x
 ``bands`` run), so the split-vs-plain decision and the per-group fan-out
@@ -61,9 +62,9 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    compose_wannier_split_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
-    merge_wannier_split_u_dis_file_contents,
     merge_wannier_u_file_contents,
     parse_wannier_u_file_contents,
 )
@@ -256,23 +257,33 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
 
 
 @task.calcfunction
-def merge_split_u_dis(
-    parent_u_file: orm.SinglefileData, **split_rotations: orm.SinglefileData
-) -> orm.SinglefileData:
-    """Combine the per-group split rotations into the block's ``_u_dis.mat``.
+def compose_split_gauge(parent_u_file: orm.SinglefileData, **files: orm.Data) -> orm.SinglefileData:
+    """Compose the split block's ``_u.mat`` from its rotations and group gauges.
 
-    ``split_rotations`` holds the ``<seedname>_split.amn`` files, keyed so
-    lexicographic order matches the group (= band) order (``b00``, ``b01``,
-    ...); ``parent_u_file`` is the whole-block run's ``_u.mat``, read only
-    for its k-point list. Each split rotation maps the parent's bands onto
-    one group and carries the parent's own gauge, which the block-diagonal
-    ``_u.mat`` of the re-Wannierized groups does not; concatenated, they
-    are the manifold's disentanglement matrix.
+    ``files`` holds the per-group ``<seedname>_split.amn`` rotations keyed
+    ``rot_b00``, ``rot_b01``, ... and the matching wannier90 ``retrieved``
+    folders keyed ``gauge_b00``, ...; lexicographic order within each family
+    is the group (= band) order. ``parent_u_file`` is the whole-block run's
+    ``_u.mat``, read for its k-point list.
+
+    The rotation a group carries maps the parent's bands onto it — the
+    parent's own gauge, which the re-Wannierized groups' ``_u.mat`` files no
+    longer hold — so the block's gauge is the two composed, group by group.
+    Only a parent that Wannierized every band it read is composed this way;
+    :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
+    admits no other kind into the split.
     """
     _, kpts = parse_wannier_u_file_contents(parent_u_file.get_content(mode="r"))
-    contents = [split_rotations[key].get_content(mode="r") for key in sorted(split_rotations)]
-    merged = merge_wannier_split_u_dis_file_contents(contents, kpts)
-    return orm.SinglefileData(io.BytesIO(merged.encode()), filename=f"{SEEDNAME}_u_dis.mat")
+    rotations = [
+        files[key].get_content(mode="r") for key in sorted(files) if key.startswith("rot_")
+    ]
+    gauges = [
+        files[key].base.repository.get_object_content(f"{SEEDNAME}_u.mat", mode="r")
+        for key in sorted(files)
+        if key.startswith("gauge_")
+    ]
+    composed = compose_wannier_split_u_file_contents(rotations, gauges, kpts)
+    return orm.SinglefileData(io.BytesIO(composed.encode()), filename=f"{SEEDNAME}_u.mat")
 
 
 @task.calcfunction
@@ -410,7 +421,6 @@ class RewannierizeSplitOutputs(TypedDict):
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
-    u_dis_file: orm.SinglefileData
     output_parameters: orm.Dict
     interpolated_bands: NotRequired[orm.BandsData]
 
@@ -503,17 +513,17 @@ def RewannierizeSplitBlocks(
         metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
-    merged_u_dis = merge_split_u_dis(
+    composed_gauge = compose_split_gauge(
         parent_u_file=parent_u_file,
-        **subblock_rotations,
-        metadata={"call_link_label": "merge_split_u_dis"},
+        **{f"rot_{key}": value for key, value in subblock_rotations.items()},
+        **{f"gauge_{key}": value for key, value in subblock_retrieved.items()},
+        metadata={"call_link_label": "compose_split_gauge"},
     )
 
     outputs = RewannierizeSplitOutputs(
-        u_file=merged["u_file"],
+        u_file=composed_gauge.result,
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
-        u_dis_file=merged_u_dis.result,
         output_parameters=merged_parameters.result,
     )
     if interpolation_kpoints is not None:
@@ -697,7 +707,6 @@ def WannierizeAndSplitBlock(
         u_file=rewannierized["u_file"],
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],
-        u_dis_file=rewannierized["u_dis_file"],
         nnkp_file=whole["nnkp_file"],
         output_parameters=rewannierized["output_parameters"],
     )

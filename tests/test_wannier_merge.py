@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    compose_wannier_split_u_file_contents,
     extend_wannier_u_dis_file_content,
     generate_wannier_centres_file_contents,
     generate_wannier_hr_file_contents,
@@ -328,27 +329,67 @@ class TestSplitUDis:
             off += width
         return merged
 
-    def test_split_rotation_reproduces_the_merged_hamiltonian(self):
-        kpts, eps, split, gauges = self._fixture()
-        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
-
+    def _rotation_files(self, split):
         off = 0
         contents = []
         for width in self.GROUPS:
             contents.append(_amn_file_contents(split[:, :, off : off + width]))
             off += width
+        return contents
+
+    def _gauge_files(self, gauges, kpts):
+        return [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+
+    def test_composed_u_reproduces_the_merged_hamiltonian(self):
+        """The isolated form: one square ``_u.mat``, no disentanglement file."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        composed, _ = parse_wannier_u_file_contents(
+            compose_wannier_split_u_file_contents(
+                self._rotation_files(split), self._gauge_files(gauges, kpts), kpts
+            )
+        )
+        gauge = composed.transpose(0, 2, 1)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        np.testing.assert_allclose(rebuilt, target, atol=1e-9)
+
+    def test_composing_a_disentangled_parent_raises(self):
+        """A parent that read more bands than it Wannierized needs the other form."""
+        kpts, _, split, gauges = self._fixture()
+        with pytest.raises(ValueError, match="disentangled"):
+            compose_wannier_split_u_file_contents(
+                self._rotation_files(split)[:1], self._gauge_files(gauges, kpts)[:1], kpts
+            )
+
+    def test_split_rotation_reproduces_the_merged_hamiltonian(self):
+        """The disentangled form: the rotations concatenated into ``_u_dis.mat``."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
         u_dis, _ = parse_wannier_u_file_contents(
-            merge_wannier_split_u_dis_file_contents(contents, kpts)
+            merge_wannier_split_u_dis_file_contents(self._rotation_files(split), kpts)
         )
         u_block, _ = parse_wannier_u_file_contents(
-            merge_wannier_u_file_contents(
-                [generate_wannier_u_file_contents(g, kpts) for g in gauges]
-            )
+            merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
         )
         # The staged pair, read back through this module's own parser.
         gauge = _staged_gauge(u_dis, u_block)
         rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
         np.testing.assert_allclose(rebuilt, target, atol=1e-9)
+
+    def test_conjugating_the_group_gauge_wrongly_fails(self):
+        """The group gauge enters adjoint; taking it as written does not."""
+        _, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        rotations = [
+            parse_wannier_amn_file_contents(c, check_square=False)
+            for c in self._rotation_files(split)
+        ]
+        wrong = np.concatenate(
+            [np.einsum("kbn,knm->kbm", r, g) for r, g in zip(rotations, gauges, strict=True)],
+            axis=2,
+        )
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", wrong.conj(), eps.astype(complex), wrong)
+        assert np.abs(rebuilt - target).max() > 1e-3
 
     def test_dropping_the_split_rotation_fails(self):
         """The block-diagonal gauge alone is not the manifold's gauge."""
