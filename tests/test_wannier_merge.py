@@ -16,7 +16,9 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
     generate_wannier_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
+    merge_wannier_split_u_dis_file_contents,
     merge_wannier_u_file_contents,
+    parse_wannier_amn_file_contents,
     parse_wannier_centres_file_contents,
     parse_wannier_hr_file_contents,
     parse_wannier_u_file_contents,
@@ -242,3 +244,155 @@ class TestExtendUDis:
         )
         umat, _ = parse_wannier_u_file_contents(extended)
         np.testing.assert_allclose(umat, udis, atol=5e-11)
+
+
+# ---------------------------------------------------------------------------
+# Split-manifold disentanglement matrix
+# ---------------------------------------------------------------------------
+
+
+def _amn_file_contents(mat: np.ndarray) -> str:
+    """Write a ``(nkpts, num_bands, num_wann)`` matrix as a Wannier90 ``.amn``."""
+    nk, nbands, nwann = mat.shape
+    lines = ["synthetic split rotation", f"{nbands:12d}{nk:12d}{nwann:12d}"]
+    for ik in range(nk):
+        for iw in range(nwann):
+            for ib in range(nbands):
+                value = mat[ik, ib, iw]
+                lines.append(
+                    f"{ib + 1:5d}{iw + 1:5d}{ik + 1:5d}{value.real:18.12f}{value.imag:18.12f}"
+                )
+    return "\n".join(lines) + "\n"
+
+
+def _random_unitary(rng, n: int) -> np.ndarray:
+    q, r = np.linalg.qr(rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n)))
+    return q * (np.diag(r) / np.abs(np.diag(r)))
+
+
+def _staged_gauge(u_dis: np.ndarray, u_block: np.ndarray) -> np.ndarray:
+    """Rebuild the bands-to-Wannier gauge kcw.x forms from the staged pair.
+
+    Both files are stored as ``(nkpts, num_wann, num_bands)``; the
+    disentanglement matrix maps bands onto the manifold and the block
+    gauge rotates within it.
+    """
+    bands_to_manifold = u_dis.transpose(0, 2, 1)
+    within_manifold = u_block.conj().transpose(0, 2, 1)
+    return np.einsum("kbn,knm->kbm", bands_to_manifold, within_manifold)
+
+
+class TestSplitUDis:
+    """A split manifold's gauge must still rebuild its own Hamiltonian.
+
+    Synthesizes a parent manifold whose bands are split into groups, runs
+    the products through the writers this module ships, and asks whether
+    the staged pair (``_u_dis.mat`` from the split rotations, block-diagonal
+    ``_u.mat`` from the groups) reproduces the merged Hamiltonian. The
+    variants that drop or scramble the split rotation must not.
+    """
+
+    NBANDS, GROUPS, NK = 6, (2, 4), 3
+
+    def _fixture(self, seed: int = 7):
+        rng = np.random.default_rng(seed)
+        nk, nbands = self.NK, self.NBANDS
+        kpts = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.5]])[:nk]
+        eps = np.sort(rng.normal(scale=5.0, size=(nk, nbands)), axis=1)
+        # The split rotation carries the parent's gauge but does not mix
+        # bands across the groups, which are separated in energy: it is
+        # unitary within each group's own band range. Anything else would
+        # leave the merged Hamiltonian non-block-diagonal, which is the
+        # property the split exists to produce.
+        split = np.zeros((nk, nbands, nbands), dtype=complex)
+        off = 0
+        for width in self.GROUPS:
+            block = np.stack([_random_unitary(rng, width) for _ in range(nk)])
+            split[:, off : off + width, off : off + width] = block
+            off += width
+        gauges = [np.stack([_random_unitary(rng, n) for _ in range(nk)]) for n in self.GROUPS]
+        return kpts, eps, split, gauges
+
+    @staticmethod
+    def _merged_hamiltonian(eps, split, gauges, groups):
+        """H in the final split basis, group by group, block-diagonal."""
+        nk = eps.shape[0]
+        total = sum(groups)
+        merged = np.zeros((nk, total, total), dtype=complex)
+        off = 0
+        for width, gauge in zip(groups, gauges, strict=True):
+            columns = split[:, :, off : off + width]
+            rotated = np.einsum("kbn,knm->kbm", columns, gauge.conj().transpose(0, 2, 1))
+            block = np.einsum("kbm,kb,kbn->kmn", rotated.conj(), eps.astype(complex), rotated)
+            merged[:, off : off + width, off : off + width] = block
+            off += width
+        return merged
+
+    def test_split_rotation_reproduces_the_merged_hamiltonian(self):
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+
+        off = 0
+        contents = []
+        for width in self.GROUPS:
+            contents.append(_amn_file_contents(split[:, :, off : off + width]))
+            off += width
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(contents, kpts)
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(
+                [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+            )
+        )
+        # The staged pair, read back through this module's own parser.
+        gauge = _staged_gauge(u_dis, u_block)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        np.testing.assert_allclose(rebuilt, target, atol=1e-9)
+
+    def test_dropping_the_split_rotation_fails(self):
+        """The block-diagonal gauge alone is not the manifold's gauge."""
+        _, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        nk, total = eps.shape[0], sum(self.GROUPS)
+        blockdiag = np.zeros((nk, total, total), dtype=complex)
+        off = 0
+        for width, gauge in zip(self.GROUPS, gauges, strict=True):
+            blockdiag[:, off : off + width, off : off + width] = gauge
+            off += width
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", blockdiag.conj(), eps.astype(complex), blockdiag)
+        assert np.abs(rebuilt - target).max() > 1e-3
+
+    def test_mis_ordered_groups_fail(self):
+        """Concatenating the split rotations out of band order is detected."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        off = 0
+        columns = []
+        for width in self.GROUPS:
+            columns.append(split[:, :, off : off + width])
+            off += width
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(
+                [_amn_file_contents(c) for c in reversed(columns)], kpts
+            )
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(
+                [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+            )
+        )
+        gauge = _staged_gauge(u_dis, u_block)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        assert np.abs(rebuilt - target).max() > 1e-3
+
+    def test_rectangular_split_rotations_round_trip(self):
+        """A split rotation is rectangular; the square check must be off."""
+        kpts, _, split, _ = self._fixture()
+        contents = [_amn_file_contents(split[:, :, :2]), _amn_file_contents(split[:, :, 2:])]
+        merged, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(contents, kpts)
+        )
+        assert merged.shape == (self.NK, self.NBANDS, self.NBANDS)
+        with pytest.raises(ValueError, match="not square"):
+            parse_wannier_amn_file_contents(contents[0])

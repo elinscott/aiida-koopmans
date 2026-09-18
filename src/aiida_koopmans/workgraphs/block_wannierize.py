@@ -536,6 +536,11 @@ class WannierizeBlockOutputs(TypedDict):
       runs for a split one.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).
+    * ``u_dis_file`` -- the block's disentanglement matrix
+      (``num_bands x num_wann`` per k-point). On the split route it is the
+      per-group split rotations concatenated: the parent's own gauge, which
+      the block-diagonal ``u_file`` no longer carries. Absent when the block
+      was Wannierized whole without disentangling.
     * ``output_parameters`` -- the parsed wannier90 output Dict, holding at
       least the per-WF ``wannier_functions_output`` table (spreads /
       centres, 1-based block-wide ``wf_ids``) and ``number_wfs``: the
@@ -577,6 +582,7 @@ class WannierizeBlockOutputs(TypedDict):
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
     nnkp_file: orm.SinglefileData
+    u_dis_file: NotRequired[orm.SinglefileData]
     output_parameters: orm.Dict
     retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]

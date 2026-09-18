@@ -10,6 +10,8 @@ the unsplit and the split branches. Nothing runs — dummy codes only.
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,45 @@ from tests.fixtures import (
 # ----------------------------------------------------------------------
 # Pure helpers
 # ----------------------------------------------------------------------
+
+
+def _synthetic_split_inputs(group_sizes, nk=1):
+    """Build stored `_split.amn` rotations and a parent `_u.mat` for build tests.
+
+    Genuinely parseable rather than empty, so the merge task these feed
+    would run on them unchanged.
+    """
+    import numpy as np
+    from aiida.orm import SinglefileData
+
+    from aiida_koopmans.workgraphs.utils.wannier_merge import (
+        generate_wannier_u_file_contents,
+    )
+
+    nbands = sum(group_sizes)
+    kpts = np.zeros((nk, 3))
+    rotations = {}
+    offset = 0
+    for index, width in enumerate(group_sizes):
+        lines = ["synthetic split rotation", f"{nbands:12d}{nk:12d}{width:12d}"]
+        for ik in range(nk):
+            for iw in range(width):
+                for ib in range(nbands):
+                    value = 1.0 if ib == offset + iw else 0.0
+                    lines.append(f"{ib + 1:5d}{iw + 1:5d}{ik + 1:5d}{value:18.12f}{0.0:18.12f}")
+        rotations[f"block_{index}"] = SinglefileData(
+            io.BytesIO(("\n".join(lines) + "\n").encode()), filename="aiida_split.amn"
+        ).store()
+        offset += width
+    parent = SinglefileData(
+        io.BytesIO(
+            generate_wannier_u_file_contents(
+                np.stack([np.eye(nbands, dtype=complex)] * nk), kpts
+            ).encode()
+        ),
+        filename="aiida_u.mat",
+    ).store()
+    return rotations, parent
 
 
 class TestDetectBandBlocks:
@@ -505,10 +546,13 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
+        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
+            split_rotations=split_rotations,
+            parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
             kpoints=kmesh,
@@ -567,10 +611,13 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
+        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
+            split_rotations=split_rotations,
+            parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
             kpoints=kmesh,

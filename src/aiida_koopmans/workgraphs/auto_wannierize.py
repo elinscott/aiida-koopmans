@@ -7,7 +7,9 @@ into per-group manifolds with
 (``Wannier.Tools.mrwf`` parallel transport, including the cubic b-vector
 stencil fallback), re-Wannierised group by group without disentanglement, and
 the per-group products (``_u.mat`` / ``_hr.dat`` / ``_centres.xyz``) merged
-back into one block-diagonal file set.
+back into one block-diagonal file set, alongside the ``_u_dis.mat`` the split
+rotations form (the parent's own gauge, which the block-diagonal ``_u.mat``
+of the re-Wannierised groups no longer carries).
 
 The group detection is data-dependent (it reads the eigenvalues of a pw.x
 ``bands`` run), so the split-vs-plain decision and the per-group fan-out
@@ -22,13 +24,11 @@ branch. This module holds the split-specific pieces only.
 Scope: a single spin channel. Blocks may be explicitly projected (ANALYTIC)
 or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
 run relies on ``projection_type``, plus the external projector inputs for
-the external source). The ``_u_dis.mat`` merge of a
-disentangled parent block is a follow-up: a block routed through the split
-must not require disentanglement (``num_bands == num_wann``), which
+the external source). A block routed through the split must not itself
+require disentanglement (``num_bands == num_wann``), which
 :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
-enforces at build time. The per-group re-Wannierisation reads only the
-parent's gauge products, so a parent's disentanglement matrix would be
-dropped on the floor rather than carried into the sub-blocks.
+enforces at build time: composing a parent's own disentanglement with the
+split rotations is a follow-up.
 """
 
 import io
@@ -63,7 +63,9 @@ from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
+    merge_wannier_split_u_dis_file_contents,
     merge_wannier_u_file_contents,
+    parse_wannier_u_file_contents,
 )
 from aiida_koopmans.workgraphs.wannier90 import (
     Pw2Wannier90Code,
@@ -254,6 +256,26 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
 
 
 @task.calcfunction
+def merge_split_u_dis(
+    parent_u_file: orm.SinglefileData, **split_rotations: orm.SinglefileData
+) -> orm.SinglefileData:
+    """Combine the per-group split rotations into the block's ``_u_dis.mat``.
+
+    ``split_rotations`` holds the ``<seedname>_split.amn`` files, keyed so
+    lexicographic order matches the group (= band) order (``b00``, ``b01``,
+    ...); ``parent_u_file`` is the whole-block run's ``_u.mat``, read only
+    for its k-point list. Each split rotation maps the parent's bands onto
+    one group and carries the parent's own gauge, which the block-diagonal
+    ``_u.mat`` of the re-Wannierized groups does not; concatenated, they
+    are the manifold's disentanglement matrix.
+    """
+    _, kpts = parse_wannier_u_file_contents(parent_u_file.get_content(mode="r"))
+    contents = [split_rotations[key].get_content(mode="r") for key in sorted(split_rotations)]
+    merged = merge_wannier_split_u_dis_file_contents(contents, kpts)
+    return orm.SinglefileData(io.BytesIO(merged.encode()), filename=f"{SEEDNAME}_u_dis.mat")
+
+
+@task.calcfunction
 def merge_wannier_output_parameters(**output_parameters: orm.Dict) -> orm.Dict:
     """Concatenate per-group parsed wannier90 outputs into one block-wide Dict.
 
@@ -388,6 +410,7 @@ class RewannierizeSplitOutputs(TypedDict):
     u_file: orm.SinglefileData
     hr_file: orm.SinglefileData
     centres_file: orm.SinglefileData
+    u_dis_file: orm.SinglefileData
     output_parameters: orm.Dict
     interpolated_bands: NotRequired[orm.BandsData]
 
@@ -397,6 +420,8 @@ def RewannierizeSplitBlocks(
     w90_code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
+    split_rotations: Annotated[dict, dynamic(orm.SinglefileData)],
+    parent_u_file: orm.SinglefileData,
     parent_parameters: orm.Dict,
     group_sizes: list[int],
     kpoints: orm.KpointsData,
@@ -438,6 +463,7 @@ def RewannierizeSplitBlocks(
     subblock_retrieved: dict[str, Any] = {}
     subblock_parameters: dict[str, Any] = {}
     subblock_bands: dict[str, Any] = {}
+    subblock_rotations: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
         parameters = _subblock_w90_parameters(
             int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
@@ -464,6 +490,7 @@ def RewannierizeSplitBlocks(
         )
         subblock_retrieved[f"b{i:02d}"] = rewannierized["retrieved"]
         subblock_parameters[f"b{i:02d}"] = rewannierized["output_parameters"]
+        subblock_rotations[f"b{i:02d}"] = split_rotations[f"block_{i}"]
         if interpolation_kpoints is not None:
             subblock_bands[f"b{i:02d}"] = rewannierized["interpolated_bands"]
 
@@ -476,10 +503,17 @@ def RewannierizeSplitBlocks(
         metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
+    merged_u_dis = merge_split_u_dis(
+        parent_u_file=parent_u_file,
+        **subblock_rotations,
+        metadata={"call_link_label": "merge_split_u_dis"},
+    )
+
     outputs = RewannierizeSplitOutputs(
         u_file=merged["u_file"],
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
+        u_dis_file=merged_u_dis.result,
         output_parameters=merged_parameters.result,
     )
     if interpolation_kpoints is not None:
@@ -644,6 +678,8 @@ def WannierizeAndSplitBlock(
         w90_code=reference(codes, "wannier90"),
         structure=structure,
         split_blocks=split["blocks"],
+        split_rotations=split["u_matrices"],
+        parent_u_file=whole["u_file"],
         parent_parameters=whole["wannier90_parameters"],
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,
@@ -661,6 +697,7 @@ def WannierizeAndSplitBlock(
         u_file=rewannierized["u_file"],
         hr_file=rewannierized["hr_file"],
         centres_file=rewannierized["centres_file"],
+        u_dis_file=rewannierized["u_dis_file"],
         nnkp_file=whole["nnkp_file"],
         output_parameters=rewannierized["output_parameters"],
     )
