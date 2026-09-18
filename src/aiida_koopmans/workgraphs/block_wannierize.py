@@ -1813,9 +1813,9 @@ def wannierize_smooth_mesh(
     pseudo_family: str | None,
     protocol: str | None,
     overrides: WannierizeOverrides | None,
-    spin_type: SpinType,
     interpolation_kpoints: orm.KpointsData | None,
     parallelization: ParallelizationDict | None,
+    spin_type: SpinType = SpinType.NONE,
     call_link_label: str = "wannierize_smooth",
     label: str = "Smooth wannierization",
 ) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
@@ -1839,6 +1839,10 @@ def wannierize_smooth_mesh(
     structure and the per-block wannier90 interpolation on this denser
     mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps, not
     re-exposed as a named output here.
+
+    ``spin_type`` defaults to :func:`WannierizeBlocks`' own default, so a
+    caller whose coarse Wannierization leaves it alone gets a dense one that
+    matches.
 
     ``call_link_label`` / ``label`` name the step; a caller that runs one
     per spin channel must give each its own.

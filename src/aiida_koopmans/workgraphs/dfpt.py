@@ -423,10 +423,6 @@ class ChannelResults(TypedDict, total=False):
       band path was supplied): kcw.x's own interpolation off the coarse
       grid, or, when a denser-mesh wannierization was supplied, the
       smooth-interpolated one (kcw.x's stays addressable on the ham step).
-    * ``bands_reference`` -- the valence-band maximum of those bands in eV,
-      for plot alignment (present only alongside a smooth-interpolated
-      ``bands``; kcw.x's own interpolation carries its reference on the
-      ``BandsData`` itself).
     * ``wannierize_bands`` -- the pw.x quality-check DFT reference bands
       along the same path, off the shared ground state (present only when a
       band path was supplied; see :func:`RunDFPT`'s ``wannierize_bands``).
@@ -448,7 +444,6 @@ class ChannelResults(TypedDict, total=False):
     screen_parameters: dict
     ham_parameters: dict
     bands: orm.BandsData
-    bands_reference: float
     wannierize_bands: PwOutputs
     projwfc: ProjwfcOutputs
     wann2kc_remote_folder: orm.RemoteData
@@ -915,7 +910,6 @@ def RunDFPT(
             },
         )
         outputs["bands"] = smooth_bands["band_structure"]
-        outputs["bands_reference"] = smooth_bands["reference"]
     return outputs
 
 
@@ -923,7 +917,6 @@ def _add_smooth_interpolation_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     *,
     do_smooth: bool,
-    spin: SpinType,
     bands_kpoints: orm.KpointsData | None,
     suffix: str,
     channel_display: str,
@@ -934,11 +927,14 @@ def _add_smooth_interpolation_dfpt_inputs(
     A no-op without ``do_smooth``. The denser mesh is Wannierized off the
     same shared scf, with the same blocks and the same overrides: the
     smooth-interpolation method swaps one Wannier-gauge DFT Hamiltonian for
-    another, so only the mesh may differ between the two runs.
+    another, so only the mesh differs between the two runs. ``spin_type``
+    is among what must not differ: this route selects a spin channel
+    through explicit ``wannier90`` / ``pw2wannier90`` overrides rather than
+    upstream's ``spin_type`` (see :func:`_channel_w90_defaults`), so both
+    Wannierizations leave it at its default.
     """
     smooth_blocks = wannierize_smooth_mesh(
         do_smooth=do_smooth,
-        spin_type=spin,
         interpolation_kpoints=bands_kpoints,
         call_link_label=f"wannierize_smooth{suffix}",
         label=f"Smooth wannierization{channel_display}",
@@ -955,12 +951,14 @@ def _resolve_smooth_interpolation(
     smooth_mp_grid: list[int] | None,
     bands_kpoints: orm.KpointsData | None,
     spin: SpinType,
+    kcw_overrides: KcwOverrides | None,
 ) -> bool:
     """Return whether :func:`SinglepointDFPTWorkflow` runs the smooth interpolation.
 
     Raises:
-        ValueError: If only one half of the denser mesh is stated, or if
-            it is stated with no path to interpolate along.
+        ValueError: If only one half of the denser mesh is stated, if it is
+            stated with no path to interpolate along, or if the caller
+            turned off the ``HAM.write_hr`` the interpolation reads.
         NotImplementedError: If the run is noncollinear or spin-orbit.
     """
     stated = [
@@ -989,6 +987,17 @@ def _resolve_smooth_interpolation(
             "the denser-mesh wannierization would drop `spinors = .true.`, and the "
             "spinor Wannier centres reach the interpolation unvalidated. Drop "
             "`smooth_kpoints` / `smooth_mp_grid` and read kcw.x's own interpolated bands."
+        )
+    # ``RunDFPT`` checks this too, on the namelist it actually assembles; that
+    # check is its own contract but runs in a deferred body, after both
+    # Wannierizations. Reading the caller's overrides here refuses the same
+    # run before anything is submitted.
+    user_ham = dict((dict((kcw_overrides or {}).items()).get("ham") or {}).items())
+    if "write_hr" in user_ham and not user_ham["write_hr"]:
+        raise ValueError(
+            "The smooth-interpolation band structure reads the Koopmans Hamiltonian kcw.x "
+            "prints under `HAM.write_hr`, and `kcw.ham.write_hr` is set to false. Drop that "
+            "keyword, or drop the denser mesh."
         )
     return True
 
@@ -1389,7 +1398,9 @@ def SinglepointDFPTWorkflow(
     ``NONE`` or ``COLLINEAR``.
     """
     validate_parallelization(parallelization)
-    do_smooth = _resolve_smooth_interpolation(smooth_kpoints, smooth_mp_grid, bands_kpoints, spin)
+    do_smooth = _resolve_smooth_interpolation(
+        smooth_kpoints, smooth_mp_grid, bands_kpoints, spin, kcw_overrides
+    )
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -1597,7 +1608,6 @@ def SinglepointDFPTWorkflow(
             pseudo_family=pseudo_family,
             protocol=protocol,
             overrides=wannier_overrides,
-            spin=spin,
             bands_kpoints=bands_kpoints,
             parallelization=parallelization,
             suffix=suffix,

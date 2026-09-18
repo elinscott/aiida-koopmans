@@ -56,6 +56,13 @@ class TestKcwHamiltoniansInterpolateAsKcwDoes:
         on. The controls below break each of those and watch the agreement
         go. kcw.x prints four decimals, so agreement below 1e-4 eV is
         agreement to the last digit it reports.
+
+        What it cannot discriminate is the centres' length unit: the phase
+        keeps whichever lattice image is nearest, and scaling every centre
+        by one factor leaves that choice untouched. Feeding these centres
+        in bohr reproduces the same eigenvalues, so the unit is pinned by
+        the caller (:func:`~aiida_koopmans.workgraphs.block_wannierize.collect_wannier_functions`
+        threads wannier90's own Å table) and not by this test.
         """
         interpolated = _interpolate(si_kcw_reference, manifold)
         printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS[manifold]]
@@ -222,6 +229,86 @@ class TestDfptBandStructureTaskWiring:
             assert f"interpolate_{manifold}" in names
         assert names.count("merge_manifold_energies") == 1
         assert "build_band_structure" in names
+
+    def test_each_manifold_reads_its_own_printed_hamiltonian(self, aiida_profile):
+        """The occupied and empty stages must not read the same file.
+
+        The task names come from the manifold, not from the file, so a
+        stage reading the wrong one would keep its name and its wiring and
+        only the eigenvalues would be wrong.
+        """
+        wg = self._build(emp=True)
+        by_name = {t.name: t for t in wg.tasks}
+
+        assert by_name["extract_occ_hamiltonian"].inputs["filename"].value == "aiida.kcw_hr_occ.dat"
+        assert by_name["extract_emp_hamiltonian"].inputs["filename"].value == "aiida.kcw_hr_emp.dat"
+
+    def test_the_filename_helper_names_the_occupied_file_for_a_filled_manifold(self):
+        """``kcw_hamiltonian_filename`` is the one place the two names are decided.
+
+        The CalcJob's retrieve list and the interpolation both go through
+        it, so a swap there would be invisible to a test that only checks
+        both names appear somewhere.
+        """
+        from aiida_koopmans.calculations.kcw import kcw_hamiltonian_filename
+
+        assert kcw_hamiltonian_filename(filled=True) == "aiida.kcw_hr_occ.dat"
+        assert kcw_hamiltonian_filename(filled=False) == "aiida.kcw_hr_emp.dat"
+
+    def test_a_multi_block_manifold_merges_its_blocks_in_band_order(self, aiida_profile):
+        """Block ``b00`` of a merge is the first label the caller listed.
+
+        The merged Hamiltonian is block-diagonal, so the order the blocks
+        are stacked in *is* the band order its rows describe. Keying the
+        merge off anything but the caller's list — reversing it, or sorting
+        the labels — would put the Koopmans Hamiltonian's rows and the DFT
+        Hamiltonian's rows on different Wannier functions, with no error
+        anywhere.
+        """
+        from aiida import orm
+
+        from aiida_koopmans.workgraphs.ui.dfpt import DfptBandStructureTask
+        from tests.fixtures import block_wannierization
+
+        # Reverse alphabetical, so a merge that sorted its labels rather
+        # than following the list would stack them the other way round.
+        labels = ["occ_b", "occ_a"]
+        blocks = {label: block_wannierization(label) for label in labels}
+        smooth_blocks = {label: block_wannierization(f"{label}_smooth") for label in labels}
+        kpath = orm.KpointsData()
+        kpath.set_kpoints([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]])
+        structure = orm.StructureData(cell=[[0, 2.7, 2.7], [2.7, 0, 2.7], [2.7, 2.7, 0]])
+        structure.append_atom(position=(0, 0, 0), symbols="Si")
+
+        wg = DfptBandStructureTask.build(
+            structure=structure.store(),
+            koopmans_ham_retrieved=orm.FolderData().store(),
+            block_wannierizations=blocks,
+            smooth_block_wannierizations=smooth_blocks,
+            occ_labels=labels,
+            kgrid=[2, 2, 2],
+            kpath=kpath.store(),
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        for step, source in (
+            ("merge_occ_dft_hamiltonian", blocks),
+            ("merge_occ_smooth_dft_hamiltonian", smooth_blocks),
+        ):
+            merged = by_name[step].inputs
+            for index, label in enumerate(labels):
+                assert merged[f"b{index:02d}"].value.uuid == source[label]["hr_file"].uuid, (
+                    f"{step} put {label} on the wrong row"
+                )
+
+        # The centres are concatenated under the same keys, so they follow
+        # the same list: the Hamiltonian's rows and the centre table's
+        # entries describe the same Wannier functions, or neither does.
+        centres = by_name["collect_occ_centres"].inputs["output_parameters"]
+        for index, label in enumerate(labels):
+            assert centres[f"b{index:02d}"].value.uuid == blocks[label]["output_parameters"].uuid, (
+                f"collect_occ_centres put {label} on the wrong row"
+            )
 
     def test_both_dft_hamiltonians_reach_each_interpolation(self, aiida_profile):
         """The coarse and the dense wannierization both feed every manifold.

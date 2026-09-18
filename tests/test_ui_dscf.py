@@ -522,6 +522,16 @@ class TestMergeManifoldEnergies:
         with pytest.raises(ValueError, match="both `occupied_down` and `empty_down`"):
             self._merge(occupied=[[1.0]], empty=[[5.0]], occupied_down=[[1.0]])
 
+    def test_a_down_channel_without_its_empty_manifold_is_refused(self):
+        """An occupied-only merge is no way past the check above.
+
+        With no ``empty`` the two ``*_down`` inputs no longer have to
+        arrive together for the shapes to work out, so the asymmetry would
+        otherwise be dropped rather than raised.
+        """
+        with pytest.raises(ValueError, match="both `occupied_down` and `empty_down`"):
+            self._merge(occupied=[[1.0]], occupied_down=[[0.9]])
+
     def test_an_occupied_only_merge_returns_the_occupied_bands(self):
         """A run with no empty projections still gets a band structure."""
         merged = self._merge(occupied=[[1.0, 2.0], [1.1, 2.1]])
