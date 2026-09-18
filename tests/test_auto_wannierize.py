@@ -10,6 +10,8 @@ the unsplit and the split branches. Nothing runs — dummy codes only.
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
 
@@ -37,6 +39,45 @@ from tests.fixtures import (
 # ----------------------------------------------------------------------
 # Pure helpers
 # ----------------------------------------------------------------------
+
+
+def _synthetic_split_inputs(group_sizes, nk=1):
+    """Build stored `_split.amn` rotations and a parent `_u.mat` for build tests.
+
+    Genuinely parseable rather than empty, so the merge task these feed
+    would run on them unchanged.
+    """
+    import numpy as np
+    from aiida.orm import SinglefileData
+
+    from aiida_koopmans.workgraphs.utils.wannier_merge import (
+        generate_wannier_u_file_contents,
+    )
+
+    nbands = sum(group_sizes)
+    kpts = np.zeros((nk, 3))
+    rotations = {}
+    offset = 0
+    for index, width in enumerate(group_sizes):
+        lines = ["synthetic split rotation", f"{nbands:12d}{nk:12d}{width:12d}"]
+        for ik in range(nk):
+            for iw in range(width):
+                for ib in range(nbands):
+                    value = 1.0 if ib == offset + iw else 0.0
+                    lines.append(f"{ib + 1:5d}{iw + 1:5d}{ik + 1:5d}{value:18.12f}{0.0:18.12f}")
+        rotations[f"block_{index}"] = SinglefileData(
+            io.BytesIO(("\n".join(lines) + "\n").encode()), filename="aiida_split.amn"
+        ).store()
+        offset += width
+    parent = SinglefileData(
+        io.BytesIO(
+            generate_wannier_u_file_contents(
+                np.stack([np.eye(nbands, dtype=complex)] * nk), kpts
+            ).encode()
+        ),
+        filename="aiida_u.mat",
+    ).store()
+    return rotations, parent
 
 
 class TestDetectBandBlocks:
@@ -505,10 +546,13 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
+        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
+            split_rotations=split_rotations,
+            parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
             kpoints=kmesh,
@@ -567,10 +611,13 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
+        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
+            split_rotations=split_rotations,
+            parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
             kpoints=kmesh,
@@ -745,7 +792,12 @@ class TestMergeWannierOutputParameters:
 
 
 class TestMergeSplitBlockProducts:
-    """Per-sub-block products merge block-diagonally in band order."""
+    """Per-sub-block products merge block-diagonally in band order.
+
+    The block's ``_u.mat`` is not among them: a block-diagonal gauge
+    describes a rotation within the split basis rather than the map from
+    the parent's bands, so it is composed elsewhere.
+    """
 
     def test_block_diagonal_merge(self, aiida_profile):
         """Two 2-WF sub-blocks merge into one 4-WF block-diagonal product set."""
@@ -757,7 +809,6 @@ class TestMergeSplitBlockProducts:
             generate_wannier_u_file_contents,
             parse_wannier_centres_file_contents,
             parse_wannier_hr_file_contents,
-            parse_wannier_u_file_contents,
         )
 
         rvect = np.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]])
@@ -785,12 +836,7 @@ class TestMergeSplitBlockProducts:
 
         merged = merge_split_block_products._callable(b00=_folder(1), b01=_folder(2))
 
-        umat, _ = parse_wannier_u_file_contents(merged["u_file"].get_content())
-        assert umat.shape == (2, 4, 4)
-        # The two sub-blocks occupy the diagonal 2x2 blocks; the off-diagonal
-        # blocks are exactly zero.
-        np.testing.assert_allclose(umat[:, :2, 2:], 0.0)
-        np.testing.assert_allclose(umat[:, 2:, :2], 0.0)
+        assert "u_file" not in merged
 
         ham, _, _ = parse_wannier_hr_file_contents(merged["hr_file"].get_content())
         assert ham.shape == (3, 4, 4)

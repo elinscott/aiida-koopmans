@@ -6,8 +6,11 @@ into per-group manifolds with
 `aiida-wannierjl <https://github.com/elinscott/aiida-wannierjl>`_
 (``Wannier.Tools.mrwf`` parallel transport, including the cubic b-vector
 stencil fallback), re-Wannierised group by group without disentanglement, and
-the per-group products (``_u.mat`` / ``_hr.dat`` / ``_centres.xyz``) merged
-back into one block-diagonal file set.
+the per-group ``_hr.dat`` / ``_centres.xyz`` merged back into one
+block-diagonal file set. The block's ``_u.mat`` is not merged but composed:
+each group's re-Wannierised gauge carries only the rotation within its own
+manifold, so the split rotation that maps the parent's bands onto the group
+is composed onto it.
 
 The group detection is data-dependent (it reads the eigenvalues of a pw.x
 ``bands`` run), so the split-vs-plain decision and the per-group fan-out
@@ -22,13 +25,11 @@ branch. This module holds the split-specific pieces only.
 Scope: a single spin channel. Blocks may be explicitly projected (ANALYTIC)
 or automatic (pseudoatomic projectors — no per-orbital list; the whole-block
 run relies on ``projection_type``, plus the external projector inputs for
-the external source). The ``_u_dis.mat`` merge of a
-disentangled parent block is a follow-up: a block routed through the split
-must not require disentanglement (``num_bands == num_wann``), which
+the external source). A block routed through the split must not itself
+require disentanglement (``num_bands == num_wann``), which
 :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
-enforces at build time. The per-group re-Wannierisation reads only the
-parent's gauge products, so a parent's disentanglement matrix would be
-dropped on the floor rather than carried into the sub-blocks.
+enforces at build time: composing a parent's own disentanglement with the
+split rotations is a follow-up.
 """
 
 import io
@@ -61,9 +62,10 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    compose_wannier_split_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
-    merge_wannier_u_file_contents,
+    parse_wannier_u_file_contents,
 )
 from aiida_koopmans.workgraphs.wannier90 import (
     Pw2Wannier90Code,
@@ -223,15 +225,19 @@ def extract_win_file(retrieved: orm.FolderData) -> orm.SinglefileData:
     return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
 
-@task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
+@task.calcfunction(outputs=["hr_file", "centres_file"])
 def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
     """Merge per-sub-block wannier90 products back into one block-wide set.
 
     ``retrieved`` holds the sub-block wannier90 ``retrieved`` folders, keyed
     so lexicographic order matches the band order of the groups (``b00``,
-    ``b01``, ...). The ``_u.mat`` / ``_hr.dat`` merges are block-diagonal and
-    the ``_centres.xyz`` centres are concatenated — see
+    ``b01``, ...). The ``_hr.dat`` merge is block-diagonal and the
+    ``_centres.xyz`` centres are concatenated — see
     :mod:`aiida_koopmans.workgraphs.utils.wannier_merge` for the invariants.
+    The block's ``_u.mat`` is not merged here: a block-diagonal one would
+    describe a gauge within the split basis rather than the map from the
+    parent's bands, so it is composed instead
+    (:func:`compose_split_gauge`).
     """
     folders = [retrieved[key] for key in sorted(retrieved)]
 
@@ -245,12 +251,41 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
         return orm.SinglefileData(io.BytesIO(content.encode()), filename=f"{SEEDNAME}{suffix}")
 
     return {
-        "u_file": _single(merge_wannier_u_file_contents(_contents("_u.mat")), "_u.mat"),
         "hr_file": _single(merge_wannier_hr_file_contents(_contents("_hr.dat")), "_hr.dat"),
         "centres_file": _single(
             merge_wannier_centres_file_contents(_contents("_centres.xyz")), "_centres.xyz"
         ),
     }
+
+
+@task.calcfunction
+def compose_split_gauge(parent_u_file: orm.SinglefileData, **files: orm.Data) -> orm.SinglefileData:
+    """Compose the split block's ``_u.mat`` from its rotations and group gauges.
+
+    ``files`` holds the per-group ``<seedname>_split.amn`` rotations keyed
+    ``rot_b00``, ``rot_b01``, ... and the matching wannier90 ``retrieved``
+    folders keyed ``gauge_b00``, ...; lexicographic order within each family
+    is the group (= band) order. ``parent_u_file`` is the whole-block run's
+    ``_u.mat``, read for its k-point list.
+
+    The rotation a group carries maps the parent's bands onto it — the
+    parent's own gauge, which the re-Wannierized groups' ``_u.mat`` files no
+    longer hold — so the block's gauge is the two composed, group by group.
+    Only a parent that Wannierized every band it read is composed this way;
+    :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
+    admits no other kind into the split.
+    """
+    _, kpts = parse_wannier_u_file_contents(parent_u_file.get_content(mode="r"))
+    rotations = [
+        files[key].get_content(mode="r") for key in sorted(files) if key.startswith("rot_")
+    ]
+    gauges = [
+        files[key].base.repository.get_object_content(f"{SEEDNAME}_u.mat", mode="r")
+        for key in sorted(files)
+        if key.startswith("gauge_")
+    ]
+    composed = compose_wannier_split_u_file_contents(rotations, gauges, kpts)
+    return orm.SinglefileData(io.BytesIO(composed.encode()), filename=f"{SEEDNAME}_u.mat")
 
 
 @task.calcfunction
@@ -397,6 +432,8 @@ def RewannierizeSplitBlocks(
     w90_code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
+    split_rotations: Annotated[dict, dynamic(orm.SinglefileData)],
+    parent_u_file: orm.SinglefileData,
     parent_parameters: orm.Dict,
     group_sizes: list[int],
     kpoints: orm.KpointsData,
@@ -438,6 +475,7 @@ def RewannierizeSplitBlocks(
     subblock_retrieved: dict[str, Any] = {}
     subblock_parameters: dict[str, Any] = {}
     subblock_bands: dict[str, Any] = {}
+    subblock_rotations: dict[str, Any] = {}
     for i, num_wann in enumerate(group_sizes):
         parameters = _subblock_w90_parameters(
             int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
@@ -464,6 +502,7 @@ def RewannierizeSplitBlocks(
         )
         subblock_retrieved[f"b{i:02d}"] = rewannierized["retrieved"]
         subblock_parameters[f"b{i:02d}"] = rewannierized["output_parameters"]
+        subblock_rotations[f"b{i:02d}"] = split_rotations[f"block_{i}"]
         if interpolation_kpoints is not None:
             subblock_bands[f"b{i:02d}"] = rewannierized["interpolated_bands"]
 
@@ -476,8 +515,15 @@ def RewannierizeSplitBlocks(
         metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
+    composed_gauge = compose_split_gauge(
+        parent_u_file=parent_u_file,
+        **{f"rot_{key}": value for key, value in subblock_rotations.items()},
+        **{f"gauge_{key}": value for key, value in subblock_retrieved.items()},
+        metadata={"call_link_label": "compose_split_gauge"},
+    )
+
     outputs = RewannierizeSplitOutputs(
-        u_file=merged["u_file"],
+        u_file=composed_gauge.result,
         hr_file=merged["hr_file"],
         centres_file=merged["centres_file"],
         output_parameters=merged_parameters.result,
@@ -644,6 +690,8 @@ def WannierizeAndSplitBlock(
         w90_code=reference(codes, "wannier90"),
         structure=structure,
         split_blocks=split["blocks"],
+        split_rotations=split["u_matrices"],
+        parent_u_file=whole["u_file"],
         parent_parameters=whole["wannier90_parameters"],
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,

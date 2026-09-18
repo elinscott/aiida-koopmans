@@ -532,8 +532,11 @@ class WannierizeBlockOutputs(TypedDict):
     * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
       (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``):
       extracted from the wannier90 ``retrieved`` folder for a
-      plainly-Wannierised block, merged block-diagonally from the per-group
-      runs for a split one.
+      plainly-Wannierised block. For a split one ``hr_file`` and
+      ``centres_file`` are merged from the per-group runs, while ``u_file``
+      is composed: each group's gauge carries only the rotation within its
+      own manifold, so the split rotation mapping the parent's bands onto
+      that group is composed onto it.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).
     * ``output_parameters`` -- the parsed wannier90 output Dict, holding at

@@ -182,6 +182,89 @@ def parse_wannier_u_file_contents(content: str) -> tuple[np.ndarray, np.ndarray]
     return umat, kpts
 
 
+def parse_wannier_amn_file_contents(content: str, check_square: bool = True) -> np.ndarray:
+    """Parse a Wannier90 ``.amn`` file into shape ``(nkpts, num_bands, num_wann)``.
+
+    Raises when ``check_square`` and the header's band and Wannier counts
+    differ; a split rotation is rectangular, so that check is off there.
+    """
+    lines = content.split("\n")
+    nbands, nk, nwann = (int(x) for x in lines[1].split())
+    if check_square and nbands != nwann:
+        raise ValueError(
+            f"``.amn`` holds a {nbands} x {nwann} matrix per k-point, which is not square."
+        )
+    amn = np.zeros((nk, nbands, nwann), dtype=complex)
+    for line in lines[2:]:
+        if not line.strip():
+            continue
+        band, wann, kpt, real, imag = line.split()
+        amn[int(kpt) - 1, int(band) - 1, int(wann) - 1] = complex(float(real), float(imag))
+    return amn
+
+
+def _split_rotations(contents: Sequence[str]) -> list[np.ndarray]:
+    """Parse per-group split rotations, each ``(nkpts, num_bands, num_wann_group)``."""
+    return [parse_wannier_amn_file_contents(content, check_square=False) for content in contents]
+
+
+def compose_wannier_split_u_file_contents(
+    rotations: Sequence[str], gauges: Sequence[str], kpts: np.ndarray
+) -> str:
+    """Compose an isolated split manifold's ``_u.mat`` from its two halves.
+
+    ``rotations`` are the per-group ``<seedname>_split.amn`` files in band
+    order and ``gauges`` the matching per-group ``_u.mat`` files. Each group
+    contributes ``rotation @ gauge^T`` — the rotation maps the parent's
+    bands onto the group and the gauge rotates within it, the transpose
+    taking the ``_u.mat`` layout (Wannier index first) into the ``.amn``
+    one (band index first) — and the groups concatenate along the Wannier
+    axis. The result is square exactly when
+    the parent Wannierized every band it read, which is the only case this
+    composition serves: a parent that disentangles keeps its rotation in a
+    ``_u_dis.mat`` of its own
+    (:func:`merge_wannier_split_u_dis_file_contents`) instead.
+    """
+    composed = np.concatenate(
+        [
+            np.einsum("kbn,knm->kbm", rotation, gauge.transpose(0, 2, 1))
+            for rotation, gauge in zip(
+                _split_rotations(rotations),
+                [parse_wannier_u_file_contents(gauge)[0] for gauge in gauges],
+                strict=True,
+            )
+        ],
+        axis=2,
+    )
+    nbands, nwann = composed.shape[1:]
+    if nbands != nwann:
+        raise ValueError(
+            f"The parent Wannierization read {nbands} bands for {nwann} Wannier "
+            "functions, so it disentangled; its split rotations belong in a "
+            "``_u_dis.mat``, not in a composed ``_u.mat``."
+        )
+    return generate_wannier_u_file_contents(np.transpose(composed, (0, 2, 1)), kpts)
+
+
+def merge_wannier_split_u_dis_file_contents(contents: Sequence[str], kpts: np.ndarray) -> str:
+    """Combine per-group split rotations into one manifold ``_u_dis.mat``.
+
+    ``contents`` are the ``<seedname>_split.amn`` files Wannier.jl writes
+    when it splits a Wannierization, in band order; each holds that group's
+    ``(num_bands x num_wann_group)`` rotation out of the parent's bands,
+    already carrying the parent's own disentanglement and gauge. They
+    concatenate along the Wannier axis into the parent's full
+    ``(num_bands x num_wann)`` rotation, which is the disentanglement matrix
+    the split manifold presents downstream; the per-group ``_u.mat`` files
+    remain its block-diagonal gauge.
+    """
+    merged = np.concatenate(
+        [parse_wannier_amn_file_contents(content, check_square=False) for content in contents],
+        axis=2,
+    )
+    return generate_wannier_u_file_contents(np.transpose(merged, (0, 2, 1)), kpts)
+
+
 def generate_wannier_u_file_contents(umat: np.ndarray, kpts: np.ndarray) -> str:
     """Generate the contents of a Wannier90 ``_u[_dis].mat`` file."""
     flines = [f" Written on {_timestamp()}"]
