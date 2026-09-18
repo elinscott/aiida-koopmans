@@ -143,12 +143,6 @@ class MlwfInitializationOutputs(TypedDict):
       to pw.x's, from the consistency check's own PW HOMO minus kcp.x's
       ``homo_energy``. A downstream band interpolation adds it to put the
       Koopmans bands on pw.x's absolute scale.
-    * ``band_structure_dft`` — the pw.x explicit band structure along
-      ``interpolation_kpoints``, off the same nscf density every block was
-      Wannierised on. Present only when ``interpolation_kpoints`` was
-      given. The per-block wannier90-interpolated counterpart rides
-      ``block_wannierizations[label]["interpolated_bands"]`` instead
-      (populated under the same condition).
     """
 
     remote_folder: orm.RemoteData
@@ -163,7 +157,6 @@ class MlwfInitializationOutputs(TypedDict):
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)]
     merge_groups: list
     pw_scale_offset: float
-    band_structure_dft: NotRequired[orm.BandsData]
 
 
 @task
@@ -391,8 +384,9 @@ def MlwfInitialization(
         interpolation_kpoints: a labelled explicit-path primitive-cell
             k-list. Given, the wannierisation also runs the pw.x explicit
             band structure and the per-block wannier90 interpolation along
-            it (see :class:`MlwfInitializationOutputs`). Absent, this
-            graph runs exactly as before.
+            it — both discoverable off :func:`WannierizeBlocks`' own
+            dumped steps, not re-exposed as a named output here. Absent,
+            this graph runs exactly as before.
         parallelization: Per-code parallelization mapping (keyed by code name);
             threaded to the wannierize, folding, and kcp.x steps.
     """
@@ -507,7 +501,7 @@ def MlwfInitialization(
         metadata={"call_link_label": "consistency_check"},
     )
 
-    outputs = MlwfInitializationOutputs(
+    return MlwfInitializationOutputs(
         remote_folder=dft_init["remote_folder"],
         evc_occupied1=fold["evc_occupied1"],
         evc_occupied2=fold["evc_occupied2"],
@@ -523,6 +517,3 @@ def MlwfInitialization(
         ).result,
         pw_scale_offset=check["offset"],
     )
-    if interpolation_kpoints is not None:
-        outputs["band_structure_dft"] = wannierize["bands"]["output_band"]
-    return outputs

@@ -286,15 +286,15 @@ class TestMlwfInitializationGraphBuild:
 
         assert_graph_roundtrips(wg)
 
-    def test_interpolation_kpoints_reaches_wannierize_and_declares_dft_bands(
+    def test_interpolation_kpoints_reaches_wannierize(
         self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, labelled_kpath
     ):
         """``interpolation_kpoints`` threads to the wannierize task's own input.
 
         Negative control: without it, the wannierize task's own socket
-        carries no value and the graph's ``band_structure_dft`` output has
-        no incoming link (the field exists on the schema either way — it
-        is ``NotRequired``, not absent from the TypedDict).
+        carries no value. Its pw.x explicit bands and wannier90-interpolated
+        bands are then discoverable off ``WannierizeBlocks``' own dumped
+        steps — this graph declares no named output for them.
         """
         from aiida.orm import List
 
@@ -321,11 +321,9 @@ class TestMlwfInitializationGraphBuild:
         wg_with_path = MlwfInitialization.build(**base_inputs, interpolation_kpoints=labelled_kpath)
         wannierize = wg_with_path.tasks["wannierize"]
         assert wannierize.inputs["interpolation_kpoints"]._links
-        assert wg_with_path.outputs["band_structure_dft"]._links
 
         wg_without_path = MlwfInitialization.build(**base_inputs)
         assert not wg_without_path.tasks["wannierize"].inputs["interpolation_kpoints"]._links
-        assert not wg_without_path.outputs["band_structure_dft"]._links
 
     def test_projwfc_code_chains_into_wannierize(
         self, mlwf_pdos_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, labelled_kpath
@@ -691,10 +689,13 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
 class TestDftBandStructureRouting:
     """``kpath`` reaches exactly one Wannierization's own ``interpolation_kpoints``.
 
-    The smooth-mesh wannierization when ``unfold_and_interpolate`` asks for
-    one, the initialization wannierization otherwise — never both, so the
-    outer ``band_structure_dft`` output has exactly one source. Built on
-    the same periodic-mlwfs route as ``TestKoopmansDSCFSmoothInterpolationBuild``.
+    A Wannierization is already running; its bands come along at no extra
+    cost, so ``kpath`` reaches every Wannierization the route builds — the
+    initialization one always, and the smooth-mesh one too when it runs —
+    rather than being routed to a single "the" DFT band structure. Neither
+    graph declares a named DFT-bands output: a consumer reads them off
+    each Wannierization's own dumped steps. Built on the same periodic-mlwfs
+    route as ``TestKoopmansDSCFSmoothInterpolationBuild``.
     """
 
     @staticmethod
@@ -718,9 +719,10 @@ class TestDftBandStructureRouting:
             smooth=smooth,
         )
 
-    def test_no_kpath_declares_no_dft_bands(
+    def test_no_kpath_reaches_neither_wannierization(
         self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh
     ):
+        """Negative control: no path means no interpolation input anywhere."""
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
         wg = KoopmansDSCFWorkflow.build(
@@ -737,9 +739,9 @@ class TestDftBandStructureRouting:
             kgrid=[2, 1, 1],
             kpoints=kmesh,
         )
-        assert not wg.outputs["band_structure_dft"]._links
+        assert not wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
 
-    def test_kpath_without_smooth_routes_to_the_initialization_wannierization(
+    def test_kpath_without_smooth_reaches_the_initialization_wannierization(
         self,
         periodic_ozone_structure,
         kcp_code,
@@ -757,21 +759,12 @@ class TestDftBandStructureRouting:
             kpath=labelled_kpath,
             smooth=False,
         )
-        # No smooth-mesh Wannierization runs; the initialization one is the
-        # graph's only source for the DFT band structure.
+        # No smooth-mesh Wannierization runs at all.
         names = [t.name for t in wg.tasks]
         assert "wannierize_smooth" not in names, names
-
-        # The coarse initialization actually samples kpath itself here
-        # (the reverse of the smooth-route case below, where it does not).
         assert wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
 
-        links = wg.outputs["band_structure_dft"]._links
-        assert len(links) == 1
-        assert links[0].from_task.name == "wannier_initialization"
-        assert links[0].from_socket._name == "band_structure_dft"
-
-    def test_kpath_with_smooth_routes_to_the_smooth_wannierization(
+    def test_kpath_with_smooth_reaches_both_wannierizations(
         self,
         periodic_ozone_structure,
         kcp_code,
@@ -780,6 +773,7 @@ class TestDftBandStructureRouting:
         kmesh,
         labelled_kpath,
     ):
+        """The denser mesh gets the path in addition to the coarse one, not instead of it."""
         wg = self._build(
             periodic_ozone_structure,
             kcp_code,
@@ -789,24 +783,8 @@ class TestDftBandStructureRouting:
             kpath=labelled_kpath,
             smooth=True,
         )
-        smooth_task = wg.tasks["wannierize_smooth"]
-        assert smooth_task.inputs["interpolation_kpoints"]._links
-
-        # `_mlwf_interpolation_kpoints` withholds kpath from the coarse
-        # initialization Wannierization once the smooth-mesh one samples
-        # it instead — never both (`_dft_band_structure_from_route`'s
-        # own precondition).
-        assert not wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
-
-        # `_wannierize_smooth_mesh` is a plain assembly helper, not a
-        # `@task.graph` boundary, so the output is the bare
-        # `WannierizeBlocks` socket it aliases (``bands.output_band``), not
-        # a renamed one — unlike the non-smooth route, which crosses
-        # `MlwfInitialization`'s own declared ``band_structure_dft`` output.
-        links = wg.outputs["band_structure_dft"]._links
-        assert len(links) == 1
-        assert links[0].from_task.name == "wannierize_smooth"
-        assert links[0].from_socket._name == "output_band"
+        assert wg.tasks["wannierize_smooth"].inputs["interpolation_kpoints"]._links
+        assert wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
 
 
 class TestProjwfcCodeThreadsThroughDSCF:
