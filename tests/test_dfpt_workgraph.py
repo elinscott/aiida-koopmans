@@ -1218,6 +1218,47 @@ class TestRunDFPTSmoothInterpolation:
         band_links = wg.outputs.bands._links
         assert [link.from_task.name for link in band_links] == ["smooth_band_structure"]
 
+    def test_a_multi_block_manifold_merges_both_hamiltonians_in_one_order(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
+    ):
+        """The band order kcw.x was given is the band order the interpolation assumes.
+
+        kcw.x reads one file set per manifold, merged block-diagonally in
+        the caller's label order, and the interpolation merges the same
+        blocks again for its own DFT Hamiltonians. Both merges key their
+        inputs ``b00``, ``b01``, ... off that one list; keying either off
+        anything else would leave the Koopmans Hamiltonian's rows and the
+        DFT Hamiltonian's rows describing different Wannier functions.
+        """
+        from tests.fixtures import block_wannierization
+
+        labels = ["occ_a", "occ_b"]
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={label: {"retrieved": occ_retrieved} for label in labels},
+            smooth_block_wannier={label: block_wannierization(label) for label in labels},
+            structure=silicon_structure,
+            occ_labels=labels,
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        # kcw.x's file set: one input per block, keyed by list position, so
+        # the merged Hamiltonian's rows follow ``labels``.
+        prepare = by_name["prepare_kcw_wannier_files"].inputs
+        assert "occ_b00" in prepare
+        assert "occ_b01" in prepare
+        assert "occ_b02" not in prepare
+
+        # The interpolation is handed that same list, and keys its own
+        # per-block merges off it.
+        smooth = by_name["smooth_band_structure"]
+        assert [str(label) for label in smooth.inputs["occ_labels"].value] == labels
+
     def test_the_hams_wigner_seitz_choice_reaches_the_interpolation(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
     ):
