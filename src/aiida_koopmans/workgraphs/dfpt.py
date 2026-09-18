@@ -992,7 +992,7 @@ def _resolve_smooth_interpolation(
     # check is its own contract but runs in a deferred body, after both
     # Wannierizations. Reading the caller's overrides here refuses the same
     # run before anything is submitted.
-    user_ham = dict((dict((kcw_overrides or {}).items()).get("ham") or {}).items())
+    user_ham = dict(((kcw_overrides or {}).get("ham") or {}).items())
     if "write_hr" in user_ham and not user_ham["write_hr"]:
         raise ValueError(
             "The smooth-interpolation band structure reads the Koopmans Hamiltonian kcw.x "
