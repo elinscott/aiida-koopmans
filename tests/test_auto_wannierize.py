@@ -792,7 +792,12 @@ class TestMergeWannierOutputParameters:
 
 
 class TestMergeSplitBlockProducts:
-    """Per-sub-block products merge block-diagonally in band order."""
+    """Per-sub-block products merge block-diagonally in band order.
+
+    The block's ``_u.mat`` is not among them: a block-diagonal gauge
+    describes a rotation within the split basis rather than the map from
+    the parent's bands, so it is composed elsewhere.
+    """
 
     def test_block_diagonal_merge(self, aiida_profile):
         """Two 2-WF sub-blocks merge into one 4-WF block-diagonal product set."""
@@ -804,7 +809,6 @@ class TestMergeSplitBlockProducts:
             generate_wannier_u_file_contents,
             parse_wannier_centres_file_contents,
             parse_wannier_hr_file_contents,
-            parse_wannier_u_file_contents,
         )
 
         rvect = np.array([[0, 0, 0], [1, 0, 0], [-1, 0, 0]])
@@ -832,12 +836,7 @@ class TestMergeSplitBlockProducts:
 
         merged = merge_split_block_products._callable(b00=_folder(1), b01=_folder(2))
 
-        umat, _ = parse_wannier_u_file_contents(merged["u_file"].get_content())
-        assert umat.shape == (2, 4, 4)
-        # The two sub-blocks occupy the diagonal 2x2 blocks; the off-diagonal
-        # blocks are exactly zero.
-        np.testing.assert_allclose(umat[:, :2, 2:], 0.0)
-        np.testing.assert_allclose(umat[:, 2:, :2], 0.0)
+        assert "u_file" not in merged
 
         ham, _, _ = parse_wannier_hr_file_contents(merged["hr_file"].get_content())
         assert ham.shape == (3, 4, 4)

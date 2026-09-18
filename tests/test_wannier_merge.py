@@ -272,15 +272,31 @@ def _random_unitary(rng, n: int) -> np.ndarray:
 
 
 def _staged_gauge(u_dis: np.ndarray, u_block: np.ndarray) -> np.ndarray:
-    """Rebuild the bands-to-Wannier gauge kcw.x forms from the staged pair.
+    """Rebuild the bands-to-Wannier gauge from the two-file form.
 
-    Both files are stored as ``(nkpts, num_wann, num_bands)``; the
-    disentanglement matrix maps bands onto the manifold and the block
-    gauge rotates within it.
+    Both files are stored as ``(nkpts, num_wann, num_bands)``; transposing
+    each into band-index-first order and multiplying gives the map from
+    bands to Wannier functions. The orientation is the one calibrated
+    against wannier90's own ``_u.mat`` and ``_centres.xyz``.
     """
-    bands_to_manifold = u_dis.transpose(0, 2, 1)
-    within_manifold = u_block.conj().transpose(0, 2, 1)
-    return np.einsum("kbn,knm->kbm", bands_to_manifold, within_manifold)
+    return np.einsum("kbn,knm->kbm", u_dis.transpose(0, 2, 1), u_block.transpose(0, 2, 1))
+
+
+def _wannier_centres(gauge: np.ndarray, overlaps: np.ndarray, bvectors: np.ndarray) -> np.ndarray:
+    """Wannier centres from a gauge and the Bloch overlaps it rotates.
+
+    ``r_n = -(1/Nk) sum_kb b Im ln (U_k^H M_kb U_k+b)_nn`` at unit shell
+    weight. Unlike a Hamiltonian rebuilt from the same gauge, this is not
+    invariant under transposing or conjugating it, so it tells two
+    orientations apart.
+    """
+    nk = gauge.shape[0]
+    centres = np.zeros((gauge.shape[2], 3))
+    for ik in range(nk):
+        for ib, bvec in enumerate(bvectors):
+            rotated = gauge[ik].conj().T @ overlaps[ik, ib] @ gauge[(ik + 1) % nk]
+            centres -= np.outer(np.angle(np.diag(rotated)), bvec)
+    return centres / nk
 
 
 class TestSplitUDis:
@@ -323,7 +339,7 @@ class TestSplitUDis:
         off = 0
         for width, gauge in zip(groups, gauges, strict=True):
             columns = split[:, :, off : off + width]
-            rotated = np.einsum("kbn,knm->kbm", columns, gauge.conj().transpose(0, 2, 1))
+            rotated = np.einsum("kbn,knm->kbm", columns, gauge.transpose(0, 2, 1))
             block = np.einsum("kbm,kb,kbn->kmn", rotated.conj(), eps.astype(complex), rotated)
             merged[:, off : off + width, off : off + width] = block
             off += width
@@ -339,6 +355,70 @@ class TestSplitUDis:
 
     def _gauge_files(self, gauges, kpts):
         return [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+
+    def _two_file_gauge(self, split, gauges, kpts):
+        """Build the same gauge via the independent two-file path."""
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(self._rotation_files(split), kpts)
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
+        )
+        return _staged_gauge(u_dis, u_block)
+
+    def _composed_gauge(self, split, gauges, kpts):
+        composed, _ = parse_wannier_u_file_contents(
+            compose_wannier_split_u_file_contents(
+                self._rotation_files(split), self._gauge_files(gauges, kpts), kpts
+            )
+        )
+        return composed.transpose(0, 2, 1)
+
+    def test_the_two_forms_build_the_same_gauge(self):
+        """The one-file and two-file forms must agree element by element.
+
+        They are assembled by different functions from the same inputs, so
+        this pins the composition where the Hamiltonian rebuild cannot: it
+        is invariant under transposing or conjugating the whole gauge, and
+        so cannot tell these orientations apart.
+        """
+        kpts, _, split, gauges = self._fixture()
+        np.testing.assert_allclose(
+            self._composed_gauge(split, gauges, kpts),
+            self._two_file_gauge(split, gauges, kpts),
+            atol=1e-9,
+        )
+
+    def test_the_composed_gauge_gives_the_right_centres(self):
+        """A transpose-sensitive anchor: the centres the gauge implies.
+
+        The Wannier centres follow from the gauge and the Bloch overlaps,
+        and change under an orientation the Hamiltonian rebuild would
+        accept. Computed off the two-file gauge and off the composed one,
+        they must agree; with the gauge conjugated they do not.
+        """
+        rng = np.random.default_rng(11)
+        kpts, _, split, gauges = self._fixture()
+        nk, nbands = self.NK, self.NBANDS
+        bvectors = np.array([[0.4, 0.0, 0.0], [0.0, 0.3, 0.0]])
+        overlaps = np.stack(
+            [np.stack([_random_unitary(rng, nbands) for _ in bvectors]) for _ in range(nk)]
+        )
+        reference = self._two_file_gauge(split, gauges, kpts)
+        composed = self._composed_gauge(split, gauges, kpts)
+        np.testing.assert_allclose(
+            _wannier_centres(composed, overlaps, bvectors),
+            _wannier_centres(reference, overlaps, bvectors),
+            atol=1e-8,
+        )
+        wrong = np.einsum("kbn->knb", composed.conj())
+        assert (
+            np.abs(
+                _wannier_centres(wrong, overlaps, bvectors)
+                - _wannier_centres(reference, overlaps, bvectors)
+            ).max()
+            > 1e-3
+        )
 
     def test_composed_u_reproduces_the_merged_hamiltonian(self):
         """The isolated form: one square ``_u.mat``, no disentanglement file."""
@@ -376,20 +456,26 @@ class TestSplitUDis:
         rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
         np.testing.assert_allclose(rebuilt, target, atol=1e-9)
 
-    def test_conjugating_the_group_gauge_wrongly_fails(self):
-        """The group gauge enters adjoint; taking it as written does not."""
-        _, eps, split, gauges = self._fixture()
-        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+    def test_conjugating_the_group_gauge_breaks_the_two_forms_agreement(self):
+        """The group gauge enters transposed, not adjoint.
+
+        The Hamiltonian rebuild cannot see this: it is invariant under
+        transposing or conjugating the whole gauge, which is why the
+        agreement between the two forms is the check that catches it.
+        """
+        kpts, _, split, gauges = self._fixture()
         rotations = [
             parse_wannier_amn_file_contents(c, check_square=False)
             for c in self._rotation_files(split)
         ]
         wrong = np.concatenate(
-            [np.einsum("kbn,knm->kbm", r, g) for r, g in zip(rotations, gauges, strict=True)],
+            [
+                np.einsum("kbn,knm->kbm", r, g.conj().transpose(0, 2, 1))
+                for r, g in zip(rotations, gauges, strict=True)
+            ],
             axis=2,
         )
-        rebuilt = np.einsum("kbm,kb,kbn->kmn", wrong.conj(), eps.astype(complex), wrong)
-        assert np.abs(rebuilt - target).max() > 1e-3
+        assert np.abs(wrong - self._two_file_gauge(split, gauges, kpts)).max() > 1e-3
 
     def test_dropping_the_split_rotation_fails(self):
         """The block-diagonal gauge alone is not the manifold's gauge."""

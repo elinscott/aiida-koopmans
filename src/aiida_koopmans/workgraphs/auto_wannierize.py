@@ -65,7 +65,6 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
     compose_wannier_split_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
-    merge_wannier_u_file_contents,
     parse_wannier_u_file_contents,
 )
 from aiida_koopmans.workgraphs.wannier90 import (
@@ -226,15 +225,19 @@ def extract_win_file(retrieved: orm.FolderData) -> orm.SinglefileData:
     return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
 
-@task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
+@task.calcfunction(outputs=["hr_file", "centres_file"])
 def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
     """Merge per-sub-block wannier90 products back into one block-wide set.
 
     ``retrieved`` holds the sub-block wannier90 ``retrieved`` folders, keyed
     so lexicographic order matches the band order of the groups (``b00``,
-    ``b01``, ...). The ``_u.mat`` / ``_hr.dat`` merges are block-diagonal and
-    the ``_centres.xyz`` centres are concatenated — see
+    ``b01``, ...). The ``_hr.dat`` merge is block-diagonal and the
+    ``_centres.xyz`` centres are concatenated — see
     :mod:`aiida_koopmans.workgraphs.utils.wannier_merge` for the invariants.
+    The block's ``_u.mat`` is not merged here: a block-diagonal one would
+    describe a gauge within the split basis rather than the map from the
+    parent's bands, so it is composed instead
+    (:func:`compose_split_gauge`).
     """
     folders = [retrieved[key] for key in sorted(retrieved)]
 
@@ -248,7 +251,6 @@ def merge_split_block_products(**retrieved: orm.FolderData) -> dict:
         return orm.SinglefileData(io.BytesIO(content.encode()), filename=f"{SEEDNAME}{suffix}")
 
     return {
-        "u_file": _single(merge_wannier_u_file_contents(_contents("_u.mat")), "_u.mat"),
         "hr_file": _single(merge_wannier_hr_file_contents(_contents("_hr.dat")), "_hr.dat"),
         "centres_file": _single(
             merge_wannier_centres_file_contents(_contents("_centres.xyz")), "_centres.xyz"

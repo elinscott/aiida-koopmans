@@ -215,9 +215,11 @@ def compose_wannier_split_u_file_contents(
 
     ``rotations`` are the per-group ``<seedname>_split.amn`` files in band
     order and ``gauges`` the matching per-group ``_u.mat`` files. Each group
-    contributes ``rotation @ gauge^H`` — the rotation maps the parent's
-    bands onto the group and the gauge rotates within it — and the groups
-    concatenate along the Wannier axis. The result is square exactly when
+    contributes ``rotation @ gauge^T`` — the rotation maps the parent's
+    bands onto the group and the gauge rotates within it, the transpose
+    taking the ``_u.mat`` layout (Wannier index first) into the ``.amn``
+    one (band index first) — and the groups concatenate along the Wannier
+    axis. The result is square exactly when
     the parent Wannierized every band it read, which is the only case this
     composition serves: a parent that disentangles keeps its rotation in a
     ``_u_dis.mat`` of its own
@@ -225,7 +227,7 @@ def compose_wannier_split_u_file_contents(
     """
     composed = np.concatenate(
         [
-            np.einsum("kbn,knm->kbm", rotation, gauge.conj().transpose(0, 2, 1))
+            np.einsum("kbn,knm->kbm", rotation, gauge.transpose(0, 2, 1))
             for rotation, gauge in zip(
                 _split_rotations(rotations),
                 [parse_wannier_u_file_contents(gauge)[0] for gauge in gauges],
