@@ -50,11 +50,12 @@ class TestKcwHamiltoniansInterpolateAsKcwDoes:
 
         kcw.x wrote both the Hamiltonian and the band structure in the same
         run, so this discriminates every convention the file crosses on its
-        way into the shared interpolator at once: R-vector ordering,
-        energy units (eV, not Ry), the Wigner-Seitz phase convention, and
-        which manifold's Wannier centres belong to which file. kcw.x prints
-        four decimals, so agreement below 1e-4 eV is agreement to the last
-        digit it reports.
+        way into the shared interpolator at once: R-vector ordering, energy
+        units (eV, not Ry), the Wigner-Seitz phase convention, the Wannier
+        centres' order, and the Monkhorst-Pack grid the Hamiltonian lives
+        on. The controls below break each of those and watch the agreement
+        go. kcw.x prints four decimals, so agreement below 1e-4 eV is
+        agreement to the last digit it reports.
         """
         interpolated = _interpolate(si_kcw_reference, manifold)
         printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS[manifold]]
@@ -76,6 +77,66 @@ class TestKcwHamiltoniansInterpolateAsKcwDoes:
         printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS["occ"]]
 
         assert np.abs(without - printed).max() > 0.1
+
+    @pytest.mark.parametrize("manifold", ["occ", "emp"])
+    def test_permuting_the_centres_does_not_give_those_eigenvalues(
+        self, si_kcw_reference: dict, manifold: str
+    ):
+        """Negative control: the centres reach the phase in the Hamiltonian's band order.
+
+        The centres enter only as differences, so a rigid shift of all of
+        them cancels and says nothing. Permuting them is what pins the
+        pairing with the Hamiltonian's rows, and it moves the bands by eV.
+        """
+        centres = np.roll(np.array(si_kcw_reference["centres"][manifold]), 1, axis=0)
+        permuted = ui_helpers.unfold_and_interpolate(
+            hr_content=(DATA_DIR / f"kcw_hr_{manifold}.dat").read_text(),
+            centers=centres,
+            cell=np.array(si_kcw_reference["cell"]),
+            kgrid=tuple(si_kcw_reference["kgrid"]),
+            kpath_kpts=np.array(si_kcw_reference["kpath_kpts"]),
+        )
+        printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS[manifold]]
+
+        assert np.abs(permuted - printed).max() > 0.1
+
+    def test_the_wrong_monkhorst_pack_grid_does_not_give_those_eigenvalues(
+        self, si_kcw_reference: dict
+    ):
+        """Negative control: ``kgrid`` selects the R-vectors, and the wrong one shows.
+
+        The grid is what turns the file's R-vectors into the primitive-cell
+        set the Fourier sum runs over, so reading the same file on a 1x1x1
+        grid keeps only the home cell and moves the bands by eV.
+        """
+        wrong = ui_helpers.unfold_and_interpolate(
+            hr_content=(DATA_DIR / "kcw_hr_occ.dat").read_text(),
+            centers=np.array(si_kcw_reference["centres"]["occ"]),
+            cell=np.array(si_kcw_reference["cell"]),
+            kgrid=(1, 1, 1),
+            kpath_kpts=np.array(si_kcw_reference["kpath_kpts"]),
+        )
+        printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS["occ"]]
+
+        assert np.abs(wrong - printed).max() > 0.1
+
+    def test_the_two_manifolds_hamiltonians_are_not_interchangeable(self, si_kcw_reference: dict):
+        """Negative control: the occupied and empty files are told apart by name alone.
+
+        Silicon's occupied and empty Wannier functions sit on the same bond
+        centres, so nothing else in this fixture would catch the two files
+        being swapped; the eigenvalues differ by 15 eV.
+        """
+        swapped = ui_helpers.unfold_and_interpolate(
+            hr_content=(DATA_DIR / "kcw_hr_emp.dat").read_text(),
+            centers=np.array(si_kcw_reference["centres"]["occ"]),
+            cell=np.array(si_kcw_reference["cell"]),
+            kgrid=tuple(si_kcw_reference["kgrid"]),
+            kpath_kpts=np.array(si_kcw_reference["kpath_kpts"]),
+        )
+        printed = np.array(si_kcw_reference["kcw_band_energies"])[:, MANIFOLD_BANDS["occ"]]
+
+        assert np.abs(swapped - printed).max() > 1.0
 
 
 class TestTheSmoothCorrectionReachesTheKcwHamiltonian:
