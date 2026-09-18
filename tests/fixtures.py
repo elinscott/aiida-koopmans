@@ -657,6 +657,24 @@ def mlwf_codes(aiida_localhost):
 
 
 @pytest.fixture
+def mlwf_pdos_codes(mlwf_codes, aiida_localhost):
+    """Extend ``mlwf_codes`` with a projwfc code for the projected-DOS flows."""
+    from aiida.common.exceptions import NotExistent
+    from aiida.orm import InstalledCode
+
+    try:
+        projwfc = InstalledCode.collection.get(label="mlwf-pjw")
+    except NotExistent:
+        projwfc = InstalledCode(
+            label="mlwf-pjw",
+            computer=aiida_localhost,
+            filepath_executable="/bin/true",
+            default_calc_job_plugin="quantumespresso.projwfc",
+        ).store()
+    return {**mlwf_codes, "projwfc": projwfc}
+
+
+@pytest.fixture
 def wannier_codes(aiida_localhost):
     """Return a codes dict of stand-in InstalledCode nodes for wannierisation graphs.
 

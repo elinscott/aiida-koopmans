@@ -56,6 +56,7 @@ from aiida_koopmans.variational_orbitals import (
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
+    WannierizeBlocksCodes,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -67,6 +68,7 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     expand_alphas_by_group,
     extract_self_hartree_from_kcp,
 )
+from aiida_koopmans.workgraphs.wannier90 import ProjwfcCode
 
 # ----------------------------------------------------------------------
 # Output / override typing
@@ -118,6 +120,9 @@ class DscfCodes(TypedDict):
     ``kcp`` runs every DSCF step; the remaining members exist only for the
     periodic Wannier-initialised route
     (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+    ``projwfc`` additionally needs a ``kpath`` and pseudos that support the
+    projected DOS (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`);
+    :func:`WannierizeBlocks` decides whether it actually runs.
     """
 
     kcp: Annotated[
@@ -131,6 +136,7 @@ class DscfCodes(TypedDict):
     wannier90: NotRequired[WannierRouteCode]
     wann2kcp: NotRequired[WannierRouteCode]
     merge_evc: NotRequired[WannierRouteCode]
+    projwfc: NotRequired[ProjwfcCode]
 
 
 class KoopmansDSCFOutputs(TypedDict):
@@ -183,6 +189,16 @@ class KoopmansDSCFOutputs(TypedDict):
     absolute energy scale — same convention as the DFPT route's kcw.x
     bands), ``band_structure_reference`` (their valence-band maximum, eV)
     and — unless the ``do_dos`` knob is off — ``dos``.
+
+    The same ``kpath`` also reaches every Wannierization this route runs
+    (the initialization one always, plus the denser smooth-interpolation
+    mesh when ``unfold_and_interpolate.smooth_int_factor`` asks for one),
+    so each publishes its own pw.x explicit band structure and per-block
+    wannier90-interpolated bands off its own dumped steps — not
+    re-exposed as a named output here; a consumer reads them the way any
+    :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
+    caller's bands are read (its ``bands``/``blocks[label]["interpolated_bands"]``
+    provenance, or the corresponding dumped step folder).
     """
 
     parameters: dict
@@ -1089,6 +1105,29 @@ def InitializeOrbitals(
     )
 
 
+def _mlwf_init_codes_for(codes: DscfCodes) -> Any:
+    """Return :func:`MlwfInitialization`'s codes namespace, from :class:`DscfCodes`.
+
+    Wires every code ``MlwfInitCodes`` requires — read off its own
+    ``__required_keys__`` rather than hard-coded, so the two TypedDicts can
+    never drift apart silently — through ``reference()``, mirroring
+    :func:`aiida_koopmans.workgraphs.dfpt._wannierize_codes_for_channel`.
+    ``projwfc`` (``MlwfInitCodes``' ``NotRequired`` member) rides along
+    unconditionally too: whether the nested ``WannierizeBlocks``' projected
+    DOS actually runs is that step's own entry decision, never a silent
+    skip decided by presence on ``codes``. Imports ``MlwfInitCodes``
+    locally: ``mlwf_init.py`` imports this module at load time, so a
+    module-scope import here would be circular.
+    """
+    from aiida_koopmans.workgraphs.mlwf_init import MlwfInitCodes
+
+    mlwf_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in MlwfInitCodes.__required_keys__
+    }
+    mlwf_codes["projwfc"] = reference(codes, "projwfc")
+    return cast("MlwfInitCodes", mlwf_codes)
+
+
 @task.graph
 def KoopmansDSCFWorkflow(
     codes: DscfCodes,
@@ -1190,7 +1229,10 @@ def KoopmansDSCFWorkflow(
     Wannier route can serve it — the molecular route has no Wannier
     basis to unfold. The ``unfold_and_interpolate`` knobs
     (``use_ws_distance``, ``do_dos``) and the ``plotting`` DOS window
-    shape the result.
+    shape the result. The same ``kpath`` also reaches every
+    Wannierization this route runs, so each publishes its own
+    base-functional band structure — a Wannierization already runs; its
+    bands come along at no extra cost.
 
     ``unfold_and_interpolate.smooth_int_factor`` above 1 adds the
     smooth-interpolation correction: the blocks are Wannierized a second
@@ -1324,17 +1366,7 @@ def KoopmansDSCFWorkflow(
     smooth_block_wannierizations = None
     if wannier_init:
         init = MlwfInitialization(
-            # Wired unconditionally: MlwfInitialization's own MlwfInitCodes
-            # requires all six, so a missing Wannier-route code surfaces
-            # there as the framework's structural missing-input error.
-            codes={
-                "pw": reference(codes, "pw"),
-                "pw2wannier90": reference(codes, "pw2wannier90"),
-                "wannier90": reference(codes, "wannier90"),
-                "wann2kcp": reference(codes, "wann2kcp"),
-                "merge_evc": reference(codes, "merge_evc"),
-                "kcp": reference(codes, "kcp"),
-            },
+            codes=_mlwf_init_codes_for(codes),
             structure=structure,
             supercell=run_structure,
             pseudos=pseudos,
@@ -1354,6 +1386,7 @@ def KoopmansDSCFWorkflow(
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
+            interpolation_kpoints=kpath,
             parallelization=parallelization,
             metadata={
                 "call_link_label": "wannier_initialization",
@@ -1379,6 +1412,7 @@ def KoopmansDSCFWorkflow(
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
             spin_polarized=spin_polarized,
+            interpolation_kpoints=kpath,
             parallelization=parallelization,
         )
     elif spin_polarized:
@@ -1702,10 +1736,28 @@ def KoopmansDSCFWorkflow(
     return outputs
 
 
+def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
+    """Return :func:`WannierizeBlocks`' codes namespace, from :class:`DscfCodes`.
+
+    Wires every code :class:`WannierizeBlocksCodes` requires off its own
+    ``__required_keys__``, mirroring :func:`_mlwf_init_codes_for` and
+    :func:`aiida_koopmans.workgraphs.dfpt._wannierize_codes_for_channel`.
+    ``projwfc`` rides along unconditionally too, on the same reasoning:
+    whether the projected DOS actually runs is :func:`WannierizeBlocks`'
+    own entry decision, never a silent skip decided by presence on
+    ``codes``.
+    """
+    wannierize_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+    }
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
+    return cast("WannierizeBlocksCodes", wannierize_codes)
+
+
 def _wannierize_smooth_mesh(
     *,
     do_smooth: bool,
-    codes: Any,
+    codes: DscfCodes,
     structure: orm.StructureData,
     blocks: Any,
     smooth_kpoints: Any,
@@ -1715,8 +1767,9 @@ def _wannierize_smooth_mesh(
     wannier_protocol: str | None,
     wannier_overrides: WannierizeOverrides | None,
     spin_polarized: bool,
+    interpolation_kpoints: orm.KpointsData | None,
     parallelization: ParallelizationDict | None,
-) -> Any:
+) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
     """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
 
     Returns ``None`` without ``do_smooth``. Called from the
@@ -1727,15 +1780,16 @@ def _wannierize_smooth_mesh(
     ``scf_remote_folder`` must be a converged scf on ``structure``:
     :func:`WannierizeBlocks` skips its own scf and runs only a fresh
     nscf on ``smooth_kpoints`` off it.
+
+    ``interpolation_kpoints``, given, also runs the pw.x explicit band
+    structure and the per-block wannier90 interpolation on this denser
+    mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps,
+    not re-exposed as a named output here.
     """
     if not do_smooth:
         return None
     smooth = WannierizeBlocks(
-        codes={
-            "pw": reference(codes, "pw"),
-            "pw2wannier90": reference(codes, "pw2wannier90"),
-            "wannier90": reference(codes, "wannier90"),
-        },
+        codes=_wannierize_blocks_codes_for(codes),
         structure=structure,
         blocks=blocks,
         kpoints=smooth_kpoints,
@@ -1745,6 +1799,7 @@ def _wannierize_smooth_mesh(
         protocol=wannier_protocol,
         overrides=wannier_overrides,
         spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+        interpolation_kpoints=interpolation_kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
     )

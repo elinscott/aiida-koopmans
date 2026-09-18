@@ -37,6 +37,7 @@ from tests.fixtures import (  # noqa: F401
     kpath,
     labelled_kpath,
     mlwf_codes,
+    mlwf_pdos_codes,
     nscf_remote,
     ozone_pseudo_family,
     ozone_pseudos,
