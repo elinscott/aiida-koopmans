@@ -20,25 +20,24 @@ added back in k-space.
 # ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the socket type-checker reads.
 
-import io
 from typing import Annotated, NotRequired, TypedDict
 
-import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
 from aiida_koopmans.spin import SpinChannel
-from aiida_koopmans.workgraphs.block_wannierize import (
-    WannierizeBlockOutputs,
-    collect_wannier_functions,
-)
+from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlockOutputs
 from aiida_koopmans.workgraphs.kcp_files import kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import (
     DensityOfStates,
     compute_dos_from_bands,
-    interpolate_bands,
 )
-from aiida_koopmans.workgraphs.utils.wannier_merge import merge_wannier_hr_file_contents
+from aiida_koopmans.workgraphs.ui.manifolds import (
+    build_band_structure,
+    extract_koopmans_hamiltonian,
+    interpolate_manifold,
+    merge_manifold_energies,
+)
 
 
 class DscfBandStructureOutputs(TypedDict):
@@ -59,105 +58,8 @@ class DscfBandStructureOutputs(TypedDict):
     dos: NotRequired[DensityOfStates]
 
 
-@task.calcfunction
-def extract_koopmans_hamiltonian(
-    retrieved: orm.FolderData, filename: orm.Str
-) -> orm.SinglefileData:
-    """Lift one printed Koopmans Hamiltonian out of a kcp.x retrieved folder.
-
-    A calcfunction, not a plain ``@task``: it takes an AiiDA data node,
-    which the PyFunction deserializer refuses.
-    """
-    name = filename.value
-    available = retrieved.base.repository.list_object_names()
-    if name not in available:
-        raise ValueError(
-            f"`{name}` is missing from the kcp.x retrieved folder (contents: "
-            f"{sorted(available)}). The final KI must run with `write_hr`."
-        )
-    content = retrieved.base.repository.get_object_content(name, mode="rb")
-    return orm.SinglefileData(io.BytesIO(content), filename=name)
-
-
-@task.calcfunction
-def manifold_hamiltonian(**hr_files: orm.SinglefileData) -> orm.SinglefileData:
-    """Combine a manifold's per-block Wannier Hamiltonians into one file.
-
-    Keys are read in sorted order, so a caller keying them ``b00``,
-    ``b01``, ... states the manifold's band order — the order
-    :func:`collect_wannier_functions` concatenates the centres in. The
-    combined Hamiltonian is block-diagonal: the blocks were Wannierized
-    independently, so no matrix element couples them.
-    """
-    contents = [hr_files[key].get_content("r") for key in sorted(hr_files)]
-    merged = merge_wannier_hr_file_contents(contents)
-    return orm.SinglefileData(io.StringIO(merged), filename="aiida_hr.dat")
-
-
-@task(outputs=["energies", "reference"])
-def merge_manifold_energies(
-    occupied: list[list[float]],
-    empty: list[list[float]],
-    occupied_down: list[list[float]] | None = None,
-    empty_down: list[list[float]] | None = None,
-    offset: float = 0.0,
-) -> dict:
-    """Concatenate per-manifold interpolated eigenvalues into one table.
-
-    Within a spin channel the occupied and empty energies join along the
-    band axis; both ``*_down`` inputs together add a leading spin axis.
-    ``offset`` shifts every energy, so the returned ``reference`` (the
-    highest occupied energy across the channels) is shifted by it too.
-    """
-    if (occupied_down is None) != (empty_down is None):
-        raise ValueError(
-            "A spin-polarized merge needs both `occupied_down` and `empty_down`; got one."
-        )
-    occ = np.asarray(occupied, dtype=float)
-    emp = np.asarray(empty, dtype=float)
-    if occ.shape[0] != emp.shape[0]:
-        raise ValueError(
-            f"The occupied and empty manifolds were interpolated along different k-paths "
-            f"({occ.shape[0]} vs {emp.shape[0]} k-points); they cannot be concatenated."
-        )
-    if occupied_down is None:
-        energies = np.concatenate([occ, emp], axis=1)
-        reference = float(occ.max())
-    else:
-        down = np.concatenate(
-            [np.asarray(occupied_down, dtype=float), np.asarray(empty_down, dtype=float)], axis=1
-        )
-        up = np.concatenate([occ, emp], axis=1)
-        if up.shape != down.shape:
-            raise ValueError(
-                f"The spin channels interpolated to different shapes ({up.shape} vs "
-                f"{down.shape}); they cannot be stacked into one band structure."
-            )
-        energies = np.stack([up, down])
-        reference = float(max(occ.max(), np.asarray(occupied_down, dtype=float).max()))
-    energies = energies + offset
-    reference = reference + offset
-    return {"energies": energies.tolist(), "reference": reference}
-
-
-@task.calcfunction
-def build_band_structure(
-    kpath: orm.KpointsData, energies: orm.List, reference: orm.Float
-) -> orm.BandsData:
-    """Attach interpolated eigenvalues (eV) to their k-path as a ``BandsData``.
-
-    ``reference`` is the valence-band maximum. It is an input rather than
-    part of the returned node so a consumer reading the bands off
-    provenance finds the energy they align to on the same calculation.
-    """
-    bands = orm.BandsData()
-    bands.set_kpointsdata(kpath)
-    bands.set_bands(np.asarray(energies.get_list(), dtype=float), units="eV")
-    return bands
-
-
 def _select_manifold(merge_groups: list, *, filled: bool, spin: SpinChannel) -> list:
-    """Return one ``(filled, spin)`` manifold's blocks from the group partition.
+    """Return one ``(filled, spin)`` manifold's block labels, in band order.
 
     Raises if the run has no projection manifold for the combination: every
     band structure needs an occupied and an empty manifold in each spin
@@ -176,83 +78,7 @@ def _select_manifold(merge_groups: list, *, filled: bool, spin: SpinChannel) -> 
             "spin channels, if polarized)."
         )
     [blocks] = matches
-    return blocks
-
-
-def _dft_hamiltonian(blocks: list, wannierizations, *, link_label: str):
-    """Return the socket carrying one manifold's DFT Hamiltonian file.
-
-    A one-block manifold is its block's ``_hr.dat`` unchanged; several
-    blocks are combined block-diagonally in band order.
-    """
-    hr_files = {
-        f"b{index:02d}": wannierizations[block["label"]]["hr_file"]
-        for index, block in enumerate(blocks)
-    }
-    if len(hr_files) == 1:
-        return next(iter(hr_files.values()))
-    return manifold_hamiltonian(**hr_files, metadata={"call_link_label": link_label}).result
-
-
-def _interpolate_manifold(
-    blocks: list,
-    *,
-    label: str,
-    filled: bool,
-    spin_index: int,
-    block_wannierizations,
-    smooth_block_wannierizations,
-    koopmans_ham_retrieved,
-    structure,
-    kpath,
-    kgrid: list[int],
-    use_ws_distance: bool,
-):
-    """Add the tasks interpolating one manifold; return its eigenvalue socket.
-
-    The centres come from each block's parsed wannier90 output, keyed so
-    lexicographic key order is the manifold's band order. A denser-mesh
-    wannierization switches on the smooth-interpolation correction, which
-    needs the coarse DFT Hamiltonian as well as the dense one; without it
-    neither reaches the interpolation.
-    """
-    hamiltonian = extract_koopmans_hamiltonian(
-        retrieved=koopmans_ham_retrieved,
-        filename=kcp_hamiltonian_filename(filled=filled, spin_index=spin_index),
-        metadata={"call_link_label": f"extract_{label}_hamiltonian"},
-    ).result
-
-    wannier_functions = collect_wannier_functions(
-        output_parameters={
-            f"b{index:02d}": block_wannierizations[block["label"]]["output_parameters"]
-            for index, block in enumerate(blocks)
-        },
-        metadata={"call_link_label": f"collect_{label}_centres"},
-    )
-
-    smooth_kwargs = {}
-    if smooth_block_wannierizations is not None:
-        smooth_kwargs = {
-            "dft_ham_file": _dft_hamiltonian(
-                blocks, block_wannierizations, link_label=f"merge_{label}_dft_hamiltonian"
-            ),
-            "dft_smooth_ham_file": _dft_hamiltonian(
-                blocks,
-                smooth_block_wannierizations,
-                link_label=f"merge_{label}_smooth_dft_hamiltonian",
-            ),
-        }
-
-    return interpolate_bands(
-        kc_ham_file=hamiltonian,
-        centres=wannier_functions["centres"],
-        structure=structure,
-        kpath=kpath,
-        kgrid=[int(n) for n in kgrid],
-        use_ws_distance=bool(use_ws_distance),
-        metadata={"call_link_label": f"interpolate_{label}"},
-        **smooth_kwargs,
-    ).result
+    return [block["label"] for block in blocks]
 
 
 @task.graph
@@ -309,16 +135,22 @@ def DscfBandStructureTask(
         for filled in (True, False):
             manifold = "occ" if filled else "emp"
             label = manifold if spin == SpinChannel.NONE else f"{manifold}_{spin.value}"
-            energies_by_manifold[filled, spin] = _interpolate_manifold(
+            hamiltonian = extract_koopmans_hamiltonian(
+                retrieved=koopmans_ham_retrieved,
+                filename=kcp_hamiltonian_filename(
+                    filled=filled,
+                    # kcp.x indexes its printed files 1 = up (and the single
+                    # channel of an unpolarized run), 2 = down.
+                    spin_index=2 if spin == SpinChannel.DOWN else 1,
+                ),
+                metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+            ).result
+            energies_by_manifold[filled, spin] = interpolate_manifold(
+                hamiltonian,
                 _select_manifold(merge_groups, filled=filled, spin=spin),
                 label=label,
-                filled=filled,
-                # kcp.x indexes its printed files 1 = up (and the single
-                # channel of an unpolarized run), 2 = down.
-                spin_index=2 if spin == SpinChannel.DOWN else 1,
                 block_wannierizations=block_wannierizations,
                 smooth_block_wannierizations=smooth_block_wannierizations,
-                koopmans_ham_retrieved=koopmans_ham_retrieved,
                 structure=structure,
                 kpath=kpath,
                 kgrid=kgrid,

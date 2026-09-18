@@ -453,7 +453,7 @@ class TestSmoothInterpolationWiring:
         import io
 
         from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
-        from aiida_koopmans.workgraphs.ui.dscf import manifold_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import manifold_hamiltonian
         from aiida_koopmans.workgraphs.utils.wannier_merge import (
             generate_wannier_hr_file_contents,
         )
@@ -486,7 +486,7 @@ class TestMergeManifoldEnergies:
 
     @staticmethod
     def _merge(**kwargs):
-        from aiida_koopmans.workgraphs.ui.dscf import merge_manifold_energies
+        from aiida_koopmans.workgraphs.ui.manifolds import merge_manifold_energies
 
         return merge_manifold_energies._callable(**kwargs)
 
@@ -521,6 +521,31 @@ class TestMergeManifoldEnergies:
     def test_half_a_spin_polarized_merge_is_refused(self):
         with pytest.raises(ValueError, match="both `occupied_down` and `empty_down`"):
             self._merge(occupied=[[1.0]], empty=[[5.0]], occupied_down=[[1.0]])
+
+    def test_a_down_channel_without_its_empty_manifold_is_refused(self):
+        """An occupied-only merge is no way past the check above.
+
+        With no ``empty`` the two ``*_down`` inputs no longer have to
+        arrive together for the shapes to work out, so the asymmetry would
+        otherwise be dropped rather than raised.
+        """
+        with pytest.raises(ValueError, match="both `occupied_down` and `empty_down`"):
+            self._merge(occupied=[[1.0]], occupied_down=[[0.9]])
+
+    def test_an_occupied_only_merge_returns_the_occupied_bands(self):
+        """A run with no empty projections still gets a band structure."""
+        merged = self._merge(occupied=[[1.0, 2.0], [1.1, 2.1]])
+        assert merged["energies"] == [[1.0, 2.0], [1.1, 2.1]]
+        assert merged["reference"] == pytest.approx(2.1)
+
+    def test_channels_with_different_manifolds_are_refused(self):
+        """One channel with an empty manifold and one without cannot stack.
+
+        The occupied-only path must not become a way to smuggle a
+        half-populated spin-polarized merge past the check above.
+        """
+        with pytest.raises(ValueError, match="same manifolds"):
+            self._merge(occupied=[[1.0]], occupied_down=[[0.9]], empty_down=[[4.0]])
 
     def test_manifolds_on_different_paths_are_refused(self):
         with pytest.raises(ValueError, match="different k-paths"):
@@ -742,7 +767,7 @@ class TestExtractKoopmansHamiltonian:
 
     def test_a_missing_file_names_the_folder_contents(self, aiida_profile):
         """The run that did not print them is what the reader has to fix."""
-        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import extract_koopmans_hamiltonian
 
         retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
         with pytest.raises(ValueError, match=r"ham_emp_1\.dat"):
@@ -752,7 +777,7 @@ class TestExtractKoopmansHamiltonian:
 
     def test_a_present_file_comes_out_under_its_own_name(self, aiida_profile):
         """Negative control: the same folder yields the file it does hold."""
-        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import extract_koopmans_hamiltonian
 
         retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
         lifted = extract_koopmans_hamiltonian._callable(
