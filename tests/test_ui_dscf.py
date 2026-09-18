@@ -522,6 +522,21 @@ class TestMergeManifoldEnergies:
         with pytest.raises(ValueError, match="both `occupied_down` and `empty_down`"):
             self._merge(occupied=[[1.0]], empty=[[5.0]], occupied_down=[[1.0]])
 
+    def test_an_occupied_only_merge_returns_the_occupied_bands(self):
+        """A run with no empty projections still gets a band structure."""
+        merged = self._merge(occupied=[[1.0, 2.0], [1.1, 2.1]])
+        assert merged["energies"] == [[1.0, 2.0], [1.1, 2.1]]
+        assert merged["reference"] == pytest.approx(2.1)
+
+    def test_channels_with_different_manifolds_are_refused(self):
+        """One channel with an empty manifold and one without cannot stack.
+
+        The occupied-only path must not become a way to smuggle a
+        half-populated spin-polarized merge past the check above.
+        """
+        with pytest.raises(ValueError, match="same manifolds"):
+            self._merge(occupied=[[1.0]], occupied_down=[[0.9]], empty_down=[[4.0]])
+
     def test_manifolds_on_different_paths_are_refused(self):
         with pytest.raises(ValueError, match="different k-paths"):
             self._merge(occupied=[[1.0], [1.1]], empty=[[5.0]])

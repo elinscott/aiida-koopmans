@@ -77,13 +77,19 @@ def merge_manifold_energies(
 
     Within a spin channel the occupied and empty energies join along the
     band axis; both ``*_down`` inputs together add a leading spin axis.
-    A run with no empty manifold passes ``occupied`` alone. ``offset``
-    shifts every energy, so the returned ``reference`` (the highest
-    occupied energy across the channels) is shifted by it too.
+    A run with no empty manifold passes ``occupied`` alone, and then
+    ``empty_down`` must be absent too. ``offset`` shifts every energy, so
+    the returned ``reference`` (the highest occupied energy across the
+    channels) is shifted by it too.
     """
-    if (occupied_down is None) != (empty_down is None) and empty is not None:
+    if (occupied_down is None) != (empty_down is None):
         raise ValueError(
             "A spin-polarized merge needs both `occupied_down` and `empty_down`; got one."
+        )
+    if empty is None and empty_down is not None:
+        raise ValueError(
+            "The spin channels must have the same manifolds; `empty_down` was given "
+            "without `empty`."
         )
     occ = np.asarray(occupied, dtype=float)
 
