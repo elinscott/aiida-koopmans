@@ -166,6 +166,24 @@ SEEDNAME = "aiida"
 _REQUIRED_SUFFIXES = ("_u.mat", "_hr.dat", "_centres.xyz")
 _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 
+# The per-block socket each product file arrives on
+# (:class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlockOutputs`),
+# and the seedname suffix it carries. Every block emits the first three; a
+# block that disentangled also emits ``u_dis_file``.
+_FILE_SOCKET_SUFFIXES = {
+    "u_file": "_u.mat",
+    "hr_file": "_hr.dat",
+    "centres_file": "_centres.xyz",
+    "u_dis_file": "_u_dis.mat",
+}
+
+# How a per-block file input to :func:`prepare_kcw_wannier_files` is keyed:
+# ``<manifold>_b<NN>_<kind>``, e.g. ``occ_b00_u``. The kind carries no
+# underscore, so the key splits unambiguously on its last one, and the
+# lexicographic order of the ``<manifold>_b<NN>`` prefixes is the band order
+# within each manifold.
+_FILE_KINDS = {"u": "u_file", "hr": "hr_file", "centres": "centres_file", "udis": "u_dis_file"}
+
 
 Wann2kcStep = task(Wann2kcCalculation)
 KcwScreenStep = task(KcwScreenCalculation)
@@ -483,27 +501,74 @@ class ManifoldBlocks(TypedDict):
     alpha_guess: NotRequired[list[float] | None]
 
 
-def _read_block_files(folder: orm.FolderData, manifold: str) -> dict[str, bytes]:
-    """Read one block's Wannier90 products out of its ``retrieved`` folder.
+def _group_block_files(
+    files: dict[str, orm.SinglefileData], manifold: str
+) -> list[dict[str, orm.SinglefileData]]:
+    """Group one manifold's flat per-block file inputs into per-block mappings.
 
-    Returns the file contents keyed by suffix (``_u.mat`` etc.).
-    ``_u_dis.mat`` is included when present; the required products raise
-    when absent.
+    ``files`` is keyed ``<manifold>_b<NN>_<kind>``; the returned list is
+    ordered by the ``<manifold>_b<NN>`` prefix, which is the band order
+    within the manifold, and each entry maps the socket name
+    (``u_file`` etc.) to its node. Raises when a block is missing one of
+    the three products every wannier90 run writes.
     """
-    names = set(folder.base.repository.list_object_names())
-    contents: dict[str, bytes] = {}
-    for suffix in _REQUIRED_SUFFIXES + _OPTIONAL_SUFFIXES:
-        src_name = f"{SEEDNAME}{suffix}"
-        if src_name not in names:
-            if suffix in _OPTIONAL_SUFFIXES:
-                continue
+    blocks: dict[str, dict[str, orm.SinglefileData]] = {}
+    for key in sorted(files):
+        prefix, _, kind = key.rpartition("_")
+        if kind not in _FILE_KINDS:
             raise ValueError(
-                f"``{src_name}`` is missing from a {manifold}-manifold wannier90 "
-                "retrieved folder. The wannier90 runs feeding a DFPT chain must set "
+                f"``{key}`` does not name a Wannier90 product: expected a "
+                f"``<manifold>_b<NN>_<kind>`` key with kind in {sorted(_FILE_KINDS)}."
+            )
+        blocks.setdefault(prefix, {})[_FILE_KINDS[kind]] = files[key]
+    grouped = [blocks[prefix] for prefix in sorted(blocks)]
+    for block in grouped:
+        missing = [socket for socket in _FILE_SOCKET_SUFFIXES if socket not in block]
+        missing = [socket for socket in missing if socket != "u_dis_file"]
+        if missing:
+            raise ValueError(
+                f"A {manifold}-manifold block reached the kcw.x staging without "
+                f"{missing}. The wannier90 runs feeding a DFPT chain must set "
                 "``write_u_matrices = True`` and ``write_xyz = True``."
             )
-        contents[suffix] = folder.base.repository.get_object_content(src_name, mode="rb")
-    return contents
+    return grouped
+
+
+def _staging_file_inputs(
+    block_wannier: Mapping[str, Any],
+    occ_labels: list,
+    emp_labels: list | None,
+    has_disentangle: bool,
+) -> dict[str, Any]:
+    """Wire each block's product files into :func:`prepare_kcw_wannier_files` kwargs.
+
+    Reads the per-block ``u_file`` / ``hr_file`` / ``centres_file``
+    sockets rather than the block's ``retrieved`` folder: a split block has
+    no retrieved folder of its final gauge, while these sockets carry the
+    final gauge in every mode. ``u_dis_file`` is wired for the one block
+    that has one — the last empty block, under ``has_disentangle``, the
+    same condition :func:`_manifold_u_dis` requires the file under. Wiring
+    it elsewhere would pass an unpopulated socket, which AiiDA's dynamic
+    port refuses.
+    """
+    inputs: dict[str, Any] = {}
+    for manifold, labels in (("occ", occ_labels), ("emp", emp_labels or [])):
+        for i, label in enumerate(labels):
+            block = block_wannier[str(label)]
+            for kind, socket in _FILE_KINDS.items():
+                if socket != "u_dis_file":
+                    inputs[f"{manifold}_b{i:02d}_{kind}"] = block[socket]
+    if emp_labels and has_disentangle:
+        last = len(emp_labels) - 1
+        inputs[f"emp_b{last:02d}_udis"] = block_wannier[str(emp_labels[last])]["u_dis_file"]
+    return inputs
+
+
+def _block_file_contents(block: dict[str, orm.SinglefileData]) -> dict[str, bytes]:
+    """Read one block's Wannier90 product files, keyed by seedname suffix."""
+    return {
+        _FILE_SOCKET_SUFFIXES[socket]: node.get_content(mode="rb") for socket, node in block.items()
+    }
 
 
 def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: str) -> None:
@@ -525,8 +590,8 @@ def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: 
     if "_u_dis.mat" not in blocks[-1]:
         raise ValueError(
             f"The {manifold} manifold is disentangled ({nbnd} bands for {num_wann} "
-            "Wannier functions) but its last block's wannier90 retrieved folder holds "
-            f"no ``{SEEDNAME}_u_dis.mat``."
+            "Wannier functions) but its last block emitted no "
+            f"``{SEEDNAME}_u_dis.mat``."
         )
     if len(blocks) > 1:
         blocks[-1]["_u_dis.mat"] = extend_wannier_u_dis_file_content(
@@ -561,42 +626,45 @@ def _merged_manifold_files(
 
 
 @task.calcfunction(outputs=["wannier_files"])
-def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **retrieved: orm.FolderData) -> dict:
+def prepare_kcw_wannier_files(nbnd_emp: int | None = None, **files: orm.SinglefileData) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
     Collects the Wannier90 products (``aiida_u.mat`` / ``aiida_hr.dat`` /
-    ``aiida_centres.xyz``, requiring the wannier90 runs to have set
-    ``write_u_matrices`` and ``write_xyz``) out of the per-block
-    ``retrieved`` folders, merges multi-block manifolds into one file set,
-    and renames the empty-manifold files to kcw.x's hard-coded
-    ``<seedname>_emp_*`` convention.
+    ``aiida_centres.xyz``, plus ``aiida_u_dis.mat`` for a disentangled
+    block) off the per-block file sockets, merges multi-block manifolds
+    into one file set, and renames the empty-manifold files to kcw.x's
+    hard-coded ``<seedname>_emp_*`` convention.
 
     Args:
         nbnd_emp: total number of empty bands (``nbnd - nocc``). Required to
             stage a merged ``aiida_emp_u_dis.mat`` when the empty manifold is
             disentangled; ignored otherwise.
-        retrieved: the per-block wannier90 ``retrieved`` folders, keyed
-            ``occ_*`` / ``emp_*`` with the *lexicographic* key order matching
-            the band order within each manifold (e.g. ``occ_b00``,
+        files: the per-block Wannier90 product files, keyed
+            ``<manifold>_b<NN>_<kind>`` — manifold ``occ`` or ``emp``, kind
+            one of ``u`` / ``hr`` / ``centres`` / ``udis`` — with the
+            *lexicographic* order of the ``<manifold>_b<NN>`` prefixes
+            matching the band order within each manifold (``occ_b00``,
             ``occ_b01``, ...).
     """
-    occ_folders = [retrieved[key] for key in sorted(retrieved) if key.startswith("occ")]
-    emp_folders = [retrieved[key] for key in sorted(retrieved) if key.startswith("emp")]
-    if not occ_folders:
+    occ_files = {key: node for key, node in files.items() if key.startswith("occ")}
+    emp_files = {key: node for key, node in files.items() if key.startswith("emp")}
+    if not occ_files:
         raise ValueError(
-            "prepare_kcw_wannier_files needs at least one occupied-manifold retrieved "
-            "folder (an ``occ_*``-keyed input)."
+            "prepare_kcw_wannier_files needs at least one occupied-manifold block "
+            "(``occ_*``-keyed file inputs)."
         )
 
     merged = orm.FolderData()
-    manifolds: list[tuple[str, str, list[orm.FolderData], int | None]] = [
-        ("", "occupied", occ_folders, None)
+    manifolds: list[tuple[str, str, dict[str, orm.SinglefileData], int | None]] = [
+        ("", "occupied", occ_files, None)
     ]
-    if emp_folders:
+    if emp_files:
         nbnd = None if nbnd_emp is None else int(nbnd_emp)
-        manifolds.append(("_emp", "empty", emp_folders, nbnd))
-    for rename, manifold, folders, nbnd in manifolds:
-        blocks = [_read_block_files(folder, manifold) for folder in folders]
+        manifolds.append(("_emp", "empty", emp_files, nbnd))
+    for rename, manifold, manifold_files, nbnd in manifolds:
+        blocks = [
+            _block_file_contents(block) for block in _group_block_files(manifold_files, manifold)
+        ]
         for suffix, content in _merged_manifold_files(blocks, nbnd, manifold).items():
             merged.base.repository.put_object_from_bytes(content, f"{SEEDNAME}{rename}{suffix}")
 
@@ -642,9 +710,11 @@ def RunDFPT(
             *wholesale*. A nested sub-graph's dynamic namespace has no
             per-key sockets until it runs, so callers must not subscript
             into it; this graph picks blocks out by label in its own
-            deferred body (the ``FoldToSupercell`` pattern). Each entry's
-            ``retrieved`` folder must hold ``aiida_u.mat`` /
-            ``aiida_hr.dat`` / ``aiida_centres.xyz``.
+            deferred body (the ``FoldToSupercell`` pattern). Read off each
+            entry: the ``u_file`` / ``hr_file`` / ``centres_file`` product
+            sockets, and ``u_dis_file`` when the block disentangled. These
+            carry the block's *final* gauge whether or not it was split,
+            unlike its ``retrieved`` folder.
         occ_labels: the occupied-manifold block labels, in band order.
             Manifold membership and band order are the caller's structural
             knowledge (its own block lists); the file merge keys each
@@ -756,15 +826,9 @@ def RunDFPT(
         ),
     }
 
-    prep_inputs: dict[str, Any] = {
-        f"occ_b{i:02d}": block_wannier[str(label)]["retrieved"]
-        for i, label in enumerate(occ_labels)
-    }
-    if emp_labels is not None:
-        for i, label in enumerate(emp_labels):
-            prep_inputs[f"emp_b{i:02d}"] = block_wannier[str(label)]["retrieved"]
-        if nbnd_emp is not None:
-            prep_inputs["nbnd_emp"] = nbnd_emp
+    prep_inputs = _staging_file_inputs(block_wannier, occ_labels, emp_labels, has_disentangle)
+    if emp_labels and nbnd_emp is not None:
+        prep_inputs["nbnd_emp"] = nbnd_emp
     wannier_files = prepare_kcw_wannier_files(
         **prep_inputs,
         metadata={"call_link_label": "prepare_kcw_wannier_files"},
