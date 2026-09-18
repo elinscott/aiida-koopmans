@@ -876,6 +876,7 @@ def RunDFPT(
         **user["ham"],
         **owned("kcw.HAM", {"do_bands": do_bands}),
     }
+    _require_written_hamiltonian(ham_namelist, smooth_block_wannier)
     ham_inputs: dict[str, Any] = {
         "code": kcw_code,
         "parameters": {"CONTROL": control, "WANNIER": wannier, "HAM": ham_namelist},
@@ -990,6 +991,26 @@ def _resolve_smooth_interpolation(
             "`smooth_kpoints` / `smooth_mp_grid` and read kcw.x's own interpolated bands."
         )
     return True
+
+
+def _require_written_hamiltonian(ham_namelist: dict[str, Any], smooth_block_wannier: Any) -> None:
+    """Check the ham step prints the Hamiltonian the smooth interpolation reads.
+
+    ``HAM.write_hr`` is a seeded default, so a caller may set it false;
+    doing that under the smooth-interpolation method leaves the
+    interpolation with no Hamiltonian to read.
+
+    Raises:
+        ValueError: If a denser-mesh wannierization is given and
+            ``HAM.write_hr`` is off.
+    """
+    if smooth_block_wannier is None or ham_namelist["write_hr"]:
+        return
+    raise ValueError(
+        "The smooth-interpolation band structure reads the Koopmans Hamiltonian kcw.x "
+        "prints under `HAM.write_hr`, and `kcw.ham.write_hr` is set to false. Drop that "
+        "keyword, or drop the denser mesh."
+    )
 
 
 def _require_smooth_interpolation_inputs(

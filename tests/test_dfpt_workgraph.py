@@ -1246,6 +1246,52 @@ class TestRunDFPTSmoothInterpolation:
 
         assert smooth.inputs["use_ws_distance"].value is False
 
+    def test_turning_write_hr_off_under_the_method_is_refused(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
+    ):
+        """``HAM.write_hr`` is the caller's to set, and the method cannot run without it.
+
+        It is a seeded default rather than a route-owned keyword, so
+        without this check the graph builds and fails only once the ham
+        step has run and its retrieved folder turns out to hold no
+        Hamiltonian.
+        """
+        from tests.fixtures import block_wannierization
+
+        with pytest.raises(ValueError, match="write_hr"):
+            RunDFPT.build(
+                kcw_code=dfpt_codes["kcw"],
+                nscf_remote_folder=nscf_remote,
+                block_wannier={"occ": {"retrieved": occ_retrieved}},
+                smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
+                structure=silicon_structure,
+                occ_labels=["occ"],
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                bands_kpoints=bands_path,
+                kcw_overrides={"ham": {"write_hr": False}},
+            )
+
+    def test_turning_write_hr_off_without_the_method_still_builds(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path
+    ):
+        """Negative control: the keyword stays the caller's on a run that reads no file."""
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": {"retrieved": occ_retrieved}},
+            occ_labels=["occ"],
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+            kcw_overrides={"ham": {"write_hr": False}},
+        )
+
+        ham_params = {t.name: t for t in wg.tasks}["ham"].inputs["parameters"].value
+        assert ham_params["HAM"]["write_hr"] is False
+
     def test_a_denser_wannierization_without_a_cell_is_refused(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path
     ):

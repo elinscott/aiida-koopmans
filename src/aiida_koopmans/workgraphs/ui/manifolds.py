@@ -8,8 +8,10 @@ denser-mesh Wannierization is supplied — and concatenate the manifolds
 into one ``BandsData``.
 
 Which file holds the Koopmans Hamiltonian, and how the manifolds are
-partitioned, is the route's own knowledge: :mod:`.dscf` reads kcp.x's
-supercell ``ham_*.dat`` files, :mod:`.dfpt` kcw.x's ``*.kcw_hr_*.dat``.
+partitioned, is the route's own knowledge:
+:mod:`aiida_koopmans.workgraphs.ui.dscf` reads kcp.x's supercell
+``ham_*.dat`` files, :mod:`aiida_koopmans.workgraphs.ui.dfpt` kcw.x's
+``*.kcw_hr_*.dat``.
 """
 
 # No ``from __future__ import annotations``: stringified annotations hide
