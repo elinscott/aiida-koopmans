@@ -286,6 +286,47 @@ class TestMlwfInitializationGraphBuild:
 
         assert_graph_roundtrips(wg)
 
+    def test_interpolation_kpoints_reaches_wannierize_and_declares_dft_bands(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, labelled_kpath
+    ):
+        """``interpolation_kpoints`` threads to the wannierize task's own input.
+
+        Negative control: without it, the wannierize task's own socket
+        carries no value and the graph's ``band_structure_dft`` output has
+        no incoming link (the field exists on the schema either way — it
+        is ``NotRequired``, not absent from the TypedDict).
+        """
+        from aiida.orm import List
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+        base_inputs = {
+            "codes": {**mlwf_codes, "kcp": mlwf_codes["pw"]},
+            "structure": periodic_ozone_structure,
+            "supercell": supercell,
+            "pseudos": ozone_real_pseudos,
+            "blocks": _ozone_blocks(),
+            "kpoints": kmesh,
+            "kgrid": [2, 1, 1],
+            "nelec": 36,
+            "nelup": 18,
+            "neldw": 18,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 20,
+            "pseudo_family": "unused-here",
+        }
+
+        wg_with_path = MlwfInitialization.build(**base_inputs, interpolation_kpoints=labelled_kpath)
+        wannierize = wg_with_path.tasks["wannierize"]
+        assert wannierize.inputs["interpolation_kpoints"]._links
+        assert wg_with_path.outputs["band_structure_dft"]._links
+
+        wg_without_path = MlwfInitialization.build(**base_inputs)
+        assert not wg_without_path.tasks["wannierize"].inputs["interpolation_kpoints"]._links
+        assert not wg_without_path.outputs["band_structure_dft"]._links
+
 
 class TestKoopmansDSCFPeriodicMlwfsBuild:
     def test_outer_graph_takes_the_wannier_init_route(
@@ -580,6 +621,117 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
             smooth=True,
         )
         assert_graph_roundtrips(wg)
+
+
+class TestDftBandStructureRouting:
+    """``kpath`` reaches exactly one Wannierization's own ``interpolation_kpoints``.
+
+    The smooth-mesh wannierization when ``unfold_and_interpolate`` asks for
+    one, the initialization wannierization otherwise — never both, so the
+    outer ``band_structure_dft`` output has exactly one source. Built on
+    the same periodic-mlwfs route as ``TestKoopmansDSCFSmoothInterpolationBuild``.
+    """
+
+    @staticmethod
+    def _build(
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        *,
+        kpath,
+        smooth: bool,
+    ):
+        return TestKoopmansDSCFSmoothInterpolationBuild._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            kpath,
+            smooth=smooth,
+        )
+
+    def test_no_kpath_declares_no_dft_bands(
+        self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh
+    ):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        wg = KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={**mlwf_codes, "kcp": kcp_code},
+            blocks=_ozone_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+        )
+        assert not wg.outputs["band_structure_dft"]._links
+
+    def test_kpath_without_smooth_routes_to_the_initialization_wannierization(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            kpath=labelled_kpath,
+            smooth=False,
+        )
+        # No smooth-mesh Wannierization runs; the initialization one is the
+        # graph's only source for the DFT band structure.
+        names = [t.name for t in wg.tasks]
+        assert "wannierize_smooth" not in names, names
+
+        links = wg.outputs["band_structure_dft"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "wannier_initialization"
+        assert links[0].from_socket._name == "band_structure_dft"
+
+    def test_kpath_with_smooth_routes_to_the_smooth_wannierization(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            kpath=labelled_kpath,
+            smooth=True,
+        )
+        smooth_task = wg.tasks["wannierize_smooth"]
+        assert smooth_task.inputs["interpolation_kpoints"]._links
+
+        # `_wannierize_smooth_mesh` is a plain assembly helper, not a
+        # `@task.graph` boundary, so the output is the bare
+        # `WannierizeBlocks` socket it aliases (``bands.output_band``), not
+        # a renamed one — unlike the non-smooth route, which crosses
+        # `MlwfInitialization`'s own declared ``band_structure_dft`` output.
+        links = wg.outputs["band_structure_dft"]._links
+        assert len(links) == 1
+        assert links[0].from_task.name == "wannierize_smooth"
+        assert links[0].from_socket._name == "output_band"
 
 
 class TestWannierOverridesThreading:

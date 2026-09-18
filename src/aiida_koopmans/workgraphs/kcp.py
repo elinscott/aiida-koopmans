@@ -183,6 +183,17 @@ class KoopmansDSCFOutputs(TypedDict):
     absolute energy scale — same convention as the DFPT route's kcw.x
     bands), ``band_structure_reference`` (their valence-band maximum, eV)
     and — unless the ``do_dos`` knob is off — ``dos``.
+
+    The same ``kpath`` also adds ``band_structure_dft``: the pw.x explicit
+    band structure of the base functional, off whichever Wannierization
+    actually samples ``kpath`` (the denser smooth-interpolation mesh when
+    ``unfold_and_interpolate.smooth_int_factor`` asks for one, the
+    initialization mesh otherwise — never both). Already on pw.x's own
+    absolute energy scale, so it needs no offset to overlay against
+    ``band_structure``. The per-block wannier90-interpolated counterpart
+    rides ``block_wannierizations[label]["interpolated_bands"]`` (or, on
+    the smooth route, the denser mesh's own per-block namespace, not
+    separately exposed here).
     """
 
     parameters: dict
@@ -198,6 +209,7 @@ class KoopmansDSCFOutputs(TypedDict):
     merge_groups: NotRequired[list]
     band_structure: NotRequired[orm.BandsData]
     band_structure_reference: NotRequired[float]
+    band_structure_dft: NotRequired[orm.BandsData]
     dos: NotRequired[DensityOfStates]
 
 
@@ -1190,7 +1202,9 @@ def KoopmansDSCFWorkflow(
     Wannier route can serve it — the molecular route has no Wannier
     basis to unfold. The ``unfold_and_interpolate`` knobs
     (``use_ws_distance``, ``do_dos``) and the ``plotting`` DOS window
-    shape the result.
+    shape the result. The same ``kpath`` also carries the base-functional
+    band structure along, out of whichever Wannierization samples it (see
+    ``band_structure_dft`` on :class:`KoopmansDSCFOutputs`).
 
     ``unfold_and_interpolate.smooth_int_factor`` above 1 adds the
     smooth-interpolation correction: the blocks are Wannierized a second
@@ -1322,6 +1336,12 @@ def KoopmansDSCFWorkflow(
     # The same blocks Wannierized on the denser mesh, when the
     # smooth-interpolation correction was asked for.
     smooth_block_wannierizations = None
+    # The DFT (base-functional) band structure along `kpath`: pw.x explicit
+    # bands from whichever Wannierization actually samples `kpath` (the
+    # smooth-mesh one when it runs, the initialization one otherwise —
+    # never both, so there is one DFT band structure per run).
+    dft_band_structure = None
+    mlwf_interpolation_kpoints = _mlwf_interpolation_kpoints(kpath, ui_do_smooth=ui_do_smooth)
     if wannier_init:
         init = MlwfInitialization(
             # Wired unconditionally: MlwfInitialization's own MlwfInitCodes
@@ -1354,6 +1374,7 @@ def KoopmansDSCFWorkflow(
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
+            interpolation_kpoints=mlwf_interpolation_kpoints,
             parallelization=parallelization,
             metadata={
                 "call_link_label": "wannier_initialization",
@@ -1367,7 +1388,7 @@ def KoopmansDSCFWorkflow(
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
         pw_scale_offset = init["pw_scale_offset"]
-        smooth_block_wannierizations = _wannierize_smooth_mesh(
+        smooth_result = _wannierize_smooth_mesh(
             do_smooth=ui_do_smooth,
             codes=codes,
             structure=structure,
@@ -1379,7 +1400,14 @@ def KoopmansDSCFWorkflow(
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
             spin_polarized=spin_polarized,
+            interpolation_kpoints=kpath if ui_do_smooth else None,
             parallelization=parallelization,
+        )
+        smooth_block_wannierizations = _smooth_block_wannierizations(smooth_result)
+        dft_band_structure = _dft_band_structure_from_route(
+            mlwf_interpolation_kpoints=mlwf_interpolation_kpoints,
+            init=init,
+            smooth_result=smooth_result,
         )
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
@@ -1699,7 +1727,68 @@ def KoopmansDSCFWorkflow(
         outputs["band_structure_reference"] = bands["reference"]
         if ui_do_dos:
             outputs["dos"] = bands["dos"]
+        # `kpath is not None` puts this route on `wannier_init`, which
+        # `_dft_band_structure_from_route` always resolves to a value: via
+        # `mlwf_interpolation_kpoints` on the initialization route, via
+        # `smooth_result` (built with `interpolation_kpoints=kpath`) on the
+        # smooth one.
+        outputs["band_structure_dft"] = cast("orm.BandsData", dft_band_structure)
     return outputs
+
+
+def _mlwf_interpolation_kpoints(
+    kpath: orm.KpointsData | None, *, ui_do_smooth: bool
+) -> orm.KpointsData | None:
+    """Return ``kpath`` for the initialization Wannierization, or ``None``.
+
+    ``None`` without a ``kpath``, or when the smooth-mesh Wannierization
+    will sample it instead (see :func:`_dft_band_structure_from_route`).
+    """
+    if kpath is None or ui_do_smooth:
+        return None
+    return kpath
+
+
+def _smooth_block_wannierizations(
+    smooth_result: "SmoothWannierizationResult | None",
+) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
+    """Return the smooth-mesh per-block namespace, or ``None`` without one."""
+    if smooth_result is None:
+        return None
+    return smooth_result["blocks"]
+
+
+def _dft_band_structure_from_route(
+    *,
+    mlwf_interpolation_kpoints: orm.KpointsData | None,
+    init: Any,
+    smooth_result: "SmoothWannierizationResult | None",
+) -> orm.BandsData | None:
+    """Return the DFT band structure from whichever Wannierization sampled ``kpath``.
+
+    The initialization Wannierization when ``mlwf_interpolation_kpoints``
+    reached it; otherwise the smooth-mesh one, when it ran with a path of
+    its own; ``None`` without either.
+    """
+    if mlwf_interpolation_kpoints is not None:
+        return init["band_structure_dft"]
+    if smooth_result is not None:
+        return smooth_result.get("band_structure_dft")
+    return None
+
+
+class SmoothWannierizationResult(TypedDict):
+    """Return shape of :func:`_wannierize_smooth_mesh`.
+
+    * ``blocks`` — the denser-mesh per-block wannierisation namespace.
+    * ``band_structure_dft`` — the denser-mesh pw.x explicit band
+      structure along ``interpolation_kpoints``; present only when it was
+      given. The per-block wannier90-interpolated counterpart rides
+      ``blocks[label]["interpolated_bands"]`` instead (same condition).
+    """
+
+    blocks: Annotated[dict, dynamic(WannierizeBlockOutputs)]
+    band_structure_dft: NotRequired[orm.BandsData]
 
 
 def _wannierize_smooth_mesh(
@@ -1715,8 +1804,9 @@ def _wannierize_smooth_mesh(
     wannier_protocol: str | None,
     wannier_overrides: WannierizeOverrides | None,
     spin_polarized: bool,
+    interpolation_kpoints: orm.KpointsData | None,
     parallelization: ParallelizationDict | None,
-) -> Any:
+) -> SmoothWannierizationResult | None:
     """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
 
     Returns ``None`` without ``do_smooth``. Called from the
@@ -1727,6 +1817,10 @@ def _wannierize_smooth_mesh(
     ``scf_remote_folder`` must be a converged scf on ``structure``:
     :func:`WannierizeBlocks` skips its own scf and runs only a fresh
     nscf on ``smooth_kpoints`` off it.
+
+    ``interpolation_kpoints``, given, also runs the pw.x explicit band
+    structure and the per-block wannier90 interpolation on this denser
+    mesh (see :class:`SmoothWannierizationResult`).
     """
     if not do_smooth:
         return None
@@ -1745,10 +1839,14 @@ def _wannierize_smooth_mesh(
         protocol=wannier_protocol,
         overrides=wannier_overrides,
         spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+        interpolation_kpoints=interpolation_kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
     )
-    return smooth["blocks"]
+    result = SmoothWannierizationResult(blocks=smooth["blocks"])
+    if interpolation_kpoints is not None:
+        result["band_structure_dft"] = smooth["bands"]["output_band"]
+    return result
 
 
 def _interpolate_bands(
