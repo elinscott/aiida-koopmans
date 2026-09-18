@@ -842,6 +842,21 @@ def si_reference() -> dict:
         return json.load(handle)
 
 
+@pytest.fixture(scope="module")
+def si_kcw_reference() -> dict:
+    """Load a live kcw.x run's own band structure and the inputs that produced it.
+
+    Silicon on a 2x2x2 grid, four occupied and four empty Wannier
+    functions: the cell, the ``CONTROL.mp1-3`` grid, the explicit k-path
+    the ham step interpolated along, each manifold's final-state Wannier
+    centres in Å, and the eigenvalues kcw.x printed (eV, both manifolds
+    concatenated). The Hamiltonians it wrote alongside them are
+    ``data/ui/dfpt/kcw_hr_{occ,emp}.dat``.
+    """
+    with open(Path(__file__).parent / "data" / "ui" / "dfpt" / "si_kcw_reference.json") as handle:
+        return json.load(handle)
+
+
 def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int = 1) -> dict:
     """Build a stored per-block ``WannierizeBlockOutputs``-shaped entry.
 

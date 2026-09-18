@@ -49,6 +49,7 @@ from tests.fixtures import (  # noqa: F401
     pw_code,
     run_pdos_codes,
     scf_remote,
+    si_kcw_reference,
     si_reference,
     silicon_structure,
     wannier_codes,

@@ -55,9 +55,9 @@ from aiida_koopmans.variational_orbitals import (
 )
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
-    WannierizeBlocks,
     WannierizeBlocksCodes,
     WannierizeOverrides,
+    wannierize_smooth_mesh,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS
@@ -1400,18 +1400,18 @@ def KoopmansDSCFWorkflow(
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
         pw_scale_offset = init["pw_scale_offset"]
-        smooth_block_wannierizations = _wannierize_smooth_mesh(
+        smooth_block_wannierizations = wannierize_smooth_mesh(
             do_smooth=ui_do_smooth,
-            codes=codes,
+            codes=_wannierize_blocks_codes_for(codes),
             structure=structure,
             blocks=blocks,
             smooth_kpoints=smooth_kpoints,
             smooth_mp_grid=smooth_mp_grid,
             scf_remote_folder=init["scf_remote_folder"],
             pseudo_family=pseudo_family,
-            wannier_protocol=wannier_protocol,
-            wannier_overrides=wannier_overrides,
-            spin_polarized=spin_polarized,
+            protocol=wannier_protocol,
+            overrides=wannier_overrides,
+            spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
             interpolation_kpoints=kpath,
             parallelization=parallelization,
         )
@@ -1752,58 +1752,6 @@ def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
     }
     wannierize_codes["projwfc"] = reference(codes, "projwfc")
     return cast("WannierizeBlocksCodes", wannierize_codes)
-
-
-def _wannierize_smooth_mesh(
-    *,
-    do_smooth: bool,
-    codes: DscfCodes,
-    structure: orm.StructureData,
-    blocks: Any,
-    smooth_kpoints: Any,
-    smooth_mp_grid: Any,
-    scf_remote_folder: Any,
-    pseudo_family: str,
-    wannier_protocol: str | None,
-    wannier_overrides: WannierizeOverrides | None,
-    spin_polarized: bool,
-    interpolation_kpoints: orm.KpointsData | None,
-    parallelization: ParallelizationDict | None,
-) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
-    """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
-
-    Returns ``None`` without ``do_smooth``. Called from the
-    ``KoopmansDSCFWorkflow`` body, so the task it creates joins that
-    graph. It depends on nothing the KI chain produces, so it runs
-    alongside the screening.
-
-    ``scf_remote_folder`` must be a converged scf on ``structure``:
-    :func:`WannierizeBlocks` skips its own scf and runs only a fresh
-    nscf on ``smooth_kpoints`` off it.
-
-    ``interpolation_kpoints``, given, also runs the pw.x explicit band
-    structure and the per-block wannier90 interpolation on this denser
-    mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps,
-    not re-exposed as a named output here.
-    """
-    if not do_smooth:
-        return None
-    smooth = WannierizeBlocks(
-        codes=_wannierize_blocks_codes_for(codes),
-        structure=structure,
-        blocks=blocks,
-        kpoints=smooth_kpoints,
-        mp_grid=list(smooth_mp_grid),
-        scf_remote_folder=scf_remote_folder,
-        pseudo_family=pseudo_family,
-        protocol=wannier_protocol,
-        overrides=wannier_overrides,
-        spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
-        interpolation_kpoints=interpolation_kpoints,
-        parallelization=parallelization,
-        metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
-    )
-    return smooth["blocks"]
 
 
 def _interpolate_bands(

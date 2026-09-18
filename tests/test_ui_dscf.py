@@ -453,7 +453,7 @@ class TestSmoothInterpolationWiring:
         import io
 
         from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
-        from aiida_koopmans.workgraphs.ui.dscf import manifold_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import manifold_hamiltonian
         from aiida_koopmans.workgraphs.utils.wannier_merge import (
             generate_wannier_hr_file_contents,
         )
@@ -486,7 +486,7 @@ class TestMergeManifoldEnergies:
 
     @staticmethod
     def _merge(**kwargs):
-        from aiida_koopmans.workgraphs.ui.dscf import merge_manifold_energies
+        from aiida_koopmans.workgraphs.ui.manifolds import merge_manifold_energies
 
         return merge_manifold_energies._callable(**kwargs)
 
@@ -742,7 +742,7 @@ class TestExtractKoopmansHamiltonian:
 
     def test_a_missing_file_names_the_folder_contents(self, aiida_profile):
         """The run that did not print them is what the reader has to fix."""
-        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import extract_koopmans_hamiltonian
 
         retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
         with pytest.raises(ValueError, match=r"ham_emp_1\.dat"):
@@ -752,7 +752,7 @@ class TestExtractKoopmansHamiltonian:
 
     def test_a_present_file_comes_out_under_its_own_name(self, aiida_profile):
         """Negative control: the same folder yields the file it does hold."""
-        from aiida_koopmans.workgraphs.ui.dscf import extract_koopmans_hamiltonian
+        from aiida_koopmans.workgraphs.ui.manifolds import extract_koopmans_hamiltonian
 
         retrieved = _retrieved_with_hamiltonians(["ham_occ_1.dat"])
         lifted = extract_koopmans_hamiltonian._callable(
