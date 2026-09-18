@@ -1366,9 +1366,6 @@ def KoopmansDSCFWorkflow(
     smooth_block_wannierizations = None
     if wannier_init:
         init = MlwfInitialization(
-            # _mlwf_init_codes_for wires every required member unconditionally:
-            # MlwfInitCodes' own required-keys surface a missing Wannier-route
-            # code as the framework's structural missing-input error.
             codes=_mlwf_init_codes_for(codes),
             structure=structure,
             supercell=run_structure,
