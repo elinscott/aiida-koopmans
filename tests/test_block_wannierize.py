@@ -849,11 +849,14 @@ class TestSplitMode:
         """
         # Every entry declares the full flat contract; the plain-route-only
         # keys (retrieved / remote_folder / wannier90_parameters) stay
-        # unpopulated at runtime on split entries.
+        # unpopulated at runtime on split entries, as does ``u_dis_file``
+        # (a split block has num_bands == num_wann, so it disentangles
+        # nothing).
         expected_entry = {
             "u_file",
             "hr_file",
             "centres_file",
+            "u_dis_file",
             "retrieved",
             "remote_folder",
             "nnkp_file",
