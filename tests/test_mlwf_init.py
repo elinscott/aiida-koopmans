@@ -327,6 +327,71 @@ class TestMlwfInitializationGraphBuild:
         assert not wg_without_path.tasks["wannierize"].inputs["interpolation_kpoints"]._links
         assert not wg_without_path.outputs["band_structure_dft"]._links
 
+    def test_projwfc_code_chains_into_wannierize(
+        self, mlwf_pdos_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, labelled_kpath
+    ):
+        """A configured projwfc code, over pseudos it supports, reaches WannierizeBlocks."""
+        from aiida.orm import List
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+        wg = MlwfInitialization.build(
+            codes={**mlwf_pdos_codes, "kcp": mlwf_pdos_codes["pw"]},
+            structure=periodic_ozone_structure,
+            supercell=supercell,
+            pseudos=ozone_real_pseudos,
+            blocks=_ozone_blocks(),
+            kpoints=kmesh,
+            kgrid=[2, 1, 1],
+            nelec=36,
+            nelup=18,
+            neldw=18,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=20,
+            pseudo_family="unused-here",
+            interpolation_kpoints=labelled_kpath,
+        )
+        codes_socket = wg.tasks["wannierize"].inputs["codes"]["projwfc"]
+        assert [link.from_socket._name for link in codes_socket._links] == ["projwfc"]
+
+    def test_missing_projwfc_code_leaves_wannierize_codes_unwired(
+        self, mlwf_codes, periodic_ozone_structure, ozone_real_pseudos, kmesh, labelled_kpath
+    ):
+        """No projwfc code configured: WannierizeBlocks' own ``codes.projwfc`` carries no link.
+
+        ``_wannierize_codes_for`` wires ``projwfc`` unconditionally through
+        ``reference()`` — the socket exists either way (``NotRequired``, not
+        absent from the schema) — but without a configured code the outer
+        graph's own ``codes.projwfc`` input never received a value, so
+        nothing flows downstream.
+        """
+        from aiida.orm import List
+
+        from aiida_koopmans.workgraphs.supercell import primitive_to_supercell
+
+        supercell = primitive_to_supercell._callable(periodic_ozone_structure, List(list=[2, 1, 1]))
+        wg = MlwfInitialization.build(
+            codes={**mlwf_codes, "kcp": mlwf_codes["pw"]},
+            structure=periodic_ozone_structure,
+            supercell=supercell,
+            pseudos=ozone_real_pseudos,
+            blocks=_ozone_blocks(),
+            kpoints=kmesh,
+            kgrid=[2, 1, 1],
+            nelec=36,
+            nelup=18,
+            neldw=18,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=20,
+            pseudo_family="unused-here",
+            interpolation_kpoints=labelled_kpath,
+        )
+        codes_socket = wg.tasks["wannierize"].inputs["codes"]["projwfc"]
+        assert not codes_socket._links
+
 
 class TestKoopmansDSCFPeriodicMlwfsBuild:
     def test_outer_graph_takes_the_wannier_init_route(
@@ -697,6 +762,10 @@ class TestDftBandStructureRouting:
         names = [t.name for t in wg.tasks]
         assert "wannierize_smooth" not in names, names
 
+        # The coarse initialization actually samples kpath itself here
+        # (the reverse of the smooth-route case below, where it does not).
+        assert wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
+
         links = wg.outputs["band_structure_dft"]._links
         assert len(links) == 1
         assert links[0].from_task.name == "wannier_initialization"
@@ -723,6 +792,12 @@ class TestDftBandStructureRouting:
         smooth_task = wg.tasks["wannierize_smooth"]
         assert smooth_task.inputs["interpolation_kpoints"]._links
 
+        # `_mlwf_interpolation_kpoints` withholds kpath from the coarse
+        # initialization Wannierization once the smooth-mesh one samples
+        # it instead — never both (`_dft_band_structure_from_route`'s
+        # own precondition).
+        assert not wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
+
         # `_wannierize_smooth_mesh` is a plain assembly helper, not a
         # `@task.graph` boundary, so the output is the bare
         # `WannierizeBlocks` socket it aliases (``bands.output_band``), not
@@ -732,6 +807,82 @@ class TestDftBandStructureRouting:
         assert len(links) == 1
         assert links[0].from_task.name == "wannierize_smooth"
         assert links[0].from_socket._name == "output_band"
+
+
+class TestProjwfcCodeThreadsThroughDSCF:
+    """A ``projwfc`` code in ``DscfCodes`` reaches both DSCF-route Wannierizations.
+
+    ``_mlwf_init_codes_for`` forwards it into ``MlwfInitCodes`` (which
+    ``MlwfInitialization`` itself forwards into ``WannierizeBlocksCodes`` —
+    covered by ``TestMlwfInitializationGraphBuild``);
+    ``_wannierize_blocks_codes_for`` forwards it directly into the
+    denser-mesh ``WannierizeBlocks`` call.
+    """
+
+    def test_projwfc_code_reaches_the_initialization_wannierization(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_pdos_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        wg = KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={**mlwf_pdos_codes, "kcp": kcp_code},
+            blocks=_ozone_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+            kpath=labelled_kpath,
+        )
+        codes_socket = wg.tasks["wannier_initialization"].inputs["codes"]["projwfc"]
+        assert [link.from_socket._name for link in codes_socket._links] == ["projwfc"]
+
+    def test_projwfc_code_reaches_the_smooth_wannierization(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_pdos_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        from aiida.orm import KpointsData
+
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        dense = KpointsData()
+        dense.set_kpoints(np.zeros((8, 3)))
+        wg = KoopmansDSCFWorkflow.build(
+            structure=periodic_ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            nspin=2,
+            correction=Correction.KI,
+            init_orbitals=VariationalOrbitalType.MLWFS,
+            codes={**mlwf_pdos_codes, "kcp": kcp_code},
+            blocks=_ozone_blocks(),
+            kgrid=[2, 1, 1],
+            kpoints=kmesh,
+            kpath=labelled_kpath,
+            smooth_kpoints=dense,
+            smooth_mp_grid=[4, 1, 1],
+            unfold_and_interpolate={"smooth_int_factor": [2, 1, 1]},
+        )
+        codes_socket = wg.tasks["wannierize_smooth"].inputs["codes"]["projwfc"]
+        assert [link.from_socket._name for link in codes_socket._links] == ["projwfc"]
 
 
 class TestWannierOverridesThreading:

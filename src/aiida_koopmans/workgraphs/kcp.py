@@ -56,6 +56,7 @@ from aiida_koopmans.variational_orbitals import (
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
+    WannierizeBlocksCodes,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
@@ -67,6 +68,7 @@ from aiida_koopmans.workgraphs.variational_orbitals import (
     expand_alphas_by_group,
     extract_self_hartree_from_kcp,
 )
+from aiida_koopmans.workgraphs.wannier90 import ProjwfcCode
 
 # ----------------------------------------------------------------------
 # Output / override typing
@@ -118,6 +120,9 @@ class DscfCodes(TypedDict):
     ``kcp`` runs every DSCF step; the remaining members exist only for the
     periodic Wannier-initialised route
     (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+    ``projwfc`` additionally needs a ``kpath`` and pseudos that support the
+    projected DOS (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`);
+    :func:`WannierizeBlocks` decides whether it actually runs.
     """
 
     kcp: Annotated[
@@ -131,6 +136,7 @@ class DscfCodes(TypedDict):
     wannier90: NotRequired[WannierRouteCode]
     wann2kcp: NotRequired[WannierRouteCode]
     merge_evc: NotRequired[WannierRouteCode]
+    projwfc: NotRequired[ProjwfcCode]
 
 
 class KoopmansDSCFOutputs(TypedDict):
@@ -1101,6 +1107,29 @@ def InitializeOrbitals(
     )
 
 
+def _mlwf_init_codes_for(codes: DscfCodes) -> Any:
+    """Return :func:`MlwfInitialization`'s codes namespace, from :class:`DscfCodes`.
+
+    Wires every code ``MlwfInitCodes`` requires — read off its own
+    ``__required_keys__`` rather than hard-coded, so the two TypedDicts can
+    never drift apart silently — through ``reference()``, mirroring
+    :func:`aiida_koopmans.workgraphs.dfpt._wannierize_codes_for_channel`.
+    ``projwfc`` (``MlwfInitCodes``' ``NotRequired`` member) rides along
+    unconditionally too: whether the nested ``WannierizeBlocks``' projected
+    DOS actually runs is that step's own entry decision, never a silent
+    skip decided by presence on ``codes``. Imports ``MlwfInitCodes``
+    locally: ``mlwf_init.py`` imports this module at load time, so a
+    module-scope import here would be circular.
+    """
+    from aiida_koopmans.workgraphs.mlwf_init import MlwfInitCodes
+
+    mlwf_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in MlwfInitCodes.__required_keys__
+    }
+    mlwf_codes["projwfc"] = reference(codes, "projwfc")
+    return cast("MlwfInitCodes", mlwf_codes)
+
+
 @task.graph
 def KoopmansDSCFWorkflow(
     codes: DscfCodes,
@@ -1344,17 +1373,10 @@ def KoopmansDSCFWorkflow(
     mlwf_interpolation_kpoints = _mlwf_interpolation_kpoints(kpath, ui_do_smooth=ui_do_smooth)
     if wannier_init:
         init = MlwfInitialization(
-            # Wired unconditionally: MlwfInitialization's own MlwfInitCodes
-            # requires all six, so a missing Wannier-route code surfaces
-            # there as the framework's structural missing-input error.
-            codes={
-                "pw": reference(codes, "pw"),
-                "pw2wannier90": reference(codes, "pw2wannier90"),
-                "wannier90": reference(codes, "wannier90"),
-                "wann2kcp": reference(codes, "wann2kcp"),
-                "merge_evc": reference(codes, "merge_evc"),
-                "kcp": reference(codes, "kcp"),
-            },
+            # _mlwf_init_codes_for wires every required member unconditionally:
+            # MlwfInitCodes' own required-keys surface a missing Wannier-route
+            # code as the framework's structural missing-input error.
+            codes=_mlwf_init_codes_for(codes),
             structure=structure,
             supercell=run_structure,
             pseudos=pseudos,
@@ -1791,10 +1813,28 @@ class SmoothWannierizationResult(TypedDict):
     band_structure_dft: NotRequired[orm.BandsData]
 
 
+def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
+    """Return :func:`WannierizeBlocks`' codes namespace, from :class:`DscfCodes`.
+
+    Wires every code :class:`WannierizeBlocksCodes` requires off its own
+    ``__required_keys__``, mirroring :func:`_mlwf_init_codes_for` and
+    :func:`aiida_koopmans.workgraphs.dfpt._wannierize_codes_for_channel`.
+    ``projwfc`` rides along unconditionally too, on the same reasoning:
+    whether the projected DOS actually runs is :func:`WannierizeBlocks`'
+    own entry decision, never a silent skip decided by presence on
+    ``codes``.
+    """
+    wannierize_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+    }
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
+    return cast("WannierizeBlocksCodes", wannierize_codes)
+
+
 def _wannierize_smooth_mesh(
     *,
     do_smooth: bool,
-    codes: Any,
+    codes: DscfCodes,
     structure: orm.StructureData,
     blocks: Any,
     smooth_kpoints: Any,
@@ -1825,11 +1865,7 @@ def _wannierize_smooth_mesh(
     if not do_smooth:
         return None
     smooth = WannierizeBlocks(
-        codes={
-            "pw": reference(codes, "pw"),
-            "pw2wannier90": reference(codes, "pw2wannier90"),
-            "wannier90": reference(codes, "wannier90"),
-        },
+        codes=_wannierize_blocks_codes_for(codes),
         structure=structure,
         blocks=blocks,
         kpoints=smooth_kpoints,

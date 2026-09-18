@@ -27,7 +27,7 @@ the ``dft_init`` save automatically, so only the ``evc_occupied{n}.dat``
 pair needs explicit re-staging).
 """
 
-from typing import Annotated, Any, NotRequired, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict, cast
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
@@ -43,6 +43,7 @@ from aiida_koopmans.utils.deserializers import KOOPMANS_NODE_DESERIALIZERS
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     WannierizeBlocks,
+    WannierizeBlocksCodes,
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.folding import (
@@ -60,7 +61,7 @@ from aiida_koopmans.workgraphs.kcp import (
 from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.supercell import supercell_size
 from aiida_koopmans.workgraphs.utils.wannier_merge import group_blocks_to_merge
-from aiida_koopmans.workgraphs.wannier90 import Pw2Wannier90Code, Wannier90Code
+from aiida_koopmans.workgraphs.wannier90 import ProjwfcCode, Pw2Wannier90Code, Wannier90Code
 
 
 class MlwfInitCodes(TypedDict):
@@ -75,6 +76,29 @@ class MlwfInitCodes(TypedDict):
         orm.AbstractCode,
         SocketMeta(help="Needed to initialize the variational orbitals from Wannier functions."),
     ]
+    projwfc: NotRequired[ProjwfcCode]
+
+
+def _wannierize_codes_for(codes: MlwfInitCodes) -> WannierizeBlocksCodes:
+    """Return :func:`WannierizeBlocks`' codes namespace, from :class:`MlwfInitCodes`.
+
+    Wires every code :class:`WannierizeBlocksCodes` requires — read off its
+    own ``__required_keys__`` rather than hard-coded, so the two TypedDicts
+    can never drift apart silently — through ``reference()``, mirroring
+    :func:`aiida_koopmans.workgraphs.dfpt._wannierize_codes_for_channel`.
+    ``projwfc`` (:class:`WannierizeBlocksCodes`' ``NotRequired`` member)
+    rides along unconditionally too: whether the projected DOS actually
+    runs is :func:`WannierizeBlocks`' own entry decision
+    (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`),
+    never a silent skip decided by presence on ``codes``. ``wannierjl``
+    (:class:`WannierizeBlocksCodes`' other ``NotRequired`` member, for
+    split-mode) is out of scope: this route never splits.
+    """
+    wannierize_codes: dict[str, Any] = {
+        name: reference(codes, name) for name in WannierizeBlocksCodes.__required_keys__
+    }
+    wannierize_codes["projwfc"] = reference(codes, "projwfc")
+    return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
 # Consistency-check thresholds for the initialisation.
@@ -394,11 +418,7 @@ def MlwfInitialization(
 
     explicit_kpoints = get_explicit_kpoints(kpoints)
     wannierize = WannierizeBlocks(
-        codes={
-            "pw": reference(codes, "pw"),
-            "pw2wannier90": reference(codes, "pw2wannier90"),
-            "wannier90": reference(codes, "wannier90"),
-        },
+        codes=_wannierize_codes_for(codes),
         structure=structure,
         blocks=blocks,
         kpoints=explicit_kpoints,

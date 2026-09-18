@@ -50,7 +50,7 @@ CASES = {
     "MlwfInitialization": (
         "aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization",
         {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "kcp"},
-        set(),
+        {"projwfc"},
     ),
     "FoldToSupercell": (
         "aiida_koopmans.workgraphs.folding.FoldToSupercell",
@@ -60,12 +60,12 @@ CASES = {
     "KoopmansDSCFWorkflow": (
         "aiida_koopmans.workgraphs.kcp.KoopmansDSCFWorkflow",
         {"kcp"},
-        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc"},
+        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc"},
     ),
     "TrajectoryWorkflow": (
         "aiida_koopmans.workgraphs.ml.TrajectoryWorkflow",
         {"kcp"},
-        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc"},
+        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc"},
     ),
     "SinglepointDFPTWorkflow": (
         "aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow",
