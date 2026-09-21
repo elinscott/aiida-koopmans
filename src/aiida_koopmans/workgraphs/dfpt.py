@@ -582,6 +582,17 @@ def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: 
     identity for the preceding blocks
     (:func:`~aiida_koopmans.workgraphs.utils.wannier_merge.extend_wannier_u_dis_file_content`).
     """
+    # The identity extension below only ever reads the last block's matrix,
+    # so a disentanglement matrix anywhere else would vanish without trace.
+    stray = [index for index, block in enumerate(blocks[:-1]) if "_u_dis.mat" in block]
+    if stray:
+        raise ValueError(
+            f"Block(s) at position {stray} of the {manifold} manifold carry a "
+            f"``{SEEDNAME}_u_dis.mat``, but only its last block may: the merge "
+            "extends that one with an identity for the blocks before it and "
+            "would drop these. Order the manifold's blocks so the disentangled "
+            "one comes last."
+        )
     if nbnd is None:
         return
     num_wann = sum(parse_wannier_u_file_shape(b["_u.mat"].decode())[1] for b in blocks)

@@ -305,6 +305,34 @@ class TestKoopmansDFPTTaskBuild:
         for name, value in SEEDED_VALUES["kcw.HAM"].items():
             assert ham_params["HAM"][name] == value, name
 
+    def test_a_populated_u_dis_socket_round_trips(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """A wired ``u_dis_file`` link must survive the run-start round trip.
+
+        The suite's other round-trip assertions build occupied-only
+        manifolds, where the disentanglement socket is never wired at all,
+        so nothing covered a populated optional socket on the staging task.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            occ_labels=["occ"],
+            emp_labels=["emp"],
+            num_wann_occ=4,
+            num_wann_emp=4,
+            nbnd_emp=8,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+        )
+        staged = wg.tasks["prepare_kcw_wannier_files"].inputs._get_all_keys()
+        assert "emp_b00_udis" in staged
+        assert_graph_roundtrips(wg)
+
     def test_staging_reads_the_file_sockets_not_the_retrieved_folder(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
     ):

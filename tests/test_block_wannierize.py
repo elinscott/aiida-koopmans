@@ -1263,6 +1263,52 @@ class TestExtractWannierProducts:
         with pytest.raises(ValueError, match=r"aiida_hr\.dat"):
             extract_wannier_output_files._callable(retrieved=folder)
 
+    def test_u_dis_is_extracted_only_when_the_block_disentangled(self, aiida_profile):
+        from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_output_files
+
+        trio = ["aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz"]
+        plain = extract_wannier_output_files._callable(retrieved=self._folder(trio))
+        assert "u_dis_file" not in plain
+        disentangled = extract_wannier_output_files._callable(
+            retrieved=self._folder([*trio, "aiida_u_dis.mat"])
+        )
+        assert disentangled["u_dis_file"].get_content() == "<aiida_u_dis.mat>"
+
+    def test_each_instance_declares_its_own_output_sockets(
+        self, wannier_codes, silicon_structure, kmesh, nscf_remote, fake_cutoffs_family
+    ):
+        """Separate extractor instances must not share one output spec.
+
+        A PyFunction task's output spec has been observed to be shared
+        across instances, so a port planted on one turns up on the others.
+        Two blocks are read back through two instances here; each must
+        declare the full set, including the optional disentanglement file,
+        and the two socket collections must be distinct objects.
+        """
+        from aiida_wannier90_workflows.common.types import WannierProjectionType
+
+        def _extractor(label, indices):
+            wg = WannierizeBlock.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                block=explicit_block(label, indices, projections=["Si:sp3"], num_bands=4),
+                projection_type=WannierProjectionType.ANALYTIC,
+                nscf_remote_folder=nscf_remote,
+                kpoints=kmesh,
+                mp_grid=[2, 2, 2],
+                pseudo_family=fake_cutoffs_family.label,
+            )
+            matches = [t for t in wg.tasks if t.name == "extract_wannier_output_files"]
+            assert matches, [t.name for t in wg.tasks]
+            return matches[0]
+
+        first = _extractor("block_1", range(1, 5))
+        second = _extractor("block_2", range(5, 9))
+        expected = {"u_file", "hr_file", "centres_file", "u_dis_file"}
+        for extractor in (first, second):
+            assert {socket._name for socket in extractor.outputs} >= expected
+        assert first.outputs is not second.outputs
+
 
 # ----------------------------------------------------------------------
 # Eager per-block build: the flat WannierizeOverrides -> builder translation
