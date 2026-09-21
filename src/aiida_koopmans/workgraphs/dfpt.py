@@ -1130,6 +1130,7 @@ def SinglepointDFPTWorkflow(
     kpoints: orm.KpointsData,
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    eps_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -1156,7 +1157,10 @@ def SinglepointDFPTWorkflow(
     ``CONTROL.mp1-3`` both count in its dimensions. The scf shares it unless
     ``scf_kpoints`` gives it a mesh of its own or ``overrides["scf"]`` a
     ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
-    dielectric chain's ground state samples the same.
+    dielectric chain's ground state samples the same, unless ``eps_kpoints``
+    gives that chain a mesh of its own — eps_inf converges much more slowly
+    with k-points than the singlepoint itself, so a denser grid there does
+    not mean the chain's scf needs to match it.
 
     The workflow has three stages: compute the ground state (one shared
     scf + nscf via
@@ -1267,7 +1271,7 @@ def SinglepointDFPTWorkflow(
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
-            scf_kpoints=scf_kpoints,
+            scf_kpoints=eps_kpoints if eps_kpoints is not None else scf_kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=spin,

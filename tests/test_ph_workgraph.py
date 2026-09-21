@@ -14,7 +14,7 @@ from node_graph.socket import TaggedValue
 
 from aiida_koopmans.workgraphs.dfpt import SinglepointDFPTWorkflow
 from aiida_koopmans.workgraphs.ph import DielectricTask, extract_dielectric_constant
-from tests.fixtures import explicit_block
+from tests.fixtures import assert_graph_roundtrips, explicit_block
 
 # ----------------------------------------------------------------------
 # extract_dielectric_constant (raw callable, no engine)
@@ -188,6 +188,41 @@ class TestSinglepointDFPTAutoEps:
             eps_inf="auto",
         )
         assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
+
+    def test_eps_kpoints_overrides_the_chain_scf_mesh(
+        self, ph_codes, silicon_structure, kmesh, denser_kmesh
+    ):
+        """``eps_kpoints`` gives the dielectric scf a mesh of its own.
+
+        Without it the dielectric scf falls back to ``scf_kpoints`` (the
+        negative control below); a mutant that ignores ``eps_kpoints``
+        would leave this on ``kmesh`` instead.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            eps_kpoints=denser_kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
+        assert_graph_roundtrips(wg)
+
+    def test_without_eps_kpoints_the_dielectric_scf_keeps_the_chain_mesh(
+        self, ph_codes, silicon_structure, kmesh
+    ):
+        """The negative control: no ``eps_kpoints`` means today's fallback mesh."""
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == kmesh.uuid
 
     def test_the_dielectric_scf_keeps_a_kpoints_distance(self, ph_codes, silicon_structure, kmesh):
         """A spacing must not be displaced by the mesh the dielectric would default to.
