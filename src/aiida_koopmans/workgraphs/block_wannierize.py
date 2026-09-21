@@ -743,13 +743,13 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     return builder_overrides or None
 
 
-#: Wannier90 product files every block must write, as they are named in the
+#: Wannier90 output files every block must write, as they are named in the
 #: ``retrieved`` folder. ``aiida_u_dis.mat`` is deliberately absent: a block
 #: with ``num_bands == num_wann`` never writes one.
-_REQUIRED_PRODUCTS = ("aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz")
+_REQUIRED_OUTPUT_FILES = ("aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz")
 
 
-class WannierProductFiles(TypedDict):
+class WannierOutputFiles(TypedDict):
     """Outputs of :func:`extract_wannier_output_files`.
 
     ``u_dis_file`` exists only for a block wannier90 disentangled
@@ -763,8 +763,8 @@ class WannierProductFiles(TypedDict):
 
 
 @task.calcfunction
-def extract_wannier_output_files(retrieved: orm.FolderData) -> WannierProductFiles:
-    """Pull a block's wannier90 product files out of its ``retrieved`` folder.
+def extract_wannier_output_files(retrieved: orm.FolderData) -> WannierOutputFiles:
+    """Pull a block's wannier90 output files out of its ``retrieved`` folder.
 
     Wraps ``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz`` — and
     ``aiida_u_dis.mat`` when the block disentangled — as individual
@@ -783,14 +783,14 @@ def extract_wannier_output_files(retrieved: orm.FolderData) -> WannierProductFil
         content = retrieved.base.repository.get_object_content(filename, mode="rb")
         return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
-    missing = [name for name in _REQUIRED_PRODUCTS if name not in names]
+    missing = [name for name in _REQUIRED_OUTPUT_FILES if name not in names]
     if missing:
         raise ValueError(
             f"{missing} missing from the wannier90 retrieved folder. The wannier90 "
             "run must set ``write_hr = True``, ``write_u_matrices = True`` and "
             "``write_xyz = True``."
         )
-    files = WannierProductFiles(
+    files = WannierOutputFiles(
         u_file=_single("aiida_u.mat"),
         hr_file=_single("aiida_hr.dat"),
         centres_file=_single("aiida_centres.xyz"),

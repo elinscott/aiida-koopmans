@@ -107,16 +107,28 @@ def _block_files(retrieved):
     return {name: node.store() for name, node in products.items()}
 
 
-def _prep_kwargs(**blocks):
-    """Flatten ``{"occ_b00": {...sockets}}`` into the staging task's kwargs."""
-    from aiida_koopmans.workgraphs.dfpt import _FILE_KINDS
+def _staging(*blocks, keys=None):
+    """Build staging-task kwargs from ``(filled, sockets)`` pairs in band order.
 
-    return {
-        f"{prefix}_{kind}": sockets[socket]
-        for prefix, sockets in blocks.items()
-        for kind, socket in _FILE_KINDS.items()
-        if socket in sockets
-    }
+    ``keys`` optionally supplies the namespace labels, so a test can give
+    them any spelling it likes: they are opaque, and only the manifest says
+    what each file is.
+    """
+    from aiida_koopmans.workgraphs.dfpt import _OUTPUT_FILES, _REQUIRED_OUTPUT_FILES
+
+    manifest, files = [], {}
+    supplied = list(keys) if keys else None
+    for filled, sockets in blocks:
+        named = {}
+        for kind in (*_REQUIRED_OUTPUT_FILES, "u_dis"):
+            socket = _OUTPUT_FILES[kind][0]
+            if socket not in sockets:
+                continue
+            key = supplied[len(files)] if supplied else f"f{len(files)}"
+            files[key] = sockets[socket]
+            named[kind] = key
+        manifest.append({"filled": filled, "files": named})
+    return {"manifest": manifest, **files}
 
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
@@ -131,14 +143,14 @@ def _block(label: str, include: range) -> ExplicitProjectionBlock:
 class TestPrepareKcwWannierFiles:
     def test_occ_only(self, aiida_profile, occ_retrieved):
         outputs = prepare_kcw_wannier_files._callable(
-            **_prep_kwargs(occ_b00=_block_files(occ_retrieved))
+            **_staging((True, _block_files(occ_retrieved)))
         )
         names = sorted(outputs["wannier_files"].base.repository.list_object_names())
         assert names == ["aiida_centres.xyz", "aiida_hr.dat", "aiida_u.mat"]
 
     def test_emp_files_are_renamed(self, aiida_profile, occ_retrieved, emp_retrieved):
         outputs = prepare_kcw_wannier_files._callable(
-            **_prep_kwargs(occ_b00=_block_files(occ_retrieved), emp_b00=_block_files(emp_retrieved))
+            **_staging((True, _block_files(occ_retrieved)), (False, _block_files(emp_retrieved)))
         )
         merged = outputs["wannier_files"]
         names = sorted(merged.base.repository.list_object_names())
@@ -159,18 +171,98 @@ class TestPrepareKcwWannierFiles:
         block = _block_files(occ_retrieved)
         block.pop("u_file")
         with pytest.raises(ValueError, match="write_u_matrices"):
-            prepare_kcw_wannier_files._callable(**_prep_kwargs(occ_b00=block))
+            prepare_kcw_wannier_files._callable(**_staging((True, block)))
 
-    def test_unknown_file_kind_raises(self, aiida_profile, occ_retrieved):
+    def test_a_file_no_block_names_raises(self, aiida_profile, occ_retrieved):
+        """Every file in the namespace must be named by some block."""
         block = _block_files(occ_retrieved)
-        with pytest.raises(ValueError, match="does not name a Wannier90 product"):
-            prepare_kcw_wannier_files._callable(
-                **_prep_kwargs(occ_b00=block), occ_b00_chk=block["u_file"]
-            )
+        with pytest.raises(ValueError, match="no block of the staging manifest names"):
+            prepare_kcw_wannier_files._callable(**_staging((True, block)), spare=block["u_file"])
 
-    def test_no_occupied_folder_raises(self, aiida_profile, emp_retrieved):
-        with pytest.raises(ValueError, match="at least one occupied"):
-            prepare_kcw_wannier_files._callable(**_prep_kwargs(emp_b00=_block_files(emp_retrieved)))
+    def test_a_name_with_no_file_raises(self, aiida_profile, occ_retrieved):
+        """Every name the manifest uses must resolve in the namespace."""
+        staging = _staging((True, _block_files(occ_retrieved)))
+        staging["manifest"][0]["files"]["u"] = "absent"
+        with pytest.raises(ValueError, match="the file namespace does not carry"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_an_unknown_kind_raises(self, aiida_profile, occ_retrieved):
+        """A manifest may only name files kcw.x reads."""
+        staging = _staging((True, _block_files(occ_retrieved)))
+        staging["manifest"][0]["files"]["chk"] = next(
+            iter(staging["manifest"][0]["files"].values())
+        )
+        with pytest.raises(ValueError, match="not Wannier90 output files"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_u_dis_on_a_non_final_block_raises(self, aiida_profile):
+        """Only a manifold's last block may carry a disentanglement matrix."""
+        staging = _staging(
+            (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True))),
+            (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+            (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+        )
+        with pytest.raises(ValueError, match="only its last block may"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_no_occupied_block_raises(self, aiida_profile, emp_retrieved):
+        with pytest.raises(ValueError, match="at least one"):
+            prepare_kcw_wannier_files._callable(**_staging((False, _block_files(emp_retrieved))))
+
+
+class TestStagingKeysCarryNoMeaning:
+    """The manifest decides manifold, band order and file kind — not the keys."""
+
+    @staticmethod
+    def _merged(staging):
+        return prepare_kcw_wannier_files._callable(**staging)["wannier_files"]
+
+    def test_misleading_keys_follow_the_manifest(self, aiida_profile):
+        """Keys that contradict the manifest must be ignored, not obeyed.
+
+        The empty manifold's files sit under keys containing ``occ`` and the
+        blocks are labelled in reverse alphabetical order, so anything
+        sniffing the keys would put the blocks in the wrong manifold and the
+        wrong order. Only the manifest is consulted, so the staged files
+        must be the same as under neutral keys.
+        """
+        occ = _block_files(_wannier_block_folder(num_wann=2, num_bands=2))
+        emp = _block_files(_wannier_block_folder(num_wann=3, num_bands=3))
+        honest = self._merged(_staging((True, occ), (False, emp)))
+        misleading = self._merged(
+            _staging(
+                (True, occ),
+                (False, emp),
+                keys=["zz_occ_2", "zz_occ_1", "zz_occ_0", "aa_occ_2", "aa_occ_1", "aa_occ_0"],
+            )
+        )
+        for name in ("aiida_u.mat", "aiida_emp_u.mat", "aiida_centres.xyz"):
+            assert misleading.base.repository.get_object_content(
+                name, mode="rb"
+            ) == honest.base.repository.get_object_content(name, mode="rb"), name
+
+    def test_a_key_sniffing_reader_would_fail_that(self, aiida_profile):
+        """Negative control: the misleading keys really do mislead.
+
+        A reader that took the manifold from the key and the order from a
+        lexicographic sort — the shape this task used to have — lands on a
+        different set of blocks, which is what the test above rules out.
+        """
+        staging = _staging(
+            (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+            (False, _block_files(_wannier_block_folder(num_wann=3, num_bands=3))),
+            keys=["zz_occ_2", "zz_occ_1", "zz_occ_0", "aa_occ_2", "aa_occ_1", "aa_occ_0"],
+        )
+        files = {k: v for k, v in staging.items() if k != "manifest"}
+        sniffed_empty = [k for k in sorted(files) if not k.split("_")[1].startswith("occ")]
+        assert sniffed_empty == []  # every key says "occ": the empty manifold vanishes
+        by_manifest = {
+            key
+            for entry in staging["manifest"]
+            if not entry["filled"]
+            for key in entry["files"].values()
+        }
+        assert by_manifest and sorted(by_manifest) != sorted(files)
 
 
 class TestPrepareKcwWannierFilesMultiBlock:
@@ -184,9 +276,9 @@ class TestPrepareKcwWannierFilesMultiBlock:
         )
 
         outputs = prepare_kcw_wannier_files._callable(
-            **_prep_kwargs(
-                occ_b00=_block_files(_wannier_block_folder(num_wann=2, num_bands=2)),
-                occ_b01=_block_files(_wannier_block_folder(num_wann=3, num_bands=3)),
+            **_staging(
+                (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (True, _block_files(_wannier_block_folder(num_wann=3, num_bands=3))),
             )
         )
         merged = outputs["wannier_files"]
@@ -215,10 +307,10 @@ class TestPrepareKcwWannierFilesMultiBlock:
         # the last block is disentangled (u_dis 2 x 4).
         outputs = prepare_kcw_wannier_files._callable(
             nbnd_emp=6,
-            **_prep_kwargs(
-                occ_b00=_block_files(_wannier_block_folder(num_wann=2, num_bands=2)),
-                emp_b00=_block_files(_wannier_block_folder(num_wann=2, num_bands=2)),
-                emp_b01=_block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True)),
+            **_staging(
+                (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True))),
             ),
         )
         merged = outputs["wannier_files"]
@@ -230,11 +322,12 @@ class TestPrepareKcwWannierFilesMultiBlock:
         with pytest.raises(ValueError, match="u_dis"):
             prepare_kcw_wannier_files._callable(
                 nbnd_emp=6,
-                **_prep_kwargs(
-                    occ_b00=_block_files(_wannier_block_folder(num_wann=2, num_bands=2)),
-                    emp_b00=_block_files(_wannier_block_folder(num_wann=2, num_bands=2)),
-                    emp_b01=_block_files(
-                        _wannier_block_folder(num_wann=2, num_bands=4, u_dis=False)
+                **_staging(
+                    (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                    (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                    (
+                        False,
+                        _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=False)),
                     ),
                 ),
             )
@@ -329,8 +422,9 @@ class TestKoopmansDFPTTaskBuild:
             kgrid=[2, 2, 2],
             has_disentangle=True,
         )
-        staged = wg.tasks["prepare_kcw_wannier_files"].inputs._get_all_keys()
-        assert "emp_b00_udis" in staged
+        manifest = wg.tasks["prepare_kcw_wannier_files"].inputs["manifest"].value
+        assert [entry["filled"] for entry in manifest] == [True, False]
+        assert "u_dis" in manifest[-1]["files"]
         assert_graph_roundtrips(wg)
 
     def test_staging_reads_the_file_sockets_not_the_retrieved_folder(
@@ -356,11 +450,15 @@ class TestKoopmansDFPTTaskBuild:
             kgrid=[2, 2, 2],
             has_disentangle=True,
         )
-        staged = sorted(wg.tasks["prepare_kcw_wannier_files"].inputs._get_all_keys())
-        assert "retrieved" not in staged
-        for key in ("occ_b00_u", "occ_b00_hr", "occ_b00_centres"):
-            assert key in staged
-        assert "emp_b00_udis" in staged
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        assert "retrieved" not in staging._get_all_keys()
+        manifest = staging["manifest"].value
+        assert [entry["filled"] for entry in manifest] == [True, False]
+        assert set(manifest[0]["files"]) == {"u", "hr", "centres"}
+        assert set(manifest[1]["files"]) == {"u", "hr", "centres", "u_dis"}
+        # Every name the manifest uses resolves in the namespace beside it.
+        named = {key for entry in manifest for key in entry["files"].values()}
+        assert named <= set(staging._get_all_keys())
 
     def test_u_dis_is_wired_only_where_the_manifold_disentangles(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
@@ -384,8 +482,8 @@ class TestKoopmansDFPTTaskBuild:
             kgrid=[2, 2, 2],
             has_disentangle=False,
         )
-        staged = wg.tasks["prepare_kcw_wannier_files"].inputs._get_all_keys()
-        assert not [key for key in staged if key.endswith("_udis")]
+        manifest = wg.tasks["prepare_kcw_wannier_files"].inputs["manifest"].value
+        assert not [entry for entry in manifest if "u_dis" in entry["files"]]
 
     @pytest.mark.parametrize("check_spread", [True, False])
     def test_check_spread_input_controls_the_namelist(
