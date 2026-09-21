@@ -1,7 +1,7 @@
 """Tests for the ΔSCF route's own band-structure wiring in ``workgraphs/kcp.py``.
 
 Two seams: the final KI printing and retrieving its Koopmans Hamiltonians,
-and ``_dscf_manifold_specs`` turning the initialisation's ``merge_groups``
+and ``dscf_manifold_specs`` turning the initialisation's ``merge_groups``
 partition into the ``ManifoldSpec`` list ``KoopmansBandStructureTask`` fans
 out over. The fan-out and merge themselves are route-agnostic and tested in
 ``test_ui_band_structure.py``.
@@ -112,22 +112,30 @@ class TestHamiltonianFilenames:
 
 
 class TestDscfManifoldSpecs:
-    """``_dscf_manifold_specs`` reads the initialisation's own partition."""
+    """``dscf_manifold_specs`` reads the initialisation's own partition."""
 
     def test_one_spec_per_filling(self):
-        from aiida_koopmans.workgraphs.kcp import _dscf_manifold_specs
+        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
 
-        specs = _dscf_manifold_specs(occ_emp_merge_groups(), spin_polarized=False)
+        specs = dscf_manifold_specs._callable(occ_emp_merge_groups(), spin_polarized=False)
 
         by_filled = {spec["filled"]: spec for spec in specs}
         assert by_filled[True]["filename"] == "ham_occ_1.dat"
         assert by_filled[True]["blocks"] == ["occ"]
-        assert by_filled[True]["spin"] == SpinChannel.NONE
+        assert by_filled[True]["spin"] == SpinChannel.NONE.value
         assert by_filled[False]["filename"] == "ham_emp_1.dat"
         assert by_filled[False]["blocks"] == ["emp"]
 
+    def test_the_stored_spin_is_a_plain_string(self):
+        """A task output is stored as a node; only a plain ``str`` survives that."""
+        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
+
+        specs = dscf_manifold_specs._callable(occ_emp_merge_groups(), spin_polarized=False)
+
+        assert all(type(spec["spin"]) is str for spec in specs)
+
     def test_spin_polarized_names_the_down_channel_spin_index_two(self):
-        from aiida_koopmans.workgraphs.kcp import _dscf_manifold_specs
+        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
 
         merge_groups = occ_emp_merge_groups("up") + occ_emp_merge_groups("down")
         merge_groups[0]["blocks"] = [{"label": "occ_up"}]
@@ -135,19 +143,19 @@ class TestDscfManifoldSpecs:
         merge_groups[2]["blocks"] = [{"label": "occ_down"}]
         merge_groups[3]["blocks"] = [{"label": "emp_down"}]
 
-        specs = _dscf_manifold_specs(merge_groups, spin_polarized=True)
+        specs = dscf_manifold_specs._callable(merge_groups, spin_polarized=True)
 
-        by_key = {(spec["filled"], spec["spin"]): spec for spec in specs}
+        by_key = {(spec["filled"], SpinChannel(spec["spin"])): spec for spec in specs}
         assert by_key[True, SpinChannel.UP]["filename"] == "ham_occ_1.dat"
         assert by_key[True, SpinChannel.DOWN]["filename"] == "ham_occ_2.dat"
         assert by_key[False, SpinChannel.DOWN]["filename"] == "ham_emp_2.dat"
 
     def test_a_missing_manifold_names_itself(self):
         """Interpolating needs an occupied and an empty manifold per channel."""
-        from aiida_koopmans.workgraphs.kcp import _dscf_manifold_specs
+        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
 
         with pytest.raises(ValueError, match="occupied and an empty projection manifold"):
-            _dscf_manifold_specs(
+            dscf_manifold_specs._callable(
                 [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}],
                 spin_polarized=False,
             )

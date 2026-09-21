@@ -926,7 +926,7 @@ def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[Mani
     specs: list[ManifoldSpec] = [
         ManifoldSpec(
             filled=True,
-            spin=SpinChannel.NONE,
+            spin=SpinChannel.NONE.value,
             filename=kcw_hamiltonian_filename(filled=True),
             blocks=[str(label) for label in occ_labels],
         ),
@@ -935,7 +935,7 @@ def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[Mani
         specs.append(
             ManifoldSpec(
                 filled=False,
-                spin=SpinChannel.NONE,
+                spin=SpinChannel.NONE.value,
                 filename=kcw_hamiltonian_filename(filled=False),
                 blocks=[str(label) for label in emp_labels],
             )

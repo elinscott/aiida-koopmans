@@ -62,11 +62,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import DensityOfStates
-from aiida_koopmans.workgraphs.ui.band_structure import (
-    KoopmansBandStructureOutputs,
-    KoopmansBandStructureTask,
-    ManifoldSpec,
-)
+from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldSpec
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -1226,7 +1222,9 @@ def KoopmansDSCFWorkflow(
       *primitive* band indices; ``nbnd`` stays the primitive per-cell
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
-    A ``kpath`` adds the unfold-and-interpolate stage (:func:`DscfBandStructureTask`):
+    A ``kpath`` adds the unfold-and-interpolate stage
+    (:func:`dscf_manifold_specs` into
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`):
     the final KI prints its Koopmans Hamiltonians and they are
     interpolated onto that primitive-cell path. Only the periodic
     Wannier route can serve it — the molecular route has no Wannier
@@ -1718,15 +1716,19 @@ def KoopmansDSCFWorkflow(
         outputs["merge_groups"] = cast("list", merge_groups)
 
     if kpath is not None:
-        bands = DscfBandStructureTask(
-            structure=structure,
+        manifolds = dscf_manifold_specs(
             merge_groups=cast("list", merge_groups),
+            spin_polarized=spin_polarized,
+            metadata={"call_link_label": "dscf_manifold_specs"},
+        ).result
+        bands = KoopmansBandStructureTask(
+            structure=structure,
+            koopmans_ham_retrieved=ki_final["retrieved"],
+            manifolds=manifolds,
             block_wannierizations=cast("dict", block_wannierizations),
             smooth_block_wannierizations=smooth_block_wannierizations,
-            koopmans_ham_retrieved=ki_final["retrieved"],
             kgrid=cast("list[int]", kgrid),
             kpath=kpath,
-            spin_polarized=spin_polarized,
             use_ws_distance=ui_use_ws_distance,
             do_dos=ui_do_dos,
             plotting=plotting,
@@ -1761,7 +1763,8 @@ def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
-def _dscf_manifold_specs(merge_groups: list, *, spin_polarized: bool) -> list[ManifoldSpec]:
+@task
+def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> list:
     """Build the ΔSCF route's manifold specs from the initialisation's merge groups.
 
     One spec per (filling, spin) the run needs, each naming the kcp.x
@@ -1769,6 +1772,14 @@ def _dscf_manifold_specs(merge_groups: list, *, spin_polarized: bool) -> list[Ma
     unpolarized run, at spin index 1; down at 2) and carrying its blocks in
     band order, off the ``merge_groups`` partition the initialisation
     wannierization emitted.
+
+    A genuine task, not a plain helper: ``merge_groups`` usually threads
+    through from the initialisation wannierization's own output, a future
+    the graph engine resolves only once this task actually runs. ``spin``
+    is stored as its plain string value — a stored task output goes
+    through AiiDA's own node serialization, unlike a graph input, and the
+    consumer (:func:`~aiida_koopmans.workgraphs.ui.band_structure._channel_manifolds`)
+    already coerces either form back to :class:`~aiida_koopmans.spin.SpinChannel`.
 
     Raises:
         ValueError: a spin channel this route needs has no merge group.
@@ -1793,7 +1804,7 @@ def _dscf_manifold_specs(merge_groups: list, *, spin_polarized: bool) -> list[Ma
             specs.append(
                 ManifoldSpec(
                     filled=filled,
-                    spin=spin,
+                    spin=spin.value,
                     filename=kcp_hamiltonian_filename(
                         filled=filled,
                         # kcp.x indexes its printed files 1 = up (and the single
@@ -1804,50 +1815,6 @@ def _dscf_manifold_specs(merge_groups: list, *, spin_polarized: bool) -> list[Ma
                 )
             )
     return specs
-
-
-@task.graph
-def DscfBandStructureTask(
-    structure: orm.StructureData,
-    merge_groups: list,
-    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
-    koopmans_ham_retrieved: orm.FolderData,
-    kgrid: list[int],
-    kpath: orm.KpointsData,
-    smooth_block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
-    spin_polarized: bool = False,
-    use_ws_distance: bool = True,
-    do_dos: bool = True,
-    plotting: dict | None = None,
-    offset: float = 0.0,
-) -> KoopmansBandStructureOutputs:
-    """Run the ΔSCF route's unfold-and-interpolate stage and return its outputs.
-
-    ``merge_groups`` reaches this graph as an input, not a plain argument,
-    because a caller usually threads it through from the initialisation
-    wannierization's own output — a future the graph engine resolves only
-    once this graph's body actually runs. Turning it into
-    ``KoopmansBandStructureTask``'s ``manifolds`` (:func:`_dscf_manifold_specs`)
-    is therefore this graph's own job, not eager work its caller could do.
-
-    Returns ``band_structure`` and ``reference`` always, and ``dos`` only
-    when ``do_dos``. ``offset`` puts the returned bands on pw.x's absolute
-    energy scale; see
-    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`.
-    """
-    return KoopmansBandStructureTask(
-        structure=structure,
-        koopmans_ham_retrieved=koopmans_ham_retrieved,
-        manifolds=_dscf_manifold_specs(merge_groups, spin_polarized=spin_polarized),
-        block_wannierizations=block_wannierizations,
-        smooth_block_wannierizations=smooth_block_wannierizations,
-        kgrid=kgrid,
-        kpath=kpath,
-        use_ws_distance=use_ws_distance,
-        do_dos=do_dos,
-        plotting=plotting,
-        offset=offset,
-    )
 
 
 def _run_predicted_final_ki(

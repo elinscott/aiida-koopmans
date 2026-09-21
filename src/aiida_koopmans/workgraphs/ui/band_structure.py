@@ -43,10 +43,16 @@ class ManifoldSpec(TypedDict):
     membership and band order: the caller's own key list into
     ``block_wannierizations``, never derived from how those keys are
     spelled.
+
+    ``spin`` carries :class:`~aiida_koopmans.spin.SpinChannel`'s plain
+    string ``.value`` (``"none"``/``"up"``/``"down"``), not the enum
+    member: a spec built inside a stored task's own output goes through
+    AiiDA's node serialization, which only a plain ``str`` is guaranteed
+    to survive. Read it back with ``SpinChannel(spec["spin"])``.
     """
 
     filled: bool
-    spin: SpinChannel
+    spin: str
     filename: str
     blocks: list[str]
 
