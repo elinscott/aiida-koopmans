@@ -981,9 +981,17 @@ def WannierizeBlock(
     ).result
     w90["parameters"] = w90_parameters
 
-    # Explicit (ANALYTIC) blocks' projections are already threaded through
-    # ``overrides`` above, ahead of the builder call; automatic blocks rely
-    # on ``projection_type`` alone (no ``projections`` key).
+    # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic
+    # blocks rely on ``projection_type`` alone (no ``projections`` key). The
+    # list is already threaded through ``overrides`` above, ahead of the
+    # builder call, so a pseudopotential the ANALYTIC branch cannot read
+    # orbitals from never crashes it; this assignment stays unconditional on
+    # top of that, since an aiida-wannier90-workflows build without the
+    # accompanying overrides-honouring change re-derives and overwrites
+    # ``projections`` from the pseudopotentials regardless of what the
+    # builder overrides supplied.
+    if "projections" in w90_kwargs:
+        w90["projections"] = orm.List(list=w90_kwargs["projections"])
 
     # Share the nscf k-mesh so the per-block wannier90 / pw2wannier90 read
     # eigenstates on the exact grid the shared nscf produced.

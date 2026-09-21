@@ -1797,6 +1797,30 @@ class TestWannierizeBlockBuild:
         assert list(projections) == ["Si:s", "Si:p"]
         assert_graph_roundtrips(wg)
 
+    def test_explicit_projections_survive_a_readable_pseudo(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A block's own explicit list wins over whatever a readable pseudo derives.
+
+        ``"Si:s"`` alone is not what aiida-wannier90-workflows' own
+        pseudo-orbital derivation would produce for this fixture's silicon
+        (it derives the full valence set, ``["Si:s", "Si:p"]``), so this
+        pins the block's explicit list against that derivation, not merely
+        against whatever the builder happened to start with.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si:s"], filled=True)
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        projections = task.inputs["wannier90"]["wannier90"]["projections"].value
+        assert list(projections) == ["Si:s"]
+
     def test_analytic_block_without_projections_still_needs_readable_pseudos(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_sg15_shaped_family
     ):
