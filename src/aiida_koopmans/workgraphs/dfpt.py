@@ -1098,6 +1098,55 @@ def _projwfc_step_will_run(pseudo_family: str | None, structure: orm.StructureDa
         return projected_dos_supported(pseudo_family, structure)
 
 
+class DfptOverrides(WannierizeOverrides, total=False):
+    """:class:`WannierizeOverrides` plus ``ph``, :func:`SinglepointDFPTWorkflow`'s own.
+
+    ``ph`` — a ``PwBaseWorkChain``-protocol override dict (upstream shape,
+    e.g. ``{"kpoints_distance": 0.1}``), merged on top of ``scf`` for the
+    ``eps_inf: auto`` dielectric step's own ground state. Unset, that step
+    reuses ``scf`` verbatim. Declared as its own TypedDict, not folded into
+    ``WannierizeOverrides`` itself, so the dielectric-only key does not leak
+    into the socket schema of every other graph that takes a
+    ``WannierizeOverrides``-typed ``overrides`` (``WannierizeBlocks``, the
+    DSCF routes, ...).
+    """
+
+    ph: dict[str, Any]
+
+
+def _dielectric_scf_overrides_and_kpoints(
+    overrides: DfptOverrides,
+    ph_kpoints: orm.KpointsData | None,
+    scf_kpoints: orm.KpointsData | None,
+) -> tuple[dict[str, Any], orm.KpointsData | None]:
+    """Resolve the ``eps_inf: auto`` dielectric step's own scf overrides and mesh.
+
+    ``overrides["ph"]``, when given, merges on top of ``overrides["scf"]``
+    (``kpoints_distance`` included) rather than replacing it, so a caller
+    naming only a mesh for this step keeps the chain's own cutoffs. An
+    explicit ``ph_kpoints`` mesh wins outright; failing that, a
+    ``kpoints_distance`` already fixing this scf (inherited from ``scf`` or
+    stated by ``ph`` itself) must not be displaced by the chain's own
+    resolved ``scf_kpoints``, which ``pin_kpoints`` would otherwise discard
+    it for.
+    """
+    from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
+
+    eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
+    eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
+    ph_overrides = overrides.get("ph")
+    if ph_overrides:
+        eps_scf_overrides = recursive_merge(eps_scf_overrides, dict(ph_overrides))
+
+    if ph_kpoints is not None:
+        dielectric_scf_kpoints = ph_kpoints
+    elif "kpoints_distance" in eps_scf_overrides:
+        dielectric_scf_kpoints = None
+    else:
+        dielectric_scf_kpoints = scf_kpoints
+    return eps_scf_overrides, dielectric_scf_kpoints
+
+
 def _add_quality_check_dfpt_inputs(
     dfpt_inputs: dict[str, Any],
     bands_kpoints: orm.KpointsData | None,
@@ -1130,10 +1179,10 @@ def SinglepointDFPTWorkflow(
     kpoints: orm.KpointsData,
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
-    eps_kpoints: orm.KpointsData | None = None,
+    ph_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
-    overrides: WannierizeOverrides | None = None,
+    overrides: DfptOverrides | None = None,
     eps_inf: float | str | None = None,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
@@ -1157,10 +1206,12 @@ def SinglepointDFPTWorkflow(
     ``CONTROL.mp1-3`` both count in its dimensions. The scf shares it unless
     ``scf_kpoints`` gives it a mesh of its own or ``overrides["scf"]`` a
     ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
-    dielectric chain's ground state samples the same, unless ``eps_kpoints``
-    gives that chain a mesh of its own — eps_inf converges much more slowly
-    with k-points than the singlepoint itself, so a denser grid there does
-    not mean the chain's scf needs to match it.
+    dielectric chain's ground state reuses the same ``overrides["scf"]``
+    (namelist keywords included) unless ``overrides["ph"]`` states its own
+    keywords on top, or ``ph_kpoints`` gives that ground state a mesh of
+    its own — eps_inf converges much more slowly with k-points than the
+    singlepoint itself, so a denser grid there does not mean the chain's
+    scf needs to match it.
 
     The workflow has three stages: compute the ground state (one shared
     scf + nscf via
@@ -1199,10 +1250,13 @@ def SinglepointDFPTWorkflow(
     namespace; the shared ground state's scf + nscf outputs land under
     ``ground_state``, regardless of ``spin``.
 
-    ``overrides`` is the flat :class:`WannierizeOverrides`: ``"scf"`` /
-    ``"nscf"`` feed the shared PW steps, and ``"wannier90"`` /
-    ``"pw2wannier90"`` feed every per-manifold wannier builder (the
-    channel staging keys are force-merged on top per channel).
+    ``overrides`` is the flat :class:`DfptOverrides`: ``"scf"`` / ``"nscf"``
+    feed the shared PW steps, ``"wannier90"`` / ``"pw2wannier90"`` feed
+    every per-manifold wannier builder (the channel staging keys are
+    force-merged on top per channel), and ``"ph"`` — this graph's own
+    addition to :class:`~aiida_koopmans.workgraphs.block_wannierize.
+    WannierizeOverrides` — merges on top of ``"scf"`` for the ``eps_inf:
+    auto`` dielectric step alone.
 
     ``check_spread`` reaches every channel's screen step unchanged (kcw.x's
     internal self-Hartree grouping — see :func:`RunDFPT`).
@@ -1264,14 +1318,15 @@ def SinglepointDFPTWorkflow(
         # requirement — it is an independent ground state, but described in the
         # same spin regime and on the same mesh as the chain's own, since the
         # overrides it inherits already state that regime's magnetization.
-        eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
-        eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
+        eps_scf_overrides, dielectric_scf_kpoints = _dielectric_scf_overrides_and_kpoints(
+            overrides, ph_kpoints, scf_kpoints
+        )
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
-            scf_kpoints=eps_kpoints if eps_kpoints is not None else scf_kpoints,
+            scf_kpoints=dielectric_scf_kpoints,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=spin,

@@ -189,13 +189,13 @@ class TestSinglepointDFPTAutoEps:
         )
         assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
 
-    def test_eps_kpoints_overrides_the_chain_scf_mesh(
+    def test_ph_kpoints_overrides_the_chain_scf_mesh(
         self, ph_codes, silicon_structure, kmesh, denser_kmesh
     ):
-        """``eps_kpoints`` gives the dielectric scf a mesh of its own.
+        """``ph_kpoints`` gives the dielectric scf a mesh of its own.
 
         Without it the dielectric scf falls back to ``scf_kpoints`` (the
-        negative control below); a mutant that ignores ``eps_kpoints``
+        negative control below); a mutant that ignores ``ph_kpoints``
         would leave this on ``kmesh`` instead.
         """
         wg = SinglepointDFPTWorkflow.build(
@@ -203,17 +203,17 @@ class TestSinglepointDFPTAutoEps:
             structure=silicon_structure,
             manifolds=_si_manifolds(),
             kpoints=kmesh,
-            eps_kpoints=denser_kmesh,
+            ph_kpoints=denser_kmesh,
             pseudo_family="SSSP/1.3/PBE/efficiency",
             eps_inf="auto",
         )
         assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
         assert_graph_roundtrips(wg)
 
-    def test_without_eps_kpoints_the_dielectric_scf_keeps_the_chain_mesh(
+    def test_without_ph_kpoints_the_dielectric_scf_keeps_the_chain_mesh(
         self, ph_codes, silicon_structure, kmesh
     ):
-        """The negative control: no ``eps_kpoints`` means today's fallback mesh."""
+        """The negative control: no ``ph_kpoints`` means today's fallback mesh."""
         wg = SinglepointDFPTWorkflow.build(
             codes=ph_codes,
             structure=silicon_structure,
@@ -223,6 +223,59 @@ class TestSinglepointDFPTAutoEps:
             eps_inf="auto",
         )
         assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == kmesh.uuid
+
+    def test_ph_overrides_kpoints_distance_reaches_only_the_dielectric_scf(
+        self, ph_codes, silicon_structure, kmesh
+    ):
+        """``overrides["ph"]["kpoints_distance"]`` lands on the dielectric scf alone.
+
+        The chain's own scf keeps sampling ``kmesh`` unperturbed — a
+        mutant that merges ``overrides["ph"]`` into the wrong step, or
+        drops it, would fail one assertion or the other.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            overrides={"ph": {"kpoints_distance": 0.11}},
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        dielectric = wg.tasks["dielectric"]
+        assert dielectric.inputs["scf_kpoints"].value is None
+        assert dielectric.inputs["overrides"].value["scf"]["kpoints_distance"] == 0.11
+        assert list(wg.tasks["scf_nscf"].inputs["scf_kpoints"].value.get_kpoints_mesh()[0]) == [
+            2,
+            2,
+            2,
+        ]
+
+    def test_ph_overrides_keeps_the_chains_own_namelist_keywords(
+        self, ph_codes, silicon_structure, kmesh
+    ):
+        """``overrides["ph"]`` merges on top of ``overrides["scf"]``, not in place of it.
+
+        A caller naming only a mesh for the dielectric step must not lose
+        the chain's own namelist keywords (here, a distinctive
+        ``ecutwfc``) — a mutant that replaces ``eps_scf_overrides`` with
+        ``overrides["ph"]`` outright would drop it.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            overrides={
+                "scf": {"pw": {"parameters": {"SYSTEM": {"ecutwfc": 55.0}}}},
+                "ph": {"kpoints_distance": 0.11},
+            },
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        )
+        dielectric_scf_overrides = wg.tasks["dielectric"].inputs["overrides"].value["scf"]
+        assert dielectric_scf_overrides["kpoints_distance"] == 0.11
+        assert dielectric_scf_overrides["pw"]["parameters"]["SYSTEM"]["ecutwfc"] == 55.0
 
     def test_the_dielectric_scf_keeps_a_kpoints_distance(self, ph_codes, silicon_structure, kmesh):
         """A spacing must not be displaced by the mesh the dielectric would default to.
