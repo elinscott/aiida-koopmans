@@ -107,12 +107,18 @@ _VALENCE_ORBITALS: dict[str, tuple[tuple[str, int, float], ...]] = {
 }
 
 
-def _pswfc_block(element: str, z_valence: float) -> tuple[str, int]:
+def _pswfc_block(element: str, z_valence: float, *, empty: bool = False) -> tuple[str, int]:
     """Return an element's ``PP_PSWFC`` block and the number of wave functions in it.
+
+    ``empty`` returns the wrapper tags with no ``PP_CHI`` children and
+    ``number_of_wfc = 0`` -- the SG15 ONCV shape, distinct from omitting the
+    block outright (see ``with_pswfc=False`` on :func:`generate_upf_data`).
 
     :raises ValueError: ``element`` has no tabulated valence configuration, or
         its occupations do not add up to ``z_valence``.
     """
+    if empty:
+        return "<PP_PSWFC>\n</PP_PSWFC>\n", 0
     orbitals = _VALENCE_ORBITALS.get(element)
     if orbitals is None:
         raise ValueError(
@@ -149,7 +155,11 @@ def generate_upf_data(aiida_profile):
     from aiida_pseudo.data.pseudo.upf import UpfData
 
     def _generate_upf_data(
-        element: str, z_valence: float = 6.0, *, with_pswfc: bool = True
+        element: str,
+        z_valence: float = 6.0,
+        *,
+        with_pswfc: bool = True,
+        pswfc_empty: bool = False,
     ) -> UpfData:
         # Shaped for the line-based block extractors in
         # aiida-wannier90-workflows' pseudo utilities: ``<PP_HEADER`` and its
@@ -159,8 +169,11 @@ def generate_upf_data(aiida_profile):
         # refuses a header that does not declare it.
         # ``number_of_wfc`` is what the projected-DOS gate reads;
         # ``with_pswfc=False`` drops it along with the ``PP_PSWFC`` block (a
-        # pseudo without atomic wavefunctions).
-        pswfc_block, number_of_wfc = _pswfc_block(element, z_valence) if with_pswfc else ("", 0)
+        # pseudo without atomic wavefunctions); ``pswfc_empty=True`` keeps
+        # the block but empties it (the SG15 ONCV shape).
+        pswfc_block, number_of_wfc = (
+            _pswfc_block(element, z_valence, empty=pswfc_empty) if with_pswfc else ("", 0)
+        )
         wfc_attribute = f'number_of_wfc="{number_of_wfc}"\n' if with_pswfc else ""
         content = (
             f'<UPF version="2.0.1">\n'
@@ -333,6 +346,26 @@ def fake_family_without_pswfc(aiida_profile, generate_upf_data):
         "FAKE/NOPSWFC/PBE/SR",
         [
             generate_upf_data(element, z_valence=z, with_pswfc=False)
+            for element, z in (("Si", 4.0), ("O", 6.0))
+        ],
+    )
+
+
+@pytest.fixture
+def fake_sg15_shaped_family(aiida_profile, generate_upf_data):
+    """Install a cutoffs family shaped like the SG15 ONCV pseudopotentials.
+
+    Each UPF carries ``number_of_wfc="0"`` and an empty ``<PP_PSWFC>`` block
+    -- present, but with no atomic wave functions to read. Distinct from
+    :func:`fake_family_without_pswfc`, whose UPFs omit the ``PP_PSWFC``
+    element outright: that shape trips a different upstream failure (an XML
+    parse error deriving ``num_wann`` from an absent block) before the
+    projection-derivation code path this family exercises is ever reached.
+    """
+    return install_cutoffs_family(
+        "FAKE/SG15SHAPE/PBE/SR",
+        [
+            generate_upf_data(element, z_valence=z, pswfc_empty=True)
             for element, z in (("Si", 4.0), ("O", 6.0))
         ],
     )
