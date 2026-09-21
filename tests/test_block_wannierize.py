@@ -1817,6 +1817,85 @@ class TestWannierizeBlockBuild:
         params = self._w90_parameters(wg)
         assert "exclude_bands" not in params
 
+    def test_explicit_block_builds_on_a_pseudo_without_pswfc(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_sg15_shaped_family
+    ):
+        """An explicit block builds on a pseudo with no atomic wave functions.
+
+        ``fake_sg15_shaped_family`` matches the SG15 ONCV shape: it cannot
+        supply the pseudopotentials' valence orbitals, which upstream's
+        ``ANALYTIC`` branch derives projections from by default. The
+        block's own explicit list must ride through instead of that
+        derivation, and the block's own counts govern the result.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si:s", "Si:p"], filled=True)
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_sg15_shaped_family.label,
+        )
+        params = self._w90_parameters(wg)
+        assert params["num_wann"] == 4
+        assert params["num_bands"] == 4
+        assert "exclude_bands" not in params
+        task = self._wannier_task(wg)
+        projections = task.inputs["wannier90"]["wannier90"]["projections"].value
+        assert list(projections) == ["Si:s", "Si:p"]
+        assert_graph_roundtrips(wg)
+
+    def test_explicit_projections_survive_a_readable_pseudo(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A block's own explicit list wins over whatever a readable pseudo derives.
+
+        ``"Si:s"`` alone is not what aiida-wannier90-workflows' own
+        pseudo-orbital derivation would produce for this fixture's silicon
+        (it derives the full valence set, ``["Si:s", "Si:p"]``), so this
+        pins the block's explicit list against that derivation, not merely
+        against whatever the builder happened to start with.
+        """
+        block = explicit_block("block_1", range(1, 5), projections=["Si:s"], filled=True)
+        wg = self._build_block(
+            wannier_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            fake_cutoffs_family.label,
+        )
+        task = self._wannier_task(wg)
+        projections = task.inputs["wannier90"]["wannier90"]["projections"].value
+        assert list(projections) == ["Si:s"]
+
+    def test_analytic_block_without_projections_still_needs_readable_pseudos(
+        self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_sg15_shaped_family
+    ):
+        """Negative control: with no explicit list, the fix has nothing to thread.
+
+        Isolates the fix to the case it actually covers: an ``ANALYTIC``
+        block whose ``projections`` key is absent (unlike
+        :func:`explicit_block`, which always sets one) still needs upstream
+        to derive a list from the pseudopotentials, which this family
+        cannot supply, so the build still fails the way it always has.
+        """
+        block = automatic_block(
+            "block_1", range(1, 5), projection_type=WannierProjectionType.ANALYTIC
+        )
+        with pytest.raises(ValueError, match="valence orbitals could not be read"):
+            WannierizeBlock.build(
+                codes=wannier_codes,
+                structure=silicon_structure,
+                block=block,
+                projection_type=WannierProjectionType.ANALYTIC,
+                nscf_remote_folder=nscf_scratch,
+                kpoints=kmesh,
+                mp_grid=[2, 2, 2],
+                pseudo_family=fake_sg15_shaped_family.label,
+            )
+
     def test_disentangling_block_gets_the_default_iteration_budget(
         self, wannier_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
     ):
