@@ -18,10 +18,6 @@ files, keyed by its own ``occ_labels`` / ``emp_labels``. Both pass that
 knowledge in as a list of :class:`ManifoldSpec`.
 """
 
-# No ``from __future__ import annotations``: stringified annotations hide
-# ``NotRequired`` from ``TypedDict.__required_keys__``
-# (python/cpython#97727), which the socket type-checker reads.
-
 import io
 from typing import Annotated, NotRequired, TypedDict
 
