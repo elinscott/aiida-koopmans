@@ -11,6 +11,7 @@ the unsplit and the split branches. Nothing runs — dummy codes only.
 from __future__ import annotations
 
 import io
+import pathlib
 
 import numpy as np
 import pytest
@@ -745,25 +746,27 @@ class TestMergeWannierOutputParameters:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
         merged = merge_wannier_output_parameters._callable(
-            b00=self._group_parameters([1.1, 2.2]),
-            b01=self._group_parameters([3.3]),
+            order=["g0", "g1"],
+            g0=self._group_parameters([1.1, 2.2]),
+            g1=self._group_parameters([3.3]),
         ).get_dict()
         assert merged["number_wfs"] == 3
         assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2, 3.3]
 
-    def test_swapped_group_keys_swap_the_band_order(self, aiida_profile):
-        """Negative control: the keys, not insertion order, define the order.
+    def test_the_order_list_decides_not_the_labels(self, aiida_profile):
+        """The stated order defines the band order; the labels say nothing.
 
-        Assigning the groups to swapped keys yields the swapped
-        concatenation — proving the merge would mis-order bands if the
-        caller mislabelled the groups.
+        The groups sit under labels whose alphabetical order is the
+        reverse of the stated one, so a merge that sorted its keys would
+        concatenate them the other way round.
         """
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
         merged = merge_wannier_output_parameters._callable(
-            b01=self._group_parameters([1.1, 2.2]),
-            b00=self._group_parameters([3.3]),
+            order=["zz", "aa"],
+            zz=self._group_parameters([3.3]),
+            aa=self._group_parameters([1.1, 2.2]),
         ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [3.3, 1.1, 2.2]
         assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
@@ -776,7 +779,9 @@ class TestMergeWannierOutputParameters:
         shuffled["wannier_functions_output"].reverse()
         from aiida.orm import Dict
 
-        merged = merge_wannier_output_parameters._callable(b00=Dict(shuffled)).get_dict()
+        merged = merge_wannier_output_parameters._callable(
+            order=["g0"], g0=Dict(shuffled)
+        ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2]
 
     def test_wf_count_mismatch_raises(self, aiida_profile):
@@ -788,7 +793,64 @@ class TestMergeWannierOutputParameters:
         from aiida.orm import Dict
 
         with pytest.raises(ValueError, match="declares"):
-            merge_wannier_output_parameters._callable(b00=Dict(broken))
+            merge_wannier_output_parameters._callable(order=["g0"], g0=Dict(broken))
+
+
+class TestGroupOrderIsExplicit:
+    """Group order travels as a list; the namespace labels mean nothing."""
+
+    @staticmethod
+    def _params(spreads):
+        from aiida.orm import Dict
+
+        return Dict(
+            {
+                "number_wfs": len(spreads),
+                "wannier_functions_output": [
+                    {"wf_ids": i + 1, "wf_spreads": s} for i, s in enumerate(spreads)
+                ],
+            }
+        )
+
+    def test_misleading_labels_follow_the_stated_order(self, aiida_profile):
+        """Labels whose sort order contradicts the stated one are ignored.
+
+        The first group sits under ``zz`` and the second under ``aa``, so a
+        merge that sorted its keys would swap them.
+        """
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        merged = merge_wannier_output_parameters._callable(
+            order=["zz", "aa"], zz=self._params([1.1, 2.2]), aa=self._params([3.3])
+        ).get_dict()
+        assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2, 3.3]
+
+    def test_a_label_sniffing_reader_would_swap_them(self, aiida_profile):
+        """Negative control: those labels really do mislead a sorting reader."""
+        assert sorted(["zz", "aa"]) != ["zz", "aa"]
+
+    def test_a_named_label_with_no_entry_raises(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        with pytest.raises(ValueError, match="does not carry"):
+            merge_wannier_output_parameters._callable(order=["g0", "g1"], g0=self._params([1.1]))
+
+    def test_an_unnamed_entry_raises(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        with pytest.raises(ValueError, match=r"does not\s+name"):
+            merge_wannier_output_parameters._callable(
+                order=["g0"], g0=self._params([1.1]), g1=self._params([2.2])
+            )
+
+    def test_the_plugin_key_convention_lives_in_one_place(self):
+        """aiida-wannierjl's own ``block_N`` naming is spelled out once."""
+        from aiida_koopmans.workgraphs import auto_wannierize
+        from aiida_koopmans.workgraphs.auto_wannierize import plugin_block_key
+
+        assert plugin_block_key(0) == "block_0"
+        source = pathlib.Path(auto_wannierize.__file__).read_text()
+        assert source.count('f"block_{') == 1
 
 
 class TestMergeSplitBlockProducts:
@@ -834,7 +896,9 @@ class TestMergeSplitBlockProducts:
             )
             return folder.store()
 
-        merged = merge_split_block_products._callable(b00=_folder(1), b01=_folder(2))
+        merged = merge_split_block_products._callable(
+            order=["g0", "g1"], g0=_folder(1), g1=_folder(2)
+        )
 
         assert "u_file" not in merged
 
@@ -871,8 +935,9 @@ class TestMergeInterpolatedBands:
 
         labels = [(0, "GAMMA"), (2, "X")]
         merged = merge_interpolated_bands._callable(
-            b00=self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels),
-            b01=self._bands([[5.0], [5.1], [5.2]], labels=labels),
+            order=["g0", "g1"],
+            g0=self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels),
+            g1=self._bands([[5.0], [5.1], [5.2]], labels=labels),
         )
         np.testing.assert_allclose(
             merged.get_bands(), [[1.0, 2.0, 5.0], [1.1, 2.1, 5.1], [1.2, 2.2, 5.2]]
@@ -885,8 +950,9 @@ class TestMergeInterpolatedBands:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_interpolated_bands
 
         merged = merge_interpolated_bands._callable(
-            b01=self._bands([[1.0], [1.1]]),
-            b00=self._bands([[5.0], [5.1]]),
+            order=["zz", "aa"],
+            zz=self._bands([[5.0], [5.1]]),
+            aa=self._bands([[1.0], [1.1]]),
         )
         np.testing.assert_allclose(merged.get_bands(), [[5.0, 1.0], [5.1, 1.1]])
 
@@ -895,8 +961,9 @@ class TestMergeInterpolatedBands:
 
         with pytest.raises(ValueError, match="k-path"):
             merge_interpolated_bands._callable(
-                b00=self._bands([[1.0], [1.1]]),
-                b01=self._bands([[5.0], [5.1], [5.2]]),
+                order=["g0", "g1"],
+                g0=self._bands([[1.0], [1.1]]),
+                g1=self._bands([[5.0], [5.1], [5.2]]),
             )
 
 
