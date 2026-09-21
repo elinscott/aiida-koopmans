@@ -668,7 +668,9 @@ class WannierizeBlocksOutputs(TypedDict):
     orbitals: NotRequired[list[VariationalOrbital]]
 
 
-def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
+def _builder_overrides(
+    overrides: WannierizeOverrides, projections: list[str] | None = None
+) -> dict[str, Any] | None:
     """Wrap the flat keyword dicts into the upstream builder override shape.
 
     The ONLY place the upstream override nesting is produced, and the one
@@ -694,6 +696,12 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
     ``scf``/``nscf`` — :func:`WannierizeBlock` discards both namespaces
     afterwards (it reuses the shared nscf scratch), so this is the only use
     the cutoffs get.
+
+    ``projections``, when given, rides in the same ``wannier90.wannier90``
+    dict as ``parameters``: the upstream ``ANALYTIC`` branch honours a
+    projection list supplied there instead of deriving one from the
+    pseudopotentials' valence orbitals, which a pseudopotential with no
+    ``PP_PSWFC`` content (SG15 ONCV) cannot supply.
     """
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -730,6 +738,8 @@ def _builder_overrides(overrides: WannierizeOverrides) -> dict[str, Any] | None:
         dict(overrides.get("wannier90") or {}),
     )
     builder_overrides["wannier90"] = {"wannier90": {"parameters": wannier90_params}}
+    if projections is not None:
+        builder_overrides["wannier90"]["wannier90"]["projections"] = projections
     if pw2wannier90:
         builder_overrides["pw2wannier90"] = {
             "pw2wannier90": {"parameters": {"INPUTPP": dict(pw2wannier90)}}
@@ -898,11 +908,18 @@ def WannierizeBlock(
     if external_projectors_path is not None:
         external_projectors_path = str(external_projectors_path)
 
+    # Computed ahead of the builder call so an explicit block's projections
+    # can ride the ``overrides`` argument: the upstream ``ANALYTIC`` branch
+    # then skips deriving them from the pseudopotentials' valence orbitals,
+    # which a pseudopotential with no ``PP_PSWFC`` content (SG15 ONCV)
+    # cannot supply.
+    w90_kwargs = block_w90_kwargs(block)
+
     builder = Wannier90WorkChain.get_builder_from_protocol(
         codes=codes,
         structure=structure,
         protocol=protocol,
-        overrides=_builder_overrides(overrides),
+        overrides=_builder_overrides(overrides, projections=w90_kwargs.get("projections")),
         pseudo_family=pseudo_family,
         electronic_type=unwrap_enum(electronic_type, ElectronicType),
         spin_type=unwrap_enum(spin_type, SpinType),
@@ -920,8 +937,7 @@ def WannierizeBlock(
     data = get_dict_from_builder(builder)
     w90 = data["wannier90"]["wannier90"]
 
-    # --- per-block wannier90 parameters / projections ---
-    w90_kwargs = block_w90_kwargs(block)
+    # --- per-block wannier90 parameters ---
     w90_params = w90["parameters"].get_dict()
     w90_params["num_wann"] = w90_kwargs["num_wann"]
     w90_params["num_bands"] = w90_kwargs["num_bands"]
@@ -965,10 +981,9 @@ def WannierizeBlock(
     ).result
     w90["parameters"] = w90_parameters
 
-    # Explicit (ANALYTIC) blocks carry resolved projection orbitals; automatic
-    # blocks rely on ``projection_type`` alone (no ``projections`` key).
-    if "projections" in w90_kwargs:
-        w90["projections"] = orm.List(list=w90_kwargs["projections"])
+    # Explicit (ANALYTIC) blocks' projections are already threaded through
+    # ``overrides`` above, ahead of the builder call; automatic blocks rely
+    # on ``projection_type`` alone (no ``projections`` key).
 
     # Share the nscf k-mesh so the per-block wannier90 / pw2wannier90 read
     # eigenstates on the exact grid the shared nscf produced.

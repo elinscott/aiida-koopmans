@@ -29,6 +29,7 @@ from tests.fixtures import (  # noqa: F401
     fake_cutoffs_family,
     fake_family_unreadable_upf,
     fake_family_without_pswfc,
+    fake_sg15_shaped_family,
     fake_upf,
     generate_full_upf_data,
     generate_upf_data,
