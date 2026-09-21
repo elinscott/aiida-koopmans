@@ -1307,8 +1307,9 @@ class TestRunDFPTSmoothInterpolation:
         the caller's label order, and the interpolation merges the same
         blocks again for its own DFT Hamiltonians. This pins that the two
         merges are handed the same list; which row each block lands on
-        inside the interpolation is pinned in ``test_ui_dfpt.py``, where
-        the per-block merge is a real task rather than a deferred graph.
+        inside the interpolation is pinned in ``test_ui_band_structure.py``,
+        where the per-block merge is a real task rather than a deferred
+        graph.
         """
         from tests.fixtures import block_wannierization
 
@@ -1973,3 +1974,19 @@ class TestSinglepointDFPTGrouping:
             kpoints=kmesh,
         )
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
+
+
+class TestKcwHamiltonianFilename:
+    """The one place kcw.x's two Hamiltonian filenames are decided."""
+
+    def test_the_filename_helper_names_the_occupied_file_for_a_filled_manifold(self):
+        """``kcw_hamiltonian_filename`` is the one place the two names are decided.
+
+        The CalcJob's retrieve list and the interpolation both go through
+        it, so a swap there would be invisible to a test that only checks
+        both names appear somewhere.
+        """
+        from aiida_koopmans.calculations.kcw import kcw_hamiltonian_filename
+
+        assert kcw_hamiltonian_filename(filled=True) == "aiida.kcw_hr_occ.dat"
+        assert kcw_hamiltonian_filename(filled=False) == "aiida.kcw_hr_emp.dat"
