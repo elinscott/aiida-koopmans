@@ -82,6 +82,7 @@ from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
     KcwScreenCalculation,
     Wann2kcCalculation,
+    kcw_hamiltonian_filename,
 )
 from aiida_koopmans.owned_keywords import owned, reject_owned, seeded
 from aiida_koopmans.parallelization import (
@@ -108,7 +109,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
-from aiida_koopmans.workgraphs.ui.dfpt import DfptBandStructureTask
+from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldSpec
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -680,7 +681,7 @@ def RunDFPT(
         smooth_block_wannier: the same blocks Wannierized on a denser mesh,
             keyed by the same labels. Given, the ``bands`` output is the
             smooth-interpolated band structure
-            (:func:`~aiida_koopmans.workgraphs.ui.dfpt.DfptBandStructureTask`)
+            (:func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`)
             rather than kcw.x's own, which stays addressable on the ham
             step. Needs ``structure`` and ``bands_kpoints``.
         wannierize_bands: the pw.x quality-check DFT reference bands along
@@ -891,13 +892,12 @@ def RunDFPT(
     outputs["ham_parameters"] = ham["output_parameters"]
     _add_optional_band_outputs(outputs, ham, do_bands, wannierize_bands, projwfc)
     if smooth_block_wannier is not None:
-        smooth_bands = DfptBandStructureTask(
+        smooth_bands = KoopmansBandStructureTask(
             structure=structure,
             koopmans_ham_retrieved=ham["retrieved"],
+            manifolds=_dfpt_manifold_specs(occ_labels, emp_labels),
             block_wannierizations=block_wannier,
             smooth_block_wannierizations=smooth_block_wannier,
-            occ_labels=[str(label) for label in occ_labels],
-            emp_labels=None if emp_labels is None else [str(label) for label in emp_labels],
             kgrid=kgrid,
             kpath=bands_kpoints,
             # Both interpolations of this Hamiltonian must read its
@@ -911,6 +911,36 @@ def RunDFPT(
         )
         outputs["bands"] = smooth_bands["band_structure"]
     return outputs
+
+
+def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[ManifoldSpec]:
+    """Build one kcw.x channel's manifold specs for the smooth interpolation.
+
+    kcw.x's printed Hamiltonian filenames carry no channel index — each
+    channel runs as its own wann2kc/screen/ham chain in its own working
+    directory — so every spec here is unpolarized from
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`'s
+    own point of view. Which physical channel a :func:`RunDFPT` call belongs
+    to is :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
+    """
+    specs: list[ManifoldSpec] = [
+        ManifoldSpec(
+            filled=True,
+            spin=SpinChannel.NONE,
+            filename=kcw_hamiltonian_filename(filled=True),
+            blocks=[str(label) for label in occ_labels],
+        ),
+    ]
+    if emp_labels is not None:
+        specs.append(
+            ManifoldSpec(
+                filled=False,
+                spin=SpinChannel.NONE,
+                filename=kcw_hamiltonian_filename(filled=False),
+                blocks=[str(label) for label in emp_labels],
+            )
+        )
+    return specs
 
 
 def _add_smooth_interpolation_dfpt_inputs(

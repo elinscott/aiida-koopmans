@@ -915,6 +915,36 @@ def occ_emp_merge_groups(spin: str = "none") -> list[dict]:
     ]
 
 
+def occ_emp_manifold_specs(
+    *,
+    spin: str = "none",
+    filenames: tuple[str, str] = ("ham_occ_1.dat", "ham_emp_1.dat"),
+    blocks: tuple[str, str] = ("occ", "emp"),
+) -> list[dict]:
+    """Return a one-block-per-filling ``ManifoldSpec`` list for one spin channel."""
+    occ_block, emp_block = blocks
+    occ_file, emp_file = filenames
+    return [
+        {"filled": True, "spin": spin, "filename": occ_file, "blocks": [occ_block]},
+        {"filled": False, "spin": spin, "filename": emp_file, "blocks": [emp_block]},
+    ]
+
+
+def _task_names(wg) -> list[str]:
+    """Return every task name in a built graph, walking nested graphs."""
+    names: list[str] = []
+
+    def _walk(tasks):
+        for task_ in tasks:
+            names.append(task_.name)
+            children = getattr(task_, "children", None)
+            if children:
+                _walk(children)
+
+    _walk(wg.tasks)
+    return names
+
+
 def si_external_projector_tables() -> dict:
     """Silicon external-projector orbital tables: s + p per atom, 8 in total.
 

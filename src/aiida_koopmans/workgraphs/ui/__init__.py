@@ -11,9 +11,9 @@ bands carry provenance back to the input Hamiltonian.
 
 Scope notes:
 
-* One (occupied or empty) x (spin) manifold per graph. The per-(filling,
-  spin) fan-out and band merging of a full ΔSCF band structure live in
-  :mod:`aiida_koopmans.workgraphs.ui.dscf`.
+* One (occupied or empty) x (spin) manifold per graph. The per-manifold
+  fan-out and band merging of a full Koopmans band structure live in
+  :mod:`aiida_koopmans.workgraphs.ui.band_structure`.
 * The smooth-interpolation correction consumes a pre-computed denser-grid
   DFT Hamiltonian (``dft_smooth_ham_file``); wannierizing that denser grid
   is the caller's job

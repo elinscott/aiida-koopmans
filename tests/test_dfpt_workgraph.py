@@ -1265,10 +1265,10 @@ class TestRunDFPTSmoothInterpolation:
     ):
         """The occupied blocks stay the occupied manifold on the way across.
 
-        ``DfptBandStructureTask`` takes the two label lists separately and
-        pairs each with the Hamiltonian file of its own filling; swapping
-        them would pair the occupied Wannier centres with the empty
-        Hamiltonian, which nothing downstream would notice.
+        ``RunDFPT`` builds one ``ManifoldSpec`` per filling, each carrying
+        its own ``filled`` flag and Hamiltonian filename; swapping them
+        would pair the occupied Wannier centres with the empty Hamiltonian,
+        which nothing downstream would notice.
         """
         from tests.fixtures import block_wannierization
 
@@ -1294,8 +1294,9 @@ class TestRunDFPTSmoothInterpolation:
         )
         smooth = {t.name: t for t in wg.tasks}["smooth_band_structure"].inputs
 
-        assert [str(label) for label in smooth["occ_labels"].value] == ["occ"]
-        assert [str(label) for label in smooth["emp_labels"].value] == ["emp"]
+        manifolds = {spec["filled"]: spec for spec in smooth["manifolds"].value}
+        assert [str(label) for label in manifolds[True]["blocks"]] == ["occ"]
+        assert [str(label) for label in manifolds[False]["blocks"]] == ["emp"]
 
     def test_a_multi_block_manifold_merges_both_hamiltonians_in_one_order(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
@@ -1336,7 +1337,8 @@ class TestRunDFPTSmoothInterpolation:
         # The interpolation is handed that same list, and keys its own
         # per-block merges off it.
         smooth = by_name["smooth_band_structure"]
-        assert [str(label) for label in smooth.inputs["occ_labels"].value] == labels
+        [occ_spec] = [spec for spec in smooth.inputs["manifolds"].value if spec["filled"]]
+        assert [str(label) for label in occ_spec["blocks"]] == labels
 
     def test_the_hams_wigner_seitz_choice_reaches_the_interpolation(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure

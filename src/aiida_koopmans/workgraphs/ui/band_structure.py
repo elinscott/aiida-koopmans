@@ -1,17 +1,21 @@
-"""Manifold-level pieces shared by the ΔSCF and DFPT band structures.
+"""Koopmans band structure assembly, shared by the ΔSCF and DFPT routes.
 
 A Koopmans band structure is assembled one (filling, spin) manifold at a
 time: lift that manifold's Koopmans Hamiltonian out of the producing
-calculation's retrieved folder, collect its Wannier centres, interpolate
-it along the k-path — with the smooth-interpolation correction when a
-denser-mesh Wannierization is supplied — and concatenate the manifolds
-into one ``BandsData``.
+calculation's retrieved folder, collect its Wannier centres, interpolate it
+along the k-path — with the smooth-interpolation correction when a
+denser-mesh Wannierization is supplied — and concatenate the manifolds into
+one ``BandsData``.
 
-Which file holds the Koopmans Hamiltonian, and how the manifolds are
-partitioned, is the route's own knowledge:
-:mod:`aiida_koopmans.workgraphs.ui.dscf` reads kcp.x's supercell
-``ham_*.dat`` files, :mod:`aiida_koopmans.workgraphs.ui.dfpt` kcw.x's
-``*.kcw_hr_*.dat``.
+:func:`KoopmansBandStructureTask` runs that fan-out for whatever manifolds
+its caller declares. Which file holds each manifold's Koopmans Hamiltonian,
+and how the manifolds are partitioned, is the route's own knowledge: the
+ΔSCF route (:mod:`aiida_koopmans.workgraphs.kcp`) reads kcp.x's supercell
+``ham_*.dat`` files, keyed by the ``merge_groups`` partition its
+initialisation wannierization emitted; the DFPT route
+(:mod:`aiida_koopmans.workgraphs.dfpt`) reads kcw.x's ``*.kcw_hr_*.dat``
+files, keyed by its own ``occ_labels`` / ``emp_labels``. Both pass that
+knowledge in as a list of :class:`ManifoldSpec`.
 """
 
 # No ``from __future__ import annotations``: stringified annotations hide
@@ -19,14 +23,91 @@ partitioned, is the route's own knowledge:
 # (python/cpython#97727), which the socket type-checker reads.
 
 import io
+from typing import Annotated, NotRequired, TypedDict
 
 import numpy as np
 from aiida import orm
-from aiida_workgraph import task
+from aiida_workgraph import dynamic, task
 
-from aiida_koopmans.workgraphs.block_wannierize import collect_wannier_functions
-from aiida_koopmans.workgraphs.ui import interpolate_bands
+from aiida_koopmans.spin import SpinChannel
+from aiida_koopmans.workgraphs.block_wannierize import (
+    WannierizeBlockOutputs,
+    collect_wannier_functions,
+)
+from aiida_koopmans.workgraphs.ui import DensityOfStates, compute_dos_from_bands, interpolate_bands
 from aiida_koopmans.workgraphs.utils.wannier_merge import merge_wannier_hr_file_contents
+
+
+class ManifoldSpec(TypedDict):
+    """One (filling, spin) manifold's identity inside a Koopmans band structure.
+
+    ``filled`` and ``spin`` alone decide merge order (occupied before
+    empty), which manifold's top sets the valence-band-maximum reference,
+    and channel stacking — never a label. ``blocks`` alone decides
+    membership and band order: the caller's own key list into
+    ``block_wannierizations``, never derived from how those keys are
+    spelled.
+    """
+
+    filled: bool
+    spin: SpinChannel
+    filename: str
+    blocks: list[str]
+
+
+def _manifold_label(*, filled: bool, spin: SpinChannel) -> str:
+    """Name one manifold for task link labels: filling, spin-qualified when polarized.
+
+    A single-channel run (``spin='none'``, or one physical channel run on
+    its own, as the DFPT route's per-channel call does) never qualifies the
+    label; a run stacking both spin channels in one call does.
+    """
+    manifold = "occ" if filled else "emp"
+    return manifold if spin == SpinChannel.NONE else f"{manifold}_{spin.value}"
+
+
+def _channel_manifolds(manifolds: list) -> dict:
+    """Group manifold specs by spin then filling, validating the partition.
+
+    Membership and stacking come from ``filled``/``spin`` alone; ``blocks``
+    is never inspected here.
+
+    Raises:
+        ValueError: two manifolds claim the same ``(filled, spin)`` pair; a
+            channel has no occupied manifold; ``spin='none'`` is mixed with
+            a polarized channel; or a ``spin='down'`` channel has no
+            ``spin='up'`` channel to pair it with.
+    """
+    by_channel: dict[SpinChannel, dict[bool, dict]] = {}
+    for spec in manifolds:
+        spin = SpinChannel(spec["spin"])
+        filled = bool(spec["filled"])
+        channel = by_channel.setdefault(spin, {})
+        if filled in channel:
+            raise ValueError(
+                f"Two manifolds both claim filled={filled}, spin={spin.value!r}; a band "
+                "structure needs at most one manifold per (filled, spin) pair."
+            )
+        channel[filled] = spec
+
+    if SpinChannel.NONE in by_channel and len(by_channel) > 1:
+        raise ValueError(
+            "The manifolds mix spin='none' with a polarized spin channel; a band "
+            "structure is either unpolarized (spin='none' only) or polarized "
+            "(spin='up' / spin='down' only)."
+        )
+    if SpinChannel.DOWN in by_channel and SpinChannel.UP not in by_channel:
+        raise ValueError(
+            "The manifolds have a spin='down' channel with no spin='up' channel to pair it with."
+        )
+    for spin, channel in by_channel.items():
+        if True not in channel:
+            raise ValueError(
+                f"The spin={spin.value!r} channel has an empty manifold (filled=False) but "
+                "no occupied one; interpolating a band structure needs the occupied "
+                "manifold in every channel it uses."
+            )
+    return by_channel
 
 
 @task.calcfunction
@@ -208,3 +289,134 @@ def interpolate_manifold(
         metadata={"call_link_label": f"interpolate_{label}"},
         **smooth_kwargs,
     ).result
+
+
+class KoopmansBandStructureOutputs(TypedDict):
+    """Outputs of :func:`KoopmansBandStructureTask`.
+
+    * ``band_structure`` — the interpolated Koopmans bands along the input
+      k-path, occupied then empty within each spin channel, on pw.x's
+      absolute energy scale (``offset`` having been added to every
+      eigenvalue; an ``offset`` of 0.0 leaves the producing route's own
+      scale unchanged).
+    * ``reference`` — the valence-band maximum in eV, for plot alignment.
+    * ``dos`` — the bands' Gaussian-smearing total DOS, present only when
+      ``do_dos``.
+    """
+
+    band_structure: orm.BandsData
+    reference: float
+    dos: NotRequired[DensityOfStates]
+
+
+@task.graph
+def KoopmansBandStructureTask(
+    structure: orm.StructureData,
+    koopmans_ham_retrieved: orm.FolderData,
+    manifolds: list,
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    kgrid: list[int],
+    kpath: orm.KpointsData,
+    smooth_block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
+    use_ws_distance: bool = True,
+    offset: float = 0.0,
+    do_dos: bool = False,
+    plotting: dict | None = None,
+) -> KoopmansBandStructureOutputs:
+    """Interpolate a Koopmans band structure from its manifolds' Hamiltonians.
+
+    One interpolation per manifold in ``manifolds``, off the Hamiltonian its
+    own ``filename`` names inside ``koopmans_ham_retrieved``, with that
+    manifold's Wannier centres; the results are concatenated
+    occupied-then-empty within a channel and, when ``manifolds`` covers both
+    a ``spin='up'`` and a ``spin='down'`` channel, stacked across them.
+    Whether the run is polarized is read off ``manifolds`` itself — there is
+    no separate flag for it.
+
+    Args:
+        structure: the primitive cell the wannierizations ran on.
+        koopmans_ham_retrieved: the retrieved folder holding every
+            manifold's printed Koopmans Hamiltonian.
+        manifolds: one :class:`ManifoldSpec` per (filling, spin) manifold to
+            interpolate. Building this list — which file names each
+            manifold's Hamiltonian, and which blocks belong to it — is the
+            calling route's own knowledge.
+        block_wannierizations: the per-block wannierization outputs, keyed
+            by block label.
+        kgrid: the Monkhorst-Pack grid the Koopmans Hamiltonian lives on
+            (the ΔSCF route's supercell repeat count; the DFPT route's
+            kcw.x ``CONTROL.mp1-3``).
+        kpath: the primitive-cell band path, in crystal coordinates.
+        smooth_block_wannierizations: the same blocks Wannierized on a
+            denser mesh, keyed by the same labels. Present asks for the
+            smooth-interpolation correction: each manifold's DFT
+            Hamiltonian is subtracted in real space and its dense
+            counterpart added back in k-space. Absent interpolates the
+            Koopmans Hamiltonian alone.
+        use_ws_distance: whether the Wigner-Seitz distance between Wannier
+            centres enters the interpolation phase, as in wannier90.
+        offset: shift applied to every returned eigenvalue and to the
+            reference; 0.0 leaves the producing route's own energy scale.
+        do_dos: whether to also compute the bands' Gaussian-smearing DOS.
+        plotting: DOS shaping — ``degauss``, ``nstep``, ``Emin``, ``Emax``.
+
+    Raises:
+        ValueError: ``manifolds`` is not a valid partition — see
+            :func:`_channel_manifolds`.
+    """
+    channels = _channel_manifolds(manifolds)
+
+    energies_by_manifold = {}
+    for spin, by_filled in channels.items():
+        for filled, spec in by_filled.items():
+            label = _manifold_label(filled=filled, spin=spin)
+            hamiltonian = extract_koopmans_hamiltonian(
+                retrieved=koopmans_ham_retrieved,
+                filename=spec["filename"],
+                metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+            ).result
+            energies_by_manifold[filled, spin] = interpolate_manifold(
+                hamiltonian,
+                spec["blocks"],
+                label=label,
+                block_wannierizations=block_wannierizations,
+                smooth_block_wannierizations=smooth_block_wannierizations,
+                structure=structure,
+                kpath=kpath,
+                kgrid=kgrid,
+                use_ws_distance=use_ws_distance,
+            )
+
+    first = SpinChannel.NONE if SpinChannel.NONE in channels else SpinChannel.UP
+    second = SpinChannel.DOWN if SpinChannel.DOWN in channels else None
+
+    merge_kwargs = {
+        "occupied": energies_by_manifold[True, first],
+        "empty": energies_by_manifold.get((False, first)),
+        "offset": offset,
+    }
+    if second is not None:
+        merge_kwargs["occupied_down"] = energies_by_manifold[True, second]
+        merge_kwargs["empty_down"] = energies_by_manifold.get((False, second))
+
+    merged = merge_manifold_energies(
+        **merge_kwargs,
+        metadata={"call_link_label": "merge_manifold_energies"},
+    )
+
+    outputs = KoopmansBandStructureOutputs(
+        band_structure=build_band_structure(
+            kpath=kpath,
+            energies=merged["energies"],
+            reference=merged["reference"],
+            metadata={"call_link_label": "build_band_structure"},
+        ).result,
+        reference=merged["reference"],
+    )
+    if do_dos:
+        outputs["dos"] = compute_dos_from_bands(
+            band_energies=merged["energies"],
+            plotting=dict(plotting) if plotting is not None else {},
+            metadata={"call_link_label": "interpolated_dos"},
+        )
+    return outputs
