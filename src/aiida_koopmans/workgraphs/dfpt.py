@@ -1036,7 +1036,7 @@ def _dfpt_manifold_files(manifolds: list) -> list[ManifoldFile]:
     return [
         ManifoldFile(
             filled=group["filled"],
-            spin=SpinChannel.NONE.value,
+            spin=SpinChannel.NONE,
             blocks=group["blocks"],
             filename=kcw_hamiltonian_filename(filled=group["filled"]),
         )

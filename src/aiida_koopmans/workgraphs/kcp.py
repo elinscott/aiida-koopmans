@@ -1776,11 +1776,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
 
     A genuine task, not a plain helper: ``merge_groups`` usually threads
     through from the initialisation wannierization's own output, a future
-    the graph engine resolves only once this task actually runs. ``spin``
-    is stored as its plain string value — a stored task output goes
-    through AiiDA's own node serialization, unlike a graph input, and the
-    consumer (:func:`~aiida_koopmans.workgraphs.ui.band_structure._channel_manifolds`)
-    already coerces either form back to :class:`~aiida_koopmans.spin.SpinChannel`.
+    the graph engine resolves only once this task actually runs.
 
     Raises:
         ValueError: a spin channel this route needs has no merge group.
@@ -1805,7 +1801,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
             specs.append(
                 ManifoldFile(
                     filled=filled,
-                    spin=spin.value,
+                    spin=spin,
                     filename=kcp_hamiltonian_filename(
                         filled=filled,
                         # kcp.x indexes its printed files 1 = up (and the single
@@ -1815,7 +1811,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
                     blocks=[
                         ProjectionBlockId(
                             label=str(block["label"]),
-                            spin=SpinChannel(block["spin"]).value,
+                            spin=SpinChannel(block["spin"]),
                             filled=filled,
                             num_wann=int(block["num_wann"]),
                         )

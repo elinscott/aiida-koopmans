@@ -2230,11 +2230,11 @@ class TestDfptManifoldFiles:
         from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
 
         down_channel = [manifold_id(["occ"], filled=True)]
-        down_channel[0]["spin"] = SpinChannel.DOWN.value
+        down_channel[0]["spin"] = SpinChannel.DOWN
 
         [spec] = _dfpt_manifold_files(down_channel)
 
-        assert spec["spin"] == SpinChannel.NONE.value
+        assert spec["spin"] == SpinChannel.NONE
 
     def test_an_occupied_only_run_keeps_one_manifold(self):
         from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files

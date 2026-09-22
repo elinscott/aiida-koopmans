@@ -3193,18 +3193,9 @@ class TestDscfManifoldSpecs:
         by_filled = {spec["filled"]: spec for spec in specs}
         assert by_filled[True]["filename"] == "ham_occ_1.dat"
         assert [block["label"] for block in by_filled[True]["blocks"]] == ["occ"]
-        assert by_filled[True]["spin"] == SpinChannel.NONE.value
+        assert by_filled[True]["spin"] == SpinChannel.NONE
         assert by_filled[False]["filename"] == "ham_emp_1.dat"
         assert [block["label"] for block in by_filled[False]["blocks"]] == ["emp"]
-
-    def test_the_stored_spin_is_a_plain_string(self):
-        """A task output is stored as a node; only a plain ``str`` survives that."""
-        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
-        from tests.fixtures import occ_emp_merge_groups
-
-        specs = dscf_manifold_specs._callable(occ_emp_merge_groups(), spin_polarized=False)
-
-        assert all(type(spec["spin"]) is str for spec in specs)
 
     def test_spin_polarized_names_the_down_channel_spin_index_two(self):
         from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
@@ -3250,7 +3241,7 @@ class TestDscfManifoldSpecs:
         [occ_block] = next(spec for spec in specs if spec["filled"])["blocks"]
         assert occ_block["num_wann"] == 4
         assert occ_block["filled"] is True
-        assert occ_block["spin"] == "none"
+        assert occ_block["spin"] == SpinChannel.NONE
 
     def test_a_missing_manifold_names_itself(self):
         """Interpolating needs an occupied and an empty manifold per channel."""
