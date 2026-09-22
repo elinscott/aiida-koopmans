@@ -70,7 +70,7 @@ def block_nodes_by_group[T](
     """
     wanted = [str(block["label"]) for group in groups for block in group["blocks"]]
     available = {str(key) for key in block_nodes}
-    missing = [label for label in dict.fromkeys(wanted) if label not in available]
+    missing = sorted(set(wanted) - available)
     if missing:
         raise ValueError(
             f"No Wannierization outputs for block(s) {missing}. The blocks are "

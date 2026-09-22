@@ -480,10 +480,7 @@ class ProjectionBlockId(TypedDict):
     """
 
     label: str
-    #: The channel as a :class:`~aiida_koopmans.spin.SpinChannel` *value*
-    #: string. A member survives storage as its value anyway, so the value
-    #: is what a consumer reads; they normalise with ``SpinChannel(...)``.
-    spin: str
+    spin: SpinChannel
     filled: bool
     num_wann: int
 
@@ -499,16 +496,15 @@ class MergeGroupId(TypedDict):
     joins it to.
 
     * ``filled`` -- ``True`` for the occupied manifold, ``False`` for empty.
-    * ``spin`` -- the channel every member block belongs to, as the
-      :class:`~aiida_koopmans.spin.SpinChannel` *value* string: a member
-      passed in reaches the body as its value anyway, so writing the value
-      keeps what a consumer reads equal to what the caller wrote.
+    * ``spin`` -- the channel every member block belongs to. Typed as the
+      channel enum; a value read back off a socket is a plain string, so
+      consumers normalize with ``SpinChannel(...)``.
     * ``blocks`` -- the member blocks in band order. Order here is the only
       authority on band order; a label is a lookup key and says nothing.
     """
 
     filled: bool
-    spin: str
+    spin: SpinChannel
     blocks: list[ProjectionBlockId]
 
 
