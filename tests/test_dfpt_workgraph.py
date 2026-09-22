@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 from wannier90_input.models.parameters import Projection
 
-from aiida_koopmans.projections import ExplicitProjectionBlock, get_wannier_indices
+from aiida_koopmans.projections import (
+    ExplicitProjectionBlock,
+    MergeGroupId,
+    ProjectionBlockId,
+    get_wannier_indices,
+)
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
@@ -95,6 +100,56 @@ def _wannier_block_folder(num_wann: int, num_bands: int, u_dis: bool = False):
     return folder.store()
 
 
+def _block_files(retrieved):
+    """Build the per-block product sockets ``RunDFPT`` reads, off a retrieved folder.
+
+    Runs the real extractor, so a test block's file sockets carry exactly
+    the bytes its ``retrieved`` folder holds.
+    """
+    from aiida_koopmans.workgraphs.block_wannierize import extract_wannier_output_files
+
+    products = extract_wannier_output_files._callable(retrieved=retrieved)
+    return {name: node.store() for name, node in products.items()}
+
+
+def manifold_id(labels, *, filled):
+    """One manifold naming ``labels`` in band order."""
+    return MergeGroupId(
+        filled=filled,
+        spin=SpinChannel.NONE,
+        blocks=[
+            ProjectionBlockId(label=label, spin=SpinChannel.NONE, filled=filled, num_wann=1)
+            for label in labels
+        ],
+    )
+
+
+def manifolds_for(occ=("occ",), emp=None):
+    """Return the manifolds a channel hands ``RunDFPT``, occupied first."""
+    groups = [manifold_id(list(occ), filled=True)]
+    if emp is not None:
+        groups.append(manifold_id(list(emp), filled=False))
+    return groups
+
+
+def _staging(*blocks, labels=None):
+    """Staging kwargs from ``(filled, files)`` pairs, in band order.
+
+    ``labels`` optionally names the blocks, so a test can give them any
+    spelling: a label is a lookup key and the manifolds say the rest.
+    """
+    named = list(labels) if labels else [f"b{i}" for i in range(len(blocks))]
+    occ = [label for label, (filled, _) in zip(named, blocks, strict=True) if filled]
+    emp = [label for label, (filled, _) in zip(named, blocks, strict=True) if not filled]
+    groups = [manifold_id(occ, filled=True)] if occ else []
+    if emp:
+        groups.append(manifold_id(emp, filled=False))
+    return {
+        "manifolds": groups,
+        **{label: dict(files) for label, (_, files) in zip(named, blocks, strict=True)},
+    }
+
+
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
     return explicit_block(label, include, projections=["Si:sp3"])
 
@@ -106,12 +161,16 @@ def _block(label: str, include: range) -> ExplicitProjectionBlock:
 
 class TestPrepareKcwWannierFiles:
     def test_occ_only(self, aiida_profile, occ_retrieved):
-        outputs = prepare_kcw_wannier_files._callable(occ_b00=occ_retrieved)
+        outputs = prepare_kcw_wannier_files._callable(
+            **_staging((True, _block_files(occ_retrieved)))
+        )
         names = sorted(outputs["wannier_files"].base.repository.list_object_names())
         assert names == ["aiida_centres.xyz", "aiida_hr.dat", "aiida_u.mat"]
 
     def test_emp_files_are_renamed(self, aiida_profile, occ_retrieved, emp_retrieved):
-        outputs = prepare_kcw_wannier_files._callable(occ_b00=occ_retrieved, emp_b00=emp_retrieved)
+        outputs = prepare_kcw_wannier_files._callable(
+            **_staging((True, _block_files(occ_retrieved)), (False, _block_files(emp_retrieved)))
+        )
         merged = outputs["wannier_files"]
         names = sorted(merged.base.repository.list_object_names())
         assert names == [
@@ -127,18 +186,76 @@ class TestPrepareKcwWannierFiles:
         content = merged.base.repository.get_object_content("aiida_emp_u.mat", mode="rb")
         assert content == b"contents of aiida_u.mat"
 
-    def test_missing_required_file_raises(self, aiida_profile, emp_retrieved):
-        from aiida.orm import FolderData
-
-        incomplete = FolderData()
-        incomplete.base.repository.put_object_from_bytes(b"x", "aiida_hr.dat")
-        incomplete.store()
+    def test_missing_required_file_raises(self, aiida_profile, occ_retrieved):
+        block = _block_files(occ_retrieved)
+        block.pop("u_file")
         with pytest.raises(ValueError, match="write_u_matrices"):
-            prepare_kcw_wannier_files._callable(occ_b00=incomplete)
+            prepare_kcw_wannier_files._callable(**_staging((True, block)))
 
-    def test_no_occupied_folder_raises(self, aiida_profile, emp_retrieved):
-        with pytest.raises(ValueError, match="at least one occupied"):
-            prepare_kcw_wannier_files._callable(emp_b00=emp_retrieved)
+    def test_a_block_with_no_files_raises(self, aiida_profile, occ_retrieved):
+        """Every block a manifold names must appear in the namespace."""
+        staging = _staging((True, _block_files(occ_retrieved)))
+        for label in list(staging):
+            if label != "manifolds":
+                del staging[label]
+        with pytest.raises(ValueError, match="No Wannierization outputs for block"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_files_no_manifold_names_raise(self, aiida_profile, occ_retrieved):
+        """A namespace entry no manifold names would be staged nowhere."""
+        staging = _staging((True, _block_files(occ_retrieved)))
+        staging["spare"] = _block_files(occ_retrieved)
+        with pytest.raises(ValueError, match="which no manifold names"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_u_dis_on_a_non_final_block_raises(self, aiida_profile):
+        """Only a manifold's last block may carry a disentanglement matrix."""
+        staging = _staging(
+            (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True))),
+            (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+            (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+        )
+        with pytest.raises(ValueError, match="only its last block may"):
+            prepare_kcw_wannier_files._callable(**staging)
+
+    def test_no_occupied_manifold_raises(self, aiida_profile, emp_retrieved):
+        with pytest.raises(ValueError, match="needs an occupied manifold"):
+            prepare_kcw_wannier_files._callable(**_staging((False, _block_files(emp_retrieved))))
+
+
+class TestBlockLabelsCarryNoMeaning:
+    """The manifolds decide manifold, band order and file kind — not labels."""
+
+    @staticmethod
+    def _merged(staging):
+        return prepare_kcw_wannier_files._callable(**staging)["wannier_files"]
+
+    def test_misleading_labels_follow_the_manifolds(self, aiida_profile):
+        """Labels that contradict the manifolds must be ignored, not obeyed.
+
+        The empty manifold's block is labelled ``occ_last`` and the blocks
+        sort in the reverse of their band order, so anything reading a
+        label would put the block in the wrong manifold or the wrong place.
+        """
+        occ = _block_files(_wannier_block_folder(num_wann=2, num_bands=2))
+        emp = _block_files(_wannier_block_folder(num_wann=3, num_bands=3))
+        honest = self._merged(_staging((True, occ), (False, emp)))
+        misleading = self._merged(_staging((True, occ), (False, emp), labels=["zz_occ", "aa_occ"]))
+        for name in ("aiida_u.mat", "aiida_emp_u.mat", "aiida_centres.xyz"):
+            assert misleading.base.repository.get_object_content(
+                name, mode="rb"
+            ) == honest.base.repository.get_object_content(name, mode="rb"), name
+
+    def test_a_label_sniffing_reader_would_fail_that(self, aiida_profile):
+        """Negative control: those labels really do mislead.
+
+        Both say ``occ``, so a reader taking the manifold from the label
+        would find no empty manifold at all, and they sort in the reverse
+        of their band order.
+        """
+        labels = ["zz_occ", "aa_occ"]
+        assert [label for label in labels if not label.split("_")[1].startswith("occ")] == []
+        assert sorted(labels) != labels
 
 
 class TestPrepareKcwWannierFilesMultiBlock:
@@ -152,8 +269,10 @@ class TestPrepareKcwWannierFilesMultiBlock:
         )
 
         outputs = prepare_kcw_wannier_files._callable(
-            occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
-            occ_b01=_wannier_block_folder(num_wann=3, num_bands=3),
+            **_staging(
+                (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (True, _block_files(_wannier_block_folder(num_wann=3, num_bands=3))),
+            )
         )
         merged = outputs["wannier_files"]
         assert sorted(merged.base.repository.list_object_names()) == [
@@ -181,9 +300,11 @@ class TestPrepareKcwWannierFilesMultiBlock:
         # the last block is disentangled (u_dis 2 x 4).
         outputs = prepare_kcw_wannier_files._callable(
             nbnd_emp=6,
-            occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
-            emp_b00=_wannier_block_folder(num_wann=2, num_bands=2),
-            emp_b01=_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True),
+            **_staging(
+                (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=True))),
+            ),
         )
         merged = outputs["wannier_files"]
         assert parse_wannier_u_file_shape(
@@ -194,15 +315,29 @@ class TestPrepareKcwWannierFilesMultiBlock:
         with pytest.raises(ValueError, match="u_dis"):
             prepare_kcw_wannier_files._callable(
                 nbnd_emp=6,
-                occ_b00=_wannier_block_folder(num_wann=2, num_bands=2),
-                emp_b00=_wannier_block_folder(num_wann=2, num_bands=2),
-                emp_b01=_wannier_block_folder(num_wann=2, num_bands=4, u_dis=False),
+                **_staging(
+                    (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                    (False, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
+                    (
+                        False,
+                        _block_files(_wannier_block_folder(num_wann=2, num_bands=4, u_dis=False)),
+                    ),
+                ),
             )
 
 
 # ----------------------------------------------------------------------
 # Graph construction
 # ----------------------------------------------------------------------
+
+
+def _staged_block(staging, label):
+    """Return one block's entry on the staging task.
+
+    The per-block entries ride the task's variadic keywords, so each sits
+    at the top of its input namespace under the block's own label.
+    """
+    return staging[label]
 
 
 class TestKoopmansDFPTTaskBuild:
@@ -213,11 +348,10 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -247,8 +381,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -265,6 +399,100 @@ class TestKoopmansDFPTTaskBuild:
         for name, value in SEEDED_VALUES["kcw.HAM"].items():
             assert ham_params["HAM"][name] == value, name
 
+    def test_a_populated_u_dis_socket_round_trips(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """A wired ``u_dis_file`` link must survive the run-start round trip.
+
+        The suite's other round-trip assertions build occupied-only
+        manifolds, where the disentanglement socket is never wired at all,
+        so nothing covered a populated optional socket on the staging task.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            manifolds=manifolds_for(("occ",), ("emp",)),
+            num_wann_occ=4,
+            num_wann_emp=4,
+            nbnd_emp=8,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+        )
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        manifolds = staging["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        assert _staged_block(staging, "emp")["u_dis_file"]._links
+        assert_graph_roundtrips(wg)
+
+    def test_staging_reads_the_file_sockets_not_the_retrieved_folder(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """kcw.x is staged from the blocks' final-gauge product files.
+
+        A split block has no ``retrieved`` folder of its final gauge, so
+        reading one here would silently stage the pre-split gauge.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            manifolds=manifolds_for(("occ",), ("emp",)),
+            num_wann_occ=4,
+            num_wann_emp=4,
+            nbnd_emp=8,
+            kgrid=[2, 2, 2],
+            has_disentangle=True,
+        )
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        assert "retrieved" not in staging._get_all_keys()
+        manifolds = staging["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        # Every block a manifold names has an entry on the staging task,
+        # under its own label; which members are wired is read off the links.
+        for group in manifolds:
+            for block in group["blocks"]:
+                entry = _staged_block(staging, str(block["label"]))
+                for socket in ("u_file", "hr_file", "centres_file"):
+                    assert entry[socket]._links, (block["label"], socket)
+        assert _staged_block(staging, "emp")["u_dis_file"]._links
+        assert "u_dis_file" not in [s._name for s in _staged_block(staging, "occ")]
+
+    def test_u_dis_is_wired_only_where_the_manifold_disentangles(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
+    ):
+        """Without disentanglement no ``udis`` socket is wired at all.
+
+        An unpopulated one is not an option: AiiDA's dynamic port takes
+        nodes, not ``None``.
+        """
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            manifolds=manifolds_for(("occ",), ("emp",)),
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            has_disentangle=False,
+        )
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        # Without disentanglement no entry carries the socket at all.
+        assert not [
+            label
+            for label in ("occ", "emp")
+            if "u_dis_file" in [s._name for s in _staged_block(staging, label)]
+        ]
+
     @pytest.mark.parametrize("check_spread", [True, False])
     def test_check_spread_input_controls_the_namelist(
         self, dfpt_codes, nscf_remote, occ_retrieved, check_spread
@@ -272,8 +500,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -287,8 +515,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -318,8 +546,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -372,8 +600,8 @@ class TestKoopmansDFPTTaskBuild:
             RunDFPT.build(
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"retrieved": occ_retrieved}},
-                occ_labels=["occ"],
+                block_wannier={"occ": _block_files(occ_retrieved)},
+                manifolds=manifolds_for(("occ",)),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -391,8 +619,8 @@ class TestKoopmansDFPTTaskBuild:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -422,11 +650,10 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -515,8 +742,8 @@ class TestRunDFPTMaterialization:
             kwargs={
                 "kcw_code": dfpt_codes["kcw"],
                 "nscf_remote_folder": nscf_remote,
-                "block_wannier": {"occ": {"retrieved": occ_retrieved}},
-                "occ_labels": ["occ"],
+                "block_wannier": {"occ": _block_files(occ_retrieved)},
+                "manifolds": manifolds_for(("occ",)),
                 "num_wann_occ": 4,
                 "num_wann_emp": 0,
                 "kgrid": [2, 2, 2],
@@ -623,8 +850,9 @@ class TestSinglepointDFPTBuild:
 
         # RunDFPT gets the whole blocks namespace plus the band-ordered
         # manifold label lists it partitions by in its deferred body.
-        assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
-        assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
+        manifolds = wg.tasks["dfpt"].inputs["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        assert [[b["label"] for b in g["blocks"]] for g in manifolds] == [["occ"], ["emp"]]
 
     def test_bands_kpoints_unlocks_the_wannierize_quality_check(
         self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
@@ -808,8 +1036,11 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
-        assert dfpt_inputs["occ_labels"].value == ["occ_1", "occ_2"]
-        assert dfpt_inputs["emp_labels"].value == ["emp_1", "emp_2"]
+        manifolds = dfpt_inputs["manifolds"].value
+        assert [[b["label"] for b in g["blocks"]] for g in manifolds] == [
+            ["occ_1", "occ_2"],
+            ["emp_1", "emp_2"],
+        ]
         assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
 
     def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
@@ -1378,11 +1609,10 @@ class TestRunDFPTGrouping:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
@@ -1417,11 +1647,10 @@ class TestRunDFPTGrouping:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
@@ -1448,8 +1677,8 @@ class TestRunDFPTGrouping:
             RunDFPT.build(
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"retrieved": occ_retrieved}},
-                occ_labels=["occ"],
+                block_wannier={"occ": _block_files(occ_retrieved)},
+                manifolds=manifolds_for(("occ",)),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -1461,8 +1690,8 @@ class TestRunDFPTGrouping:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],

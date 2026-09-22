@@ -536,6 +536,11 @@ class WannierizeBlockOutputs(TypedDict):
       runs for a split one.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).
+    * ``u_dis_file`` -- the block's ``aiida_u_dis.mat``
+      (``num_bands x num_wann`` per k-point), populated exactly when the
+      block disentangled (``num_bands > num_wann``). Split entries leave it
+      unpopulated: a split block has ``num_bands == num_wann`` by
+      construction, so no disentanglement matrix exists to carry.
     * ``output_parameters`` -- the parsed wannier90 output Dict, holding at
       least the per-WF ``wannier_functions_output`` table (spreads /
       centres, 1-based block-wide ``wf_ids``) and ``number_wfs``: the
@@ -578,6 +583,7 @@ class WannierizeBlockOutputs(TypedDict):
     centres_file: orm.SinglefileData
     nnkp_file: orm.SinglefileData
     output_parameters: orm.Dict
+    u_dis_file: NotRequired[orm.SinglefileData]
     retrieved: NotRequired[orm.FolderData]
     remote_folder: NotRequired[orm.RemoteData]
     wannier90_parameters: NotRequired[orm.Dict]
@@ -747,13 +753,33 @@ def _builder_overrides(
     return builder_overrides or None
 
 
-@task.calcfunction(outputs=["u_file", "hr_file", "centres_file"])
-def extract_wannier_output_files(retrieved: orm.FolderData) -> dict:
-    """Pull the gauge-product trio out of a wannier90 ``retrieved`` folder.
+#: Wannier90 output files every block must write, as they are named in the
+#: ``retrieved`` folder. ``aiida_u_dis.mat`` is deliberately absent: a block
+#: with ``num_bands == num_wann`` never writes one.
+_REQUIRED_OUTPUT_FILES = ("aiida_u.mat", "aiida_hr.dat", "aiida_centres.xyz")
 
-    Wraps ``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz`` as
-    individual :class:`~aiida.orm.SinglefileData` nodes so a plainly
-    Wannierised block exposes the same file sockets as a split one. The
+
+class WannierOutputFiles(TypedDict):
+    """Outputs of :func:`extract_wannier_output_files`.
+
+    ``u_dis_file`` exists only for a block wannier90 disentangled
+    (``num_bands > num_wann``); the other three are always written.
+    """
+
+    u_file: orm.SinglefileData
+    hr_file: orm.SinglefileData
+    centres_file: orm.SinglefileData
+    u_dis_file: NotRequired[orm.SinglefileData]
+
+
+@task.calcfunction
+def extract_wannier_output_files(retrieved: orm.FolderData) -> WannierOutputFiles:
+    """Pull a block's wannier90 output files out of its ``retrieved`` folder.
+
+    Wraps ``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz`` — and
+    ``aiida_u_dis.mat`` when the block disentangled — as individual
+    :class:`~aiida.orm.SinglefileData` nodes, so a plainly Wannierised
+    block exposes the same file sockets as a split one. The three required
     files exist because :func:`WannierizeBlock` pins ``write_hr`` /
     ``write_u_matrices`` / ``write_xyz`` (upstream's default retrieve
     suffixes then pick them up). A calcfunction (not a plain ``@task``): it
@@ -761,21 +787,27 @@ def extract_wannier_output_files(retrieved: orm.FolderData) -> dict:
     """
     import io
 
+    names = retrieved.base.repository.list_object_names()
+
     def _single(filename: str) -> orm.SinglefileData:
-        if filename not in retrieved.base.repository.list_object_names():
-            raise ValueError(
-                f"``{filename}`` is missing from the wannier90 retrieved folder. "
-                "The wannier90 run must set ``write_hr = True``, "
-                "``write_u_matrices = True`` and ``write_xyz = True``."
-            )
         content = retrieved.base.repository.get_object_content(filename, mode="rb")
         return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
-    return {
-        "u_file": _single("aiida_u.mat"),
-        "hr_file": _single("aiida_hr.dat"),
-        "centres_file": _single("aiida_centres.xyz"),
-    }
+    missing = [name for name in _REQUIRED_OUTPUT_FILES if name not in names]
+    if missing:
+        raise ValueError(
+            f"{missing} missing from the wannier90 retrieved folder. The wannier90 "
+            "run must set ``write_hr = True``, ``write_u_matrices = True`` and "
+            "``write_xyz = True``."
+        )
+    files = WannierOutputFiles(
+        u_file=_single("aiida_u.mat"),
+        hr_file=_single("aiida_hr.dat"),
+        centres_file=_single("aiida_centres.xyz"),
+    )
+    if "aiida_u_dis.mat" in names:
+        files["u_dis_file"] = _single("aiida_u_dis.mat")
+    return files
 
 
 @task.calcfunction
@@ -1043,6 +1075,7 @@ def WannierizeBlock(
         u_file=output_files["u_file"],
         hr_file=output_files["hr_file"],
         centres_file=output_files["centres_file"],
+        u_dis_file=output_files["u_dis_file"],
         retrieved=outputs["wannier90"]["retrieved"],
         remote_folder=outputs["wannier90"]["remote_folder"],
         nnkp_file=outputs["wannier90_pp"]["nnkp_file"],

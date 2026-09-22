@@ -33,18 +33,59 @@ The generate functions reproduce the fixed-width formats kcw.x parses.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import TypedDict
 
 import numpy as np
 
 from aiida_koopmans.projections import (
+    MergeGroupId,
     ProjectionBlock,
     block_occupancy,
     validate_projection_block,
 )
 from aiida_koopmans.spin import SpinChannel
+
+
+def block_nodes_by_group[T](
+    groups: Sequence[MergeGroupId],
+    block_nodes: Mapping[str, T],
+) -> list[list[T]]:
+    """Return each group's per-block nodes, in the group's band order.
+
+    Joins the two halves of the block contract: ``groups`` says which
+    blocks a manifold holds and in what order, ``block_nodes`` maps a
+    block label to the nodes that block produced. The returned list is
+    parallel to ``groups``, each entry parallel to that group's
+    ``blocks``.
+
+    Every label the groups name must appear in ``block_nodes`` and
+    nothing else may, so a consumer cannot silently skip a block or
+    merge one the caller did not ask for.
+
+    Raises:
+        ValueError: If the labels the groups name and the keys of
+            ``block_nodes`` are not the same set.
+    """
+    wanted = [str(block["label"]) for group in groups for block in group["blocks"]]
+    available = {str(key) for key in block_nodes}
+    missing = sorted(set(wanted) - available)
+    if missing:
+        raise ValueError(
+            f"No Wannierization outputs for block(s) {missing}. The blocks are "
+            f"{sorted(set(wanted))} and the outputs cover {sorted(available)}. Pass "
+            "the per-block outputs namespace wholesale, keyed by the labels the "
+            "block list uses."
+        )
+    unused = sorted(available - set(wanted))
+    if unused:
+        raise ValueError(
+            f"The per-block outputs carry block(s) {unused}, which no manifold "
+            f"names. The manifolds name {sorted(set(wanted))}. Drop the extra "
+            "blocks, or add them to the manifold they belong to."
+        )
+    return [[block_nodes[str(block["label"])] for block in group["blocks"]] for group in groups]
 
 
 def _timestamp() -> str:

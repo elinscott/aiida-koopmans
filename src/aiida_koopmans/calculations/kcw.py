@@ -34,7 +34,7 @@ and ``<seedname>_emp_u.mat`` / ``_emp_u_dis.mat`` / ``_emp_hr.dat`` /
 ``_emp_centres.xyz`` for the empty one. Stage them via the ``wannier_files``
 ``FolderData`` input -- its contents are copied into the workdir root with
 their stored names (the DFPT workgraph assembles that folder from the
-wannier90 ``retrieved`` outputs; see
+per-block wannier90 output files; see
 ``aiida_koopmans.workgraphs.dfpt.prepare_kcw_wannier_files``).
 
 Input namelists are validated against the ``pydantic_espresso`` kcw models
