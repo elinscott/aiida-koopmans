@@ -521,7 +521,11 @@ def RewannierizeSplitBlocks(
     )
     # The split's groups are a manifold in the block contract's sense:
     # the group order is the manifold's own order and each label is a
-    # lookup key into the namespace beside it.
+    # lookup key into the namespace beside it. The manifold travels as
+    # plain JSON, so its scalars are coerced to native types here: a
+    # graph input arrives wrapped and the wrapper is not serializable.
+    occupied = bool(filled)
+    channel = SpinChannel(spin_channel)
     blocks: list[ProjectionBlockId] = []
     block_files: dict[str, dict[str, Any]] = {}
     for i, num_wann in enumerate(group_sizes):
@@ -555,8 +559,8 @@ def RewannierizeSplitBlocks(
         blocks.append(
             ProjectionBlockId(
                 label=label,
-                spin=SpinChannel(spin_channel),
-                filled=filled,
+                spin=channel,
+                filled=occupied,
                 num_wann=int(num_wann),
             )
         )
@@ -569,7 +573,7 @@ def RewannierizeSplitBlocks(
             entry["interpolated_bands"] = rewannierized["interpolated_bands"]
         block_files[label] = entry
 
-    group = MergeGroupId(filled=filled, spin=SpinChannel(spin_channel), blocks=blocks)
+    group = MergeGroupId(filled=occupied, spin=channel, blocks=blocks)
 
     merged = merge_split_block_products(
         group=group,
@@ -578,7 +582,7 @@ def RewannierizeSplitBlocks(
     )
     merged_parameters = merge_wannier_output_parameters(
         group=group,
-        block_files={
+        **{
             label: {"output_parameters": e["output_parameters"]} for label, e in block_files.items()
         },
         metadata={"call_link_label": "merge_wannier_output_parameters"},

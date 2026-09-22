@@ -32,6 +32,7 @@ from aiida_koopmans.workgraphs.auto_wannierize import (
 from aiida_koopmans.workgraphs.block_wannierize import WannierizeBlocks
 from tests.fixtures import (
     assert_graph_roundtrips,
+    assert_graph_submits,
     bands_data,
     count_pw_bands_runs,
     explicit_block,
@@ -658,6 +659,60 @@ class TestRewannierizeSplitBlocksBuild:
         assert len(links) == 1
         assert links[0].from_task.name == "merge_interpolated_bands"
         assert_graph_roundtrips(wg)
+
+    def test_every_merge_takes_its_groups_as_namespace_entries(
+        self, auto_codes, silicon_structure, kmesh, aiida_profile, labelled_kpath
+    ):
+        """Each merge reads its groups through the per-group namespace.
+
+        A group's files are unresolved sockets until its re-Wannierization
+        runs, so they reach a merge as one namespace entry per group,
+        linked from that group's run. Handed over as a single mapping
+        instead, they would ride in as one input value carrying the
+        sockets, and storing the graph's inputs — which its parent does
+        when it submits it — dies on them.
+        """
+        from aiida.orm import Dict, FolderData
+
+        from aiida_koopmans.workgraphs.auto_wannierize import RewannierizeSplitBlocks
+
+        split_blocks = {
+            "block_0": FolderData().store(),
+            "block_1": FolderData().store(),
+        }
+        split_gauges, parent_u_file = _synthetic_split_inputs([4, 4])
+        wg = RewannierizeSplitBlocks.build(
+            w90_code=auto_codes["wannier90"],
+            structure=silicon_structure,
+            split_blocks=split_blocks,
+            split_gauges=split_gauges,
+            parent_u_file=parent_u_file,
+            parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
+            group_sizes=[4, 4],
+            kpoints=kmesh,
+            mp_grid=[2, 2, 2],
+            interpolation_kpoints=labelled_kpath,
+        )
+        merges = {
+            "merge_split_block_products": ["retrieved"],
+            "merge_wannier_output_parameters": ["output_parameters"],
+            "merge_interpolated_bands": ["interpolated_bands"],
+            "compose_split_gauge": ["retrieved"],
+        }
+        for name, keys in merges.items():
+            task = wg.tasks[name]
+            for index, label in enumerate(("g0", "g1")):
+                for key in keys:
+                    links = task.inputs[label][key]._links
+                    assert len(links) == 1, (name, label, key)
+                    # The entry's label decides which group's run it reads,
+                    # so a mis-keyed namespace would cross the groups over.
+                    assert links[0].from_task.name == f"wannier90_split_block_{index}"
+            # The group order and labels travel as the manifold beside the
+            # namespace, not as the namespace's own key order.
+            group = task.inputs["group"]
+            assert [block["label"] for block in group["blocks"].value] == ["g0", "g1"]
+        assert_graph_submits(wg)
 
 
 # ----------------------------------------------------------------------
