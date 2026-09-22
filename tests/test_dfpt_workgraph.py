@@ -116,9 +116,9 @@ def manifold_id(labels, *, filled):
     """One manifold naming ``labels`` in band order."""
     return MergeGroupId(
         filled=filled,
-        spin=SpinChannel.NONE.value,
+        spin=SpinChannel.NONE,
         blocks=[
-            ProjectionBlockId(label=label, spin=SpinChannel.NONE.value, filled=filled, num_wann=1)
+            ProjectionBlockId(label=label, spin=SpinChannel.NONE, filled=filled, num_wann=1)
             for label in labels
         ],
     )
