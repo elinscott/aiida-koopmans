@@ -1187,7 +1187,7 @@ def _maybe_emit_orbital_partition(
     specs = [
         ProjectionBlockId(
             label=str(block["label"]),
-            spin=SpinChannel(block["spin"]),
+            spin=SpinChannel(block["spin"]).value,
             filled=block_occupancy(block),
             num_wann=int(block["num_wann"]),
         )

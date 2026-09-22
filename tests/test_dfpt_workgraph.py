@@ -11,7 +11,12 @@ from __future__ import annotations
 import pytest
 from wannier90_input.models.parameters import Projection
 
-from aiida_koopmans.projections import ExplicitProjectionBlock, get_wannier_indices
+from aiida_koopmans.projections import (
+    ExplicitProjectionBlock,
+    MergeGroupId,
+    ProjectionBlockId,
+    get_wannier_indices,
+)
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.dfpt import (
     RunDFPT,
@@ -107,28 +112,44 @@ def _block_files(retrieved):
     return {name: node.store() for name, node in products.items()}
 
 
-def _staging(*blocks, keys=None):
-    """Build staging-task kwargs from ``(filled, sockets)`` pairs in band order.
+def manifold_id(labels, *, filled):
+    """One manifold naming ``labels`` in band order."""
+    return MergeGroupId(
+        filled=filled,
+        spin=SpinChannel.NONE.value,
+        blocks=[
+            ProjectionBlockId(label=label, spin=SpinChannel.NONE.value, filled=filled, num_wann=1)
+            for label in labels
+        ],
+    )
 
-    ``keys`` optionally supplies the namespace labels, so a test can give
-    them any spelling it likes: they are opaque, and only the manifest says
-    what each file is.
+
+def manifolds_for(occ=("occ",), emp=None):
+    """Return the manifolds a channel hands ``RunDFPT``, occupied first."""
+    groups = [manifold_id(list(occ), filled=True)]
+    if emp is not None:
+        groups.append(manifold_id(list(emp), filled=False))
+    return groups
+
+
+def _staging(*blocks, labels=None):
+    """Staging kwargs from ``(filled, files)`` pairs, in band order.
+
+    ``labels`` optionally names the blocks, so a test can give them any
+    spelling: a label is a lookup key and the manifolds say the rest.
     """
-    from aiida_koopmans.workgraphs.dfpt import _OUTPUT_FILES, _REQUIRED_OUTPUT_FILES
-
-    manifest, files = [], {}
-    supplied = list(keys) if keys else None
-    for filled, sockets in blocks:
-        named = {}
-        for kind in (*_REQUIRED_OUTPUT_FILES, "u_dis"):
-            socket = _OUTPUT_FILES[kind][0]
-            if socket not in sockets:
-                continue
-            key = supplied[len(files)] if supplied else f"f{len(files)}"
-            files[key] = sockets[socket]
-            named[kind] = key
-        manifest.append({"filled": filled, "files": named})
-    return {"manifest": manifest, **files}
+    named = list(labels) if labels else [f"b{i}" for i in range(len(blocks))]
+    occ = [label for label, (filled, _) in zip(named, blocks, strict=True) if filled]
+    emp = [label for label, (filled, _) in zip(named, blocks, strict=True) if not filled]
+    groups = [manifold_id(occ, filled=True)] if occ else []
+    if emp:
+        groups.append(manifold_id(emp, filled=False))
+    return {
+        "manifolds": groups,
+        "block_files": {
+            label: dict(files) for label, (_, files) in zip(named, blocks, strict=True)
+        },
+    }
 
 
 def _block(label: str, include: range) -> ExplicitProjectionBlock:
@@ -173,26 +194,18 @@ class TestPrepareKcwWannierFiles:
         with pytest.raises(ValueError, match="write_u_matrices"):
             prepare_kcw_wannier_files._callable(**_staging((True, block)))
 
-    def test_a_file_no_block_names_raises(self, aiida_profile, occ_retrieved):
-        """Every file in the namespace must be named by some block."""
-        block = _block_files(occ_retrieved)
-        with pytest.raises(ValueError, match="no block of the staging manifest names"):
-            prepare_kcw_wannier_files._callable(**_staging((True, block)), spare=block["u_file"])
-
-    def test_a_name_with_no_file_raises(self, aiida_profile, occ_retrieved):
-        """Every name the manifest uses must resolve in the namespace."""
+    def test_a_block_with_no_files_raises(self, aiida_profile, occ_retrieved):
+        """Every block a manifold names must appear in the namespace."""
         staging = _staging((True, _block_files(occ_retrieved)))
-        staging["manifest"][0]["files"]["u"] = "absent"
-        with pytest.raises(ValueError, match="the file namespace does not carry"):
+        staging["block_files"] = {}
+        with pytest.raises(ValueError, match="No Wannierization outputs for block"):
             prepare_kcw_wannier_files._callable(**staging)
 
-    def test_an_unknown_kind_raises(self, aiida_profile, occ_retrieved):
-        """A manifest may only name files kcw.x reads."""
+    def test_files_no_manifold_names_raise(self, aiida_profile, occ_retrieved):
+        """A namespace entry no manifold names would be staged nowhere."""
         staging = _staging((True, _block_files(occ_retrieved)))
-        staging["manifest"][0]["files"]["chk"] = next(
-            iter(staging["manifest"][0]["files"].values())
-        )
-        with pytest.raises(ValueError, match="not Wannier90 output files"):
+        staging["block_files"]["spare"] = _block_files(occ_retrieved)
+        with pytest.raises(ValueError, match="which no manifold names"):
             prepare_kcw_wannier_files._callable(**staging)
 
     def test_u_dis_on_a_non_final_block_raises(self, aiida_profile):
@@ -205,64 +218,44 @@ class TestPrepareKcwWannierFiles:
         with pytest.raises(ValueError, match="only its last block may"):
             prepare_kcw_wannier_files._callable(**staging)
 
-    def test_no_occupied_block_raises(self, aiida_profile, emp_retrieved):
-        with pytest.raises(ValueError, match="at least one"):
+    def test_no_occupied_manifold_raises(self, aiida_profile, emp_retrieved):
+        with pytest.raises(ValueError, match="needs an occupied manifold"):
             prepare_kcw_wannier_files._callable(**_staging((False, _block_files(emp_retrieved))))
 
 
-class TestStagingKeysCarryNoMeaning:
-    """The manifest decides manifold, band order and file kind — not the keys."""
+class TestBlockLabelsCarryNoMeaning:
+    """The manifolds decide manifold, band order and file kind — not labels."""
 
     @staticmethod
     def _merged(staging):
         return prepare_kcw_wannier_files._callable(**staging)["wannier_files"]
 
-    def test_misleading_keys_follow_the_manifest(self, aiida_profile):
-        """Keys that contradict the manifest must be ignored, not obeyed.
+    def test_misleading_labels_follow_the_manifolds(self, aiida_profile):
+        """Labels that contradict the manifolds must be ignored, not obeyed.
 
-        The empty manifold's files sit under keys containing ``occ`` and the
-        blocks are labelled in reverse alphabetical order, so anything
-        sniffing the keys would put the blocks in the wrong manifold and the
-        wrong order. Only the manifest is consulted, so the staged files
-        must be the same as under neutral keys.
+        The empty manifold's block is labelled ``occ_last`` and the blocks
+        sort in the reverse of their band order, so anything reading a
+        label would put the block in the wrong manifold or the wrong place.
         """
         occ = _block_files(_wannier_block_folder(num_wann=2, num_bands=2))
         emp = _block_files(_wannier_block_folder(num_wann=3, num_bands=3))
         honest = self._merged(_staging((True, occ), (False, emp)))
-        misleading = self._merged(
-            _staging(
-                (True, occ),
-                (False, emp),
-                keys=["zz_occ_2", "zz_occ_1", "zz_occ_0", "aa_occ_2", "aa_occ_1", "aa_occ_0"],
-            )
-        )
+        misleading = self._merged(_staging((True, occ), (False, emp), labels=["zz_occ", "aa_occ"]))
         for name in ("aiida_u.mat", "aiida_emp_u.mat", "aiida_centres.xyz"):
             assert misleading.base.repository.get_object_content(
                 name, mode="rb"
             ) == honest.base.repository.get_object_content(name, mode="rb"), name
 
-    def test_a_key_sniffing_reader_would_fail_that(self, aiida_profile):
-        """Negative control: the misleading keys really do mislead.
+    def test_a_label_sniffing_reader_would_fail_that(self, aiida_profile):
+        """Negative control: those labels really do mislead.
 
-        A reader that took the manifold from the key and the order from a
-        lexicographic sort — the shape this task used to have — lands on a
-        different set of blocks, which is what the test above rules out.
+        Both say ``occ``, so a reader taking the manifold from the label
+        would find no empty manifold at all, and they sort in the reverse
+        of their band order.
         """
-        staging = _staging(
-            (True, _block_files(_wannier_block_folder(num_wann=2, num_bands=2))),
-            (False, _block_files(_wannier_block_folder(num_wann=3, num_bands=3))),
-            keys=["zz_occ_2", "zz_occ_1", "zz_occ_0", "aa_occ_2", "aa_occ_1", "aa_occ_0"],
-        )
-        files = {k: v for k, v in staging.items() if k != "manifest"}
-        sniffed_empty = [k for k in sorted(files) if not k.split("_")[1].startswith("occ")]
-        assert sniffed_empty == []  # every key says "occ": the empty manifold vanishes
-        by_manifest = {
-            key
-            for entry in staging["manifest"]
-            if not entry["filled"]
-            for key in entry["files"].values()
-        }
-        assert by_manifest and sorted(by_manifest) != sorted(files)
+        labels = ["zz_occ", "aa_occ"]
+        assert [label for label in labels if not label.split("_")[1].startswith("occ")] == []
+        assert sorted(labels) != labels
 
 
 class TestPrepareKcwWannierFilesMultiBlock:
@@ -349,8 +342,7 @@ class TestKoopmansDFPTTaskBuild:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -381,7 +373,7 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -414,17 +406,17 @@ class TestKoopmansDFPTTaskBuild:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             nbnd_emp=8,
             kgrid=[2, 2, 2],
             has_disentangle=True,
         )
-        manifest = wg.tasks["prepare_kcw_wannier_files"].inputs["manifest"].value
-        assert [entry["filled"] for entry in manifest] == [True, False]
-        assert "u_dis" in manifest[-1]["files"]
+        manifolds = wg.tasks["prepare_kcw_wannier_files"].inputs["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        emp_files = wg.tasks["prepare_kcw_wannier_files"].inputs["block_files"]["emp"]
+        assert emp_files["u_dis_file"]._links
         assert_graph_roundtrips(wg)
 
     def test_staging_reads_the_file_sockets_not_the_retrieved_folder(
@@ -442,8 +434,7 @@ class TestKoopmansDFPTTaskBuild:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             nbnd_emp=8,
@@ -452,13 +443,19 @@ class TestKoopmansDFPTTaskBuild:
         )
         staging = wg.tasks["prepare_kcw_wannier_files"].inputs
         assert "retrieved" not in staging._get_all_keys()
-        manifest = staging["manifest"].value
-        assert [entry["filled"] for entry in manifest] == [True, False]
-        assert set(manifest[0]["files"]) == {"u", "hr", "centres"}
-        assert set(manifest[1]["files"]) == {"u", "hr", "centres", "u_dis"}
-        # Every name the manifest uses resolves in the namespace beside it.
-        named = {key for entry in manifest for key in entry["files"].values()}
-        assert named <= set(staging._get_all_keys())
+        manifolds = staging["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        block_files = staging["block_files"]
+        # Every block a manifold names has an entry beside it. The entry
+        # declares the whole file set; which members are populated is read
+        # off the links.
+        for group in manifolds:
+            for block in group["blocks"]:
+                entry = block_files[str(block["label"])]
+                for socket in ("u_file", "hr_file", "centres_file"):
+                    assert entry[socket]._links, (block["label"], socket)
+        assert block_files["emp"]["u_dis_file"]._links
+        assert not block_files["occ"]["u_dis_file"]._links
 
     def test_u_dis_is_wired_only_where_the_manifold_disentangles(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
@@ -475,15 +472,16 @@ class TestKoopmansDFPTTaskBuild:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
             has_disentangle=False,
         )
-        manifest = wg.tasks["prepare_kcw_wannier_files"].inputs["manifest"].value
-        assert not [entry for entry in manifest if "u_dis" in entry["files"]]
+        block_files = wg.tasks["prepare_kcw_wannier_files"].inputs["block_files"]
+        # The socket is declared on every entry; without disentanglement
+        # none of them is wired to anything.
+        assert not [label for label in ("occ", "emp") if block_files[label]["u_dis_file"]._links]
 
     @pytest.mark.parametrize("check_spread", [True, False])
     def test_check_spread_input_controls_the_namelist(
@@ -493,7 +491,7 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -508,7 +506,7 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -539,7 +537,7 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -593,7 +591,7 @@ class TestKoopmansDFPTTaskBuild:
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
                 block_wannier={"occ": _block_files(occ_retrieved)},
-                occ_labels=["occ"],
+                manifolds=manifolds_for(("occ",)),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -612,7 +610,7 @@ class TestKoopmansDFPTTaskBuild:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -645,8 +643,7 @@ class TestKoopmansDFPTTaskBuild:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -736,7 +733,7 @@ class TestRunDFPTMaterialization:
                 "kcw_code": dfpt_codes["kcw"],
                 "nscf_remote_folder": nscf_remote,
                 "block_wannier": {"occ": _block_files(occ_retrieved)},
-                "occ_labels": ["occ"],
+                "manifolds": manifolds_for(("occ",)),
                 "num_wann_occ": 4,
                 "num_wann_emp": 0,
                 "kgrid": [2, 2, 2],
@@ -843,8 +840,9 @@ class TestSinglepointDFPTBuild:
 
         # RunDFPT gets the whole blocks namespace plus the band-ordered
         # manifold label lists it partitions by in its deferred body.
-        assert wg.tasks["dfpt"].inputs["occ_labels"].value == ["occ"]
-        assert wg.tasks["dfpt"].inputs["emp_labels"].value == ["emp"]
+        manifolds = wg.tasks["dfpt"].inputs["manifolds"].value
+        assert [group["filled"] for group in manifolds] == [True, False]
+        assert [[b["label"] for b in g["blocks"]] for g in manifolds] == [["occ"], ["emp"]]
 
     def test_bands_kpoints_unlocks_the_wannierize_quality_check(
         self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
@@ -1028,8 +1026,11 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["num_wann_occ"].value == 4
         assert dfpt_inputs["num_wann_emp"].value == 4
         assert dfpt_inputs["nbnd_emp"].value == 4
-        assert dfpt_inputs["occ_labels"].value == ["occ_1", "occ_2"]
-        assert dfpt_inputs["emp_labels"].value == ["emp_1", "emp_2"]
+        manifolds = dfpt_inputs["manifolds"].value
+        assert [[b["label"] for b in g["blocks"]] for g in manifolds] == [
+            ["occ_1", "occ_2"],
+            ["emp_1", "emp_2"],
+        ]
         assert dfpt_inputs["check_spread"].value == True  # noqa: E712 — TaggedValue breaks `is`
 
     def test_check_spread_reaches_the_channel_chain(self, dfpt_codes, silicon_structure, kmesh):
@@ -1601,8 +1602,7 @@ class TestRunDFPTGrouping:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
@@ -1640,8 +1640,7 @@ class TestRunDFPTGrouping:
                 "occ": _block_files(occ_retrieved),
                 "emp": _block_files(emp_retrieved),
             },
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(("occ",), ("emp",)),
             spreads=[0.5] * 4 + [0.7] * 4,
             num_wann_occ=4,
             num_wann_emp=4,
@@ -1669,7 +1668,7 @@ class TestRunDFPTGrouping:
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
                 block_wannier={"occ": _block_files(occ_retrieved)},
-                occ_labels=["occ"],
+                manifolds=manifolds_for(("occ",)),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -1682,7 +1681,7 @@ class TestRunDFPTGrouping:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={"occ": _block_files(occ_retrieved)},
-            occ_labels=["occ"],
+            manifolds=manifolds_for(("occ",)),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],

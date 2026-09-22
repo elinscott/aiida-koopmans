@@ -74,7 +74,7 @@ from typing import (
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
-from aiida_workgraph import dynamic, task
+from aiida_workgraph import dynamic, namespace, task
 from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
@@ -90,7 +90,9 @@ from aiida_koopmans.parallelization import (
     validate_parallelization,
 )
 from aiida_koopmans.projections import (
+    MergeGroupId,
     ProjectionBlock,
+    ProjectionBlockId,
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import (
@@ -108,6 +110,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    block_nodes_by_group,
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
@@ -171,13 +174,18 @@ _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 # (:class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlockOutputs`),
 # and the seedname suffix it is staged under. Every block provides the
 # first three; only a block that disentangled provides ``u_dis``.
-_OUTPUT_FILES = {
-    "u": ("u_file", "_u.mat"),
-    "hr": ("hr_file", "_hr.dat"),
-    "centres": ("centres_file", "_centres.xyz"),
-    "u_dis": ("u_dis_file", "_u_dis.mat"),
+# The Wannier90 output files a block hands to kcw.x: the socket each
+# arrives on
+# (:class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlockOutputs`)
+# and the seedname suffix it is staged under. ``u_dis_file`` is present
+# only on a block that disentangled.
+_OUTPUT_FILE_SUFFIXES = {
+    "u_file": "_u.mat",
+    "hr_file": "_hr.dat",
+    "centres_file": "_centres.xyz",
+    "u_dis_file": "_u_dis.mat",
 }
-_REQUIRED_OUTPUT_FILES = ("u", "hr", "centres")
+_REQUIRED_OUTPUT_FILES = ("u_file", "hr_file", "centres_file")
 
 
 Wann2kcStep = task(Wann2kcCalculation)
@@ -496,117 +504,89 @@ class ManifoldBlocks(TypedDict):
     alpha_guess: NotRequired[list[float] | None]
 
 
-def _manifest_blocks(
-    manifest: list, files: dict[str, orm.SinglefileData], filled: bool
-) -> list[dict[str, orm.SinglefileData]]:
-    """Return one manifold's blocks, in band order, as kind -> file mappings.
+def _manifold_id(blocks: list[ProjectionBlock], spin: SpinChannel, *, filled: bool) -> MergeGroupId:
+    """Describe one manifold as the JSON-pure view its consumers take.
 
-    Reads the manifold from each entry's ``filled`` flag, the band order
-    from the manifest's own order, and each file's kind from the field it
-    sits under. The namespace keys are opaque labels and are never parsed.
+    ``blocks`` is in band order and stays so; ``spin`` is written as its
+    value string, which is what a consumer reads back off the socket.
     """
-    return [
-        {kind: files[key] for kind, key in entry["files"].items()}
-        for entry in manifest
-        if bool(entry["filled"]) is filled
-    ]
-
-
-def _validate_manifest(manifest: list, files: dict[str, orm.SinglefileData]) -> None:
-    """Check a staging manifest describes exactly the files it was given.
-
-    Every entry must name the files kcw.x needs, every name must resolve to
-    a file in the namespace, and every file must be named by some entry.
-    ``u_dis`` may appear only on the last block of its manifold: the merge
-    extends that one with an identity for the blocks before it and would
-    drop any other.
-    """
-    referenced: list[str] = []
-    for position, entry in enumerate(manifest):
-        named = entry["files"]
-        unknown = sorted(set(named) - set(_OUTPUT_FILES))
-        if unknown:
-            raise ValueError(
-                f"Block {position} of the staging manifest names {unknown}, which "
-                f"are not Wannier90 output files kcw.x reads ({sorted(_OUTPUT_FILES)})."
+    return MergeGroupId(
+        filled=filled,
+        spin=SpinChannel(spin).value,
+        blocks=[
+            ProjectionBlockId(
+                label=str(block["label"]),
+                spin=SpinChannel(block["spin"]).value,
+                filled=filled,
+                num_wann=int(block["num_wann"]),
             )
-        missing = [kind for kind in _REQUIRED_OUTPUT_FILES if kind not in named]
+            for block in blocks
+        ],
+    )
+
+
+def _validate_block_files(entries: list[Mapping[str, Any]], manifold: str) -> None:
+    """Check one manifold's blocks carry the files the merge will read.
+
+    The join says which blocks a manifold holds and in what order; it does
+    not police what each carries. Two rules it leaves open: every block
+    provides the three files every wannier90 run writes, and only the last
+    block may provide a disentanglement matrix — the merge extends that one
+    with an identity for the blocks before it, so one anywhere else would
+    be dropped without a word.
+    """
+    for position, entry in enumerate(entries):
+        missing = [socket for socket in _REQUIRED_OUTPUT_FILES if socket not in entry]
         if missing:
             raise ValueError(
-                f"Block {position} of the staging manifest names no {missing}. The "
-                "wannier90 runs feeding a DFPT chain must set "
-                "``write_u_matrices = True`` and ``write_xyz = True``."
+                f"Block {position} of the {manifold} manifold reached the kcw.x "
+                f"staging without {missing}. The wannier90 runs feeding a DFPT "
+                "chain must set ``write_u_matrices = True`` and "
+                "``write_xyz = True``."
             )
-        referenced.extend(named.values())
-    absent = sorted(set(referenced) - set(files))
-    if absent:
+    stray = [index for index, entry in enumerate(entries[:-1]) if "u_dis_file" in entry]
+    if stray:
         raise ValueError(
-            f"The staging manifest names {absent}, which the file namespace does not carry."
+            f"Block(s) at position {stray} of the {manifold} manifold carry a "
+            "disentanglement matrix, but only its last block may: the merge "
+            "extends that one with an identity for the blocks before it and "
+            "would drop these. Order the manifold's blocks so the disentangled "
+            "one comes last."
         )
-    unused = sorted(set(files) - set(referenced))
-    if unused:
-        raise ValueError(
-            f"The file namespace carries {unused}, which no block of the staging "
-            "manifest names; they would be staged nowhere."
-        )
-    for filled in (True, False):
-        blocks = [entry for entry in manifest if bool(entry["filled"]) is filled]
-        stray = [i for i, entry in enumerate(blocks[:-1]) if "u_dis" in entry["files"]]
-        if stray:
-            manifold = "occupied" if filled else "empty"
-            raise ValueError(
-                f"Block(s) at position {stray} of the {manifold} manifold name a "
-                "``u_dis``, but only its last block may: the merge extends that "
-                "one with an identity for the blocks before it and would drop "
-                "these. Order the manifold's blocks so the disentangled one "
-                "comes last."
-            )
 
 
-def _staging_inputs(
-    block_wannier: Mapping[str, Any],
-    occ_labels: list,
-    emp_labels: list | None,
-    has_disentangle: bool,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build the staging manifest and file namespace for one channel.
+def _staging_block_files(
+    manifolds: list, block_wannier: Mapping[str, Any], has_disentangle: bool
+) -> dict[str, dict[str, Any]]:
+    """Pick each block's Wannier90 output files out of the wannierization.
 
-    Returns the manifest — one entry per block in band order, carrying its
-    ``filled`` flag and the namespace label of each Wannier90 output file
-    it provides — and the namespace those labels resolve in. The labels
-    are opaque: everything the staging task needs to know travels in the
-    manifest, from the caller's own ``occ_labels`` / ``emp_labels``.
-
-    Each block contributes the ``u_file`` / ``hr_file`` / ``centres_file``
-    sockets rather than its ``retrieved`` folder: a split block has no
-    retrieved folder of its final gauge, while these sockets carry the
+    Keyed by block label, which is what the manifolds name their blocks
+    by. Each block contributes the ``u_file`` / ``hr_file`` /
+    ``centres_file`` sockets rather than its ``retrieved`` folder: a split
+    block has no retrieved folder of its final gauge, while these carry the
     final gauge in every mode. ``u_dis_file`` is taken from the one block
-    that has one — the last empty block, under ``has_disentangle``, the
-    same condition :func:`_manifold_u_dis` requires the file under. Taking
-    it elsewhere would pass an unpopulated socket, which AiiDA's dynamic
-    port refuses.
+    that has one — the last block of the empty manifold, under
+    ``has_disentangle``. Taking it elsewhere would pass an unpopulated
+    socket, which AiiDA's dynamic port refuses.
     """
-    manifest: list[dict[str, Any]] = []
-    files: dict[str, Any] = {}
-    emp_labels = emp_labels or []
-    for filled, labels in ((True, occ_labels), (False, emp_labels)):
-        for position, label in enumerate(labels):
-            block = block_wannier[str(label)]
-            kinds = list(_REQUIRED_OUTPUT_FILES)
-            if not filled and has_disentangle and position == len(emp_labels) - 1:
-                kinds.append("u_dis")
-            named: dict[str, str] = {}
-            for kind in kinds:
-                key = f"f{len(files)}"
-                files[key] = block[_OUTPUT_FILES[kind][0]]
-                named[kind] = key
-            manifest.append({"filled": filled, "files": named})
-    return manifest, files
+    files: dict[str, dict[str, Any]] = {}
+    for group in manifolds:
+        blocks = list(group["blocks"])
+        for position, block in enumerate(blocks):
+            label = str(block["label"])
+            entry = block_wannier[label]
+            named = {socket: entry[socket] for socket in _REQUIRED_OUTPUT_FILES}
+            if not group["filled"] and has_disentangle and position == len(blocks) - 1:
+                named["u_dis_file"] = entry["u_dis_file"]
+            files[label] = named
+    return files
 
 
-def _block_file_contents(block: dict[str, orm.SinglefileData]) -> dict[str, bytes]:
+def _block_file_contents(block: Mapping[str, orm.SinglefileData]) -> dict[str, bytes]:
     """Read one block's Wannier90 output files, keyed by seedname suffix."""
-    return {_OUTPUT_FILES[kind][1]: node.get_content(mode="rb") for kind, node in block.items()}
+    return {
+        _OUTPUT_FILE_SUFFIXES[socket]: node.get_content(mode="rb") for socket, node in block.items()
+    }
 
 
 def _manifold_u_dis(blocks: list[dict[str, bytes]], nbnd: int | None, manifold: str) -> None:
@@ -663,10 +643,24 @@ def _merged_manifold_files(
     return merged
 
 
-@task.calcfunction(outputs=["wannier_files"])
-def prepare_kcw_wannier_files(
-    manifest: list, nbnd_emp: int | None = None, **files: orm.SinglefileData
-) -> dict:
+class KcwBlockFiles(TypedDict):
+    """The per-block Wannier90 output files the kcw.x file merge reads."""
+
+    u_file: orm.SinglefileData
+    hr_file: orm.SinglefileData
+    centres_file: orm.SinglefileData
+    u_dis_file: NotRequired[orm.SinglefileData]
+
+
+@task.calcfunction(
+    inputs=namespace(
+        manifolds=list,
+        block_files=dynamic(KcwBlockFiles),
+        nbnd_emp=(int, None),
+    ),
+    outputs=["wannier_files"],
+)
+def prepare_kcw_wannier_files(manifolds: list, nbnd_emp: int | None = None, **inputs: Any) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
     Collects the Wannier90 output files (``aiida_u.mat`` / ``aiida_hr.dat``
@@ -675,37 +669,44 @@ def prepare_kcw_wannier_files(
     empty-manifold files to kcw.x's hard-coded ``<seedname>_emp_*``
     convention.
 
+    ``block_files`` arrives through the variadic keywords, the only route a
+    nested namespace takes into a process function; the socket shape is the
+    decorator's ``inputs`` spec. The scalars stay named so that a caller
+    forwarding one from a graph input still gets it converted to a node.
+
     Args:
-        manifest: one entry per block, in band order, as
-            ``{"filled": bool, "files": {kind: key}}``. ``filled`` says
-            which manifold the block belongs to, the list order is the band
-            order within it, and each ``kind`` (``u`` / ``hr`` /
-            ``centres``, and ``u_dis`` on a disentangled block) names the
-            ``files`` entry holding it. The keys themselves carry no
-            meaning and are never parsed.
+        manifolds: one :class:`~aiida_koopmans.projections.MergeGroupId` per
+            manifold, each naming its blocks in band order. Exactly one
+            manifold must be occupied; an empty one is optional.
         nbnd_emp: total number of empty bands (``nbnd - nocc``). Required to
             stage a merged ``aiida_emp_u_dis.mat`` when the empty manifold is
             disentangled; ignored otherwise.
-        files: the Wannier90 output files, under the labels the manifest
-            refers to them by.
+        block_files: the per-block Wannier90 output files, keyed by block
+            label.
+
+    Raises:
+        ValueError: If the manifolds and ``block_files`` name different
+            blocks, if no manifold is occupied, or if a block other than a
+            manifold's last carries a disentanglement matrix, or if a
+            block is missing a file the merge reads.
     """
-    manifest = manifest.get_list() if hasattr(manifest, "get_list") else list(manifest)
-    _validate_manifest(manifest, files)
-    if not any(bool(entry["filled"]) for entry in manifest):
+    manifolds = list(manifolds)
+    by_group = block_nodes_by_group(manifolds, inputs["block_files"])
+    if not any(group["filled"] for group in manifolds):
         raise ValueError(
-            "The staging manifest describes no occupied block; kcw.x needs at least one."
+            "prepare_kcw_wannier_files needs an occupied manifold (a "
+            "``filled = True`` entry in ``manifolds``); it got "
+            f"{len(manifolds)} manifold(s), all empty."
         )
 
     merged = orm.FolderData()
-    empty = _manifest_blocks(manifest, files, filled=False)
-    manifolds: list[tuple[str, str, list, int | None]] = [
-        ("", "occupied", _manifest_blocks(manifest, files, filled=True), None)
-    ]
-    if empty:
-        manifolds.append(("_emp", "empty", empty, None if nbnd_emp is None else int(nbnd_emp)))
-    for rename, manifold, blocks, nbnd in manifolds:
-        contents = [_block_file_contents(block) for block in blocks]
-        for suffix, content in _merged_manifold_files(contents, nbnd, manifold).items():
+    for group, entries in zip(manifolds, by_group, strict=True):
+        filled = bool(group["filled"])
+        rename, manifold = ("", "occupied") if filled else ("_emp", "empty")
+        nbnd = None if filled or nbnd_emp is None else int(nbnd_emp)
+        _validate_block_files(entries, manifold)
+        blocks = [_block_file_contents(entry) for entry in entries]
+        for suffix, content in _merged_manifold_files(blocks, nbnd, manifold).items():
             merged.base.repository.put_object_from_bytes(content, f"{SEEDNAME}{rename}{suffix}")
 
     return {"wannier_files": merged}
@@ -716,11 +717,10 @@ def RunDFPT(
     kcw_code: orm.AbstractCode,
     nscf_remote_folder: orm.RemoteData,
     block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)],
-    occ_labels: list,
+    manifolds: list,
     num_wann_occ: int,
     num_wann_emp: int,
     kgrid: list[int],
-    emp_labels: list | None = None,
     nbnd_emp: int | None = None,
     spreads: list | None = None,
     bands_kpoints: orm.KpointsData | None = None,
@@ -755,17 +755,16 @@ def RunDFPT(
             sockets, and ``u_dis_file`` when the block disentangled. These
             carry the block's *final* gauge whether or not it was split,
             unlike its ``retrieved`` folder.
-        occ_labels: the occupied-manifold block labels, in band order.
-            Manifold membership and band order are the caller's structural
-            knowledge (its own block lists), and travel to
-            :func:`prepare_kcw_wannier_files` as the staging manifest it
-            merges by. Multi-block manifolds are merged there into one file
-            set.
+        manifolds: one :class:`~aiida_koopmans.projections.MergeGroupId` per
+            manifold — the occupied one, and the empty one when the channel
+            has empty states — each naming its blocks in band order.
+            Membership and order are the caller's structural knowledge; a
+            block label is only the key this graph looks ``block_wannier``
+            up by. Multi-block manifolds are merged into one file set by
+            :func:`prepare_kcw_wannier_files`.
         num_wann_occ / num_wann_emp: *total* Wannier function counts per
             manifold (``num_wann_emp = 0`` for an occupied-only run).
         kgrid: the Monkhorst-Pack grid of the nscf, for ``CONTROL.mp1-3``.
-        emp_labels: the empty-manifold block labels, in band order (omit
-            for an occupied-only run).
         nbnd_emp: total number of empty bands (``nbnd - nocc``); needed to
             extend the ``u_dis`` matrix when a merged empty manifold is
             disentangled.
@@ -865,9 +864,11 @@ def RunDFPT(
         ),
     }
 
-    manifest, staged_files = _staging_inputs(block_wannier, occ_labels, emp_labels, has_disentangle)
-    staging: dict[str, Any] = {"manifest": manifest, **staged_files}
-    if emp_labels and nbnd_emp is not None:
+    staging: dict[str, Any] = {
+        "manifolds": manifolds,
+        "block_files": _staging_block_files(manifolds, block_wannier, has_disentangle),
+    }
+    if nbnd_emp is not None:
         staging["nbnd_emp"] = nbnd_emp
     wannier_files = prepare_kcw_wannier_files(
         **staging,
@@ -1487,13 +1488,13 @@ def SinglepointDFPTWorkflow(
         # Hand RunDFPT the whole ``blocks`` namespace: a nested sub-graph's
         # dynamic namespace has no per-key sockets at build time, so it must
         # flow wholesale; RunDFPT picks blocks out by label in its deferred
-        # body. Manifold membership and band order travel as the caller's
-        # own label lists (structural knowledge, not label parsing).
+        # body. Manifold membership and band order travel beside it, as the
+        # caller's own block lists (structural knowledge, not label parsing).
         dfpt_inputs: dict[str, Any] = {
             "kcw_code": reference(codes, "kcw"),
             "nscf_remote_folder": nscf_remote_folder,
             "block_wannier": wannierized["blocks"],
-            "occ_labels": [str(block["label"]) for block in occ_blocks],
+            "manifolds": [_manifold_id(occ_blocks, channel, filled=True)],
             "num_wann_occ": sum(block["num_wann"] for block in occ_blocks),
             "num_wann_emp": 0,
             "kgrid": mp_grid,
@@ -1522,7 +1523,7 @@ def SinglepointDFPTWorkflow(
             # absorbs the manifold's disentanglement bands, so the sum is the
             # total empty-band count (nbnd - nocc).
             nbnd_emp = sum(block["num_bands"] for block in emp_blocks)
-            dfpt_inputs["emp_labels"] = [str(block["label"]) for block in emp_blocks]
+            dfpt_inputs["manifolds"].append(_manifold_id(emp_blocks, channel, filled=False))
             dfpt_inputs["num_wann_emp"] = num_wann_emp
             dfpt_inputs["nbnd_emp"] = nbnd_emp
             # Disentanglement is a property of the empty manifold, not caller
