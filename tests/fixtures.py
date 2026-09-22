@@ -575,25 +575,6 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
-def assert_graph_submits(wg):
-    """Assert a built WorkGraph's inputs can be turned into stored nodes.
-
-    Submitting a graph stores every task input as an AiiDA node and links
-    it to the process, so a value that is not a node and not JSON — an
-    unresolved socket packed into a plain dict, a graph input still in its
-    wrapper — fails there rather than at construction. A nested graph task
-    takes this path when its parent submits it, after its body has run.
-
-    Needs a profile (it stores nodes); pair it with ``aiida_profile``.
-    """
-    from aiida.engine.utils import instantiate_process
-    from aiida.manage import get_manager
-    from aiida_workgraph.engine.workgraph import WorkGraphEngine
-
-    runner = get_manager().get_runner()
-    instantiate_process(runner, WorkGraphEngine, **wg.to_engine_inputs(metadata={}))
-
-
 def automatic_block(label, wannier_indices, spin=None, projection_type=None, filled=None):
     """Build a minimal automatic projection block.
 
