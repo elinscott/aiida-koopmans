@@ -146,9 +146,7 @@ def _staging(*blocks, labels=None):
         groups.append(manifold_id(emp, filled=False))
     return {
         "manifolds": groups,
-        "block_files": {
-            label: dict(files) for label, (_, files) in zip(named, blocks, strict=True)
-        },
+        **{label: dict(files) for label, (_, files) in zip(named, blocks, strict=True)},
     }
 
 
@@ -197,14 +195,16 @@ class TestPrepareKcwWannierFiles:
     def test_a_block_with_no_files_raises(self, aiida_profile, occ_retrieved):
         """Every block a manifold names must appear in the namespace."""
         staging = _staging((True, _block_files(occ_retrieved)))
-        staging["block_files"] = {}
+        for label in list(staging):
+            if label != "manifolds":
+                del staging[label]
         with pytest.raises(ValueError, match="No Wannierization outputs for block"):
             prepare_kcw_wannier_files._callable(**staging)
 
     def test_files_no_manifold_names_raise(self, aiida_profile, occ_retrieved):
         """A namespace entry no manifold names would be staged nowhere."""
         staging = _staging((True, _block_files(occ_retrieved)))
-        staging["block_files"]["spare"] = _block_files(occ_retrieved)
+        staging["spare"] = _block_files(occ_retrieved)
         with pytest.raises(ValueError, match="which no manifold names"):
             prepare_kcw_wannier_files._callable(**staging)
 
@@ -331,6 +331,15 @@ class TestPrepareKcwWannierFilesMultiBlock:
 # ----------------------------------------------------------------------
 
 
+def _staged_block(staging, label):
+    """Return one block's entry on the staging task.
+
+    The per-block entries ride the task's variadic keywords, so each sits
+    at the top of its input namespace under the block's own label.
+    """
+    return staging[label]
+
+
 class TestKoopmansDFPTTaskBuild:
     def test_full_chain_with_screening_and_bands(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved, bands_path
@@ -413,10 +422,10 @@ class TestKoopmansDFPTTaskBuild:
             kgrid=[2, 2, 2],
             has_disentangle=True,
         )
-        manifolds = wg.tasks["prepare_kcw_wannier_files"].inputs["manifolds"].value
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        manifolds = staging["manifolds"].value
         assert [group["filled"] for group in manifolds] == [True, False]
-        emp_files = wg.tasks["prepare_kcw_wannier_files"].inputs["block_files"]["emp"]
-        assert emp_files["u_dis_file"]._links
+        assert _staged_block(staging, "emp")["u_dis_file"]._links
         assert_graph_roundtrips(wg)
 
     def test_staging_reads_the_file_sockets_not_the_retrieved_folder(
@@ -445,17 +454,15 @@ class TestKoopmansDFPTTaskBuild:
         assert "retrieved" not in staging._get_all_keys()
         manifolds = staging["manifolds"].value
         assert [group["filled"] for group in manifolds] == [True, False]
-        block_files = staging["block_files"]
-        # Every block a manifold names has an entry beside it. The entry
-        # declares the whole file set; which members are populated is read
-        # off the links.
+        # Every block a manifold names has an entry on the staging task,
+        # under its own label; which members are wired is read off the links.
         for group in manifolds:
             for block in group["blocks"]:
-                entry = block_files[str(block["label"])]
+                entry = _staged_block(staging, str(block["label"]))
                 for socket in ("u_file", "hr_file", "centres_file"):
                     assert entry[socket]._links, (block["label"], socket)
-        assert block_files["emp"]["u_dis_file"]._links
-        assert not block_files["occ"]["u_dis_file"]._links
+        assert _staged_block(staging, "emp")["u_dis_file"]._links
+        assert "u_dis_file" not in [s._name for s in _staged_block(staging, "occ")]
 
     def test_u_dis_is_wired_only_where_the_manifold_disentangles(
         self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved
@@ -478,10 +485,13 @@ class TestKoopmansDFPTTaskBuild:
             kgrid=[2, 2, 2],
             has_disentangle=False,
         )
-        block_files = wg.tasks["prepare_kcw_wannier_files"].inputs["block_files"]
-        # The socket is declared on every entry; without disentanglement
-        # none of them is wired to anything.
-        assert not [label for label in ("occ", "emp") if block_files[label]["u_dis_file"]._links]
+        staging = wg.tasks["prepare_kcw_wannier_files"].inputs
+        # Without disentanglement no entry carries the socket at all.
+        assert not [
+            label
+            for label in ("occ", "emp")
+            if "u_dis_file" in [s._name for s in _staged_block(staging, label)]
+        ]
 
     @pytest.mark.parametrize("check_spread", [True, False])
     def test_check_spread_input_controls_the_namelist(

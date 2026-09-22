@@ -59,7 +59,7 @@ Current limitations:
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
 import warnings
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import (
     Annotated,
@@ -74,7 +74,7 @@ from typing import (
 
 from aiida import orm
 from aiida_quantumespresso.common.types import SpinType
-from aiida_workgraph import dynamic, namespace, task
+from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
@@ -531,7 +531,7 @@ def _manifold_id(blocks: list[ProjectionBlock], spin: SpinChannel, *, filled: bo
     )
 
 
-def _validate_block_files(entries: list[Mapping[str, Any]], manifold: str) -> None:
+def _validate_block_files(entries: Sequence[Mapping[str, Any]], manifold: str) -> None:
     """Check one manifold's blocks carry the files the merge will read.
 
     The join says which blocks a manifold holds and in what order; it does
@@ -655,16 +655,11 @@ def _merged_manifold_files(
     return merged
 
 
-@task.calcfunction(
-    inputs=namespace(
-        manifolds=list[MergeGroupId],
-        block_files=dynamic(WannierOutputFiles),
-        nbnd_emp=(int, None),
-    ),
-    outputs=["wannier_files"],
-)
+@task.calcfunction(outputs=["wannier_files"])
 def prepare_kcw_wannier_files(
-    manifolds: list[MergeGroupId], nbnd_emp: int | None = None, **inputs: Any
+    manifolds: list[MergeGroupId],
+    nbnd_emp: int | None = None,
+    **block_files: Annotated[dict, dynamic(WannierOutputFiles)],
 ) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
@@ -675,9 +670,10 @@ def prepare_kcw_wannier_files(
     convention.
 
     ``block_files`` arrives through the variadic keywords, the only route a
-    nested namespace takes into a process function; the socket shape is the
-    decorator's ``inputs`` spec. The scalars stay named so that a caller
-    forwarding one from a graph input still gets it converted to a node.
+    nested namespace takes into a process function, and is annotated there.
+    The scalars stay named so that a caller forwarding one from a graph
+    input still gets it converted to a node — a scalar passed through the
+    variadic keywords is rejected at run time.
 
     Args:
         manifolds: one :class:`~aiida_koopmans.projections.MergeGroupId` per
@@ -696,7 +692,7 @@ def prepare_kcw_wannier_files(
             block is missing a file the merge reads.
     """
     manifolds = list(manifolds)
-    by_group = block_nodes_by_group(manifolds, inputs["block_files"])
+    by_group = block_nodes_by_group(manifolds, block_files)
     if not any(group["filled"] for group in manifolds):
         raise ValueError(
             "prepare_kcw_wannier_files needs an occupied manifold (a "
@@ -882,7 +878,7 @@ def RunDFPT(
 
     staging: dict[str, Any] = {
         "manifolds": manifolds,
-        "block_files": _staging_block_files(manifolds, block_wannier, has_disentangle),
+        **_staging_block_files(manifolds, block_wannier, has_disentangle),
     }
     if nbnd_emp is not None:
         staging["nbnd_emp"] = nbnd_emp
