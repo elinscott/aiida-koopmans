@@ -65,7 +65,7 @@ def group_files(pairs, kind):
 
 
 def _synthetic_split_inputs(group_sizes, nk=1):
-    """Build stored `_split.amn` rotations and a parent `_u.mat` for build tests.
+    """Build stored `_split.amn` gauges and a parent `_u.mat` for build tests.
 
     Genuinely parseable rather than empty, so the merge task these feed
     would run on them unchanged.
@@ -79,16 +79,16 @@ def _synthetic_split_inputs(group_sizes, nk=1):
 
     nbands = sum(group_sizes)
     kpts = np.zeros((nk, 3))
-    rotations = {}
+    split_gauges = {}
     offset = 0
     for index, width in enumerate(group_sizes):
-        lines = ["synthetic split rotation", f"{nbands:12d}{nk:12d}{width:12d}"]
+        lines = ["synthetic split gauge", f"{nbands:12d}{nk:12d}{width:12d}"]
         for ik in range(nk):
             for iw in range(width):
                 for ib in range(nbands):
                     value = 1.0 if ib == offset + iw else 0.0
                     lines.append(f"{ib + 1:5d}{iw + 1:5d}{ik + 1:5d}{value:18.12f}{0.0:18.12f}")
-        rotations[f"block_{index}"] = SinglefileData(
+        split_gauges[f"block_{index}"] = SinglefileData(
             io.BytesIO(("\n".join(lines) + "\n").encode()), filename="aiida_split.amn"
         ).store()
         offset += width
@@ -100,7 +100,7 @@ def _synthetic_split_inputs(group_sizes, nk=1):
         ),
         filename="aiida_u.mat",
     ).store()
-    return rotations, parent
+    return split_gauges, parent
 
 
 class TestDetectBandBlocks:
@@ -569,12 +569,12 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
-        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
+        split_gauges, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
-            split_gauges=split_rotations,
+            split_gauges=split_gauges,
             parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
@@ -634,12 +634,12 @@ class TestRewannierizeSplitBlocksBuild:
             "block_0": FolderData().store(),
             "block_1": FolderData().store(),
         }
-        split_rotations, parent_u_file = _synthetic_split_inputs([4, 4])
+        split_gauges, parent_u_file = _synthetic_split_inputs([4, 4])
         wg = RewannierizeSplitBlocks.build(
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
-            split_gauges=split_rotations,
+            split_gauges=split_gauges,
             parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],

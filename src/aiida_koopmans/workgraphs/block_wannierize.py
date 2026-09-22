@@ -534,8 +534,8 @@ class WannierizeBlockOutputs(TypedDict):
       extracted from the wannier90 ``retrieved`` folder for a
       plainly-Wannierised block. For a split one ``hr_file`` and
       ``centres_file`` are merged from the per-group runs, while ``u_file``
-      is composed: each group's gauge carries only the rotation within its
-      own manifold, so the split rotation mapping the parent's bands onto
+      is composed: each group's gauge acts only within its own manifold,
+      so the split gauge mapping the parent's bands onto
       that group is composed onto it.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).

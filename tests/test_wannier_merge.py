@@ -255,7 +255,7 @@ class TestExtendUDis:
 def _amn_file_contents(mat: np.ndarray) -> str:
     """Write a ``(nkpts, num_bands, num_wann)`` matrix as a Wannier90 ``.amn``."""
     nk, nbands, nwann = mat.shape
-    lines = ["synthetic split rotation", f"{nbands:12d}{nk:12d}{nwann:12d}"]
+    lines = ["synthetic split gauge", f"{nbands:12d}{nk:12d}{nwann:12d}"]
     for ik in range(nk):
         for iw in range(nwann):
             for ib in range(nbands):
@@ -304,9 +304,9 @@ class TestSplitUDis:
 
     Synthesizes a parent manifold whose bands are split into groups, runs
     the products through the writers this module ships, and asks whether
-    the staged pair (``_u_dis.mat`` from the split rotations, block-diagonal
+    the staged pair (``_u_dis.mat`` from the split gauges, block-diagonal
     ``_u.mat`` from the groups) reproduces the merged Hamiltonian. The
-    variants that drop or scramble the split rotation must not.
+    variants that drop or scramble the split gauge must not.
     """
 
     NBANDS, GROUPS, NK = 6, (2, 4), 3
@@ -316,7 +316,7 @@ class TestSplitUDis:
         nk, nbands = self.NK, self.NBANDS
         kpts = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.5]])[:nk]
         eps = np.sort(rng.normal(scale=5.0, size=(nk, nbands)), axis=1)
-        # The split rotation carries the parent's gauge but does not mix
+        # The split gauge carries the parent's gauge but does not mix
         # bands across the groups, which are separated in energy: it is
         # unitary within each group's own band range. Anything else would
         # leave the merged Hamiltonian non-block-diagonal, which is the
@@ -345,7 +345,7 @@ class TestSplitUDis:
             off += width
         return merged
 
-    def _rotation_files(self, split):
+    def _split_gauge_files(self, split):
         off = 0
         contents = []
         for width in self.GROUPS:
@@ -359,7 +359,7 @@ class TestSplitUDis:
     def _two_file_gauge(self, split, gauges, kpts):
         """Build the same gauge via the independent two-file path."""
         u_dis, _ = parse_wannier_u_file_contents(
-            merge_wannier_split_u_dis_file_contents(self._rotation_files(split), kpts)
+            merge_wannier_split_u_dis_file_contents(self._split_gauge_files(split), kpts)
         )
         u_block, _ = parse_wannier_u_file_contents(
             merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
@@ -369,7 +369,7 @@ class TestSplitUDis:
     def _composed_gauge(self, split, gauges, kpts):
         composed, _ = parse_wannier_u_file_contents(
             compose_wannier_split_u_file_contents(
-                self._rotation_files(split), self._gauge_files(gauges, kpts), kpts
+                self._split_gauge_files(split), self._gauge_files(gauges, kpts), kpts
             )
         )
         return composed.transpose(0, 2, 1)
@@ -426,7 +426,7 @@ class TestSplitUDis:
         target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
         composed, _ = parse_wannier_u_file_contents(
             compose_wannier_split_u_file_contents(
-                self._rotation_files(split), self._gauge_files(gauges, kpts), kpts
+                self._split_gauge_files(split), self._gauge_files(gauges, kpts), kpts
             )
         )
         gauge = composed.transpose(0, 2, 1)
@@ -438,15 +438,15 @@ class TestSplitUDis:
         kpts, _, split, gauges = self._fixture()
         with pytest.raises(ValueError, match="disentangled"):
             compose_wannier_split_u_file_contents(
-                self._rotation_files(split)[:1], self._gauge_files(gauges, kpts)[:1], kpts
+                self._split_gauge_files(split)[:1], self._gauge_files(gauges, kpts)[:1], kpts
             )
 
-    def test_split_rotation_reproduces_the_merged_hamiltonian(self):
-        """The disentangled form: the rotations concatenated into ``_u_dis.mat``."""
+    def test_split_gauges_reproduce_the_merged_hamiltonian(self):
+        """The disentangled form: the split gauges concatenated into ``_u_dis.mat``."""
         kpts, eps, split, gauges = self._fixture()
         target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
         u_dis, _ = parse_wannier_u_file_contents(
-            merge_wannier_split_u_dis_file_contents(self._rotation_files(split), kpts)
+            merge_wannier_split_u_dis_file_contents(self._split_gauge_files(split), kpts)
         )
         u_block, _ = parse_wannier_u_file_contents(
             merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
@@ -464,20 +464,20 @@ class TestSplitUDis:
         agreement between the two forms is the check that catches it.
         """
         kpts, _, split, gauges = self._fixture()
-        rotations = [
+        split_gauges = [
             parse_wannier_amn_file_contents(c, check_square=False)
-            for c in self._rotation_files(split)
+            for c in self._split_gauge_files(split)
         ]
         wrong = np.concatenate(
             [
                 np.einsum("kbn,knm->kbm", r, g.conj().transpose(0, 2, 1))
-                for r, g in zip(rotations, gauges, strict=True)
+                for r, g in zip(split_gauges, gauges, strict=True)
             ],
             axis=2,
         )
         assert np.abs(wrong - self._two_file_gauge(split, gauges, kpts)).max() > 1e-3
 
-    def test_dropping_the_split_rotation_fails(self):
+    def test_dropping_the_split_gauge_fails(self):
         """The block-diagonal gauge alone is not the manifold's gauge."""
         _, eps, split, gauges = self._fixture()
         target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
@@ -491,7 +491,7 @@ class TestSplitUDis:
         assert np.abs(rebuilt - target).max() > 1e-3
 
     def test_mis_ordered_groups_fail(self):
-        """Concatenating the split rotations out of band order is detected."""
+        """Concatenating the split gauges out of band order is detected."""
         kpts, eps, split, gauges = self._fixture()
         target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
         off = 0
@@ -513,8 +513,8 @@ class TestSplitUDis:
         rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
         assert np.abs(rebuilt - target).max() > 1e-3
 
-    def test_rectangular_split_rotations_round_trip(self):
-        """A split rotation is rectangular; the square check must be off."""
+    def test_rectangular_split_gauges_round_trip(self):
+        """A split gauge is rectangular; the square check must be off."""
         kpts, _, split, _ = self._fixture()
         contents = [_amn_file_contents(split[:, :, :2]), _amn_file_contents(split[:, :, 2:])]
         merged, _ = parse_wannier_u_file_contents(
