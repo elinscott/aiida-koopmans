@@ -1000,7 +1000,7 @@ def RunDFPT(
         smooth_bands = KoopmansBandStructureTask(
             structure=structure,
             koopmans_ham_retrieved=ham["retrieved"],
-            manifolds=_dfpt_manifold_specs(occ_labels, emp_labels),
+            manifolds=_dfpt_manifold_files(manifolds),
             block_wannierizations=block_wannier,
             smooth_block_wannierizations=smooth_block_wannier,
             kgrid=kgrid,
@@ -1018,65 +1018,30 @@ def RunDFPT(
     return outputs
 
 
-#: ``ProjectionBlockId.num_wann`` for a block :func:`_dfpt_manifold_specs`
-#: builds. ``RunDFPT`` receives only each manifold's *total* Wannier count
-#: (``num_wann_occ`` / ``num_wann_emp``), never a per-block breakdown, so
-#: no real value is available here. Deliberately invalid (real blocks
-#: carry at least one Wannier function) rather than a plausible-looking
-#: guess, so a future consumer that actually needs this field fails
-#: loudly via :func:`~aiida_koopmans.projections.validate_projection_block_id`
-#: instead of silently trusting a fabricated count.
-_UNKNOWN_NUM_WANN = 0
+def _dfpt_manifold_files(manifolds: list) -> list[ManifoldFile]:
+    """Add each manifold's Hamiltonian filename to :func:`RunDFPT`'s own ``manifolds``.
 
-
-def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[ManifoldFile]:
-    """Build one kcw.x channel's manifold specs for the smooth interpolation.
+    ``manifolds`` already carries real blocks (real ``num_wann``, from the
+    projection blocks :func:`SinglepointDFPTWorkflow` derived them from);
+    this only adds the one field specific to the band structure.
 
     kcw.x's printed Hamiltonian filenames carry no channel index — each
     channel runs as its own wann2kc/screen/ham chain in its own working
-    directory — so every spec here is unpolarized from
+    directory — so every file here is unpolarized from
     :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`'s
-    own point of view. Which physical channel a :func:`RunDFPT` call belongs
-    to is :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
-
-    Each block's ``num_wann`` is :data:`_UNKNOWN_NUM_WANN`: see its own
-    docstring for why. Nothing on this path reads it — the interpolation
-    only ever looks a block up by ``label``.
+    own point of view, whatever the manifold's own ``spin`` says: which
+    physical channel this :func:`RunDFPT` call belongs to is
+    :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
     """
-    specs: list[ManifoldFile] = [
+    return [
         ManifoldFile(
-            filled=True,
+            filled=group["filled"],
             spin=SpinChannel.NONE.value,
-            filename=kcw_hamiltonian_filename(filled=True),
-            blocks=[
-                ProjectionBlockId(
-                    label=str(label),
-                    spin=SpinChannel.NONE.value,
-                    filled=True,
-                    num_wann=_UNKNOWN_NUM_WANN,
-                )
-                for label in occ_labels
-            ],
-        ),
-    ]
-    if emp_labels is not None:
-        specs.append(
-            ManifoldFile(
-                filled=False,
-                spin=SpinChannel.NONE.value,
-                filename=kcw_hamiltonian_filename(filled=False),
-                blocks=[
-                    ProjectionBlockId(
-                        label=str(label),
-                        spin=SpinChannel.NONE.value,
-                        filled=False,
-                        num_wann=_UNKNOWN_NUM_WANN,
-                    )
-                    for label in emp_labels
-                ],
-            )
+            blocks=group["blocks"],
+            filename=kcw_hamiltonian_filename(filled=group["filled"]),
         )
-    return specs
+        for group in manifolds
+    ]
 
 
 def _add_smooth_interpolation_dfpt_inputs(

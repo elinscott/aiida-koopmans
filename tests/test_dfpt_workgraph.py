@@ -1455,16 +1455,15 @@ class TestRunDFPTSmoothInterpolation:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
             smooth_block_wannier={
                 "occ": block_wannierization("occ_smooth"),
                 "emp": block_wannierization("emp_smooth"),
             },
             structure=silicon_structure,
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(occ=["occ"], emp=["emp"]),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -1497,16 +1496,15 @@ class TestRunDFPTSmoothInterpolation:
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
             block_wannier={
-                "occ": {"retrieved": occ_retrieved},
-                "emp": {"retrieved": emp_retrieved},
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
             },
             smooth_block_wannier={
                 "occ": block_wannierization("occ_smooth"),
                 "emp": block_wannierization("emp_smooth"),
             },
             structure=silicon_structure,
-            occ_labels=["occ"],
-            emp_labels=["emp"],
+            manifolds=manifolds_for(occ=["occ"], emp=["emp"]),
             num_wann_occ=4,
             num_wann_emp=4,
             kgrid=[2, 2, 2],
@@ -1538,10 +1536,10 @@ class TestRunDFPTSmoothInterpolation:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={label: {"retrieved": occ_retrieved} for label in labels},
+            block_wannier={label: _block_files(occ_retrieved) for label in labels},
             smooth_block_wannier={label: block_wannierization(label) for label in labels},
             structure=silicon_structure,
-            occ_labels=labels,
+            manifolds=manifolds_for(labels),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -1549,12 +1547,10 @@ class TestRunDFPTSmoothInterpolation:
         )
         by_name = {t.name: t for t in wg.tasks}
 
-        # kcw.x's file set: one input per block, keyed by list position, so
-        # the merged Hamiltonian's rows follow ``labels``.
-        prepare = by_name["prepare_kcw_wannier_files"].inputs
-        assert "occ_b00" in prepare
-        assert "occ_b01" in prepare
-        assert "occ_b02" not in prepare
+        # kcw.x's file set: one manifold naming both blocks, in band order.
+        prepare_manifolds = by_name["prepare_kcw_wannier_files"].inputs["manifolds"].value
+        [occ_group] = prepare_manifolds
+        assert [str(block["label"]) for block in occ_group["blocks"]] == labels
 
         # The interpolation is handed that same list, and keys its own
         # per-block merges off it.
@@ -1576,10 +1572,10 @@ class TestRunDFPTSmoothInterpolation:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
+            block_wannier={"occ": _block_files(occ_retrieved)},
             smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
             structure=silicon_structure,
-            occ_labels=["occ"],
+            manifolds=manifolds_for(["occ"]),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -1606,10 +1602,10 @@ class TestRunDFPTSmoothInterpolation:
             RunDFPT.build(
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"retrieved": occ_retrieved}},
+                block_wannier={"occ": _block_files(occ_retrieved)},
                 smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
                 structure=silicon_structure,
-                occ_labels=["occ"],
+                manifolds=manifolds_for(["occ"]),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -1624,8 +1620,8 @@ class TestRunDFPTSmoothInterpolation:
         wg = RunDFPT.build(
             kcw_code=dfpt_codes["kcw"],
             nscf_remote_folder=nscf_remote,
-            block_wannier={"occ": {"retrieved": occ_retrieved}},
-            occ_labels=["occ"],
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(["occ"]),
             num_wann_occ=4,
             num_wann_emp=0,
             kgrid=[2, 2, 2],
@@ -1646,9 +1642,9 @@ class TestRunDFPTSmoothInterpolation:
             RunDFPT.build(
                 kcw_code=dfpt_codes["kcw"],
                 nscf_remote_folder=nscf_remote,
-                block_wannier={"occ": {"retrieved": occ_retrieved}},
+                block_wannier={"occ": _block_files(occ_retrieved)},
                 smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
-                occ_labels=["occ"],
+                manifolds=manifolds_for(["occ"]),
                 num_wann_occ=4,
                 num_wann_emp=0,
                 kgrid=[2, 2, 2],
@@ -2195,43 +2191,58 @@ class TestSinglepointDFPTGrouping:
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
 
 
-class TestDfptManifoldSpecs:
-    """``_dfpt_manifold_specs`` builds the manifold contract from bare labels."""
+class TestDfptManifoldFiles:
+    """``_dfpt_manifold_files`` adds the Hamiltonian filename to real manifolds."""
 
-    def test_the_blocks_carry_the_manifolds_own_filled_and_spin(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+    def test_each_manifold_gets_its_own_filename(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
 
-        specs = _dfpt_manifold_specs(["occ_a", "occ_b"], ["emp"])
+        files = _dfpt_manifold_files(manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"]))
 
-        by_filled = {spec["filled"]: spec for spec in specs}
-        occ_blocks = by_filled[True]["blocks"]
-        assert [block["label"] for block in occ_blocks] == ["occ_a", "occ_b"]
-        assert all(block["filled"] is True and block["spin"] == "none" for block in occ_blocks)
-        [emp_block] = by_filled[False]["blocks"]
-        assert emp_block["label"] == "emp"
-        assert emp_block["filled"] is False
+        by_filled = {spec["filled"]: spec for spec in files}
+        assert by_filled[True]["filename"] == "aiida.kcw_hr_occ.dat"
+        assert by_filled[False]["filename"] == "aiida.kcw_hr_emp.dat"
 
-    def test_an_occupied_only_run_builds_one_manifold(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+    def test_the_blocks_are_unchanged_real_projection_blocks(self):
+        """The manifold's own blocks pass through, real ``num_wann`` included.
 
-        specs = _dfpt_manifold_specs(["occ"], None)
-
-        assert len(specs) == 1
-        assert specs[0]["filled"] is True
-
-    def test_num_wann_is_the_documented_sentinel_not_a_guess(self):
-        """kcw.x's channel gives RunDFPT no per-block Wannier count.
-
-        ``num_wann`` is unused on this path (the interpolation looks a
-        block up by label only), so a value that could pass for real data
-        would be worse than one that is deliberately, visibly invalid.
+        ``RunDFPT``'s ``manifolds`` input already carries the real
+        projection blocks :func:`SinglepointDFPTWorkflow` derived; this
+        helper adds only the filename, never touches ``blocks``.
         """
-        from aiida_koopmans.projections import validate_projection_block_id
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
 
-        [occ_block] = _dfpt_manifold_specs(["occ"], None)[0]["blocks"]
-        with pytest.raises(ValueError, match="num_wann"):
-            validate_projection_block_id(occ_block)
+        source = manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
+        files = _dfpt_manifold_files(source)
+
+        assert [spec["blocks"] for spec in files] == [group["blocks"] for group in source]
+
+    def test_the_manifold_file_is_unpolarized_whatever_the_channels_own_spin_is(self):
+        """kcw.x's filenames carry no channel index, so the spec's own ``spin`` is 'none'.
+
+        A collinear run's manifolds arrive with the real physical channel
+        (``spin='up'``/``'down'``) stamped by :func:`SinglepointDFPTWorkflow`;
+        which channel a given :func:`RunDFPT` call is for is that caller's
+        knowledge, not something :func:`KoopmansBandStructureTask` needs —
+        each call interpolates exactly one channel's own occ/emp pair, never
+        stacking across channels.
+        """
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+
+        down_channel = [manifold_id(["occ"], filled=True)]
+        down_channel[0]["spin"] = SpinChannel.DOWN.value
+
+        [spec] = _dfpt_manifold_files(down_channel)
+
+        assert spec["spin"] == SpinChannel.NONE.value
+
+    def test_an_occupied_only_run_keeps_one_manifold(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+
+        files = _dfpt_manifold_files(manifolds_for(occ=["occ"]))
+
+        assert len(files) == 1
+        assert files[0]["filled"] is True
 
 
 class TestKcwHamiltonianFilename:
