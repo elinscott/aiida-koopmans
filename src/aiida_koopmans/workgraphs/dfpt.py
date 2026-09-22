@@ -106,6 +106,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlocks,
     WannierizeBlocksCodes,
     WannierizeOverrides,
+    WannierOutputFiles,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
@@ -174,18 +175,16 @@ _OPTIONAL_SUFFIXES = ("_u_dis.mat",)
 # (:class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlockOutputs`),
 # and the seedname suffix it is staged under. Every block provides the
 # first three; only a block that disentangled provides ``u_dis``.
-# The Wannier90 output files a block hands to kcw.x: the socket each
-# arrives on
-# (:class:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlockOutputs`)
-# and the seedname suffix it is staged under. ``u_dis_file`` is present
-# only on a block that disentangled.
+# Seedname suffix each of a block's Wannier90 output files is staged
+# under; every block provides all but ``u_dis_file``, which only a
+# disentangled one writes.
 _OUTPUT_FILE_SUFFIXES = {
     "u_file": "_u.mat",
     "hr_file": "_hr.dat",
     "centres_file": "_centres.xyz",
     "u_dis_file": "_u_dis.mat",
 }
-_REQUIRED_OUTPUT_FILES = ("u_file", "hr_file", "centres_file")
+_REQUIRED_OUTPUT_FILES = tuple(k for k in _OUTPUT_FILE_SUFFIXES if k != "u_dis_file")
 
 
 Wann2kcStep = task(Wann2kcCalculation)
@@ -505,18 +504,20 @@ class ManifoldBlocks(TypedDict):
 
 
 def _manifold_id(blocks: list[ProjectionBlock], spin: SpinChannel, *, filled: bool) -> MergeGroupId:
-    """Describe one manifold as the JSON-pure view its consumers take.
+    """Build the ``MergeGroupId`` for one manifold.
 
-    ``blocks`` is in band order and stays so; ``spin`` is written as its
-    value string, which is what a consumer reads back off the socket.
+    Keeps ``blocks`` in the order given and reduces each to its label,
+    channel, occupancy and Wannier-function count. The blocks must already
+    be in band order, since that order is what the result means by it, and
+    must all belong to ``spin``.
     """
     return MergeGroupId(
         filled=filled,
-        spin=SpinChannel(spin).value,
+        spin=SpinChannel(spin),
         blocks=[
             ProjectionBlockId(
                 label=str(block["label"]),
-                spin=SpinChannel(block["spin"]).value,
+                spin=SpinChannel(block["spin"]),
                 filled=filled,
                 num_wann=int(block["num_wann"]),
             )
@@ -556,8 +557,10 @@ def _validate_block_files(entries: list[Mapping[str, Any]], manifold: str) -> No
 
 
 def _staging_block_files(
-    manifolds: list, block_wannier: Mapping[str, Any], has_disentangle: bool
-) -> dict[str, dict[str, Any]]:
+    manifolds: list[MergeGroupId],
+    block_wannier: Mapping[str, WannierizeBlockOutputs],
+    has_disentangle: bool,
+) -> dict[str, WannierOutputFiles]:
     """Pick each block's Wannier90 output files out of the wannierization.
 
     Keyed by block label, which is what the manifolds name their blocks
@@ -569,13 +572,17 @@ def _staging_block_files(
     ``has_disentangle``. Taking it elsewhere would pass an unpopulated
     socket, which AiiDA's dynamic port refuses.
     """
-    files: dict[str, dict[str, Any]] = {}
+    files: dict[str, WannierOutputFiles] = {}
     for group in manifolds:
         blocks = list(group["blocks"])
         for position, block in enumerate(blocks):
             label = str(block["label"])
             entry = block_wannier[label]
-            named = {socket: entry[socket] for socket in _REQUIRED_OUTPUT_FILES}
+            named = WannierOutputFiles(
+                u_file=entry["u_file"],
+                hr_file=entry["hr_file"],
+                centres_file=entry["centres_file"],
+            )
             if not group["filled"] and has_disentangle and position == len(blocks) - 1:
                 named["u_dis_file"] = entry["u_dis_file"]
             files[label] = named
@@ -643,24 +650,17 @@ def _merged_manifold_files(
     return merged
 
 
-class KcwBlockFiles(TypedDict):
-    """The per-block Wannier90 output files the kcw.x file merge reads."""
-
-    u_file: orm.SinglefileData
-    hr_file: orm.SinglefileData
-    centres_file: orm.SinglefileData
-    u_dis_file: NotRequired[orm.SinglefileData]
-
-
 @task.calcfunction(
     inputs=namespace(
-        manifolds=list,
-        block_files=dynamic(KcwBlockFiles),
+        manifolds=list[MergeGroupId],
+        block_files=dynamic(WannierOutputFiles),
         nbnd_emp=(int, None),
     ),
     outputs=["wannier_files"],
 )
-def prepare_kcw_wannier_files(manifolds: list, nbnd_emp: int | None = None, **inputs: Any) -> dict:
+def prepare_kcw_wannier_files(
+    manifolds: list[MergeGroupId], nbnd_emp: int | None = None, **inputs: Any
+) -> dict:
     """Assemble the ``wannier_files`` folder the kcw.x CalcJobs stage.
 
     Collects the Wannier90 output files (``aiida_u.mat`` / ``aiida_hr.dat``
