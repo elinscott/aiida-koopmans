@@ -92,6 +92,7 @@ from aiida_koopmans.parallelization import (
 )
 from aiida_koopmans.projections import (
     ProjectionBlock,
+    ProjectionBlockId,
 )
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.variational_orbitals import (
@@ -109,7 +110,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
-from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldSpec
+from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldFile
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     extend_wannier_u_dis_file_content,
     merge_wannier_centres_file_contents,
@@ -913,7 +914,18 @@ def RunDFPT(
     return outputs
 
 
-def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[ManifoldSpec]:
+#: ``ProjectionBlockId.num_wann`` for a block :func:`_dfpt_manifold_specs`
+#: builds. ``RunDFPT`` receives only each manifold's *total* Wannier count
+#: (``num_wann_occ`` / ``num_wann_emp``), never a per-block breakdown, so
+#: no real value is available here. Deliberately invalid (real blocks
+#: carry at least one Wannier function) rather than a plausible-looking
+#: guess, so a future consumer that actually needs this field fails
+#: loudly via :func:`~aiida_koopmans.projections.validate_projection_block_id`
+#: instead of silently trusting a fabricated count.
+_UNKNOWN_NUM_WANN = 0
+
+
+def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[ManifoldFile]:
     """Build one kcw.x channel's manifold specs for the smooth interpolation.
 
     kcw.x's printed Hamiltonian filenames carry no channel index — each
@@ -922,22 +934,42 @@ def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[Mani
     :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`'s
     own point of view. Which physical channel a :func:`RunDFPT` call belongs
     to is :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
+
+    Each block's ``num_wann`` is :data:`_UNKNOWN_NUM_WANN`: see its own
+    docstring for why. Nothing on this path reads it — the interpolation
+    only ever looks a block up by ``label``.
     """
-    specs: list[ManifoldSpec] = [
-        ManifoldSpec(
+    specs: list[ManifoldFile] = [
+        ManifoldFile(
             filled=True,
             spin=SpinChannel.NONE.value,
             filename=kcw_hamiltonian_filename(filled=True),
-            blocks=[str(label) for label in occ_labels],
+            blocks=[
+                ProjectionBlockId(
+                    label=str(label),
+                    spin=SpinChannel.NONE,
+                    filled=True,
+                    num_wann=_UNKNOWN_NUM_WANN,
+                )
+                for label in occ_labels
+            ],
         ),
     ]
     if emp_labels is not None:
         specs.append(
-            ManifoldSpec(
+            ManifoldFile(
                 filled=False,
                 spin=SpinChannel.NONE.value,
                 filename=kcw_hamiltonian_filename(filled=False),
-                blocks=[str(label) for label in emp_labels],
+                blocks=[
+                    ProjectionBlockId(
+                        label=str(label),
+                        spin=SpinChannel.NONE,
+                        filled=False,
+                        num_wann=_UNKNOWN_NUM_WANN,
+                    )
+                    for label in emp_labels
+                ],
             )
         )
     return specs

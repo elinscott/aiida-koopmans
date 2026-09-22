@@ -485,6 +485,30 @@ class ProjectionBlockId(TypedDict):
     num_wann: int
 
 
+class MergeGroupId(TypedDict):
+    """The blocks of one manifold, in band order.
+
+    The structural half of the block contract: which blocks a manifold
+    holds, in which order, and what the manifold is. It travels as plain
+    JSON data — a graph input or a task output — beside the namespace of
+    per-block nodes that :func:`block_nodes_by_group
+    <aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group>`
+    joins it to.
+
+    * ``filled`` -- ``True`` for the occupied manifold, ``False`` for empty.
+    * ``spin`` -- the channel every member block belongs to, as the
+      :class:`~aiida_koopmans.spin.SpinChannel` *value* string: a member
+      passed in reaches the body as its value anyway, so writing the value
+      keeps what a consumer reads equal to what the caller wrote.
+    * ``blocks`` -- the member blocks in band order. Order here is the only
+      authority on band order; a label is a lookup key and says nothing.
+    """
+
+    filled: bool
+    spin: str
+    blocks: list[ProjectionBlockId]
+
+
 def validate_projection_block_id(spec: ProjectionBlockId) -> None:
     """Reject a block view whose shape cannot describe real orbitals.
 

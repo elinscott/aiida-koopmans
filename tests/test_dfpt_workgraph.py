@@ -1265,7 +1265,7 @@ class TestRunDFPTSmoothInterpolation:
     ):
         """The occupied blocks stay the occupied manifold on the way across.
 
-        ``RunDFPT`` builds one ``ManifoldSpec`` per filling, each carrying
+        ``RunDFPT`` builds one ``ManifoldFile`` per filling, each carrying
         its own ``filled`` flag and Hamiltonian filename; swapping them
         would pair the occupied Wannier centres with the empty Hamiltonian,
         which nothing downstream would notice.
@@ -1295,8 +1295,8 @@ class TestRunDFPTSmoothInterpolation:
         smooth = {t.name: t for t in wg.tasks}["smooth_band_structure"].inputs
 
         manifolds = {spec["filled"]: spec for spec in smooth["manifolds"].value}
-        assert [str(label) for label in manifolds[True]["blocks"]] == ["occ"]
-        assert [str(label) for label in manifolds[False]["blocks"]] == ["emp"]
+        assert [str(block["label"]) for block in manifolds[True]["blocks"]] == ["occ"]
+        assert [str(block["label"]) for block in manifolds[False]["blocks"]] == ["emp"]
 
     def test_a_multi_block_manifold_merges_both_hamiltonians_in_one_order(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
@@ -1339,7 +1339,7 @@ class TestRunDFPTSmoothInterpolation:
         # per-block merges off it.
         smooth = by_name["smooth_band_structure"]
         [occ_spec] = [spec for spec in smooth.inputs["manifolds"].value if spec["filled"]]
-        assert [str(label) for label in occ_spec["blocks"]] == labels
+        assert [str(block["label"]) for block in occ_spec["blocks"]] == labels
 
     def test_the_hams_wigner_seitz_choice_reaches_the_interpolation(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
@@ -1974,6 +1974,45 @@ class TestSinglepointDFPTGrouping:
             kpoints=kmesh,
         )
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
+
+
+class TestDfptManifoldSpecs:
+    """``_dfpt_manifold_specs`` builds the manifold contract from bare labels."""
+
+    def test_the_blocks_carry_the_manifolds_own_filled_and_spin(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+
+        specs = _dfpt_manifold_specs(["occ_a", "occ_b"], ["emp"])
+
+        by_filled = {spec["filled"]: spec for spec in specs}
+        occ_blocks = by_filled[True]["blocks"]
+        assert [block["label"] for block in occ_blocks] == ["occ_a", "occ_b"]
+        assert all(block["filled"] is True and block["spin"] == "none" for block in occ_blocks)
+        [emp_block] = by_filled[False]["blocks"]
+        assert emp_block["label"] == "emp"
+        assert emp_block["filled"] is False
+
+    def test_an_occupied_only_run_builds_one_manifold(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+
+        specs = _dfpt_manifold_specs(["occ"], None)
+
+        assert len(specs) == 1
+        assert specs[0]["filled"] is True
+
+    def test_num_wann_is_the_documented_sentinel_not_a_guess(self):
+        """kcw.x's channel gives RunDFPT no per-block Wannier count.
+
+        ``num_wann`` is unused on this path (the interpolation looks a
+        block up by label only), so a value that could pass for real data
+        would be worse than one that is deliberately, visibly invalid.
+        """
+        from aiida_koopmans.projections import validate_projection_block_id
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_specs
+
+        [occ_block] = _dfpt_manifold_specs(["occ"], None)[0]["blocks"]
+        with pytest.raises(ValueError, match="num_wann"):
+            validate_projection_block_id(occ_block)
 
 
 class TestKcwHamiltonianFilename:

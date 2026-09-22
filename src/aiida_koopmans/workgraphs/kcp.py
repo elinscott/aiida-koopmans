@@ -43,6 +43,7 @@ from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
 )
+from aiida_koopmans.projections import ProjectionBlockId
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons_task
@@ -62,7 +63,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import DensityOfStates
-from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldSpec
+from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldFile
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -1785,7 +1786,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
         ValueError: a spin channel this route needs has no merge group.
     """
     spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
-    specs: list[ManifoldSpec] = []
+    specs: list[ManifoldFile] = []
     for spin in spins:
         for filled in (True, False):
             matches = [
@@ -1802,7 +1803,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
                 )
             [blocks] = matches
             specs.append(
-                ManifoldSpec(
+                ManifoldFile(
                     filled=filled,
                     spin=spin.value,
                     filename=kcp_hamiltonian_filename(
@@ -1811,7 +1812,15 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
                         # channel of an unpolarized run), 2 = down.
                         spin_index=2 if spin == SpinChannel.DOWN else 1,
                     ),
-                    blocks=[block["label"] for block in blocks],
+                    blocks=[
+                        ProjectionBlockId(
+                            label=str(block["label"]),
+                            spin=SpinChannel(block["spin"]),
+                            filled=filled,
+                            num_wann=int(block["num_wann"]),
+                        )
+                        for block in blocks
+                    ],
                 )
             )
     return specs

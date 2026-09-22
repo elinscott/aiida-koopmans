@@ -15,7 +15,12 @@ and how the manifolds are partitioned, is the route's own knowledge: the
 initialisation wannierization emitted; the DFPT route
 (:mod:`aiida_koopmans.workgraphs.dfpt`) reads kcw.x's ``*.kcw_hr_*.dat``
 files, keyed by its own ``occ_labels`` / ``emp_labels``. Both pass that
-knowledge in as a list of :class:`ManifoldSpec`.
+knowledge in as a list of :class:`ManifoldFile`, the repo-wide manifold
+contract (:class:`~aiida_koopmans.projections.MergeGroupId`) plus the one
+field specific to a Koopmans band structure. Block-to-node lookups go
+through the contract's own
+:func:`~aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group`,
+never a local re-implementation of the join.
 """
 
 import io
@@ -25,36 +30,32 @@ import numpy as np
 from aiida import orm
 from aiida_workgraph import dynamic, task
 
+from aiida_koopmans.projections import MergeGroupId
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlockOutputs,
     collect_wannier_functions,
 )
 from aiida_koopmans.workgraphs.ui import DensityOfStates, compute_dos_from_bands, interpolate_bands
-from aiida_koopmans.workgraphs.utils.wannier_merge import merge_wannier_hr_file_contents
+from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    block_nodes_by_group,
+    merge_wannier_hr_file_contents,
+)
 
 
-class ManifoldSpec(TypedDict):
-    """One (filling, spin) manifold's identity inside a Koopmans band structure.
+class ManifoldFile(MergeGroupId):
+    """A manifold plus the Koopmans Hamiltonian file naming it.
 
-    ``filled`` and ``spin`` alone decide merge order (occupied before
-    empty), which manifold's top sets the valence-band-maximum reference,
-    and channel stacking — never a label. ``blocks`` alone decides
-    membership and band order: the caller's own key list into
-    ``block_wannierizations``, never derived from how those keys are
-    spelled.
-
-    ``spin`` carries :class:`~aiida_koopmans.spin.SpinChannel`'s plain
-    string ``.value`` (``"none"``/``"up"``/``"down"``), not the enum
-    member: a spec built inside a stored task's own output goes through
-    AiiDA's node serialization, which only a plain ``str`` is guaranteed
-    to survive. Read it back with ``SpinChannel(spec["spin"])``.
+    ``filled`` and ``spin`` (from :class:`~aiida_koopmans.projections.MergeGroupId`)
+    alone decide merge order (occupied before empty), which manifold's top
+    sets the valence-band-maximum reference, and channel stacking — never
+    a label. ``blocks`` alone decides membership and band order: the
+    caller's own block views, joined to ``block_wannierizations`` by
+    :func:`~aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group`,
+    never derived from how a block's label is spelled.
     """
 
-    filled: bool
-    spin: str
     filename: str
-    blocks: list[str]
 
 
 def _manifold_label(*, filled: bool, spin: SpinChannel) -> str:
@@ -224,16 +225,16 @@ def build_band_structure(
     return bands
 
 
-def manifold_dft_hamiltonian(labels: list[str], wannierizations, *, link_label: str):
+def manifold_dft_hamiltonian(entries: list, *, link_label: str):
     """Return the socket carrying one manifold's DFT Hamiltonian file.
 
-    ``labels`` are the manifold's block labels in band order. A one-block
-    manifold is its block's ``_hr.dat`` unchanged; several blocks are
-    combined block-diagonally in that order.
+    ``entries`` are the manifold's block Wannierization outputs, in band
+    order — already joined to the manifold's blocks by
+    :func:`~aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group`.
+    A one-block manifold is its block's ``_hr.dat`` unchanged; several
+    blocks are combined block-diagonally in that order.
     """
-    hr_files = {
-        f"b{index:02d}": wannierizations[label]["hr_file"] for index, label in enumerate(labels)
-    }
+    hr_files = {f"b{index:02d}": entry["hr_file"] for index, entry in enumerate(entries)}
     if len(hr_files) == 1:
         return next(iter(hr_files.values()))
     return manifold_hamiltonian(**hr_files, metadata={"call_link_label": link_label}).result
@@ -241,11 +242,10 @@ def manifold_dft_hamiltonian(labels: list[str], wannierizations, *, link_label: 
 
 def interpolate_manifold(
     koopmans_ham_file,
-    labels: list[str],
+    entries: list,
     *,
     label: str,
-    block_wannierizations,
-    smooth_block_wannierizations,
+    smooth_entries: list | None,
     structure,
     kpath,
     kgrid: list[int],
@@ -253,31 +253,29 @@ def interpolate_manifold(
 ):
     """Add the tasks interpolating one manifold; return its eigenvalue socket.
 
-    ``labels`` are the manifold's block labels in band order. The centres
-    come from each block's parsed wannier90 output, keyed so lexicographic
-    key order is that band order. A denser-mesh wannierization switches on
-    the smooth-interpolation correction, which needs the coarse DFT
-    Hamiltonian as well as the dense one; without it neither reaches the
-    interpolation.
+    ``entries`` are the manifold's block Wannierization outputs, in band
+    order (see :func:`manifold_dft_hamiltonian`). The centres come from
+    each block's parsed wannier90 output, keyed so lexicographic key order
+    is that band order. ``smooth_entries`` — the same blocks' outputs on a
+    denser mesh — switches on the smooth-interpolation correction, which
+    needs the coarse DFT Hamiltonian as well as the dense one; absent,
+    neither reaches the interpolation.
     """
     wannier_functions = collect_wannier_functions(
         output_parameters={
-            f"b{index:02d}": block_wannierizations[block_label]["output_parameters"]
-            for index, block_label in enumerate(labels)
+            f"b{index:02d}": entry["output_parameters"] for index, entry in enumerate(entries)
         },
         metadata={"call_link_label": f"collect_{label}_centres"},
     )
 
     smooth_kwargs = {}
-    if smooth_block_wannierizations is not None:
+    if smooth_entries is not None:
         smooth_kwargs = {
             "dft_ham_file": manifold_dft_hamiltonian(
-                labels, block_wannierizations, link_label=f"merge_{label}_dft_hamiltonian"
+                entries, link_label=f"merge_{label}_dft_hamiltonian"
             ),
             "dft_smooth_ham_file": manifold_dft_hamiltonian(
-                labels,
-                smooth_block_wannierizations,
-                link_label=f"merge_{label}_smooth_dft_hamiltonian",
+                smooth_entries, link_label=f"merge_{label}_smooth_dft_hamiltonian"
             ),
         }
 
@@ -339,7 +337,7 @@ def KoopmansBandStructureTask(
         structure: the primitive cell the wannierizations ran on.
         koopmans_ham_retrieved: the retrieved folder holding every
             manifold's printed Koopmans Hamiltonian.
-        manifolds: one :class:`ManifoldSpec` per (filling, spin) manifold to
+        manifolds: one :class:`ManifoldFile` per (filling, spin) manifold to
             interpolate. Building this list — which file names each
             manifold's Hamiltonian, and which blocks belong to it — is the
             calling route's own knowledge.
@@ -368,26 +366,37 @@ def KoopmansBandStructureTask(
     """
     channels = _channel_manifolds(manifolds)
 
+    # One join across every manifold at once: the join is exact-set, so it
+    # must see every block every manifold names, no more and no less.
+    entries_by_manifold = block_nodes_by_group(manifolds, block_wannierizations)
+    smooth_entries_by_manifold = (
+        block_nodes_by_group(manifolds, smooth_block_wannierizations)
+        if smooth_block_wannierizations is not None
+        else [None] * len(manifolds)
+    )
+
     energies_by_manifold = {}
-    for spin, by_filled in channels.items():
-        for filled, spec in by_filled.items():
-            label = _manifold_label(filled=filled, spin=spin)
-            hamiltonian = extract_koopmans_hamiltonian(
-                retrieved=koopmans_ham_retrieved,
-                filename=spec["filename"],
-                metadata={"call_link_label": f"extract_{label}_hamiltonian"},
-            ).result
-            energies_by_manifold[filled, spin] = interpolate_manifold(
-                hamiltonian,
-                spec["blocks"],
-                label=label,
-                block_wannierizations=block_wannierizations,
-                smooth_block_wannierizations=smooth_block_wannierizations,
-                structure=structure,
-                kpath=kpath,
-                kgrid=kgrid,
-                use_ws_distance=use_ws_distance,
-            )
+    for spec, entries, smooth_entries in zip(
+        manifolds, entries_by_manifold, smooth_entries_by_manifold, strict=True
+    ):
+        filled = bool(spec["filled"])
+        spin = SpinChannel(spec["spin"])
+        label = _manifold_label(filled=filled, spin=spin)
+        hamiltonian = extract_koopmans_hamiltonian(
+            retrieved=koopmans_ham_retrieved,
+            filename=spec["filename"],
+            metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+        ).result
+        energies_by_manifold[filled, spin] = interpolate_manifold(
+            hamiltonian,
+            entries,
+            label=label,
+            smooth_entries=smooth_entries,
+            structure=structure,
+            kpath=kpath,
+            kgrid=kgrid,
+            use_ws_distance=use_ws_distance,
+        )
 
     first = SpinChannel.NONE if SpinChannel.NONE in channels else SpinChannel.UP
     second = SpinChannel.DOWN if SpinChannel.DOWN in channels else None

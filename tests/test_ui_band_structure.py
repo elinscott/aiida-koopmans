@@ -26,6 +26,7 @@ from aiida_koopmans.workgraphs.ui import helpers as ui_helpers
 from tests.fixtures import (
     _task_names,
     assert_graph_roundtrips,
+    block_view,
     block_wannierization,
     occ_emp_manifold_specs,
 )
@@ -250,9 +251,19 @@ class TestMisleadingBlockKeysStayStructural:
         }
         manifolds = [
             # filled=True, but its one block is named as though it were empty.
-            {"filled": True, "spin": "none", "filename": "ham_occ_1.dat", "blocks": ["emp_1"]},
+            {
+                "filled": True,
+                "spin": "none",
+                "filename": "ham_occ_1.dat",
+                "blocks": [block_view("emp_1", filled=True)],
+            },
             # filled=False, but its one block is named as though it were occupied.
-            {"filled": False, "spin": "none", "filename": "ham_emp_1.dat", "blocks": ["occ_1"]},
+            {
+                "filled": False,
+                "spin": "none",
+                "filename": "ham_emp_1.dat",
+                "blocks": [block_view("occ_1", filled=False)],
+            },
         ]
         wg = KoopmansBandStructureTask.build(
             structure=silicon_structure,
@@ -288,10 +299,30 @@ class TestMisleadingBlockKeysStayStructural:
         from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask
 
         manifolds = [
-            {"filled": True, "spin": "down", "filename": "ham_occ_2.dat", "blocks": ["occ_down"]},
-            {"filled": False, "spin": "down", "filename": "ham_emp_2.dat", "blocks": ["emp_down"]},
-            {"filled": True, "spin": "up", "filename": "ham_occ_1.dat", "blocks": ["occ_up"]},
-            {"filled": False, "spin": "up", "filename": "ham_emp_1.dat", "blocks": ["emp_up"]},
+            {
+                "filled": True,
+                "spin": "down",
+                "filename": "ham_occ_2.dat",
+                "blocks": [block_view("occ_down", spin="down", filled=True)],
+            },
+            {
+                "filled": False,
+                "spin": "down",
+                "filename": "ham_emp_2.dat",
+                "blocks": [block_view("emp_down", spin="down", filled=False)],
+            },
+            {
+                "filled": True,
+                "spin": "up",
+                "filename": "ham_occ_1.dat",
+                "blocks": [block_view("occ_up", spin="up", filled=True)],
+            },
+            {
+                "filled": False,
+                "spin": "up",
+                "filename": "ham_emp_1.dat",
+                "blocks": [block_view("emp_up", spin="up", filled=False)],
+            },
         ]
         wg = KoopmansBandStructureTask.build(
             structure=silicon_structure,
@@ -316,7 +347,7 @@ class TestMisleadingBlockKeysStayStructural:
 
 
 class TestManifoldsRoundTrip:
-    """A ``list[ManifoldSpec]`` graph input must survive a WorkGraph dict round trip."""
+    """A ``list[ManifoldFile]`` graph input must survive a WorkGraph dict round trip."""
 
     @staticmethod
     def _build(manifolds, *, silicon_structure, blocks):
@@ -336,7 +367,12 @@ class TestManifoldsRoundTrip:
 
     def test_one_manifold(self, silicon_structure):
         manifolds = [
-            {"filled": True, "spin": "none", "filename": "ham_occ_1.dat", "blocks": ["occ"]}
+            {
+                "filled": True,
+                "spin": "none",
+                "filename": "ham_occ_1.dat",
+                "blocks": [block_view("occ")],
+            }
         ]
         wg = self._build(manifolds, silicon_structure=silicon_structure, blocks=["occ"])
         assert_graph_roundtrips(wg)
@@ -633,13 +669,13 @@ class TestSmoothInterpolationWiring:
                 "filled": True,
                 "spin": "none",
                 "filename": "ham_occ_1.dat",
-                "blocks": labels["occ"],
+                "blocks": [block_view(x, filled=True) for x in labels["occ"]],
             },
             {
                 "filled": False,
                 "spin": "none",
                 "filename": "ham_emp_1.dat",
-                "blocks": labels["emp"],
+                "blocks": [block_view(x, filled=False) for x in labels["emp"]],
             },
         ]
         every_label = labels["occ"] + labels["emp"]
@@ -721,8 +757,18 @@ class TestSmoothInterpolationWiring:
             structure=silicon_structure,
             koopmans_ham_retrieved=_retrieved_with_hamiltonians(["ham_occ_1.dat", "ham_emp_1.dat"]),
             manifolds=[
-                {"filled": True, "spin": "none", "filename": "ham_occ_1.dat", "blocks": labels},
-                {"filled": False, "spin": "none", "filename": "ham_emp_1.dat", "blocks": ["emp"]},
+                {
+                    "filled": True,
+                    "spin": "none",
+                    "filename": "ham_occ_1.dat",
+                    "blocks": [block_view(x, filled=True) for x in labels],
+                },
+                {
+                    "filled": False,
+                    "spin": "none",
+                    "filename": "ham_emp_1.dat",
+                    "blocks": [block_view("emp", filled=False)],
+                },
             ],
             block_wannierizations={**blocks, "emp": block_wannierization("emp", num_wann=2)},
             smooth_block_wannierizations={

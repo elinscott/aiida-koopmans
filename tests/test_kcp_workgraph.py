@@ -3192,10 +3192,10 @@ class TestDscfManifoldSpecs:
 
         by_filled = {spec["filled"]: spec for spec in specs}
         assert by_filled[True]["filename"] == "ham_occ_1.dat"
-        assert by_filled[True]["blocks"] == ["occ"]
+        assert [block["label"] for block in by_filled[True]["blocks"]] == ["occ"]
         assert by_filled[True]["spin"] == SpinChannel.NONE.value
         assert by_filled[False]["filename"] == "ham_emp_1.dat"
-        assert by_filled[False]["blocks"] == ["emp"]
+        assert [block["label"] for block in by_filled[False]["blocks"]] == ["emp"]
 
     def test_the_stored_spin_is_a_plain_string(self):
         """A task output is stored as a node; only a plain ``str`` survives that."""
@@ -3211,10 +3211,10 @@ class TestDscfManifoldSpecs:
         from tests.fixtures import occ_emp_merge_groups
 
         merge_groups = occ_emp_merge_groups("up") + occ_emp_merge_groups("down")
-        merge_groups[0]["blocks"] = [{"label": "occ_up"}]
-        merge_groups[1]["blocks"] = [{"label": "emp_up"}]
-        merge_groups[2]["blocks"] = [{"label": "occ_down"}]
-        merge_groups[3]["blocks"] = [{"label": "emp_down"}]
+        merge_groups[0]["blocks"] = [{"label": "occ_up", "spin": "up", "num_wann": 3}]
+        merge_groups[1]["blocks"] = [{"label": "emp_up", "spin": "up", "num_wann": 1}]
+        merge_groups[2]["blocks"] = [{"label": "occ_down", "spin": "down", "num_wann": 3}]
+        merge_groups[3]["blocks"] = [{"label": "emp_down", "spin": "down", "num_wann": 1}]
 
         specs = dscf_manifold_specs._callable(merge_groups, spin_polarized=True)
 
@@ -3223,13 +3223,48 @@ class TestDscfManifoldSpecs:
         assert by_key[True, SpinChannel.DOWN]["filename"] == "ham_occ_2.dat"
         assert by_key[False, SpinChannel.DOWN]["filename"] == "ham_emp_2.dat"
 
+    def test_a_blocks_num_wann_and_spin_come_from_the_merge_group(self):
+        """The block view carries real identity data, not just its label.
+
+        ``merge_groups``' blocks are full projection blocks (real
+        ``num_wann``); the view built here must thread that through rather
+        than fabricate it, since it is the honest source available.
+        """
+        from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
+
+        merge_groups = [
+            {
+                "filled": True,
+                "spin": "none",
+                "blocks": [{"label": "occ", "spin": "none", "num_wann": 4}],
+            },
+            {
+                "filled": False,
+                "spin": "none",
+                "blocks": [{"label": "emp", "spin": "none", "num_wann": 2}],
+            },
+        ]
+
+        specs = dscf_manifold_specs._callable(merge_groups, spin_polarized=False)
+
+        [occ_block] = next(spec for spec in specs if spec["filled"])["blocks"]
+        assert occ_block["num_wann"] == 4
+        assert occ_block["filled"] is True
+        assert occ_block["spin"] == "none"
+
     def test_a_missing_manifold_names_itself(self):
         """Interpolating needs an occupied and an empty manifold per channel."""
         from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
 
         with pytest.raises(ValueError, match="occupied and an empty projection manifold"):
             dscf_manifold_specs._callable(
-                [{"filled": True, "spin": "none", "blocks": [{"label": "occ"}]}],
+                [
+                    {
+                        "filled": True,
+                        "spin": "none",
+                        "blocks": [{"label": "occ", "spin": "none", "num_wann": 1}],
+                    }
+                ],
                 spin_polarized=False,
             )
 

@@ -943,9 +943,14 @@ def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int 
 def occ_emp_merge_groups(spin: str = "none") -> list[dict]:
     """Return a one-block-per-filling ``merge_groups`` partition for one spin channel."""
     return [
-        {"filled": True, "spin": spin, "blocks": [{"label": "occ"}]},
-        {"filled": False, "spin": spin, "blocks": [{"label": "emp"}]},
+        {"filled": True, "spin": spin, "blocks": [{"label": "occ", "spin": spin, "num_wann": 1}]},
+        {"filled": False, "spin": spin, "blocks": [{"label": "emp", "spin": spin, "num_wann": 1}]},
     ]
+
+
+def block_view(label: str, *, spin: str = "none", filled: bool = True, num_wann: int = 1) -> dict:
+    """Return one block's :class:`~aiida_koopmans.projections.ProjectionBlockId` view."""
+    return {"label": label, "spin": spin, "filled": filled, "num_wann": num_wann}
 
 
 def occ_emp_manifold_specs(
@@ -954,12 +959,22 @@ def occ_emp_manifold_specs(
     filenames: tuple[str, str] = ("ham_occ_1.dat", "ham_emp_1.dat"),
     blocks: tuple[str, str] = ("occ", "emp"),
 ) -> list[dict]:
-    """Return a one-block-per-filling ``ManifoldSpec`` list for one spin channel."""
+    """Return a one-block-per-filling ``ManifoldFile`` list for one spin channel."""
     occ_block, emp_block = blocks
     occ_file, emp_file = filenames
     return [
-        {"filled": True, "spin": spin, "filename": occ_file, "blocks": [occ_block]},
-        {"filled": False, "spin": spin, "filename": emp_file, "blocks": [emp_block]},
+        {
+            "filled": True,
+            "spin": spin,
+            "filename": occ_file,
+            "blocks": [block_view(occ_block, spin=spin, filled=True)],
+        },
+        {
+            "filled": False,
+            "spin": spin,
+            "filename": emp_file,
+            "blocks": [block_view(emp_block, spin=spin, filled=False)],
+        },
     ]
 
 
