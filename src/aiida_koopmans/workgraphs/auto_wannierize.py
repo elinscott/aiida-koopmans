@@ -41,7 +41,7 @@ from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
-from aiida_workgraph import dynamic, namespace, task
+from aiida_workgraph import dynamic, task
 from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
@@ -259,11 +259,10 @@ def _group_entries(group: MergeGroupId, block_files: Mapping[str, Any]) -> list:
     return block_nodes_by_group([group], block_files)[0]
 
 
-@task.calcfunction(
-    inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)),
-    outputs=["hr_file", "centres_file"],
-)
-def merge_split_block_products(group: MergeGroupId, **inputs: Any) -> dict:
+@task.calcfunction(outputs=["hr_file", "centres_file"])
+def merge_split_block_products(
+    group: MergeGroupId, **block_files: Annotated[dict, dynamic(SplitGroupFiles)]
+) -> dict:
     """Merge per-sub-block wannier90 products back into one block-wide set.
 
     ``group`` is the split block's manifold, naming its groups in band
@@ -277,7 +276,7 @@ def merge_split_block_products(group: MergeGroupId, **inputs: Any) -> dict:
     parent's bands, so it is composed instead
     (:func:`compose_split_gauge`).
     """
-    folders = [entry["retrieved"] for entry in _group_entries(group, inputs["block_files"])]
+    folders = [entry["retrieved"] for entry in _group_entries(group, block_files)]
 
     def _contents(suffix: str) -> list[str]:
         return [
@@ -296,15 +295,11 @@ def merge_split_block_products(group: MergeGroupId, **inputs: Any) -> dict:
     }
 
 
-@task.calcfunction(
-    inputs=namespace(
-        parent_u_file=orm.SinglefileData,
-        group=dict,
-        block_files=dynamic(SplitGroupFiles),
-    )
-)
+@task.calcfunction
 def compose_split_gauge(
-    parent_u_file: orm.SinglefileData, group: MergeGroupId, **inputs: Any
+    parent_u_file: orm.SinglefileData,
+    group: MergeGroupId,
+    **block_files: Annotated[dict, dynamic(SplitGroupFiles)],
 ) -> orm.SinglefileData:
     """Compose the split block's ``_u.mat`` from its per-group gauges.
 
@@ -323,7 +318,7 @@ def compose_split_gauge(
     admits no other kind into the split.
     """
     _, kpts = parse_wannier_u_file_contents(parent_u_file.get_content(mode="r"))
-    entries = _group_entries(group, inputs["block_files"])
+    entries = _group_entries(group, block_files)
     split_gauges = [entry["split_gauge"].get_content(mode="r") for entry in entries]
     gauges = [
         entry["retrieved"].base.repository.get_object_content(f"{SEEDNAME}_u.mat", mode="r")
@@ -333,8 +328,10 @@ def compose_split_gauge(
     return orm.SinglefileData(io.BytesIO(composed.encode()), filename=f"{SEEDNAME}_u.mat")
 
 
-@task.calcfunction(inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)))
-def merge_wannier_output_parameters(group: MergeGroupId, **inputs: Any) -> orm.Dict:
+@task.calcfunction
+def merge_wannier_output_parameters(
+    group: MergeGroupId, **block_files: Annotated[dict, dynamic(SplitGroupFiles)]
+) -> orm.Dict:
     """Concatenate per-group parsed wannier90 outputs into one block-wide Dict.
 
     ``group`` is the split block's manifold, naming its groups in band
@@ -349,7 +346,7 @@ def merge_wannier_output_parameters(group: MergeGroupId, **inputs: Any) -> orm.D
     """
     merged_wfs: list[dict] = []
     offset = 0
-    for entry in _group_entries(group, inputs["block_files"]):
+    for entry in _group_entries(group, block_files):
         node = entry["output_parameters"]
         params = node.get_dict()
         wfs = params.get("wannier_functions_output") or []
@@ -367,8 +364,10 @@ def merge_wannier_output_parameters(group: MergeGroupId, **inputs: Any) -> orm.D
     return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
 
 
-@task.calcfunction(inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)))
-def merge_interpolated_bands(group: MergeGroupId, **inputs: Any) -> orm.BandsData:
+@task.calcfunction
+def merge_interpolated_bands(
+    group: MergeGroupId, **block_files: Annotated[dict, dynamic(SplitGroupFiles)]
+) -> orm.BandsData:
     """Concatenate per-group interpolated bands into one block-wide structure.
 
     ``group`` is the split block's manifold, naming its groups in band
@@ -380,9 +379,7 @@ def merge_interpolated_bands(group: MergeGroupId, **inputs: Any) -> orm.BandsDat
     This threads parsed outputs (concatenating parsed ``BandsData``) — no
     file is re-parsed.
     """
-    ordered = [
-        entry["interpolated_bands"] for entry in _group_entries(group, inputs["block_files"])
-    ]
+    ordered = [entry["interpolated_bands"] for entry in _group_entries(group, block_files)]
     reference = ordered[0]
     kpoints = reference.get_kpoints()
     for bands in ordered[1:]:
@@ -576,7 +573,7 @@ def RewannierizeSplitBlocks(
 
     merged = merge_split_block_products(
         group=group,
-        block_files={label: {"retrieved": e["retrieved"]} for label, e in block_files.items()},
+        **{label: {"retrieved": e["retrieved"]} for label, e in block_files.items()},
         metadata={"call_link_label": "merge_split_block_products"},
     )
     merged_parameters = merge_wannier_output_parameters(
@@ -590,7 +587,7 @@ def RewannierizeSplitBlocks(
     composed_gauge = compose_split_gauge(
         parent_u_file=parent_u_file,
         group=group,
-        block_files={
+        **{
             label: {"split_gauge": e["split_gauge"], "retrieved": e["retrieved"]}
             for label, e in block_files.items()
         },
@@ -606,7 +603,7 @@ def RewannierizeSplitBlocks(
     if interpolation_kpoints is not None:
         merged_bands = merge_interpolated_bands(
             group=group,
-            block_files={
+            **{
                 label: {"interpolated_bands": e["interpolated_bands"]}
                 for label, e in block_files.items()
             },

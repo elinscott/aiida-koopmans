@@ -767,7 +767,7 @@ class TestMergeWannierOutputParameters:
 
         merged = merge_wannier_output_parameters._callable(
             group=split_group(["g0", "g1"]),
-            block_files=group_files(
+            **group_files(
                 [
                     ("g0", self._group_parameters([1.1, 2.2])),
                     ("g1", self._group_parameters([3.3])),
@@ -790,7 +790,7 @@ class TestMergeWannierOutputParameters:
 
         merged = merge_wannier_output_parameters._callable(
             group=split_group(["zz", "aa"]),
-            block_files=group_files(
+            **group_files(
                 [
                     ("zz", self._group_parameters([3.3])),
                     ("aa", self._group_parameters([1.1, 2.2])),
@@ -811,7 +811,7 @@ class TestMergeWannierOutputParameters:
 
         merged = merge_wannier_output_parameters._callable(
             group=split_group(["g0"]),
-            block_files=group_files([("g0", Dict(shuffled))], "output_parameters"),
+            **group_files([("g0", Dict(shuffled))], "output_parameters"),
         ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2]
 
@@ -826,7 +826,7 @@ class TestMergeWannierOutputParameters:
         with pytest.raises(ValueError, match="declares"):
             merge_wannier_output_parameters._callable(
                 group=split_group(["g0"]),
-                block_files=group_files([("g0", Dict(broken))], "output_parameters"),
+                **group_files([("g0", Dict(broken))], "output_parameters"),
             )
 
 
@@ -856,7 +856,7 @@ class TestGroupOrderIsExplicit:
 
         merged = merge_wannier_output_parameters._callable(
             group=split_group(["zz", "aa"]),
-            block_files=group_files(
+            **group_files(
                 [("zz", self._params([1.1, 2.2])), ("aa", self._params([3.3]))],
                 "output_parameters",
             ),
@@ -873,7 +873,7 @@ class TestGroupOrderIsExplicit:
         with pytest.raises(ValueError, match="No Wannierization outputs for block"):
             merge_wannier_output_parameters._callable(
                 group=split_group(["g0", "g1"]),
-                block_files=group_files([("g0", self._params([1.1]))], "output_parameters"),
+                **group_files([("g0", self._params([1.1]))], "output_parameters"),
             )
 
     def test_an_entry_no_group_names_raises(self, aiida_profile):
@@ -882,7 +882,7 @@ class TestGroupOrderIsExplicit:
         with pytest.raises(ValueError, match="which no manifold names"):
             merge_wannier_output_parameters._callable(
                 group=split_group(["g0"]),
-                block_files=group_files(
+                **group_files(
                     [("g0", self._params([1.1])), ("g1", self._params([2.2]))],
                     "output_parameters",
                 ),
@@ -943,7 +943,7 @@ class TestMergeSplitBlockProducts:
 
         merged = merge_split_block_products._callable(
             group=split_group(["g0", "g1"]),
-            block_files=group_files([("g0", _folder(1)), ("g1", _folder(2))], "retrieved"),
+            **group_files([("g0", _folder(1)), ("g1", _folder(2))], "retrieved"),
         )
 
         assert "u_file" not in merged
@@ -982,7 +982,7 @@ class TestMergeInterpolatedBands:
         labels = [(0, "GAMMA"), (2, "X")]
         merged = merge_interpolated_bands._callable(
             group=split_group(["g0", "g1"]),
-            block_files=group_files(
+            **group_files(
                 [
                     ("g0", self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels)),
                     ("g1", self._bands([[5.0], [5.1], [5.2]], labels=labels)),
@@ -1002,7 +1002,7 @@ class TestMergeInterpolatedBands:
 
         merged = merge_interpolated_bands._callable(
             group=split_group(["zz", "aa"]),
-            block_files=group_files(
+            **group_files(
                 [("zz", self._bands([[5.0], [5.1]])), ("aa", self._bands([[1.0], [1.1]]))],
                 "interpolated_bands",
             ),
@@ -1015,7 +1015,7 @@ class TestMergeInterpolatedBands:
         with pytest.raises(ValueError, match="k-path"):
             merge_interpolated_bands._callable(
                 group=split_group(["g0", "g1"]),
-                block_files=group_files(
+                **group_files(
                     [
                         ("g0", self._bands([[1.0], [1.1]])),
                         ("g1", self._bands([[5.0], [5.1], [5.2]])),
