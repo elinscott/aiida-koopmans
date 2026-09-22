@@ -54,6 +54,7 @@ from aiida_koopmans.projections import (
     detect_band_blocks,
     get_wannier_indices,
     groups_to_wannier_indices,
+    resolve_block_occupancy,
     restrict_groups_to_block,
 )
 from aiida_koopmans.spin import SpinChannel
@@ -483,8 +484,8 @@ def RewannierizeSplitBlocks(
     group_sizes: list[int],
     kpoints: orm.KpointsData,
     mp_grid: list[int],
-    filled: bool = True,
-    spin_channel: SpinChannel = SpinChannel.NONE,
+    filled: bool,
+    spin_channel: SpinChannel,
     wannier90_overrides: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     interpolation_kpoints: orm.KpointsData | None = None,
@@ -631,6 +632,7 @@ def WannierizeAndSplitBlock(
     nscf_remote_folder: orm.RemoteData,
     kpoints: orm.KpointsData,
     mp_grid: list[int],
+    num_occ_bands: int | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -672,6 +674,15 @@ def WannierizeAndSplitBlock(
     Wannierisation: the split chain regenerates ``.mmn`` at most (its cubic
     pw2wannier90 rerun writes no ``.amn``) and the per-group re-runs are
     preprocessing-free, so neither reads the projectors again.
+
+    Each detected group's occupancy is settled by
+    :func:`~aiida_koopmans.projections.resolve_block_occupancy`: from
+    ``block["filled"]`` when the block already carries it, otherwise from
+    ``num_occ_bands`` against the block's own bands (required then — split
+    mode always has it, see
+    :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`).
+    The block's spin is always known (``block["spin"]``) and travels
+    unconditionally.
 
     ``interpolation_kpoints`` (a labelled explicit-path ``KpointsData``)
     reaches both the whole-block Wannierisation and — when the block splits
@@ -760,6 +771,12 @@ def WannierizeAndSplitBlock(
         metadata={"call_link_label": "split_wannierization", "label": "Parallel-transport split"},
     )
 
+    # The block's occupancy is a single value shared by every detected
+    # group within it (split mode rejects a block whose bands straddle the
+    # occupied/empty boundary); its spin is always known.
+    occupied = resolve_block_occupancy(block, block_bands, num_occ_bands)
+    channel = SpinChannel(block["spin"])
+
     # The split's ``blocks`` namespace keys only exist once it has run, so
     # the re-Wannierisation consumes the whole namespace in a nested graph.
     # The split also emits per-block ``win_files``; they are deliberately
@@ -776,6 +793,8 @@ def WannierizeAndSplitBlock(
         group_sizes=[len(group) for group in wann_groups],
         kpoints=kpoints,
         mp_grid=mp_grid,
+        filled=occupied,
+        spin_channel=channel,
         wannier90_overrides=overrides.get("wannier90"),
         wannier90_options=wannier90_options,
         interpolation_kpoints=interpolation_kpoints,

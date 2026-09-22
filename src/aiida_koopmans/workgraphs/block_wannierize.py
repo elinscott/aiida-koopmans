@@ -1794,6 +1794,10 @@ def WannierizeBlocks(
                 nscf_remote_folder=nscf_scratch,
                 kpoints=kpoints,
                 mp_grid=mp_grid,
+                # ``_resolve_split_mode`` already required ``num_occ_bands``
+                # for split mode; a block with no ``filled`` stamp of its
+                # own settles its occupancy from it.
+                num_occ_bands=num_occ_bands,
                 pseudo_family=pseudo_family,
                 protocol=protocol,
                 overrides=overrides or None,

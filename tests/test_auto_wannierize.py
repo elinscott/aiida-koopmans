@@ -17,10 +17,12 @@ import numpy as np
 import pytest
 
 from aiida_koopmans.projections import (
+    BlockBoundaryError,
     detect_band_blocks,
     groups_to_wannier_indices,
     restrict_groups_to_block,
 )
+from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.workgraphs.auto_wannierize import (
     WannierizeAndSplitBlock,
     _plain_options,
@@ -46,7 +48,6 @@ from tests.fixtures import (
 def split_group(labels, *, num_wann=1):
     """Build one split block's manifold, naming its groups in band order."""
     from aiida_koopmans.projections import MergeGroupId, ProjectionBlockId
-    from aiida_koopmans.spin import SpinChannel
 
     return MergeGroupId(
         filled=True,
@@ -419,6 +420,7 @@ class TestPerBlockGraphBuild:
             block,
             [[1, 2, 3, 4], [5, 6, 7, 8]],
             fake_cutoffs_family.label,
+            num_occ_bands=8,
         )
         names = [t.name for t in wg.tasks]
         assert "wannierize_whole_block" in names
@@ -439,6 +441,12 @@ class TestPerBlockGraphBuild:
         # cardinality) up front, even though the split folders are futures.
         rewann_task = wg.tasks["rewannierize_split_blocks"]
         assert rewann_task.inputs["group_sizes"].value == [4, 4]
+
+        # The block carries no ``filled`` stamp of its own here; its
+        # occupancy is settled from ``num_occ_bands`` (all 8 of its bands
+        # are occupied), and its spin is the block's own unconditionally.
+        assert rewann_task.inputs["filled"].value is True
+        assert SpinChannel(rewann_task.inputs["spin_channel"].value) == SpinChannel.NONE
 
         # The split's ``blocks`` namespace feeds the nested graph, and the
         # whole-block run's resolved parameters cross on its explicit
@@ -487,6 +495,7 @@ class TestPerBlockGraphBuild:
             block,
             [[1, 2, 3, 4], [5, 6, 7, 8]],
             fake_cutoffs_family.label,
+            num_occ_bands=8,
             interpolation_kpoints=labelled_kpath,
         )
         whole = wg.tasks["wannierize_whole_block"]
@@ -549,9 +558,118 @@ class TestPerBlockGraphBuild:
             block,
             [[1, 2, 3, 4], [5, 6], [7, 8, 9, 10, 11, 12]],
             fake_cutoffs_family.label,
+            num_occ_bands=12,
         )
         split_task = wg.tasks["split_wannierization"]
         assert split_task.inputs["groups"].value == [[1, 2], [3, 4, 5, 6, 7, 8]]
+
+
+class TestOccupancyAndSpinResolution:
+    """The nested re-Wannierisation's manifold stamp reflects the block, not a guess."""
+
+    def _build(
+        self, codes, structure, kpoints, nscf_scratch, block, groups, pseudo_family, **kwargs
+    ):
+        return WannierizeAndSplitBlock.build(
+            codes=codes,
+            structure=structure,
+            block=block,
+            groups=groups,
+            nscf_remote_folder=nscf_scratch,
+            kpoints=kpoints,
+            mp_grid=[2, 2, 2],
+            pseudo_family=pseudo_family,
+            **kwargs,
+        )
+
+    def test_unstamped_block_settles_as_empty_from_num_occ_bands(
+        self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A block entirely above the boundary is empty, not the silent ``True`` default."""
+        block = explicit_block("block_e", range(5, 9), ["Si: sp3"])
+        wg = self._build(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            [[1, 2, 3, 4], [5, 6], [7, 8]],
+            fake_cutoffs_family.label,
+            num_occ_bands=4,
+        )
+        rewann_task = wg.tasks["rewannierize_split_blocks"]
+        assert rewann_task.inputs["filled"].value is False
+        assert SpinChannel(rewann_task.inputs["spin_channel"].value) == SpinChannel.NONE
+
+    def test_stamped_block_occupancy_is_used_as_is(
+        self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A block that already says ``filled`` never needs ``num_occ_bands``."""
+        block = explicit_block("block_e", range(5, 9), ["Si: sp3"], filled=False)
+        wg = self._build(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            [[1, 2, 3, 4], [5, 6], [7, 8]],
+            fake_cutoffs_family.label,
+            # No ``num_occ_bands``: the stamp alone must settle it.
+        )
+        rewann_task = wg.tasks["rewannierize_split_blocks"]
+        assert rewann_task.inputs["filled"].value is False
+
+    def test_spin_channel_threads_through_from_the_block(
+        self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A collinear block's channel reaches the merged manifold, not ``NONE``."""
+        block = explicit_block(
+            "block_1", range(1, 9), ["Si: sp3", "Si: sp3"], spin=SpinChannel.UP, filled=True
+        )
+        wg = self._build(
+            auto_codes,
+            silicon_structure,
+            kmesh,
+            nscf_scratch,
+            block,
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            fake_cutoffs_family.label,
+        )
+        rewann_task = wg.tasks["rewannierize_split_blocks"]
+        assert SpinChannel(rewann_task.inputs["spin_channel"].value) == SpinChannel.UP
+
+    def test_block_spanning_the_boundary_raises(
+        self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """A block whose own bands sit on both sides of the boundary is a fault, not a guess."""
+        block = explicit_block("block_s", range(3, 7), ["Si: sp3"])
+        with pytest.raises(BlockBoundaryError, match="spans the occupied/empty boundary"):
+            self._build(
+                auto_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                [[1, 2], [3, 4], [5, 6]],
+                fake_cutoffs_family.label,
+                num_occ_bands=4,
+            )
+
+    def test_unstamped_block_without_num_occ_bands_raises(
+        self, auto_codes, silicon_structure, kmesh, nscf_scratch, fake_cutoffs_family
+    ):
+        """An unstamped block with no boundary to settle it from is a fault, not ``True``."""
+        block = explicit_block("block_1", range(1, 9), ["Si: sp3", "Si: sp3"])
+        with pytest.raises(BlockBoundaryError, match="does not say whether"):
+            self._build(
+                auto_codes,
+                silicon_structure,
+                kmesh,
+                nscf_scratch,
+                block,
+                [[1, 2, 3, 4], [5, 6, 7, 8]],
+                fake_cutoffs_family.label,
+            )
 
 
 class TestRewannierizeSplitBlocksBuild:
@@ -579,10 +697,17 @@ class TestRewannierizeSplitBlocksBuild:
             group_sizes=[4, 4],
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
+            filled=False,
+            spin_channel=SpinChannel.UP,
             wannier90_overrides={"num_iter": 500, "dis_froz_max": 10.0},
         )
         names = [t.name for t in wg.tasks]
         assert "merge_split_block_products" in names
+        # The caller's occupancy and spin stamp the manifold every merge
+        # reads -- not the previous ``filled=True, spin=none`` default.
+        merge_group = wg.tasks["merge_split_block_products"].inputs["group"]
+        assert merge_group["filled"].value is False
+        assert SpinChannel(merge_group["spin"].value) == SpinChannel.UP
         assert "merge_wannier_output_parameters" in names
         w90_tasks = [t for t in wg.tasks if t.name.startswith("wannier90_split_block")]
         assert len(w90_tasks) == 2
@@ -644,6 +769,8 @@ class TestRewannierizeSplitBlocksBuild:
             group_sizes=[4, 4],
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
+            filled=True,
+            spin_channel=SpinChannel.NONE,
             interpolation_kpoints=labelled_kpath,
         )
         names = [t.name for t in wg.tasks]
@@ -691,6 +818,8 @@ class TestRewannierizeSplitBlocksBuild:
             group_sizes=[4, 4],
             kpoints=kmesh,
             mp_grid=[2, 2, 2],
+            filled=True,
+            spin_channel=SpinChannel.NONE,
             interpolation_kpoints=labelled_kpath,
         )
         merges = {
@@ -713,6 +842,29 @@ class TestRewannierizeSplitBlocksBuild:
             group = task.inputs["group"]
             assert [block["label"] for block in group["blocks"].value] == ["g0", "g1"]
         assert_graph_submits(wg)
+
+    def test_filled_and_spin_channel_are_required(
+        self, auto_codes, silicon_structure, kmesh, aiida_profile
+    ):
+        """No caller can fall back to the previous ``filled=True, spin=none`` default."""
+        from aiida.orm import Dict, FolderData
+
+        from aiida_koopmans.workgraphs.auto_wannierize import RewannierizeSplitBlocks
+
+        split_blocks = {"block_0": FolderData().store(), "block_1": FolderData().store()}
+        split_gauges, parent_u_file = _synthetic_split_inputs([4, 4])
+        with pytest.raises(TypeError, match="filled"):
+            RewannierizeSplitBlocks.build(
+                w90_code=auto_codes["wannier90"],
+                structure=silicon_structure,
+                split_blocks=split_blocks,
+                split_gauges=split_gauges,
+                parent_u_file=parent_u_file,
+                parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
+                group_sizes=[4, 4],
+                kpoints=kmesh,
+                mp_grid=[2, 2, 2],
+            )
 
 
 # ----------------------------------------------------------------------
