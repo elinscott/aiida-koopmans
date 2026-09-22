@@ -49,11 +49,9 @@ def split_group(labels, *, num_wann=1):
 
     return MergeGroupId(
         filled=True,
-        spin=SpinChannel.NONE.value,
+        spin=SpinChannel.NONE,
         blocks=[
-            ProjectionBlockId(
-                label=label, spin=SpinChannel.NONE.value, filled=True, num_wann=num_wann
-            )
+            ProjectionBlockId(label=label, spin=SpinChannel.NONE, filled=True, num_wann=num_wann)
             for label in labels
         ],
     )

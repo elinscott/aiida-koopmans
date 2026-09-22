@@ -558,7 +558,7 @@ def RewannierizeSplitBlocks(
         blocks.append(
             ProjectionBlockId(
                 label=label,
-                spin=SpinChannel(spin_channel).value,
+                spin=SpinChannel(spin_channel),
                 filled=filled,
                 num_wann=int(num_wann),
             )
@@ -572,7 +572,7 @@ def RewannierizeSplitBlocks(
             entry["interpolated_bands"] = rewannierized["interpolated_bands"]
         block_files[label] = entry
 
-    group = MergeGroupId(filled=filled, spin=SpinChannel(spin_channel).value, blocks=blocks)
+    group = MergeGroupId(filled=filled, spin=SpinChannel(spin_channel), blocks=blocks)
 
     merged = merge_split_block_products(
         group=group,
