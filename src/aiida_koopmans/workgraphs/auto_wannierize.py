@@ -8,9 +8,9 @@ into per-group manifolds with
 stencil fallback), re-Wannierised group by group without disentanglement, and
 the per-group ``_hr.dat`` / ``_centres.xyz`` merged back into one
 block-diagonal file set. The block's ``_u.mat`` is not merged but composed:
-each group's re-Wannierised gauge carries only the rotation within its own
-manifold, so the split rotation that maps the parent's bands onto the group
-is composed onto it.
+each group's re-Wannierised gauge acts only within its own manifold, so the
+split gauge that maps the parent's bands onto the group is composed onto
+it.
 
 The group detection is data-dependent (it reads the eigenvalues of a pw.x
 ``bands`` run), so the split-vs-plain decision and the per-group fan-out
@@ -29,10 +29,11 @@ the external source). A block routed through the split must not itself
 require disentanglement (``num_bands == num_wann``), which
 :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
 enforces at build time: composing a parent's own disentanglement with the
-split rotations is a follow-up.
+split gauges is a follow-up.
 """
 
 import io
+from collections.abc import Mapping
 from typing import Annotated, Any, NotRequired, TypedDict
 
 import numpy as np
@@ -40,14 +41,16 @@ from aiida import orm
 from aiida_quantumespresso.common.types import ElectronicType, SpinType
 from aiida_wannier90.calculations import Wannier90Calculation
 from aiida_wannierjl.workflows import split_wannierization
-from aiida_workgraph import dynamic, task
+from aiida_workgraph import dynamic, namespace, task
 from aiida_workgraph.socket_spec import SocketMeta
 from node_graph import reference
 
 from aiida_koopmans.owned_keywords import owned
 from aiida_koopmans.parallelization import ParallelizationDict
 from aiida_koopmans.projections import (
+    MergeGroupId,
     ProjectionBlock,
+    ProjectionBlockId,
     detect_band_blocks,
     get_wannier_indices,
     groups_to_wannier_indices,
@@ -62,6 +65,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.pw import PwCode
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    block_nodes_by_group,
     compose_wannier_split_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
@@ -236,35 +240,36 @@ def plugin_block_key(index: int) -> str:
     return f"block_{int(index)}"
 
 
-def _in_order(order: list, files: dict) -> list:
-    """Return ``files`` as a list in the order ``order`` names them.
+class SplitGroupFiles(TypedDict):
+    """What one split group contributes to a block's merged products."""
 
-    ``order`` holds namespace labels in group (= band) order. The labels
-    themselves carry no meaning: this is the only thing that says which
-    entry comes first, so the two must describe each other exactly.
+    retrieved: NotRequired[orm.FolderData]
+    split_gauge: NotRequired[orm.SinglefileData]
+    output_parameters: NotRequired[orm.Dict]
+    interpolated_bands: NotRequired[orm.BandsData]
+
+
+def _group_entries(group: MergeGroupId, block_files: Mapping[str, Any]) -> list:
+    """Return one split block's group entries, in band order.
+
+    The split's groups are a manifold in the block contract's sense: the
+    group order is the manifold's ``blocks`` order and the labels are
+    lookup keys, so the shared join does the work.
     """
-    order = order.get_list() if hasattr(order, "get_list") else list(order)
-    absent = [label for label in order if label not in files]
-    if absent:
-        raise ValueError(
-            f"The group order names {absent}, which the namespace beside it does not carry."
-        )
-    unused = sorted(set(files) - set(order))
-    if unused:
-        raise ValueError(
-            f"The namespace carries {unused}, which the group order does not "
-            "name; they would be dropped."
-        )
-    return [files[label] for label in order]
+    return block_nodes_by_group([group], block_files)[0]
 
 
-@task.calcfunction(outputs=["hr_file", "centres_file"])
-def merge_split_block_products(order: list, **retrieved: orm.FolderData) -> dict:
+@task.calcfunction(
+    inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)),
+    outputs=["hr_file", "centres_file"],
+)
+def merge_split_block_products(group: MergeGroupId, **inputs: Any) -> dict:
     """Merge per-sub-block wannier90 products back into one block-wide set.
 
-    ``retrieved`` holds the sub-block wannier90 ``retrieved`` folders under
-    opaque labels, and ``order`` names them in group (= band) order. The
-    ``_hr.dat`` merge is block-diagonal and the
+    ``group`` is the split block's manifold, naming its groups in band
+    order; ``block_files`` holds each group's wannier90 ``retrieved``
+    folder under that group's label. The ``_hr.dat`` merge is
+    block-diagonal and the
     ``_centres.xyz`` centres are concatenated — see
     :mod:`aiida_koopmans.workgraphs.utils.wannier_merge` for the invariants.
     The block's ``_u.mat`` is not merged here: a block-diagonal one would
@@ -272,7 +277,7 @@ def merge_split_block_products(order: list, **retrieved: orm.FolderData) -> dict
     parent's bands, so it is composed instead
     (:func:`compose_split_gauge`).
     """
-    folders = _in_order(order, retrieved)
+    folders = [entry["retrieved"] for entry in _group_entries(group, inputs["block_files"])]
 
     def _contents(suffix: str) -> list[str]:
         return [
@@ -291,52 +296,50 @@ def merge_split_block_products(order: list, **retrieved: orm.FolderData) -> dict
     }
 
 
-@task.calcfunction
+@task.calcfunction(
+    inputs=namespace(
+        parent_u_file=orm.SinglefileData,
+        group=dict,
+        block_files=dynamic(SplitGroupFiles),
+    )
+)
 def compose_split_gauge(
-    parent_u_file: orm.SinglefileData,
-    rotations: list,
-    gauges: list,
-    **files: orm.Data,
+    parent_u_file: orm.SinglefileData, group: MergeGroupId, **inputs: Any
 ) -> orm.SinglefileData:
-    """Compose the split block's ``_u.mat`` from its rotations and group gauges.
+    """Compose the split block's ``_u.mat`` from its per-group gauges.
 
-    ``files`` holds the per-group ``<seedname>_split.amn`` rotations and
-    the matching wannier90 ``retrieved`` folders under opaque labels;
-    ``rotations`` and ``gauges`` name them in group (= band) order.
-    ``parent_u_file`` is the whole-block run's ``_u.mat``, read for its
-    k-point list.
+    ``group`` is the split block's manifold, naming its groups in band
+    order; ``block_files`` holds, per group, the ``<seedname>_split.amn``
+    split gauge and the wannier90 ``retrieved`` folder of that group's
+    re-Wannierization. ``parent_u_file`` is the whole-block run's
+    ``_u.mat``, read for its k-point list.
 
-    The rotation a group carries maps the parent's bands onto it — the
-    parent's own gauge, which the re-Wannierized groups' ``_u.mat`` files no
-    longer hold — so the block's gauge is the two composed, group by group.
-    Only a parent that Wannierized every band it read is composed this way;
+    A group's split gauge maps the parent's bands onto it — carrying the
+    parent's own gauge, which the re-Wannierized groups' ``_u.mat`` files
+    no longer hold — so the block's gauge is the two composed, group by
+    group. Only a parent that Wannierized every band it read is composed
+    this way;
     :func:`~aiida_koopmans.workgraphs.block_wannierize._resolve_split_mode`
     admits no other kind into the split.
     """
     _, kpts = parse_wannier_u_file_contents(parent_u_file.get_content(mode="r"))
-    named = list(rotations.get_list() if hasattr(rotations, "get_list") else rotations) + list(
-        gauges.get_list() if hasattr(gauges, "get_list") else gauges
-    )
-    _in_order(named, files)
-    rotation_contents = [
-        files[label].get_content(mode="r")
-        for label in (rotations.get_list() if hasattr(rotations, "get_list") else rotations)
+    entries = _group_entries(group, inputs["block_files"])
+    split_gauges = [entry["split_gauge"].get_content(mode="r") for entry in entries]
+    gauges = [
+        entry["retrieved"].base.repository.get_object_content(f"{SEEDNAME}_u.mat", mode="r")
+        for entry in entries
     ]
-    gauge_contents = [
-        files[label].base.repository.get_object_content(f"{SEEDNAME}_u.mat", mode="r")
-        for label in (gauges.get_list() if hasattr(gauges, "get_list") else gauges)
-    ]
-    composed = compose_wannier_split_u_file_contents(rotation_contents, gauge_contents, kpts)
+    composed = compose_wannier_split_u_file_contents(split_gauges, gauges, kpts)
     return orm.SinglefileData(io.BytesIO(composed.encode()), filename=f"{SEEDNAME}_u.mat")
 
 
-@task.calcfunction
-def merge_wannier_output_parameters(order: list, **output_parameters: orm.Dict) -> orm.Dict:
+@task.calcfunction(inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)))
+def merge_wannier_output_parameters(group: MergeGroupId, **inputs: Any) -> orm.Dict:
     """Concatenate per-group parsed wannier90 outputs into one block-wide Dict.
 
-    ``output_parameters`` holds the per-group re-Wannierisation outputs
-    under opaque labels, and ``order`` names them in group (= band) order.
-    The per-WF ``wannier_functions_output`` tables are
+    ``group`` is the split block's manifold, naming its groups in band
+    order; ``block_files`` holds each group's parsed wannier90 output under
+    that group's label. The per-WF ``wannier_functions_output`` tables are
     concatenated in that order, entries sorted by their run-local
     ``wf_ids`` and re-based to a block-wide 1-based numbering, and
     ``number_wfs`` is summed. Only these honestly mergeable keys are
@@ -346,7 +349,8 @@ def merge_wannier_output_parameters(order: list, **output_parameters: orm.Dict) 
     """
     merged_wfs: list[dict] = []
     offset = 0
-    for node in _in_order(order, output_parameters):
+    for entry in _group_entries(group, inputs["block_files"]):
+        node = entry["output_parameters"]
         params = node.get_dict()
         wfs = params.get("wannier_functions_output") or []
         if len(wfs) != params.get("number_wfs"):
@@ -363,20 +367,22 @@ def merge_wannier_output_parameters(order: list, **output_parameters: orm.Dict) 
     return orm.Dict({"number_wfs": offset, "wannier_functions_output": merged_wfs})
 
 
-@task.calcfunction
-def merge_interpolated_bands(order: list, **interpolated_bands: orm.BandsData) -> orm.BandsData:
+@task.calcfunction(inputs=namespace(group=dict, block_files=dynamic(SplitGroupFiles)))
+def merge_interpolated_bands(group: MergeGroupId, **inputs: Any) -> orm.BandsData:
     """Concatenate per-group interpolated bands into one block-wide structure.
 
-    ``interpolated_bands`` holds the per-group re-Wannierisation results
-    under opaque labels, and ``order`` names them in group (= band) order.
-    Every group interpolates along the same k-path, and the
+    ``group`` is the split block's manifold, naming its groups in band
+    order; ``block_files`` holds each group's interpolated bands under that
+    group's label. Every group interpolates along the same k-path, and the
     merged block Hamiltonian is block-diagonal in the groups, so its band
     structure at every k-point is exactly the union of the groups': the
     per-group bands are concatenated along the band axis in group order.
     This threads parsed outputs (concatenating parsed ``BandsData``) — no
     file is re-parsed.
     """
-    ordered = _in_order(order, interpolated_bands)
+    ordered = [
+        entry["interpolated_bands"] for entry in _group_entries(group, inputs["block_files"])
+    ]
     reference = ordered[0]
     kpoints = reference.get_kpoints()
     for bands in ordered[1:]:
@@ -474,12 +480,14 @@ def RewannierizeSplitBlocks(
     w90_code: orm.AbstractCode,
     structure: orm.StructureData,
     split_blocks: Annotated[dict, dynamic(orm.FolderData)],
-    split_rotations: Annotated[dict, dynamic(orm.SinglefileData)],
+    split_gauges: Annotated[dict, dynamic(orm.SinglefileData)],
     parent_u_file: orm.SinglefileData,
     parent_parameters: orm.Dict,
     group_sizes: list[int],
     kpoints: orm.KpointsData,
     mp_grid: list[int],
+    filled: bool = True,
+    spin_channel: SpinChannel = SpinChannel.NONE,
     wannier90_overrides: dict[str, Any] | None = None,
     wannier90_options: dict[str, Any] | None = None,
     interpolation_kpoints: orm.KpointsData | None = None,
@@ -514,14 +522,11 @@ def RewannierizeSplitBlocks(
         if hasattr(parent_parameters, "get_dict")
         else dict(parent_parameters)
     )
-    # Labels for the namespaces below are assigned by enumeration: the
-    # group order travels beside them as an explicit list, so nothing has
-    # to read meaning back out of a label.
-    order: list[str] = []
-    subblock_retrieved: dict[str, Any] = {}
-    subblock_parameters: dict[str, Any] = {}
-    subblock_bands: dict[str, Any] = {}
-    subblock_rotations: dict[str, Any] = {}
+    # The split's groups are a manifold in the block contract's sense:
+    # the group order is the manifold's own order and each label is a
+    # lookup key into the namespace beside it.
+    blocks: list[ProjectionBlockId] = []
+    block_files: dict[str, dict[str, Any]] = {}
     for i, num_wann in enumerate(group_sizes):
         parameters = _subblock_w90_parameters(
             int(num_wann), mp_grid, wannier90_overrides, parent_w90_parameters
@@ -550,31 +555,45 @@ def RewannierizeSplitBlocks(
             },
         )
         label = f"g{i}"
-        order.append(label)
-        subblock_retrieved[label] = rewannierized["retrieved"]
-        subblock_parameters[label] = rewannierized["output_parameters"]
-        subblock_rotations[label] = split_rotations[plugin_block_key(i)]
+        blocks.append(
+            ProjectionBlockId(
+                label=label,
+                spin=SpinChannel(spin_channel).value,
+                filled=filled,
+                num_wann=int(num_wann),
+            )
+        )
+        entry: dict[str, Any] = {
+            "retrieved": rewannierized["retrieved"],
+            "output_parameters": rewannierized["output_parameters"],
+            "split_gauge": split_gauges[plugin_block_key(i)],
+        }
         if interpolation_kpoints is not None:
-            subblock_bands[label] = rewannierized["interpolated_bands"]
+            entry["interpolated_bands"] = rewannierized["interpolated_bands"]
+        block_files[label] = entry
+
+    group = MergeGroupId(filled=filled, spin=SpinChannel(spin_channel).value, blocks=blocks)
 
     merged = merge_split_block_products(
-        order=order,
-        **subblock_retrieved,
+        group=group,
+        block_files={label: {"retrieved": e["retrieved"]} for label, e in block_files.items()},
         metadata={"call_link_label": "merge_split_block_products"},
     )
     merged_parameters = merge_wannier_output_parameters(
-        order=order,
-        **subblock_parameters,
+        group=group,
+        block_files={
+            label: {"output_parameters": e["output_parameters"]} for label, e in block_files.items()
+        },
         metadata={"call_link_label": "merge_wannier_output_parameters"},
     )
 
-    # One namespace holds both families, so each carries its own order.
     composed_gauge = compose_split_gauge(
         parent_u_file=parent_u_file,
-        rotations=[f"rot_{label}" for label in order],
-        gauges=[f"gauge_{label}" for label in order],
-        **{f"rot_{label}": subblock_rotations[label] for label in order},
-        **{f"gauge_{label}": subblock_retrieved[label] for label in order},
+        group=group,
+        block_files={
+            label: {"split_gauge": e["split_gauge"], "retrieved": e["retrieved"]}
+            for label, e in block_files.items()
+        },
         metadata={"call_link_label": "compose_split_gauge"},
     )
 
@@ -586,8 +605,11 @@ def RewannierizeSplitBlocks(
     )
     if interpolation_kpoints is not None:
         merged_bands = merge_interpolated_bands(
-            order=order,
-            **subblock_bands,
+            group=group,
+            block_files={
+                label: {"interpolated_bands": e["interpolated_bands"]}
+                for label, e in block_files.items()
+            },
             metadata={"call_link_label": "merge_interpolated_bands"},
         )
         outputs["interpolated_bands"] = merged_bands.result
@@ -747,7 +769,7 @@ def WannierizeAndSplitBlock(
         w90_code=reference(codes, "wannier90"),
         structure=structure,
         split_blocks=split["blocks"],
-        split_rotations=split["u_matrices"],
+        split_gauges=split["u_matrices"],
         parent_u_file=whole["u_file"],
         parent_parameters=whole["wannier90_parameters"],
         group_sizes=[len(group) for group in wann_groups],

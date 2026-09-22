@@ -42,6 +42,28 @@ from tests.fixtures import (
 # ----------------------------------------------------------------------
 
 
+def split_group(labels, *, num_wann=1):
+    """Build one split block's manifold, naming its groups in band order."""
+    from aiida_koopmans.projections import MergeGroupId, ProjectionBlockId
+    from aiida_koopmans.spin import SpinChannel
+
+    return MergeGroupId(
+        filled=True,
+        spin=SpinChannel.NONE.value,
+        blocks=[
+            ProjectionBlockId(
+                label=label, spin=SpinChannel.NONE.value, filled=True, num_wann=num_wann
+            )
+            for label in labels
+        ],
+    )
+
+
+def group_files(pairs, kind):
+    """Build ``{label: {kind: node}}`` from ``(label, node)`` pairs."""
+    return {label: {kind: node} for label, node in pairs}
+
+
 def _synthetic_split_inputs(group_sizes, nk=1):
     """Build stored `_split.amn` rotations and a parent `_u.mat` for build tests.
 
@@ -552,7 +574,7 @@ class TestRewannierizeSplitBlocksBuild:
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
-            split_rotations=split_rotations,
+            split_gauges=split_rotations,
             parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
@@ -617,7 +639,7 @@ class TestRewannierizeSplitBlocksBuild:
             w90_code=auto_codes["wannier90"],
             structure=silicon_structure,
             split_blocks=split_blocks,
-            split_rotations=split_rotations,
+            split_gauges=split_rotations,
             parent_u_file=parent_u_file,
             parent_parameters=Dict(_PARENT_W90_PARAMETERS).store(),
             group_sizes=[4, 4],
@@ -746,9 +768,14 @@ class TestMergeWannierOutputParameters:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
         merged = merge_wannier_output_parameters._callable(
-            order=["g0", "g1"],
-            g0=self._group_parameters([1.1, 2.2]),
-            g1=self._group_parameters([3.3]),
+            group=split_group(["g0", "g1"]),
+            block_files=group_files(
+                [
+                    ("g0", self._group_parameters([1.1, 2.2])),
+                    ("g1", self._group_parameters([3.3])),
+                ],
+                "output_parameters",
+            ),
         ).get_dict()
         assert merged["number_wfs"] == 3
         assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
@@ -764,9 +791,14 @@ class TestMergeWannierOutputParameters:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
         merged = merge_wannier_output_parameters._callable(
-            order=["zz", "aa"],
-            zz=self._group_parameters([3.3]),
-            aa=self._group_parameters([1.1, 2.2]),
+            group=split_group(["zz", "aa"]),
+            block_files=group_files(
+                [
+                    ("zz", self._group_parameters([3.3])),
+                    ("aa", self._group_parameters([1.1, 2.2])),
+                ],
+                "output_parameters",
+            ),
         ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [3.3, 1.1, 2.2]
         assert [wf["wf_ids"] for wf in merged["wannier_functions_output"]] == [1, 2, 3]
@@ -780,7 +812,8 @@ class TestMergeWannierOutputParameters:
         from aiida.orm import Dict
 
         merged = merge_wannier_output_parameters._callable(
-            order=["g0"], g0=Dict(shuffled)
+            group=split_group(["g0"]),
+            block_files=group_files([("g0", Dict(shuffled))], "output_parameters"),
         ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2]
 
@@ -793,7 +826,10 @@ class TestMergeWannierOutputParameters:
         from aiida.orm import Dict
 
         with pytest.raises(ValueError, match="declares"):
-            merge_wannier_output_parameters._callable(order=["g0"], g0=Dict(broken))
+            merge_wannier_output_parameters._callable(
+                group=split_group(["g0"]),
+                block_files=group_files([("g0", Dict(broken))], "output_parameters"),
+            )
 
 
 class TestGroupOrderIsExplicit:
@@ -821,7 +857,11 @@ class TestGroupOrderIsExplicit:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
         merged = merge_wannier_output_parameters._callable(
-            order=["zz", "aa"], zz=self._params([1.1, 2.2]), aa=self._params([3.3])
+            group=split_group(["zz", "aa"]),
+            block_files=group_files(
+                [("zz", self._params([1.1, 2.2])), ("aa", self._params([3.3]))],
+                "output_parameters",
+            ),
         ).get_dict()
         assert [wf["wf_spreads"] for wf in merged["wannier_functions_output"]] == [1.1, 2.2, 3.3]
 
@@ -829,18 +869,25 @@ class TestGroupOrderIsExplicit:
         """Negative control: those labels really do mislead a sorting reader."""
         assert sorted(["zz", "aa"]) != ["zz", "aa"]
 
-    def test_a_named_label_with_no_entry_raises(self, aiida_profile):
+    def test_a_block_with_no_entry_raises(self, aiida_profile):
         from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
 
-        with pytest.raises(ValueError, match="does not carry"):
-            merge_wannier_output_parameters._callable(order=["g0", "g1"], g0=self._params([1.1]))
-
-    def test_an_unnamed_entry_raises(self, aiida_profile):
-        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
-
-        with pytest.raises(ValueError, match=r"does not\s+name"):
+        with pytest.raises(ValueError, match="No Wannierization outputs for block"):
             merge_wannier_output_parameters._callable(
-                order=["g0"], g0=self._params([1.1]), g1=self._params([2.2])
+                group=split_group(["g0", "g1"]),
+                block_files=group_files([("g0", self._params([1.1]))], "output_parameters"),
+            )
+
+    def test_an_entry_no_group_names_raises(self, aiida_profile):
+        from aiida_koopmans.workgraphs.auto_wannierize import merge_wannier_output_parameters
+
+        with pytest.raises(ValueError, match="which no manifold names"):
+            merge_wannier_output_parameters._callable(
+                group=split_group(["g0"]),
+                block_files=group_files(
+                    [("g0", self._params([1.1])), ("g1", self._params([2.2]))],
+                    "output_parameters",
+                ),
             )
 
     def test_the_plugin_key_convention_lives_in_one_place(self):
@@ -897,7 +944,8 @@ class TestMergeSplitBlockProducts:
             return folder.store()
 
         merged = merge_split_block_products._callable(
-            order=["g0", "g1"], g0=_folder(1), g1=_folder(2)
+            group=split_group(["g0", "g1"]),
+            block_files=group_files([("g0", _folder(1)), ("g1", _folder(2))], "retrieved"),
         )
 
         assert "u_file" not in merged
@@ -935,9 +983,14 @@ class TestMergeInterpolatedBands:
 
         labels = [(0, "GAMMA"), (2, "X")]
         merged = merge_interpolated_bands._callable(
-            order=["g0", "g1"],
-            g0=self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels),
-            g1=self._bands([[5.0], [5.1], [5.2]], labels=labels),
+            group=split_group(["g0", "g1"]),
+            block_files=group_files(
+                [
+                    ("g0", self._bands([[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]], labels=labels)),
+                    ("g1", self._bands([[5.0], [5.1], [5.2]], labels=labels)),
+                ],
+                "interpolated_bands",
+            ),
         )
         np.testing.assert_allclose(
             merged.get_bands(), [[1.0, 2.0, 5.0], [1.1, 2.1, 5.1], [1.2, 2.2, 5.2]]
@@ -950,9 +1003,11 @@ class TestMergeInterpolatedBands:
         from aiida_koopmans.workgraphs.auto_wannierize import merge_interpolated_bands
 
         merged = merge_interpolated_bands._callable(
-            order=["zz", "aa"],
-            zz=self._bands([[5.0], [5.1]]),
-            aa=self._bands([[1.0], [1.1]]),
+            group=split_group(["zz", "aa"]),
+            block_files=group_files(
+                [("zz", self._bands([[5.0], [5.1]])), ("aa", self._bands([[1.0], [1.1]]))],
+                "interpolated_bands",
+            ),
         )
         np.testing.assert_allclose(merged.get_bands(), [[5.0, 1.0], [5.1, 1.1]])
 
@@ -961,9 +1016,14 @@ class TestMergeInterpolatedBands:
 
         with pytest.raises(ValueError, match="k-path"):
             merge_interpolated_bands._callable(
-                order=["g0", "g1"],
-                g0=self._bands([[1.0], [1.1]]),
-                g1=self._bands([[5.0], [5.1], [5.2]]),
+                group=split_group(["g0", "g1"]),
+                block_files=group_files(
+                    [
+                        ("g0", self._bands([[1.0], [1.1]])),
+                        ("g1", self._bands([[5.0], [5.1], [5.2]])),
+                    ],
+                    "interpolated_bands",
+                ),
             )
 
 
