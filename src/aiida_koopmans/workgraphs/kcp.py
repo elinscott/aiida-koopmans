@@ -1815,7 +1815,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
                     blocks=[
                         ProjectionBlockId(
                             label=str(block["label"]),
-                            spin=SpinChannel(block["spin"]),
+                            spin=SpinChannel(block["spin"]).value,
                             filled=filled,
                             num_wann=int(block["num_wann"]),
                         )

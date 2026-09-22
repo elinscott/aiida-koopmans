@@ -947,7 +947,7 @@ def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[Mani
             blocks=[
                 ProjectionBlockId(
                     label=str(label),
-                    spin=SpinChannel.NONE,
+                    spin=SpinChannel.NONE.value,
                     filled=True,
                     num_wann=_UNKNOWN_NUM_WANN,
                 )
@@ -964,7 +964,7 @@ def _dfpt_manifold_specs(occ_labels: list, emp_labels: list | None) -> list[Mani
                 blocks=[
                     ProjectionBlockId(
                         label=str(label),
-                        spin=SpinChannel.NONE,
+                        spin=SpinChannel.NONE.value,
                         filled=False,
                         num_wann=_UNKNOWN_NUM_WANN,
                     )

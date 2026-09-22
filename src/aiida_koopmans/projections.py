@@ -480,7 +480,10 @@ class ProjectionBlockId(TypedDict):
     """
 
     label: str
-    spin: SpinChannel
+    #: The channel as a :class:`~aiida_koopmans.spin.SpinChannel` *value*
+    #: string. A member survives storage as its value anyway, so the value
+    #: is what a consumer reads; they normalise with ``SpinChannel(...)``.
+    spin: str
     filled: bool
     num_wann: int
 
