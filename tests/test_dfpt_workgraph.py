@@ -23,7 +23,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
-from tests.fixtures import assert_graph_roundtrips, explicit_block
+from tests.fixtures import assert_graph_roundtrips, assert_graph_submits, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -365,6 +365,10 @@ class TestKoopmansDFPTTaskBuild:
         assert "wann2kc" in names
         assert "screen" in names
         assert "ham" in names
+        # Submission stores every task input as a node, so a socket left
+        # inside a plain dict (rather than a namespace entry) dies here
+        # even though construction alone would not have caught it.
+        assert_graph_submits(wg)
 
     def test_seeded_kcw_defaults_match_the_roster(self, dfpt_codes, nscf_remote, occ_retrieved):
         """The route's seeded kcw.x literals equal SEEDED_VALUES.
