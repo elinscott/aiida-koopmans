@@ -347,7 +347,7 @@ class TestMisleadingBlockKeysStayStructural:
 
 
 class TestManifoldsRoundTrip:
-    """A ``list[ManifoldFile]`` graph input must survive a WorkGraph dict round trip."""
+    """A ``list[MergeGroupWithHamiltonianId]`` input must survive a WorkGraph dict round trip."""
 
     @staticmethod
     def _build(manifolds, *, silicon_structure, blocks):

@@ -112,7 +112,10 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
-from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldFile
+from aiida_koopmans.workgraphs.ui.band_structure import (
+    KoopmansBandStructureTask,
+    MergeGroupWithHamiltonianId,
+)
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     block_nodes_by_group,
     extend_wannier_u_dis_file_content,
@@ -996,7 +999,7 @@ def RunDFPT(
         smooth_bands = KoopmansBandStructureTask(
             structure=structure,
             koopmans_ham_retrieved=ham["retrieved"],
-            manifolds=_dfpt_manifold_files(manifolds),
+            manifolds=_dfpt_merge_groups_with_hamiltonian(manifolds),
             block_wannierizations=block_wannier,
             smooth_block_wannierizations=smooth_block_wannier,
             kgrid=kgrid,
@@ -1014,7 +1017,7 @@ def RunDFPT(
     return outputs
 
 
-def _dfpt_manifold_files(manifolds: list) -> list[ManifoldFile]:
+def _dfpt_merge_groups_with_hamiltonian(manifolds: list) -> list[MergeGroupWithHamiltonianId]:
     """Add each manifold's Hamiltonian filename to :func:`RunDFPT`'s own ``manifolds``.
 
     ``manifolds`` already carries real blocks (real ``num_wann``, from the
@@ -1030,7 +1033,7 @@ def _dfpt_manifold_files(manifolds: list) -> list[ManifoldFile]:
     :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
     """
     return [
-        ManifoldFile(
+        MergeGroupWithHamiltonianId(
             filled=group["filled"],
             spin=SpinChannel.NONE,
             blocks=group["blocks"],

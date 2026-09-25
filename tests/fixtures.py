@@ -959,7 +959,7 @@ def occ_emp_manifold_specs(
     filenames: tuple[str, str] = ("ham_occ_1.dat", "ham_emp_1.dat"),
     blocks: tuple[str, str] = ("occ", "emp"),
 ) -> list[dict]:
-    """Return a one-block-per-filling ``ManifoldFile`` list for one spin channel."""
+    """Return a one-block-per-filling ``MergeGroupWithHamiltonianId`` list for one spin channel."""
     occ_block, emp_block = blocks
     occ_file, emp_file = filenames
     return [

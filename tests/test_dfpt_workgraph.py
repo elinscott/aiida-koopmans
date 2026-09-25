@@ -1495,7 +1495,7 @@ class TestRunDFPTSmoothInterpolation:
     ):
         """The occupied blocks stay the occupied manifold on the way across.
 
-        ``RunDFPT`` builds one ``ManifoldFile`` per filling, each carrying
+        ``RunDFPT`` builds one ``MergeGroupWithHamiltonianId`` per filling, each carrying
         its own ``filled`` flag and Hamiltonian filename; swapping them
         would pair the occupied Wannier centres with the empty Hamiltonian,
         which nothing downstream would notice.
@@ -2201,13 +2201,15 @@ class TestSinglepointDFPTGrouping:
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
 
 
-class TestDfptManifoldFiles:
-    """``_dfpt_manifold_files`` adds the Hamiltonian filename to real manifolds."""
+class TestDfptMergeGroupsWithHamiltonian:
+    """``_dfpt_merge_groups_with_hamiltonian`` adds the Hamiltonian filename to real manifolds."""
 
     def test_each_manifold_gets_its_own_filename(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
 
-        files = _dfpt_manifold_files(manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"]))
+        files = _dfpt_merge_groups_with_hamiltonian(
+            manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
+        )
 
         by_filled = {spec["filled"]: spec for spec in files}
         assert by_filled[True]["filename"] == "aiida.kcw_hr_occ.dat"
@@ -2220,10 +2222,10 @@ class TestDfptManifoldFiles:
         projection blocks :func:`SinglepointDFPTWorkflow` derived; this
         helper adds only the filename, never touches ``blocks``.
         """
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
 
         source = manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
-        files = _dfpt_manifold_files(source)
+        files = _dfpt_merge_groups_with_hamiltonian(source)
 
         assert [spec["blocks"] for spec in files] == [group["blocks"] for group in source]
 
@@ -2237,19 +2239,19 @@ class TestDfptManifoldFiles:
         each call interpolates exactly one channel's own occ/emp pair, never
         stacking across channels.
         """
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
 
         down_channel = [manifold_id(["occ"], filled=True)]
         down_channel[0]["spin"] = SpinChannel.DOWN
 
-        [spec] = _dfpt_manifold_files(down_channel)
+        [spec] = _dfpt_merge_groups_with_hamiltonian(down_channel)
 
         assert spec["spin"] == SpinChannel.NONE
 
     def test_an_occupied_only_run_keeps_one_manifold(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_manifold_files
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
 
-        files = _dfpt_manifold_files(manifolds_for(occ=["occ"]))
+        files = _dfpt_merge_groups_with_hamiltonian(manifolds_for(occ=["occ"]))
 
         assert len(files) == 1
         assert files[0]["filled"] is True

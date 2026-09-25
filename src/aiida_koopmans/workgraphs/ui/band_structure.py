@@ -15,7 +15,7 @@ and how the manifolds are partitioned, is the route's own knowledge: the
 initialisation wannierization emitted; the DFPT route
 (:mod:`aiida_koopmans.workgraphs.dfpt`) reads kcw.x's ``*.kcw_hr_*.dat``
 files, keyed by its own ``occ_labels`` / ``emp_labels``. Both pass that
-knowledge in as a list of :class:`ManifoldFile`, the repo-wide manifold
+knowledge in as a list of :class:`MergeGroupWithHamiltonianId`, the repo-wide manifold
 contract (:class:`~aiida_koopmans.projections.MergeGroupId`) plus the one
 field specific to a Koopmans band structure. Block-to-node lookups go
 through the contract's own
@@ -43,17 +43,8 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
 )
 
 
-class ManifoldFile(MergeGroupId):
-    """A manifold plus the Koopmans Hamiltonian file naming it.
-
-    ``filled`` and ``spin`` (from :class:`~aiida_koopmans.projections.MergeGroupId`)
-    alone decide merge order (occupied before empty), which manifold's top
-    sets the valence-band-maximum reference, and channel stacking — never
-    a label. ``blocks`` alone decides membership and band order: the
-    caller's own block views, joined to ``block_wannierizations`` by
-    :func:`~aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group`,
-    never derived from how a block's label is spelled.
-    """
+class MergeGroupWithHamiltonianId(MergeGroupId):
+    """A merge group plus the Koopmans Hamiltonian file that holds its bands."""
 
     filename: str
 
@@ -337,7 +328,7 @@ def KoopmansBandStructureTask(
         structure: the primitive cell the wannierizations ran on.
         koopmans_ham_retrieved: the retrieved folder holding every
             manifold's printed Koopmans Hamiltonian.
-        manifolds: one :class:`ManifoldFile` per (filling, spin) manifold to
+        manifolds: one :class:`MergeGroupWithHamiltonianId` per (filling, spin) manifold to
             interpolate. Building this list — which file names each
             manifold's Hamiltonian, and which blocks belong to it — is the
             calling route's own knowledge.

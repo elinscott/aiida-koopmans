@@ -63,7 +63,10 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import DensityOfStates
-from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask, ManifoldFile
+from aiida_koopmans.workgraphs.ui.band_structure import (
+    KoopmansBandStructureTask,
+    MergeGroupWithHamiltonianId,
+)
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -1782,7 +1785,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
         ValueError: a spin channel this route needs has no merge group.
     """
     spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
-    specs: list[ManifoldFile] = []
+    specs: list[MergeGroupWithHamiltonianId] = []
     for spin in spins:
         for filled in (True, False):
             matches = [
@@ -1799,7 +1802,7 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
                 )
             [blocks] = matches
             specs.append(
-                ManifoldFile(
+                MergeGroupWithHamiltonianId(
                     filled=filled,
                     spin=spin,
                     filename=kcp_hamiltonian_filename(
