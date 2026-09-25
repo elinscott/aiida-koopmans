@@ -1198,6 +1198,471 @@ class TestSinglepointDFPTBuild:
 
 
 # ----------------------------------------------------------------------
+# Smooth interpolation
+# ----------------------------------------------------------------------
+
+
+def _smooth_build(dfpt_codes, silicon_structure, kmesh, pseudo_family, **overrides):
+    """Build a silicon DFPT workflow with the smooth-interpolation mesh set."""
+    from aiida.orm import KpointsData
+
+    smooth_kpoints = KpointsData()
+    smooth_kpoints.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]])
+    inputs = {
+        "codes": dfpt_codes,
+        "structure": silicon_structure,
+        "manifolds": {
+            "none": {
+                "occ": [_block("occ", range(1, 5))],
+                "emp": [_block("emp", range(5, 9))],
+            }
+        },
+        "kpoints": kmesh,
+        "bands_kpoints": _short_path(),
+        "smooth_kpoints": smooth_kpoints,
+        "smooth_mp_grid": [8, 8, 8],
+        "pseudo_family": pseudo_family,
+    }
+    inputs.update(overrides)
+    return SinglepointDFPTWorkflow.build(**inputs)
+
+
+def _short_path():
+    from aiida.orm import KpointsData
+
+    kpts = KpointsData()
+    kpts.set_kpoints([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]])
+    return kpts
+
+
+class TestSmoothInterpolation:
+    """``smooth_kpoints`` / ``smooth_mp_grid`` add a second Wannierization."""
+
+    def test_the_denser_mesh_is_wannierized_and_reaches_the_band_structure(
+        self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
+    ):
+        """The dense Wannierization runs off the shared scf and feeds the interpolation.
+
+        Three things have to hold together for the method to mean
+        anything: the second Wannierization samples the *denser* mesh, it
+        reads the same scf density as the coarse one (so the two
+        Hamiltonians describe the same ground state), and its blocks reach
+        the kcw.x chain that owns the Koopmans Hamiltonian.
+        """
+        wg = _smooth_build(dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family.label)
+        by_name = {t.name: t for t in wg.tasks}
+
+        assert "wannierize_smooth" in by_name
+        smooth_inputs = by_name["wannierize_smooth"].inputs
+        assert smooth_inputs["mp_grid"].value == [8, 8, 8]
+        assert [link.from_task.name for link in smooth_inputs["scf_remote_folder"]._links] == [
+            "scf_nscf"
+        ]
+
+        dfpt_inputs = by_name["dfpt"].inputs
+        assert [link.from_task.name for link in dfpt_inputs["smooth_block_wannier"]._links] == [
+            "wannierize_smooth"
+        ]
+        assert dfpt_inputs["structure"]._links
+
+    def test_the_k_path_reaches_the_denser_wannierization(
+        self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
+    ):
+        """The dense Wannierization interpolates along the run's own path too.
+
+        Every Wannierization a singlepoint runs samples ``kpoints.path``,
+        so the dense one's quality check is comparable with the coarse
+        one's along the same path.
+        """
+        wg = _smooth_build(dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family.label)
+        links = (
+            {t.name: t for t in wg.tasks}["wannierize_smooth"]
+            .inputs["interpolation_kpoints"]
+            ._links
+        )
+
+        assert [link.from_socket._name for link in links] == ["bands_kpoints"]
+
+    def test_the_denser_wannierization_inherits_the_nspin2_overrides(
+        self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
+    ):
+        """Its own nscf must describe the same spin regime as the shared scf.
+
+        It runs a fresh nscf off that scf's density, and kcw.x forces the
+        chain to ``nspin = 2`` even for a closed-shell system: an nscf that
+        did not inherit that would read a density it does not match.
+        """
+        wg = _smooth_build(dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family.label)
+        overrides = {t.name: t for t in wg.tasks}["wannierize_smooth"].inputs["overrides"]
+        nscf_system = overrides["nscf"].value["pw"]["parameters"]["SYSTEM"]
+
+        assert nscf_system["nspin"] == 2
+        assert nscf_system["tot_magnetization"] == 0
+
+    def test_without_the_denser_mesh_nothing_is_added(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
+    ):
+        """Negative control: the default graph is the one that ran before.
+
+        No second Wannierization, and the kcw.x chain gets neither of the
+        inputs that would make it interpolate anything itself — so
+        ``bands`` is still kcw.x's own.
+        """
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={
+                "none": {
+                    "occ": [_block("occ", range(1, 5))],
+                    "emp": [_block("emp", range(5, 9))],
+                }
+            },
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        assert "wannierize_smooth" not in by_name
+        assert not by_name["dfpt"].inputs["smooth_block_wannier"]._links
+        assert not by_name["dfpt"].inputs["structure"]._links
+
+    def test_collinear_wannierizes_the_denser_mesh_per_channel(
+        self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
+    ):
+        """Each spin channel gets its own dense Wannierization and its own bands.
+
+        The channels are Wannierized separately, so sharing one dense
+        Hamiltonian between them would subtract the wrong channel's DFT
+        part from one of the two Koopmans Hamiltonians.
+        """
+        from aiida_quantumespresso.common.types import SpinType
+
+        magnetization = {"pw": {"parameters": {"SYSTEM": {"tot_magnetization": 2}}}}
+        wg = _smooth_build(
+            dfpt_codes,
+            silicon_structure,
+            kmesh,
+            fake_cutoffs_family.label,
+            manifolds={
+                "up": {
+                    "occ": [_block("occ_up", range(1, 6))],
+                    "emp": [_block("emp_up", range(6, 9))],
+                },
+                "down": {
+                    "occ": [_block("occ_down", range(1, 4))],
+                    "emp": [_block("emp_down", range(4, 9))],
+                },
+            },
+            spin=SpinType.COLLINEAR,
+            overrides={"scf": magnetization, "nscf": magnetization},
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        for suffix in ("_up", "_down"):
+            assert f"wannierize_smooth{suffix}" in by_name
+            links = by_name[f"dfpt{suffix}"].inputs["smooth_block_wannier"]._links
+            assert [link.from_task.name for link in links] == [f"wannierize_smooth{suffix}"]
+            w90 = by_name[f"wannierize_smooth{suffix}"].inputs["overrides"]["wannier90"].value
+            assert w90["spin"] == suffix.lstrip("_")
+            # This route selects its spin channel through those overrides,
+            # not upstream's ``spin_type``; the two Wannierizations must
+            # agree on it, or they describe different ground states.
+            assert (
+                by_name[f"wannierize_smooth{suffix}"].inputs["spin_type"].value
+                == by_name[f"wannierize{suffix}"].inputs["spin_type"].value
+            )
+
+    def test_turning_write_hr_off_is_refused_before_anything_is_submitted(
+        self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
+    ):
+        """The whole graph is refused, not just the kcw.x chain inside it.
+
+        ``RunDFPT`` checks the namelist it assembles, but its body is
+        deferred: by the time that fires, the ground state and both
+        Wannierizations have run. Reading the caller's own override here
+        refuses the run while it is still being built.
+        """
+        with pytest.raises(ValueError, match="write_hr"):
+            _smooth_build(
+                dfpt_codes,
+                silicon_structure,
+                kmesh,
+                fake_cutoffs_family.label,
+                kcw_overrides={"ham": {"write_hr": False}},
+            )
+
+    def test_turning_write_hr_off_without_the_denser_mesh_still_builds(
+        self, dfpt_codes, silicon_structure, kmesh, bands_path, fake_cutoffs_family
+    ):
+        """Negative control: the keyword stays the caller's on a run that reads no file."""
+        wg = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            pseudo_family=fake_cutoffs_family.label,
+            kcw_overrides={"ham": {"write_hr": False}},
+        )
+
+        assert "wannierize_smooth" not in [t.name for t in wg.tasks]
+
+    @pytest.mark.parametrize("spin_name", ["NON_COLLINEAR", "SPIN_ORBIT"])
+    def test_a_spinor_run_refuses_the_method(self, dfpt_codes, silicon_structure, kmesh, spin_name):
+        """The spinor regimes raise rather than silently dropping the keyword."""
+        from aiida_quantumespresso.common.types import SpinType
+
+        with pytest.raises(NotImplementedError, match="smooth-interpolation method is not wired"):
+            _smooth_build(
+                dfpt_codes,
+                silicon_structure,
+                kmesh,
+                "SSSP/1.3/PBE/efficiency",
+                spin=getattr(SpinType, spin_name),
+            )
+
+    def test_the_method_without_a_band_path_is_refused(self, dfpt_codes, silicon_structure, kmesh):
+        """A denser mesh shapes a band structure; asking for none is a contradiction."""
+        with pytest.raises(ValueError, match="asks for none"):
+            _smooth_build(
+                dfpt_codes,
+                silicon_structure,
+                kmesh,
+                "SSSP/1.3/PBE/efficiency",
+                bands_kpoints=None,
+            )
+
+    def test_half_the_denser_mesh_is_refused(self, dfpt_codes, silicon_structure, kmesh):
+        """The k-point list and its grid dimensions state one thing between them."""
+        with pytest.raises(ValueError, match="only `smooth_mp_grid` was given"):
+            SinglepointDFPTWorkflow.build(
+                codes=dfpt_codes,
+                structure=silicon_structure,
+                manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+                kpoints=kmesh,
+                bands_kpoints=_short_path(),
+                smooth_mp_grid=[8, 8, 8],
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+            )
+
+
+class TestRunDFPTSmoothInterpolation:
+    """What ``RunDFPT`` does with a denser-mesh wannierization."""
+
+    def test_the_smooth_band_structure_replaces_the_published_bands(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved, bands_path, silicon_structure
+    ):
+        """``bands`` becomes the smooth interpolation; kcw.x's own still runs.
+
+        The ham step keeps ``do_bands``, so kcw.x's coarse interpolation
+        stays addressable on that step — what changes is which band
+        structure the channel publishes as its own.
+        """
+        from tests.fixtures import block_wannierization
+
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            smooth_block_wannier={
+                "occ": block_wannierization("occ_smooth"),
+                "emp": block_wannierization("emp_smooth"),
+            },
+            structure=silicon_structure,
+            manifolds=manifolds_for(occ=["occ"], emp=["emp"]),
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+            has_disentangle=True,
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        assert "smooth_band_structure" in by_name
+        ham_params = by_name["ham"].inputs["parameters"].value
+        assert ham_params["HAM"]["do_bands"] is True
+        assert ham_params["HAM"]["write_hr"] is True
+
+        band_links = wg.outputs.bands._links
+        assert [link.from_task.name for link in band_links] == ["smooth_band_structure"]
+
+    def test_each_manifolds_labels_reach_the_interpolation_unswapped(
+        self, dfpt_codes, nscf_remote, occ_retrieved, emp_retrieved, bands_path, silicon_structure
+    ):
+        """The occupied blocks stay the occupied manifold on the way across.
+
+        ``RunDFPT`` builds one ``MergeGroupWithHamiltonianId`` per filling, each carrying
+        its own ``filled`` flag and Hamiltonian filename; swapping them
+        would pair the occupied Wannier centres with the empty Hamiltonian,
+        which nothing downstream would notice.
+        """
+        from tests.fixtures import block_wannierization
+
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={
+                "occ": _block_files(occ_retrieved),
+                "emp": _block_files(emp_retrieved),
+            },
+            smooth_block_wannier={
+                "occ": block_wannierization("occ_smooth"),
+                "emp": block_wannierization("emp_smooth"),
+            },
+            structure=silicon_structure,
+            manifolds=manifolds_for(occ=["occ"], emp=["emp"]),
+            num_wann_occ=4,
+            num_wann_emp=4,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+            has_disentangle=True,
+        )
+        smooth = {t.name: t for t in wg.tasks}["smooth_band_structure"].inputs
+
+        manifolds = {spec["filled"]: spec for spec in smooth["manifolds"].value}
+        assert [str(block["label"]) for block in manifolds[True]["blocks"]] == ["occ"]
+        assert [str(block["label"]) for block in manifolds[False]["blocks"]] == ["emp"]
+
+    def test_a_multi_block_manifold_merges_both_hamiltonians_in_one_order(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
+    ):
+        """One label list reaches both merges, so neither can invent its own order.
+
+        kcw.x reads one file set per manifold, merged block-diagonally in
+        the caller's label order, and the interpolation merges the same
+        blocks again for its own DFT Hamiltonians. This pins that the two
+        merges are handed the same list; which row each block lands on
+        inside the interpolation is pinned in ``test_ui_band_structure.py``,
+        where the per-block merge is a real task rather than a deferred
+        graph.
+        """
+        from tests.fixtures import block_wannierization
+
+        labels = ["occ_a", "occ_b"]
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={label: _block_files(occ_retrieved) for label in labels},
+            smooth_block_wannier={label: block_wannierization(label) for label in labels},
+            structure=silicon_structure,
+            manifolds=manifolds_for(labels),
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+        )
+        by_name = {t.name: t for t in wg.tasks}
+
+        # kcw.x's file set: one manifold naming both blocks, in band order.
+        prepare_manifolds = by_name["prepare_kcw_wannier_files"].inputs["manifolds"].value
+        [occ_group] = prepare_manifolds
+        assert [str(block["label"]) for block in occ_group["blocks"]] == labels
+
+        # The interpolation is handed that same list, and keys its own
+        # per-block merges off it.
+        smooth = by_name["smooth_band_structure"]
+        [occ_spec] = [spec for spec in smooth.inputs["manifolds"].value if spec["filled"]]
+        assert [str(block["label"]) for block in occ_spec["blocks"]] == labels
+
+    def test_the_hams_wigner_seitz_choice_reaches_the_interpolation(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
+    ):
+        """A user turning ``use_ws_distance`` off turns it off for both interpolations.
+
+        kcw.x and this interpolation read the same Hamiltonian; reading it
+        under two different phase conventions would make the published
+        bands and the ham step's own disagree for no stated reason.
+        """
+        from tests.fixtures import block_wannierization
+
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
+            structure=silicon_structure,
+            manifolds=manifolds_for(["occ"]),
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+            kcw_overrides={"ham": {"use_ws_distance": False}},
+        )
+        smooth = {t.name: t for t in wg.tasks}["smooth_band_structure"]
+
+        assert smooth.inputs["use_ws_distance"].value is False
+
+    def test_turning_write_hr_off_under_the_method_is_refused(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
+    ):
+        """``HAM.write_hr`` is the caller's to set, and the method cannot run without it.
+
+        It is a seeded default rather than a route-owned keyword, so
+        without this check the graph builds and fails only once the ham
+        step has run and its retrieved folder turns out to hold no
+        Hamiltonian.
+        """
+        from tests.fixtures import block_wannierization
+
+        with pytest.raises(ValueError, match="write_hr"):
+            RunDFPT.build(
+                kcw_code=dfpt_codes["kcw"],
+                nscf_remote_folder=nscf_remote,
+                block_wannier={"occ": _block_files(occ_retrieved)},
+                smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
+                structure=silicon_structure,
+                manifolds=manifolds_for(["occ"]),
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                bands_kpoints=bands_path,
+                kcw_overrides={"ham": {"write_hr": False}},
+            )
+
+    def test_turning_write_hr_off_without_the_method_still_builds(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path
+    ):
+        """Negative control: the keyword stays the caller's on a run that reads no file."""
+        wg = RunDFPT.build(
+            kcw_code=dfpt_codes["kcw"],
+            nscf_remote_folder=nscf_remote,
+            block_wannier={"occ": _block_files(occ_retrieved)},
+            manifolds=manifolds_for(["occ"]),
+            num_wann_occ=4,
+            num_wann_emp=0,
+            kgrid=[2, 2, 2],
+            bands_kpoints=bands_path,
+            kcw_overrides={"ham": {"write_hr": False}},
+        )
+
+        ham_params = {t.name: t for t in wg.tasks}["ham"].inputs["parameters"].value
+        assert ham_params["HAM"]["write_hr"] is False
+
+    def test_a_denser_wannierization_without_a_cell_is_refused(
+        self, dfpt_codes, nscf_remote, occ_retrieved, bands_path
+    ):
+        """The unfolding needs the cell; asking for it without one raises."""
+        from tests.fixtures import block_wannierization
+
+        with pytest.raises(ValueError, match="needs `structure`"):
+            RunDFPT.build(
+                kcw_code=dfpt_codes["kcw"],
+                nscf_remote_folder=nscf_remote,
+                block_wannier={"occ": _block_files(occ_retrieved)},
+                smooth_block_wannier={"occ": block_wannierization("occ_smooth")},
+                manifolds=manifolds_for(["occ"]),
+                num_wann_occ=4,
+                num_wann_emp=0,
+                kgrid=[2, 2, 2],
+                bands_kpoints=bands_path,
+            )
+
+
+# ----------------------------------------------------------------------
 # derive_dfpt_manifolds / normalize_alpha_guess (pure helpers)
 # ----------------------------------------------------------------------
 
@@ -1734,3 +2199,75 @@ class TestSinglepointDFPTGrouping:
             kpoints=kmesh,
         )
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
+
+
+class TestDfptMergeGroupsWithHamiltonian:
+    """``_dfpt_merge_groups_with_hamiltonian`` adds the Hamiltonian filename to real manifolds."""
+
+    def test_each_manifold_gets_its_own_filename(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
+
+        files = _dfpt_merge_groups_with_hamiltonian(
+            manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
+        )
+
+        by_filled = {spec["filled"]: spec for spec in files}
+        assert by_filled[True]["filename"] == "aiida.kcw_hr_occ.dat"
+        assert by_filled[False]["filename"] == "aiida.kcw_hr_emp.dat"
+
+    def test_the_blocks_are_unchanged_real_projection_blocks(self):
+        """The manifold's own blocks pass through, real ``num_wann`` included.
+
+        ``RunDFPT``'s ``manifolds`` input already carries the real
+        projection blocks :func:`SinglepointDFPTWorkflow` derived; this
+        helper adds only the filename, never touches ``blocks``.
+        """
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
+
+        source = manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
+        files = _dfpt_merge_groups_with_hamiltonian(source)
+
+        assert [spec["blocks"] for spec in files] == [group["blocks"] for group in source]
+
+    def test_the_manifold_file_is_unpolarized_whatever_the_channels_own_spin_is(self):
+        """kcw.x's filenames carry no channel index, so the spec's own ``spin`` is 'none'.
+
+        A collinear run's manifolds arrive with the real physical channel
+        (``spin='up'``/``'down'``) stamped by :func:`SinglepointDFPTWorkflow`;
+        which channel a given :func:`RunDFPT` call is for is that caller's
+        knowledge, not something :func:`KoopmansBandStructureTask` needs —
+        each call interpolates exactly one channel's own occ/emp pair, never
+        stacking across channels.
+        """
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
+
+        down_channel = [manifold_id(["occ"], filled=True)]
+        down_channel[0]["spin"] = SpinChannel.DOWN
+
+        [spec] = _dfpt_merge_groups_with_hamiltonian(down_channel)
+
+        assert spec["spin"] == SpinChannel.NONE
+
+    def test_an_occupied_only_run_keeps_one_manifold(self):
+        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
+
+        files = _dfpt_merge_groups_with_hamiltonian(manifolds_for(occ=["occ"]))
+
+        assert len(files) == 1
+        assert files[0]["filled"] is True
+
+
+class TestKcwHamiltonianFilename:
+    """The one place kcw.x's two Hamiltonian filenames are decided."""
+
+    def test_the_filename_helper_names_the_occupied_file_for_a_filled_manifold(self):
+        """``kcw_hamiltonian_filename`` is the one place the two names are decided.
+
+        The CalcJob's retrieve list and the interpolation both go through
+        it, so a swap there would be invisible to a test that only checks
+        both names appear somewhere.
+        """
+        from aiida_koopmans.calculations.kcw import kcw_hamiltonian_filename
+
+        assert kcw_hamiltonian_filename(filled=True) == "aiida.kcw_hr_occ.dat"
+        assert kcw_hamiltonian_filename(filled=False) == "aiida.kcw_hr_emp.dat"

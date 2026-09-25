@@ -1855,3 +1855,69 @@ def WannierizeBlocks(
         outputs["groups"] = detect.result
     _wire_scf_nscf_outputs(outputs, scf_nscf, nscf_scratch)
     return outputs
+
+
+def wannierize_smooth_mesh(
+    *,
+    do_smooth: bool,
+    codes: WannierizeBlocksCodes,
+    structure: orm.StructureData,
+    blocks: Any,
+    smooth_kpoints: Any,
+    smooth_mp_grid: Any,
+    scf_remote_folder: Any,
+    pseudo_family: str | None,
+    protocol: str | None,
+    overrides: WannierizeOverrides | None,
+    interpolation_kpoints: orm.KpointsData | None,
+    parallelization: ParallelizationDict | None,
+    spin_type: SpinType = SpinType.NONE,
+    call_link_label: str = "wannierize_smooth",
+    label: str = "Smooth wannierization",
+) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
+    """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
+
+    The smooth-interpolation method replaces the DFT part of a Koopmans
+    Hamiltonian with the same quantity from a Wannierization on a denser
+    mesh; this runs that second Wannierization. Returns ``None`` without
+    ``do_smooth``.
+
+    Called from a Koopmans singlepoint's ``@task.graph`` body, so the task
+    it creates joins that graph. It depends on nothing the screening
+    produces, so it runs alongside it.
+
+    ``scf_remote_folder`` must be a converged scf on ``structure``:
+    :func:`WannierizeBlocks` skips its own scf and runs only a fresh nscf on
+    ``smooth_kpoints`` off it. ``overrides`` must therefore carry the same
+    ``nscf`` keywords the coarse run used, spin regime included.
+
+    ``interpolation_kpoints``, given, also runs the pw.x explicit band
+    structure and the per-block wannier90 interpolation on this denser
+    mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps, not
+    re-exposed as a named output here.
+
+    ``spin_type`` defaults to :func:`WannierizeBlocks`' own default, so a
+    caller whose coarse Wannierization leaves it alone gets a dense one that
+    matches.
+
+    ``call_link_label`` / ``label`` name the step; a caller that runs one
+    per spin channel must give each its own.
+    """
+    if not do_smooth:
+        return None
+    smooth = WannierizeBlocks(
+        codes=codes,
+        structure=structure,
+        blocks=blocks,
+        kpoints=smooth_kpoints,
+        mp_grid=list(smooth_mp_grid),
+        scf_remote_folder=scf_remote_folder,
+        pseudo_family=pseudo_family,
+        protocol=protocol,
+        overrides=overrides,
+        spin_type=spin_type,
+        interpolation_kpoints=interpolation_kpoints,
+        parallelization=parallelization,
+        metadata={"call_link_label": call_link_label, "label": label},
+    )
+    return smooth["blocks"]

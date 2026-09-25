@@ -82,6 +82,7 @@ from aiida_koopmans.calculations.kcw import (
     KcwHamCalculation,
     KcwScreenCalculation,
     Wann2kcCalculation,
+    kcw_hamiltonian_filename,
 )
 from aiida_koopmans.owned_keywords import owned, reject_owned, seeded
 from aiida_koopmans.parallelization import (
@@ -107,9 +108,14 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlocksCodes,
     WannierizeOverrides,
     WannierOutputFiles,
+    wannierize_smooth_mesh,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
+from aiida_koopmans.workgraphs.ui.band_structure import (
+    KoopmansBandStructureTask,
+    MergeGroupWithHamiltonianId,
+)
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     block_nodes_by_group,
     extend_wannier_u_dis_file_content,
@@ -438,7 +444,9 @@ class ChannelResults(TypedDict, total=False):
     * ``ham_parameters`` -- ham-step scalars (:class:`KcwHamParameters`),
       including the KS / KI eigenvalues on the k-grid.
     * ``bands`` -- interpolated Koopmans band structure (present only when a
-      band path was supplied).
+      band path was supplied): kcw.x's own interpolation off the coarse
+      grid, or, when a denser-mesh wannierization was supplied, the
+      smooth-interpolated one (kcw.x's stays addressable on the ham step).
     * ``wannierize_bands`` -- the pw.x quality-check DFT reference bands
       along the same path, off the shared ground state (present only when a
       band path was supplied; see :func:`RunDFPT`'s ``wannierize_bands``).
@@ -720,6 +728,8 @@ def RunDFPT(
     nbnd_emp: int | None = None,
     spreads: list | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    structure: orm.StructureData | None = None,
+    smooth_block_wannier: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
     wannierize_bands: PwOutputs | None = None,
     projwfc: ProjwfcOutputs | None = None,
     eps_inf: float | None = None,
@@ -773,6 +783,14 @@ def RunDFPT(
             ``num_wann_occ + num_wann_emp`` at runtime.
         bands_kpoints: explicit k-path; when given, the ham step interpolates
             the Koopmans Hamiltonian along it (``HAM.do_bands``).
+        structure: the primitive cell, required by the smooth-interpolation
+            band structure and unused otherwise.
+        smooth_block_wannier: the same blocks Wannierized on a denser mesh,
+            keyed by the same labels. Given, the ``bands`` output is the
+            smooth-interpolated band structure
+            (:func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`)
+            rather than kcw.x's own, which stays addressable on the ham
+            step. Needs ``structure`` and ``bands_kpoints``.
         wannierize_bands: the pw.x quality-check DFT reference bands along
             the same path, forwarded whole from the caller's
             :func:`~aiida_koopmans.workgraphs.block_wannierize.WannierizeBlocks`
@@ -828,6 +846,7 @@ def RunDFPT(
     # to a plain bool before it lands in the stored ``control`` Dict.
     l_vcut = True if l_vcut is None else bool(l_vcut)
     user = kcw_overrides_by_namelist(kcw_overrides)
+    _require_smooth_interpolation_inputs(smooth_block_wannier, structure, bands_kpoints)
 
     control = {
         **seeded("kcw.CONTROL", {"kcw_iverbosity": 1, "lrpa": False}),
@@ -957,6 +976,7 @@ def RunDFPT(
         **user["ham"],
         **owned("kcw.HAM", {"do_bands": do_bands}),
     }
+    _require_written_hamiltonian(ham_namelist, smooth_block_wannier)
     ham_inputs: dict[str, Any] = {
         "code": kcw_code,
         "parameters": {"CONTROL": control, "WANNIER": wannier, "HAM": ham_namelist},
@@ -975,7 +995,186 @@ def RunDFPT(
     outputs["alphas"] = alphas
     outputs["ham_parameters"] = ham["output_parameters"]
     _add_optional_band_outputs(outputs, ham, do_bands, wannierize_bands, projwfc)
+    if smooth_block_wannier is not None:
+        smooth_bands = KoopmansBandStructureTask(
+            structure=structure,
+            koopmans_ham_retrieved=ham["retrieved"],
+            manifolds=_dfpt_merge_groups_with_hamiltonian(manifolds),
+            block_wannierizations=block_wannier,
+            smooth_block_wannierizations=smooth_block_wannier,
+            kgrid=kgrid,
+            kpath=bands_kpoints,
+            # Both interpolations of this Hamiltonian must read its
+            # R-vectors the same way, so the user's own ``HAM`` keyword wins
+            # here too.
+            use_ws_distance=bool(ham_namelist["use_ws_distance"]),
+            metadata={
+                "call_link_label": "smooth_band_structure",
+                "label": "Smooth band interpolation",
+            },
+        )
+        outputs["bands"] = smooth_bands["band_structure"]
     return outputs
+
+
+def _dfpt_merge_groups_with_hamiltonian(manifolds: list) -> list[MergeGroupWithHamiltonianId]:
+    """Add each manifold's Hamiltonian filename to :func:`RunDFPT`'s own ``manifolds``.
+
+    ``manifolds`` already carries real blocks (real ``num_wann``, from the
+    projection blocks :func:`SinglepointDFPTWorkflow` derived them from);
+    this only adds the one field specific to the band structure.
+
+    kcw.x's printed Hamiltonian filenames carry no channel index — each
+    channel runs as its own wann2kc/screen/ham chain in its own working
+    directory — so every file here is unpolarized from
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`'s
+    own point of view, whatever the manifold's own ``spin`` says: which
+    physical channel this :func:`RunDFPT` call belongs to is
+    :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
+    """
+    return [
+        MergeGroupWithHamiltonianId(
+            filled=group["filled"],
+            spin=SpinChannel.NONE,
+            blocks=group["blocks"],
+            filename=kcw_hamiltonian_filename(filled=group["filled"]),
+        )
+        for group in manifolds
+    ]
+
+
+def _add_smooth_interpolation_dfpt_inputs(
+    dfpt_inputs: dict[str, Any],
+    *,
+    do_smooth: bool,
+    bands_kpoints: orm.KpointsData | None,
+    suffix: str,
+    channel_display: str,
+    **smooth_mesh_kwargs: Any,
+) -> None:
+    """Wannierize one channel's blocks on the denser mesh and wire them, in place.
+
+    A no-op without ``do_smooth``. The denser mesh is Wannierized off the
+    same shared scf, with the same blocks and the same overrides: the
+    smooth-interpolation method swaps one Wannier-gauge DFT Hamiltonian for
+    another, so only the mesh differs between the two runs. ``spin_type``
+    is among what must not differ: this route selects a spin channel
+    through explicit ``wannier90`` / ``pw2wannier90`` overrides rather than
+    upstream's ``spin_type`` (see :func:`_channel_w90_defaults`), so both
+    Wannierizations leave it at its default.
+    """
+    smooth_blocks = wannierize_smooth_mesh(
+        do_smooth=do_smooth,
+        interpolation_kpoints=bands_kpoints,
+        call_link_label=f"wannierize_smooth{suffix}",
+        label=f"Smooth wannierization{channel_display}",
+        **smooth_mesh_kwargs,
+    )
+    if smooth_blocks is None:
+        return
+    dfpt_inputs["structure"] = smooth_mesh_kwargs["structure"]
+    dfpt_inputs["smooth_block_wannier"] = smooth_blocks
+
+
+def _resolve_smooth_interpolation(
+    smooth_kpoints: orm.KpointsData | None,
+    smooth_mp_grid: list[int] | None,
+    bands_kpoints: orm.KpointsData | None,
+    spin: SpinType,
+    kcw_overrides: KcwOverrides | None,
+) -> bool:
+    """Return whether :func:`SinglepointDFPTWorkflow` runs the smooth interpolation.
+
+    Raises:
+        ValueError: If only one half of the denser mesh is stated, if it is
+            stated with no path to interpolate along, or if the caller
+            turned off the ``HAM.write_hr`` the interpolation reads.
+        NotImplementedError: If the run is noncollinear or spin-orbit.
+    """
+    stated = [
+        name
+        for name, value in (("smooth_kpoints", smooth_kpoints), ("smooth_mp_grid", smooth_mp_grid))
+        if value is not None
+    ]
+    if not stated:
+        return False
+    if len(stated) == 1:
+        raise ValueError(
+            "`smooth_kpoints` (an explicit k-point list) and `smooth_mp_grid` (its "
+            f"Monkhorst-Pack dimensions) together state the denser mesh the "
+            f"smooth-interpolation method Wannierizes; only `{stated[0]}` was given."
+        )
+    if bands_kpoints is None:
+        raise ValueError(
+            "The smooth-interpolation method shapes a band structure, and this run asks "
+            "for none. Pass the path to interpolate along as `bands_kpoints`, or drop "
+            "`smooth_kpoints` / `smooth_mp_grid`."
+        )
+    spin_regime = unwrap_enum(spin, SpinType) or SpinType.NONE
+    if spin_regime in (SpinType.NON_COLLINEAR, SpinType.SPIN_ORBIT):
+        raise NotImplementedError(
+            f"The smooth-interpolation method is not wired for spin={spin_regime.value!r}: "
+            "the denser-mesh wannierization would drop `spinors = .true.`, and the "
+            "spinor Wannier centres reach the interpolation unvalidated. Drop "
+            "`smooth_kpoints` / `smooth_mp_grid` and read kcw.x's own interpolated bands."
+        )
+    # ``RunDFPT`` checks this too, on the namelist it actually assembles; that
+    # check is its own contract but runs in a deferred body, after both
+    # Wannierizations. Reading the caller's overrides here refuses the same
+    # run before anything is submitted.
+    user_ham = dict(((kcw_overrides or {}).get("ham") or {}).items())
+    if "write_hr" in user_ham and not user_ham["write_hr"]:
+        raise ValueError(
+            "The smooth-interpolation band structure reads the Koopmans Hamiltonian kcw.x "
+            "prints under `HAM.write_hr`, and `kcw.ham.write_hr` is set to false. Drop that "
+            "keyword, or drop the denser mesh."
+        )
+    return True
+
+
+def _require_written_hamiltonian(ham_namelist: dict[str, Any], smooth_block_wannier: Any) -> None:
+    """Check the ham step prints the Hamiltonian the smooth interpolation reads.
+
+    ``HAM.write_hr`` is a seeded default, so a caller may set it false;
+    doing that under the smooth-interpolation method leaves the
+    interpolation with no Hamiltonian to read.
+
+    Raises:
+        ValueError: If a denser-mesh wannierization is given and
+            ``HAM.write_hr`` is off.
+    """
+    if smooth_block_wannier is None or ham_namelist["write_hr"]:
+        return
+    raise ValueError(
+        "The smooth-interpolation band structure reads the Koopmans Hamiltonian kcw.x "
+        "prints under `HAM.write_hr`, and `kcw.ham.write_hr` is set to false. Drop that "
+        "keyword, or drop the denser mesh."
+    )
+
+
+def _require_smooth_interpolation_inputs(
+    smooth_block_wannier: Any,
+    structure: orm.StructureData | None,
+    bands_kpoints: orm.KpointsData | None,
+) -> None:
+    """Check the smooth-interpolation inputs of :func:`RunDFPT` arrive together.
+
+    Raises:
+        ValueError: If a denser-mesh wannierization is given without the
+            cell to unfold onto or the path to interpolate along.
+    """
+    if smooth_block_wannier is None:
+        return
+    missing = [
+        name
+        for name, value in (("structure", structure), ("bands_kpoints", bands_kpoints))
+        if value is None
+    ]
+    if missing:
+        raise ValueError(
+            f"`smooth_block_wannier` asks for the smooth-interpolation band structure, "
+            f"which also needs {' and '.join(f'`{name}`' for name in missing)}."
+        )
 
 
 def _dict_typed_field_names(typeddict_cls: type) -> frozenset[str]:
@@ -1231,6 +1430,8 @@ def SinglepointDFPTWorkflow(
     kpoints: orm.KpointsData,
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    smooth_kpoints: orm.KpointsData | None = None,
+    smooth_mp_grid: list[int] | None = None,
     eps_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
@@ -1321,8 +1522,20 @@ def SinglepointDFPTWorkflow(
     ``kcw_overrides`` reaches every channel's :func:`RunDFPT` unchanged: user
     kcw.x namelist keywords merged into its ``control`` / ``wannier`` /
     ``screen`` / ``ham`` dicts.
+
+    ``smooth_kpoints`` (an explicit k-point list) with ``smooth_mp_grid``
+    (its Monkhorst-Pack dimensions) switches on the smooth-interpolation
+    method: each channel's blocks are Wannierized a second time on that
+    denser mesh, and the channel's ``bands`` output becomes the band
+    structure interpolated with the dense DFT Hamiltonian in place of the
+    coarse one. kcw.x's own coarse interpolation still runs and stays
+    addressable on the ham step. Needs ``bands_kpoints``, and ``spin``
+    ``NONE`` or ``COLLINEAR``.
     """
     validate_parallelization(parallelization)
+    do_smooth = _resolve_smooth_interpolation(
+        smooth_kpoints, smooth_mp_grid, bands_kpoints, spin, kcw_overrides
+    )
 
     from aiida_quantumespresso.workflows.protocols.utils import recursive_merge
 
@@ -1516,6 +1729,24 @@ def SinglepointDFPTWorkflow(
         }
         _add_quality_check_dfpt_inputs(
             dfpt_inputs, bands_kpoints, wannierized, pseudo_family, structure
+        )
+
+        _add_smooth_interpolation_dfpt_inputs(
+            dfpt_inputs,
+            do_smooth=do_smooth,
+            codes=wannierize_codes,
+            structure=structure,
+            blocks=occ_blocks + emp_blocks,
+            smooth_kpoints=smooth_kpoints,
+            smooth_mp_grid=smooth_mp_grid,
+            scf_remote_folder=scf_nscf["scf_remote_folder"],
+            pseudo_family=pseudo_family,
+            protocol=protocol,
+            overrides=wannier_overrides,
+            bands_kpoints=bands_kpoints,
+            parallelization=parallelization,
+            suffix=suffix,
+            channel_display=channel_display,
         )
 
         if emp_blocks:

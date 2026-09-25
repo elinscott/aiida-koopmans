@@ -1,8 +1,8 @@
 """Naming for the files kcp.x retrieves under ``write_hr``.
 
-Split out of :mod:`aiida_koopmans.workgraphs.kcp` so
-:mod:`aiida_koopmans.workgraphs.ui.dscf` can import it without a circular
-import back into ``kcp``.
+Kept apart from :mod:`aiida_koopmans.workgraphs.kcp`, which is already
+large, so the CalcJob's retrieve-list glob and the ΔSCF band-structure
+filename convention share one small, dependency-free module.
 """
 
 #: Glob patterns naming the Koopmans Hamiltonians kcp.x prints under
