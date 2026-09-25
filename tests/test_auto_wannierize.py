@@ -962,12 +962,12 @@ class TestGroupOrderIsExplicit:
                 ),
             )
 
-    def test_the_plugin_key_convention_lives_in_one_place(self):
+    def test_the_wannierjl_key_convention_lives_in_one_place(self):
         """aiida-wannierjl's own ``block_N`` naming is spelled out once."""
         from aiida_koopmans.workgraphs import auto_wannierize
-        from aiida_koopmans.workgraphs.auto_wannierize import plugin_block_key
+        from aiida_koopmans.workgraphs.auto_wannierize import wannierjl_block_key
 
-        assert plugin_block_key(0) == "block_0"
+        assert wannierjl_block_key(0) == "block_0"
         source = pathlib.Path(auto_wannierize.__file__).read_text()
         assert source.count('f"block_{') == 1
 

@@ -230,12 +230,11 @@ def extract_win_file(retrieved: orm.FolderData) -> orm.SinglefileData:
     return orm.SinglefileData(io.BytesIO(content), filename=filename)
 
 
-def plugin_block_key(index: int) -> str:
+def wannierjl_block_key(index: int) -> str:
     """Return the key aiida-wannierjl gives the ``index``-th split group.
 
-    The plugin names its per-group output namespaces ``block_0``,
-    ``block_1``, ... That is its convention, not ours, so it is spelled
-    out here and used only where the plugin's outputs are read; everything
+    aiida-wannierjl names its per-group output namespaces ``block_0``,
+    ``block_1``, ... this is the one place that naming is read; everything
     downstream carries the group order as an explicit list instead.
     """
     return f"block_{int(index)}"
@@ -520,11 +519,9 @@ def RewannierizeSplitBlocks(
         if hasattr(parent_parameters, "get_dict")
         else dict(parent_parameters)
     )
-    # The split's groups are a manifold in the block contract's sense:
-    # the group order is the manifold's own order and each label is a
-    # lookup key into the namespace beside it. The manifold travels as
-    # plain JSON, so its scalars are coerced to native types here: a
-    # graph input arrives wrapped and the wrapper is not serializable.
+    # `filled` and `spin_channel` arrive as graph inputs wrapped in
+    # aiida-workgraph's TaggedValue, which JSON cannot serialize, so they
+    # are unwrapped once here before they go into the MergeGroupId.
     occupied = bool(filled)
     channel = SpinChannel(spin_channel)
     blocks: list[ProjectionBlockId] = []
@@ -545,10 +542,9 @@ def RewannierizeSplitBlocks(
             structure=structure,
             parameters=parameters,
             kpoints=kpoints,
-            # The two plugin namespaces are read here and nowhere else:
-            # this is the one place aiida-wannierjl's own key convention
-            # is spelled out.
-            local_input_folder=split_blocks[plugin_block_key(i)],
+            # The two aiida-wannierjl namespaces are read here and nowhere
+            # else; see wannierjl_block_key for its key convention.
+            local_input_folder=split_blocks[wannierjl_block_key(i)],
             **path_inputs,
             metadata={
                 "call_link_label": f"wannier90_split_block_{i}",
@@ -568,7 +564,7 @@ def RewannierizeSplitBlocks(
         entry: dict[str, Any] = {
             "retrieved": rewannierized["retrieved"],
             "output_parameters": rewannierized["output_parameters"],
-            "split_gauge": split_gauges[plugin_block_key(i)],
+            "split_gauge": split_gauges[wannierjl_block_key(i)],
         }
         if interpolation_kpoints is not None:
             entry["interpolated_bands"] = rewannierized["interpolated_bands"]

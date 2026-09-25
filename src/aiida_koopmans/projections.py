@@ -459,7 +459,7 @@ def block_occupancy(block: ProjectionBlock) -> bool:
 def resolve_block_occupancy(
     block: ProjectionBlock, block_bands: Sequence[int], num_occ_bands: int | None
 ) -> bool:
-    """Return whether ``block`` is occupied, settling an unstamped block from the boundary.
+    """Return whether ``block`` is occupied, from ``num_occ_bands`` if ``filled`` is unset.
 
     Returns :func:`block_occupancy` when ``filled`` is already stamped.
     Otherwise every one of ``block_bands`` (the block's own global band
