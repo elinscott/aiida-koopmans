@@ -10,13 +10,16 @@ import numpy as np
 import pytest
 
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
+    compose_wannier_split_u_file_contents,
     extend_wannier_u_dis_file_content,
     generate_wannier_centres_file_contents,
     generate_wannier_hr_file_contents,
     generate_wannier_u_file_contents,
     merge_wannier_centres_file_contents,
     merge_wannier_hr_file_contents,
+    merge_wannier_split_u_dis_file_contents,
     merge_wannier_u_file_contents,
+    parse_wannier_amn_file_contents,
     parse_wannier_centres_file_contents,
     parse_wannier_hr_file_contents,
     parse_wannier_u_file_contents,
@@ -242,3 +245,281 @@ class TestExtendUDis:
         )
         umat, _ = parse_wannier_u_file_contents(extended)
         np.testing.assert_allclose(umat, udis, atol=5e-11)
+
+
+# ---------------------------------------------------------------------------
+# Split-manifold disentanglement matrix
+# ---------------------------------------------------------------------------
+
+
+def _amn_file_contents(mat: np.ndarray) -> str:
+    """Write a ``(nkpts, num_bands, num_wann)`` matrix as a Wannier90 ``.amn``."""
+    nk, nbands, nwann = mat.shape
+    lines = ["synthetic split gauge", f"{nbands:12d}{nk:12d}{nwann:12d}"]
+    for ik in range(nk):
+        for iw in range(nwann):
+            for ib in range(nbands):
+                value = mat[ik, ib, iw]
+                lines.append(
+                    f"{ib + 1:5d}{iw + 1:5d}{ik + 1:5d}{value.real:18.12f}{value.imag:18.12f}"
+                )
+    return "\n".join(lines) + "\n"
+
+
+def _random_unitary(rng, n: int) -> np.ndarray:
+    q, r = np.linalg.qr(rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n)))
+    return q * (np.diag(r) / np.abs(np.diag(r)))
+
+
+def _staged_gauge(u_dis: np.ndarray, u_block: np.ndarray) -> np.ndarray:
+    """Rebuild the bands-to-Wannier gauge from the two-file form.
+
+    Both files are stored as ``(nkpts, num_wann, num_bands)``; transposing
+    each into band-index-first order and multiplying gives the map from
+    bands to Wannier functions. The orientation is the one calibrated
+    against wannier90's own ``_u.mat`` and ``_centres.xyz``.
+    """
+    return np.einsum("kbn,knm->kbm", u_dis.transpose(0, 2, 1), u_block.transpose(0, 2, 1))
+
+
+def _wannier_centres(gauge: np.ndarray, overlaps: np.ndarray, bvectors: np.ndarray) -> np.ndarray:
+    """Wannier centres from a gauge and the Bloch overlaps it rotates.
+
+    ``r_n = -(1/Nk) sum_kb b Im ln (U_k^H M_kb U_k+b)_nn`` at unit shell
+    weight. Unlike a Hamiltonian rebuilt from the same gauge, this is not
+    invariant under transposing or conjugating it, so it tells two
+    orientations apart.
+    """
+    nk = gauge.shape[0]
+    centres = np.zeros((gauge.shape[2], 3))
+    for ik in range(nk):
+        for ib, bvec in enumerate(bvectors):
+            rotated = gauge[ik].conj().T @ overlaps[ik, ib] @ gauge[(ik + 1) % nk]
+            centres -= np.outer(np.angle(np.diag(rotated)), bvec)
+    return centres / nk
+
+
+class TestSplitUDis:
+    """A split manifold's gauge must still rebuild its own Hamiltonian.
+
+    Synthesizes a parent manifold whose bands are split into groups, runs
+    the products through the writers this module ships, and asks whether
+    the staged pair (``_u_dis.mat`` from the split gauges, block-diagonal
+    ``_u.mat`` from the groups) reproduces the merged Hamiltonian. The
+    variants that drop or scramble the split gauge must not.
+    """
+
+    NBANDS, GROUPS, NK = 6, (2, 4), 3
+
+    def _fixture(self, seed: int = 7):
+        rng = np.random.default_rng(seed)
+        nk, nbands = self.NK, self.NBANDS
+        kpts = np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.0, 0.5, 0.5]])[:nk]
+        eps = np.sort(rng.normal(scale=5.0, size=(nk, nbands)), axis=1)
+        # The split gauge carries the parent's gauge but does not mix
+        # bands across the groups, which are separated in energy: it is
+        # unitary within each group's own band range. Anything else would
+        # leave the merged Hamiltonian non-block-diagonal, which is the
+        # property the split exists to produce.
+        split = np.zeros((nk, nbands, nbands), dtype=complex)
+        off = 0
+        for width in self.GROUPS:
+            block = np.stack([_random_unitary(rng, width) for _ in range(nk)])
+            split[:, off : off + width, off : off + width] = block
+            off += width
+        gauges = [np.stack([_random_unitary(rng, n) for _ in range(nk)]) for n in self.GROUPS]
+        return kpts, eps, split, gauges
+
+    @staticmethod
+    def _merged_hamiltonian(eps, split, gauges, groups):
+        """H in the final split basis, group by group, block-diagonal."""
+        nk = eps.shape[0]
+        total = sum(groups)
+        merged = np.zeros((nk, total, total), dtype=complex)
+        off = 0
+        for width, gauge in zip(groups, gauges, strict=True):
+            columns = split[:, :, off : off + width]
+            rotated = np.einsum("kbn,knm->kbm", columns, gauge.transpose(0, 2, 1))
+            block = np.einsum("kbm,kb,kbn->kmn", rotated.conj(), eps.astype(complex), rotated)
+            merged[:, off : off + width, off : off + width] = block
+            off += width
+        return merged
+
+    def _split_gauge_files(self, split):
+        off = 0
+        contents = []
+        for width in self.GROUPS:
+            contents.append(_amn_file_contents(split[:, :, off : off + width]))
+            off += width
+        return contents
+
+    def _gauge_files(self, gauges, kpts):
+        return [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+
+    def _two_file_gauge(self, split, gauges, kpts):
+        """Build the same gauge via the independent two-file path."""
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(self._split_gauge_files(split), kpts)
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
+        )
+        return _staged_gauge(u_dis, u_block)
+
+    def _composed_gauge(self, split, gauges, kpts):
+        composed, _ = parse_wannier_u_file_contents(
+            compose_wannier_split_u_file_contents(
+                self._split_gauge_files(split), self._gauge_files(gauges, kpts), kpts
+            )
+        )
+        return composed.transpose(0, 2, 1)
+
+    def test_the_two_forms_build_the_same_gauge(self):
+        """The one-file and two-file forms must agree element by element.
+
+        They are assembled by different functions from the same inputs, so
+        this pins the composition where the Hamiltonian rebuild cannot: it
+        is invariant under transposing or conjugating the whole gauge, and
+        so cannot tell these orientations apart.
+        """
+        kpts, _, split, gauges = self._fixture()
+        np.testing.assert_allclose(
+            self._composed_gauge(split, gauges, kpts),
+            self._two_file_gauge(split, gauges, kpts),
+            atol=1e-9,
+        )
+
+    def test_the_composed_gauge_gives_the_right_centres(self):
+        """A transpose-sensitive anchor: the centres the gauge implies.
+
+        The Wannier centres follow from the gauge and the Bloch overlaps,
+        and change under an orientation the Hamiltonian rebuild would
+        accept. Computed off the two-file gauge and off the composed one,
+        they must agree; with the gauge conjugated they do not.
+        """
+        rng = np.random.default_rng(11)
+        kpts, _, split, gauges = self._fixture()
+        nk, nbands = self.NK, self.NBANDS
+        bvectors = np.array([[0.4, 0.0, 0.0], [0.0, 0.3, 0.0]])
+        overlaps = np.stack(
+            [np.stack([_random_unitary(rng, nbands) for _ in bvectors]) for _ in range(nk)]
+        )
+        reference = self._two_file_gauge(split, gauges, kpts)
+        composed = self._composed_gauge(split, gauges, kpts)
+        np.testing.assert_allclose(
+            _wannier_centres(composed, overlaps, bvectors),
+            _wannier_centres(reference, overlaps, bvectors),
+            atol=1e-8,
+        )
+        wrong = np.einsum("kbn->knb", composed.conj())
+        assert (
+            np.abs(
+                _wannier_centres(wrong, overlaps, bvectors)
+                - _wannier_centres(reference, overlaps, bvectors)
+            ).max()
+            > 1e-3
+        )
+
+    def test_composed_u_reproduces_the_merged_hamiltonian(self):
+        """The isolated form: one square ``_u.mat``, no disentanglement file."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        composed, _ = parse_wannier_u_file_contents(
+            compose_wannier_split_u_file_contents(
+                self._split_gauge_files(split), self._gauge_files(gauges, kpts), kpts
+            )
+        )
+        gauge = composed.transpose(0, 2, 1)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        np.testing.assert_allclose(rebuilt, target, atol=1e-9)
+
+    def test_composing_a_disentangled_parent_raises(self):
+        """A parent that read more bands than it Wannierized needs the other form."""
+        kpts, _, split, gauges = self._fixture()
+        with pytest.raises(ValueError, match="disentangled"):
+            compose_wannier_split_u_file_contents(
+                self._split_gauge_files(split)[:1], self._gauge_files(gauges, kpts)[:1], kpts
+            )
+
+    def test_split_gauges_reproduce_the_merged_hamiltonian(self):
+        """The disentangled form: the split gauges concatenated into ``_u_dis.mat``."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(self._split_gauge_files(split), kpts)
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(self._gauge_files(gauges, kpts))
+        )
+        # The staged pair, read back through this module's own parser.
+        gauge = _staged_gauge(u_dis, u_block)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        np.testing.assert_allclose(rebuilt, target, atol=1e-9)
+
+    def test_conjugating_the_group_gauge_breaks_the_two_forms_agreement(self):
+        """The group gauge enters transposed, not adjoint.
+
+        The Hamiltonian rebuild cannot see this: it is invariant under
+        transposing or conjugating the whole gauge, which is why the
+        agreement between the two forms is the check that catches it.
+        """
+        kpts, _, split, gauges = self._fixture()
+        split_gauges = [
+            parse_wannier_amn_file_contents(c, check_square=False)
+            for c in self._split_gauge_files(split)
+        ]
+        wrong = np.concatenate(
+            [
+                np.einsum("kbn,knm->kbm", r, g.conj().transpose(0, 2, 1))
+                for r, g in zip(split_gauges, gauges, strict=True)
+            ],
+            axis=2,
+        )
+        assert np.abs(wrong - self._two_file_gauge(split, gauges, kpts)).max() > 1e-3
+
+    def test_dropping_the_split_gauge_fails(self):
+        """The block-diagonal gauge alone is not the manifold's gauge."""
+        _, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        nk, total = eps.shape[0], sum(self.GROUPS)
+        blockdiag = np.zeros((nk, total, total), dtype=complex)
+        off = 0
+        for width, gauge in zip(self.GROUPS, gauges, strict=True):
+            blockdiag[:, off : off + width, off : off + width] = gauge
+            off += width
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", blockdiag.conj(), eps.astype(complex), blockdiag)
+        assert np.abs(rebuilt - target).max() > 1e-3
+
+    def test_mis_ordered_groups_fail(self):
+        """Concatenating the split gauges out of band order is detected."""
+        kpts, eps, split, gauges = self._fixture()
+        target = self._merged_hamiltonian(eps, split, gauges, self.GROUPS)
+        off = 0
+        columns = []
+        for width in self.GROUPS:
+            columns.append(split[:, :, off : off + width])
+            off += width
+        u_dis, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(
+                [_amn_file_contents(c) for c in reversed(columns)], kpts
+            )
+        )
+        u_block, _ = parse_wannier_u_file_contents(
+            merge_wannier_u_file_contents(
+                [generate_wannier_u_file_contents(g, kpts) for g in gauges]
+            )
+        )
+        gauge = _staged_gauge(u_dis, u_block)
+        rebuilt = np.einsum("kbm,kb,kbn->kmn", gauge.conj(), eps.astype(complex), gauge)
+        assert np.abs(rebuilt - target).max() > 1e-3
+
+    def test_rectangular_split_gauges_round_trip(self):
+        """A split gauge is rectangular; the square check must be off."""
+        kpts, _, split, _ = self._fixture()
+        contents = [_amn_file_contents(split[:, :, :2]), _amn_file_contents(split[:, :, 2:])]
+        merged, _ = parse_wannier_u_file_contents(
+            merge_wannier_split_u_dis_file_contents(contents, kpts)
+        )
+        assert merged.shape == (self.NK, self.NBANDS, self.NBANDS)
+        with pytest.raises(ValueError, match="not square"):
+            parse_wannier_amn_file_contents(contents[0])

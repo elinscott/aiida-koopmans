@@ -456,6 +456,42 @@ def block_occupancy(block: ProjectionBlock) -> bool:
     return bool(block["filled"])
 
 
+def resolve_block_occupancy(
+    block: ProjectionBlock, block_bands: Sequence[int], num_occ_bands: int | None
+) -> bool:
+    """Return whether ``block`` is occupied, from ``num_occ_bands`` if ``filled`` is unset.
+
+    Returns :func:`block_occupancy` when ``filled`` is already stamped.
+    Otherwise every one of ``block_bands`` (the block's own global band
+    indices) must sit on the same side of the occupied/empty boundary at
+    band ``num_occ_bands`` -- a block whose bands straddle it draws its
+    Wannier functions from both manifolds, which no single occupancy can
+    describe, and raises :class:`BlockBoundaryError`. Raises the same error
+    when ``num_occ_bands`` is not given: an unstamped block has no other way
+    to settle its occupancy.
+    """
+    if "filled" in block:
+        return block_occupancy(block)
+    if num_occ_bands is None:
+        raise BlockBoundaryError(
+            f"Block {block['label']!r} does not say whether it is occupied or "
+            "empty, and no occupied-band boundary was given to settle it from "
+            "the band-group detection.",
+            label=block["label"],
+        )
+    below = [band for band in block_bands if band <= num_occ_bands]
+    above = [band for band in block_bands if band > num_occ_bands]
+    if below and above:
+        raise BlockBoundaryError(
+            f"Block {block['label']!r} spans the occupied/empty boundary at band "
+            f"{num_occ_bands}: bands {sorted(below)} are occupied and "
+            f"{sorted(above)} are empty. A projection block must come from a "
+            "single manifold.",
+            label=block["label"],
+        )
+    return bool(below)
+
+
 class ProjectionBlockId(TypedDict):
     """Identity-and-shape view of a :class:`ProjectionBlock`.
 

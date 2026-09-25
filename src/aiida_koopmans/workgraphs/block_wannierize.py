@@ -532,8 +532,11 @@ class WannierizeBlockOutputs(TypedDict):
     * ``u_file`` / ``hr_file`` / ``centres_file`` -- the gauge-product trio
       (``aiida_u.mat`` / ``aiida_hr.dat`` / ``aiida_centres.xyz``):
       extracted from the wannier90 ``retrieved`` folder for a
-      plainly-Wannierised block, merged block-diagonally from the per-group
-      runs for a split one.
+      plainly-Wannierised block. For a split one ``hr_file`` and
+      ``centres_file`` are merged from the per-group runs, while ``u_file``
+      is composed: each group's gauge acts only within its own manifold,
+      so the split gauge mapping the parent's bands onto
+      that group is composed onto it.
     * ``nnkp_file`` -- the ``aiida.nnkp`` SinglefileData from the ``-pp``
       run (gauge-independent, hence shared by both routes).
     * ``u_dis_file`` -- the block's ``aiida_u_dis.mat``
@@ -1791,6 +1794,10 @@ def WannierizeBlocks(
                 nscf_remote_folder=nscf_scratch,
                 kpoints=kpoints,
                 mp_grid=mp_grid,
+                # ``_resolve_split_mode`` already required ``num_occ_bands``
+                # for split mode; a block with no ``filled`` stamp of its
+                # own settles its occupancy from it.
+                num_occ_bands=num_occ_bands,
                 pseudo_family=pseudo_family,
                 protocol=protocol,
                 overrides=overrides or None,
