@@ -1134,7 +1134,7 @@ def _mlwf_init_codes_for(codes: DscfCodes) -> Any:
 
 
 @task.graph
-def KoopmansDSCFWorkflow(
+def KoopmansDSCFWorkflow(  # noqa: C901
     codes: DscfCodes,
     structure: orm.StructureData,
     pseudo_family: str,
@@ -1406,21 +1406,34 @@ def KoopmansDSCFWorkflow(
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
         pw_scale_offset = init["pw_scale_offset"]
-        smooth_block_wannierizations = _smooth_block_wannierizations(
-            do_smooth=ui_do_smooth,
-            codes=_wannierize_blocks_codes_for(codes),
-            structure=structure,
-            blocks=blocks,
-            smooth_kpoints=smooth_kpoints,
-            smooth_mp_grid=smooth_mp_grid,
-            scf_remote_folder=init["scf_remote_folder"],
-            pseudo_family=pseudo_family,
-            protocol=wannier_protocol,
-            overrides=wannier_overrides,
-            spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
-            interpolation_kpoints=kpath,
-            parallelization=parallelization,
-        )
+        if ui_do_smooth:
+            # The denser mesh is Wannierized off the same shared scf, with
+            # the same blocks and the same overrides: the
+            # smooth-interpolation method swaps one Wannier-gauge DFT
+            # Hamiltonian for another, so only the mesh differs between the
+            # two runs. ``wannier_overrides`` must therefore carry the same
+            # ``nscf`` keywords the coarse run used, spin regime included —
+            # :func:`WannierizeBlocks` skips its own scf and runs only a
+            # fresh nscf on ``smooth_kpoints`` off ``init["scf_remote_folder"]``.
+            smooth = WannierizeBlocks(
+                codes=_wannierize_blocks_codes_for(codes),
+                structure=structure,
+                blocks=cast("list", blocks),
+                kpoints=smooth_kpoints,
+                mp_grid=list(cast("list[int]", smooth_mp_grid)),
+                scf_remote_folder=init["scf_remote_folder"],
+                pseudo_family=pseudo_family,
+                protocol=wannier_protocol,
+                overrides=wannier_overrides,
+                spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+                interpolation_kpoints=kpath,
+                parallelization=parallelization,
+                metadata={
+                    "call_link_label": "wannierize_smooth",
+                    "label": "Smooth wannierization",
+                },
+            )
+            smooth_block_wannierizations = smooth["blocks"]
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -1748,59 +1761,6 @@ def KoopmansDSCFWorkflow(
         if ui_do_dos:
             outputs["dos"] = bands["dos"]
     return outputs
-
-
-def _smooth_block_wannierizations(
-    *,
-    do_smooth: bool,
-    codes: WannierizeBlocksCodes,
-    structure: orm.StructureData,
-    blocks: list | None,
-    smooth_kpoints: orm.KpointsData | None,
-    smooth_mp_grid: list[int] | None,
-    scf_remote_folder: orm.RemoteData,
-    pseudo_family: str | None,
-    protocol: str | None,
-    overrides: WannierizeOverrides | None,
-    spin_type: SpinType,
-    interpolation_kpoints: orm.KpointsData | None,
-    parallelization: ParallelizationDict | None,
-) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
-    """Wannierize ``blocks`` on the denser mesh for the smooth-interpolation correction.
-
-    A no-op without ``do_smooth``. The denser mesh is Wannierized off the
-    same shared scf, with the same blocks and the same overrides: the
-    smooth-interpolation method swaps one Wannier-gauge DFT Hamiltonian for
-    another, so only the mesh differs between the two runs.
-
-    ``scf_remote_folder`` must be a converged scf on ``structure``:
-    :func:`WannierizeBlocks` skips its own scf and runs only a fresh nscf on
-    ``smooth_kpoints`` off it. ``overrides`` must therefore carry the same
-    ``nscf`` keywords the coarse run used, spin regime included.
-
-    ``interpolation_kpoints``, given, also runs the pw.x explicit band
-    structure and the per-block wannier90 interpolation on this denser
-    mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps, not
-    re-exposed as a named output here.
-    """
-    if not do_smooth:
-        return None
-    smooth = WannierizeBlocks(
-        codes=codes,
-        structure=structure,
-        blocks=cast("list", blocks),
-        kpoints=smooth_kpoints,
-        mp_grid=list(cast("list[int]", smooth_mp_grid)),
-        scf_remote_folder=scf_remote_folder,
-        pseudo_family=pseudo_family,
-        protocol=protocol,
-        overrides=overrides,
-        spin_type=spin_type,
-        interpolation_kpoints=interpolation_kpoints,
-        parallelization=parallelization,
-        metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
-    )
-    return smooth["blocks"]
 
 
 def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
