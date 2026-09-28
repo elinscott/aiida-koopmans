@@ -43,7 +43,7 @@ from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
 )
-from aiida_koopmans.projections import ProjectionBlockId
+from aiida_koopmans.projections import MergeGroupId, ProjectionBlockId
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons_task
@@ -65,7 +65,8 @@ from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_ha
 from aiida_koopmans.workgraphs.ui import DensityOfStates
 from aiida_koopmans.workgraphs.ui.band_structure import (
     KoopmansBandStructureTask,
-    MergeGroupWithHamiltonianId,
+    extract_koopmans_hamiltonian,
+    manifold_label,
 )
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
@@ -1727,7 +1728,7 @@ def KoopmansDSCFWorkflow(
         ).result
         bands = KoopmansBandStructureTask(
             structure=structure,
-            koopmans_ham_retrieved=ki_final["retrieved"],
+            koopmans_hamiltonians=_kcp_koopmans_hamiltonians(spin_polarized, ki_final["retrieved"]),
             manifolds=manifolds,
             block_wannierizations=cast("dict", block_wannierizations),
             smooth_block_wannierizations=smooth_block_wannierizations,
@@ -1767,15 +1768,24 @@ def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
+def dscf_manifolds(spin_polarized: bool) -> list[tuple[bool, SpinChannel]]:
+    """List the (filling, channel) manifolds a ΔSCF band structure covers.
+
+    Occupied before empty within a channel, up before down — the order the
+    interpolated eigenvalues are concatenated in.
+    """
+    spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
+    return [(filled, spin) for spin in spins for filled in (True, False)]
+
+
 @task
 def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> list:
     """Build the ΔSCF route's manifold specs from the initialisation's merge groups.
 
-    One spec per (filling, spin) the run needs, each naming the kcp.x
-    Hamiltonian file for its manifold (up, and the single channel of an
-    unpolarized run, at spin index 1; down at 2) and carrying its blocks in
-    band order, off the ``merge_groups`` partition the initialisation
-    wannierization emitted.
+    One :class:`~aiida_koopmans.projections.MergeGroupId` per (filling,
+    spin) the run needs, carrying that manifold's blocks in band order off
+    the ``merge_groups`` partition the initialisation wannierization
+    emitted.
 
     A genuine task, not a plain helper: ``merge_groups`` usually threads
     through from the initialisation wannierization's own output, a future
@@ -1784,45 +1794,58 @@ def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> lis
     Raises:
         ValueError: a spin channel this route needs has no merge group.
     """
-    spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
-    specs: list[MergeGroupWithHamiltonianId] = []
-    for spin in spins:
-        for filled in (True, False):
-            matches = [
-                group["blocks"]
-                for group in merge_groups
-                if bool(group["filled"]) == filled and SpinChannel(group["spin"]) == spin
-            ]
-            if not matches:
-                raise ValueError(
-                    f"Interpolating a band structure needs an occupied and an empty "
-                    f"projection manifold in every spin channel; the run has none for "
-                    f"filled={filled}, spin={spin.value!r}. Add projections covering the "
-                    "empty bands (and both spin channels, if polarized)."
-                )
-            [blocks] = matches
-            specs.append(
-                MergeGroupWithHamiltonianId(
-                    filled=filled,
-                    spin=spin,
-                    filename=kcp_hamiltonian_filename(
-                        filled=filled,
-                        # kcp.x indexes its printed files 1 = up (and the single
-                        # channel of an unpolarized run), 2 = down.
-                        spin_index=2 if spin == SpinChannel.DOWN else 1,
-                    ),
-                    blocks=[
-                        ProjectionBlockId(
-                            label=str(block["label"]),
-                            spin=SpinChannel(block["spin"]),
-                            filled=filled,
-                            num_wann=int(block["num_wann"]),
-                        )
-                        for block in blocks
-                    ],
-                )
+    specs: list[MergeGroupId] = []
+    for filled, spin in dscf_manifolds(spin_polarized):
+        matches = [
+            group["blocks"]
+            for group in merge_groups
+            if bool(group["filled"]) == filled and SpinChannel(group["spin"]) == spin
+        ]
+        if not matches:
+            raise ValueError(
+                f"Interpolating a band structure needs an occupied and an empty "
+                f"projection manifold in every spin channel; the run has none for "
+                f"filled={filled}, spin={spin.value!r}. Add projections covering the "
+                "empty bands (and both spin channels, if polarized)."
             )
+        [blocks] = matches
+        specs.append(
+            MergeGroupId(
+                filled=filled,
+                spin=spin,
+                blocks=[
+                    ProjectionBlockId(
+                        label=str(block["label"]),
+                        spin=SpinChannel(block["spin"]),
+                        filled=filled,
+                        num_wann=int(block["num_wann"]),
+                    )
+                    for block in blocks
+                ],
+            )
+        )
     return specs
+
+
+def _kcp_koopmans_hamiltonians(spin_polarized: bool, retrieved) -> dict:
+    """Lift each manifold's Koopmans Hamiltonian out of the final KI's folder.
+
+    Keyed by
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.manifold_label`,
+    the band structure task's own namespace key. Which manifolds exist
+    follows ``spin_polarized`` alone, so the keys are known here even
+    though :func:`dscf_manifold_specs` only fills in their blocks once the
+    initialisation wannierization has run.
+    """
+    hamiltonians = {}
+    for filled, spin in dscf_manifolds(spin_polarized):
+        label = manifold_label(filled=filled, spin=spin)
+        hamiltonians[label] = extract_koopmans_hamiltonian(
+            retrieved=retrieved,
+            filename=kcp_hamiltonian_filename(filled=filled, spin=spin),
+            metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+        ).result
+    return hamiltonians
 
 
 def _run_predicted_final_ki(

@@ -5,18 +5,29 @@ large, so the CalcJob's retrieve-list glob and the ΔSCF band-structure
 filename convention share one small, dependency-free module.
 """
 
+from aiida_koopmans.spin import SpinChannel
+
 #: Glob patterns naming the Koopmans Hamiltonians kcp.x prints under
 #: ``write_hr``, one occupied and one empty file per spin channel, in the
 #: working directory (QE ``CPV/write_hamiltonian.f90``).
 KCP_HAMILTONIAN_PATTERNS = ("ham_occ_*.dat", "ham_emp_*.dat")
 
 
-def kcp_hamiltonian_filename(*, filled: bool, spin_index: int) -> str:
+def kcp_hamiltonian_filename(*, filled: bool, spin: SpinChannel) -> str:
     """Name the Koopmans Hamiltonian kcp.x prints for one manifold.
 
-    ``spin_index`` is kcp.x's 1-based spin index: 1 for up (and for the
-    single channel of an unpolarized run), 2 for down.
+    kcp.x indexes its printed files by its own 1-based spin index: 1 for
+    up, and for the single channel of an unpolarized run; 2 for down.
+
+    Raises:
+        ValueError: ``spin`` is the spinor channel, which kcp.x has no
+            mode for.
     """
-    if spin_index not in (1, 2):
-        raise ValueError(f"spin_index must be 1 or 2, got {spin_index!r}")
+    channel = SpinChannel(spin)
+    if channel == SpinChannel.SPINOR:
+        raise ValueError(
+            "kcp.x has no noncollinear mode and prints no Hamiltonian for a spinor "
+            "manifold; run the unpolarized or the collinear ('up'/'down') route."
+        )
+    spin_index = 2 if channel == SpinChannel.DOWN else 1
     return f"ham_{'occ' if filled else 'emp'}_{spin_index}.dat"

@@ -1,29 +1,27 @@
 """Koopmans band structure assembly, shared by the ΔSCF and DFPT routes.
 
 A Koopmans band structure is assembled one (filling, spin) manifold at a
-time: lift that manifold's Koopmans Hamiltonian out of the producing
-calculation's retrieved folder, collect its Wannier centres, interpolate it
-along the k-path — with the smooth-interpolation correction when a
-denser-mesh Wannierization is supplied — and concatenate the manifolds into
-one ``BandsData``.
+time: take that manifold's Koopmans Hamiltonian, collect its Wannier
+centres, interpolate it along the k-path — with the smooth-interpolation
+correction when a denser-mesh Wannierization is supplied — and concatenate
+the manifolds into one ``BandsData``.
 
 :func:`KoopmansBandStructureTask` runs that fan-out for whatever manifolds
-its caller declares. Which file holds each manifold's Koopmans Hamiltonian,
-and how the manifolds are partitioned, is the route's own knowledge: the
-ΔSCF route (:mod:`aiida_koopmans.workgraphs.kcp`) reads kcp.x's supercell
-``ham_*.dat`` files, keyed by the ``merge_groups`` partition its
-initialisation wannierization emitted; the DFPT route
-(:mod:`aiida_koopmans.workgraphs.dfpt`) reads kcw.x's ``*.kcw_hr_*.dat``
-files, keyed by its own ``occ_labels`` / ``emp_labels``. Both pass that
-knowledge in as a list of :class:`MergeGroupWithHamiltonianId`, the repo-wide manifold
-contract (:class:`~aiida_koopmans.projections.MergeGroupId`) plus the one
-field specific to a Koopmans band structure. Block-to-node lookups go
-through the contract's own
+its caller declares: a list of :class:`~aiida_koopmans.projections.MergeGroupId`
+(the repo-wide manifold contract) beside a namespace of Hamiltonian files
+keyed by :func:`manifold_label`. Lifting each file out of the producing
+calculation's retrieved folder is the route's own step — the ΔSCF route
+(:mod:`aiida_koopmans.workgraphs.kcp`) kcp.x's supercell ``ham_*.dat``,
+the DFPT route (:mod:`aiida_koopmans.workgraphs.dfpt`) kcw.x's
+``*.kcw_hr_*.dat`` — through :func:`extract_koopmans_hamiltonian`, so no
+filename crosses into this task. Block-to-node lookups go through the
+contract's own
 :func:`~aiida_koopmans.workgraphs.utils.wannier_merge.block_nodes_by_group`,
 never a local re-implementation of the join.
 """
 
 import io
+from collections.abc import Mapping, Sequence
 from typing import Annotated, NotRequired, TypedDict
 
 import numpy as np
@@ -43,21 +41,46 @@ from aiida_koopmans.workgraphs.utils.wannier_merge import (
 )
 
 
-class MergeGroupWithHamiltonianId(MergeGroupId):
-    """A merge group plus the Koopmans Hamiltonian file that holds its bands."""
+def manifold_label(*, filled: bool, spin: SpinChannel) -> str:
+    """Name one (filling, spin) manifold: filling, spin-qualified unless ``'none'``.
 
-    filename: str
-
-
-def _manifold_label(*, filled: bool, spin: SpinChannel) -> str:
-    """Name one manifold for task link labels: filling, spin-qualified when polarized.
-
-    A single-channel run (``spin='none'``, or one physical channel run on
-    its own, as the DFPT route's per-channel call does) never qualifies the
-    label; a run stacking both spin channels in one call does.
+    The name is both the key of the ``koopmans_hamiltonians`` namespace and
+    the stem of the manifold's task link labels, so a route keying that
+    namespace and :func:`KoopmansBandStructureTask` reading it back call
+    this one function rather than spelling the key twice.
     """
     manifold = "occ" if filled else "emp"
-    return manifold if spin == SpinChannel.NONE else f"{manifold}_{spin.value}"
+    channel = SpinChannel(spin)
+    return manifold if channel == SpinChannel.NONE else f"{manifold}_{channel.value}"
+
+
+def hamiltonians_by_manifold[T](
+    manifolds: Sequence[MergeGroupId], hamiltonians: Mapping[str, T]
+) -> list[T]:
+    """Return each manifold's Koopmans Hamiltonian, parallel to ``manifolds``.
+
+    Joins the two halves of the band-structure input: ``manifolds`` says
+    which manifolds to interpolate, ``hamiltonians`` maps a
+    :func:`manifold_label` to the file the producing calculation printed
+    for that manifold. Every label the manifolds name must appear and
+    nothing else may.
+
+    Raises:
+        ValueError: If the labels the manifolds name and the keys of
+            ``hamiltonians`` are not the same set.
+    """
+    wanted = [
+        manifold_label(filled=bool(group["filled"]), spin=SpinChannel(group["spin"]))
+        for group in manifolds
+    ]
+    available = {str(key) for key in hamiltonians}
+    if available != set(wanted):
+        raise ValueError(
+            f"The Koopmans Hamiltonians are keyed {sorted(available)}, but the manifolds "
+            f"name {sorted(set(wanted))}. Pass one Hamiltonian per manifold, keyed by "
+            "``manifold_label(filled=..., spin=...)``."
+        )
+    return [hamiltonians[label] for label in wanted]
 
 
 def _channel_manifolds(manifolds: list) -> dict:
@@ -68,9 +91,8 @@ def _channel_manifolds(manifolds: list) -> dict:
 
     Raises:
         ValueError: two manifolds claim the same ``(filled, spin)`` pair; a
-            channel has no occupied manifold; ``spin='none'`` is mixed with
-            a polarized channel; or a ``spin='down'`` channel has no
-            ``spin='up'`` channel to pair it with.
+            channel has no occupied manifold; or the manifolds cover
+            several channels that are not exactly ``'up'`` and ``'down'``.
     """
     by_channel: dict[SpinChannel, dict[bool, dict]] = {}
     for spec in manifolds:
@@ -84,15 +106,12 @@ def _channel_manifolds(manifolds: list) -> dict:
             )
         channel[filled] = spec
 
-    if SpinChannel.NONE in by_channel and len(by_channel) > 1:
+    if len(by_channel) > 1 and set(by_channel) != {SpinChannel.UP, SpinChannel.DOWN}:
         raise ValueError(
-            "The manifolds mix spin='none' with a polarized spin channel; a band "
-            "structure is either unpolarized (spin='none' only) or polarized "
-            "(spin='up' / spin='down' only)."
-        )
-    if SpinChannel.DOWN in by_channel and SpinChannel.UP not in by_channel:
-        raise ValueError(
-            "The manifolds have a spin='down' channel with no spin='up' channel to pair it with."
+            f"The manifolds cover the spin channels "
+            f"{sorted(channel.value for channel in by_channel)}; a band structure covers "
+            "one channel on its own, or the 'up' and 'down' channels of a collinear run "
+            "stacked together."
         )
     for spin, channel in by_channel.items():
         if True not in channel:
@@ -303,7 +322,7 @@ class KoopmansBandStructureOutputs(TypedDict):
 @task.graph
 def KoopmansBandStructureTask(
     structure: orm.StructureData,
-    koopmans_ham_retrieved: orm.FolderData,
+    koopmans_hamiltonians: Annotated[dict, dynamic(orm.SinglefileData)],
     manifolds: list,
     block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
     kgrid: list[int],
@@ -316,9 +335,8 @@ def KoopmansBandStructureTask(
 ) -> KoopmansBandStructureOutputs:
     """Interpolate a Koopmans band structure from its manifolds' Hamiltonians.
 
-    One interpolation per manifold in ``manifolds``, off the Hamiltonian its
-    own ``filename`` names inside ``koopmans_ham_retrieved``, with that
-    manifold's Wannier centres; the results are concatenated
+    One interpolation per manifold in ``manifolds``, off that manifold's
+    Koopmans Hamiltonian and Wannier centres; the results are concatenated
     occupied-then-empty within a channel and, when ``manifolds`` covers both
     a ``spin='up'`` and a ``spin='down'`` channel, stacked across them.
     Whether the run is polarized is read off ``manifolds`` itself — there is
@@ -326,12 +344,13 @@ def KoopmansBandStructureTask(
 
     Args:
         structure: the primitive cell the wannierizations ran on.
-        koopmans_ham_retrieved: the retrieved folder holding every
-            manifold's printed Koopmans Hamiltonian.
-        manifolds: one :class:`MergeGroupWithHamiltonianId` per (filling, spin) manifold to
-            interpolate. Building this list — which file names each
-            manifold's Hamiltonian, and which blocks belong to it — is the
-            calling route's own knowledge.
+        koopmans_hamiltonians: one printed Koopmans Hamiltonian per
+            manifold, keyed by :func:`manifold_label`.
+        manifolds: one
+            :class:`~aiida_koopmans.projections.MergeGroupId` per
+            (filling, spin) manifold to interpolate. Building this list —
+            which blocks belong to each manifold, in which band order — is
+            the calling route's own knowledge.
         block_wannierizations: the per-block wannierization outputs, keyed
             by block label.
         kgrid: the Monkhorst-Pack grid the Koopmans Hamiltonian lives on
@@ -353,31 +372,30 @@ def KoopmansBandStructureTask(
 
     Raises:
         ValueError: ``manifolds`` is not a valid partition — see
-            :func:`_channel_manifolds`.
+            :func:`_channel_manifolds` — or ``koopmans_hamiltonians`` does
+            not hold exactly the manifolds' Hamiltonians.
     """
     channels = _channel_manifolds(manifolds)
+    hamiltonians = hamiltonians_by_manifold(manifolds, koopmans_hamiltonians)
 
     # One join across every manifold at once: the join is exact-set, so it
     # must see every block every manifold names, no more and no less.
     entries_by_manifold = block_nodes_by_group(manifolds, block_wannierizations)
-    smooth_entries_by_manifold = (
-        block_nodes_by_group(manifolds, smooth_block_wannierizations)
-        if smooth_block_wannierizations is not None
-        else [None] * len(manifolds)
-    )
+    smooth_entries_by_manifold: list[list | None]
+    if smooth_block_wannierizations is None:
+        smooth_entries_by_manifold = [None] * len(manifolds)
+    else:
+        smooth_entries_by_manifold = list(
+            block_nodes_by_group(manifolds, smooth_block_wannierizations)
+        )
 
     energies_by_manifold = {}
-    for spec, entries, smooth_entries in zip(
-        manifolds, entries_by_manifold, smooth_entries_by_manifold, strict=True
+    for spec, hamiltonian, entries, smooth_entries in zip(
+        manifolds, hamiltonians, entries_by_manifold, smooth_entries_by_manifold, strict=True
     ):
         filled = bool(spec["filled"])
         spin = SpinChannel(spec["spin"])
-        label = _manifold_label(filled=filled, spin=spin)
-        hamiltonian = extract_koopmans_hamiltonian(
-            retrieved=koopmans_ham_retrieved,
-            filename=spec["filename"],
-            metadata={"call_link_label": f"extract_{label}_hamiltonian"},
-        ).result
+        label = manifold_label(filled=filled, spin=spin)
         energies_by_manifold[filled, spin] = interpolate_manifold(
             hamiltonian,
             entries,
@@ -389,8 +407,11 @@ def KoopmansBandStructureTask(
             use_ws_distance=use_ws_distance,
         )
 
-    first = SpinChannel.NONE if SpinChannel.NONE in channels else SpinChannel.UP
-    second = SpinChannel.DOWN if SpinChannel.DOWN in channels else None
+    if len(channels) == 2:
+        first, second = SpinChannel.UP, SpinChannel.DOWN
+    else:
+        (first,) = channels
+        second = None
 
     merge_kwargs = {
         "occupied": energies_by_manifold[True, first],

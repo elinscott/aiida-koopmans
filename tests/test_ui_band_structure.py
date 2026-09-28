@@ -28,7 +28,7 @@ from tests.fixtures import (
     assert_graph_roundtrips,
     block_view,
     block_wannierization,
-    occ_emp_manifold_specs,
+    occ_emp_merge_groups,
 )
 
 
@@ -43,6 +43,30 @@ def _retrieved_with_hamiltonians(names):
     for name in names:
         folder.base.repository.put_object_from_filelike(io.BytesIO(b"h"), name)
     return folder.store()
+
+
+def _hamiltonians(*labels, content=None):
+    """Return one Koopmans Hamiltonian node per manifold label.
+
+    Each file holds its own label, so a manifold reading the wrong one is
+    visible; ``content`` overrides that with one shared file.
+    """
+    return {
+        label: orm.SinglefileData(
+            io.BytesIO((label if content is None else content).encode()),
+            filename="aiida_hr.dat",
+        ).store()
+        for label in labels
+    }
+
+
+def _manifold_hamiltonians(manifolds):
+    """Return the Hamiltonian namespace a list of manifolds asks for."""
+    from aiida_koopmans.workgraphs.ui.band_structure import manifold_label
+
+    return _hamiltonians(
+        *[manifold_label(filled=spec["filled"], spin=spec["spin"]) for spec in manifolds]
+    )
 
 
 # ----------------------------------------------------------------------
@@ -174,57 +198,57 @@ class TestChannelManifoldsValidation:
         with pytest.raises(ValueError, match="Two manifolds both claim"):
             self._group(
                 [
-                    {"filled": True, "spin": "none", "filename": "a", "blocks": ["x"]},
-                    {"filled": True, "spin": "none", "filename": "b", "blocks": ["y"]},
+                    {"filled": True, "spin": "none", "blocks": ["x"]},
+                    {"filled": True, "spin": "none", "blocks": ["y"]},
                 ]
             )
 
     def test_an_empty_manifold_needs_its_occupied_one(self):
         with pytest.raises(ValueError, match="no occupied one"):
-            self._group([{"filled": False, "spin": "none", "filename": "a", "blocks": ["x"]}])
+            self._group([{"filled": False, "spin": "none", "blocks": ["x"]}])
 
     def test_spin_none_cannot_mix_with_a_polarized_channel(self):
-        with pytest.raises(ValueError, match="mix spin='none'"):
+        with pytest.raises(ValueError, match="cover the spin channels"):
             self._group(
                 [
-                    {"filled": True, "spin": "none", "filename": "a", "blocks": ["x"]},
-                    {"filled": True, "spin": "up", "filename": "b", "blocks": ["y"]},
+                    {"filled": True, "spin": "none", "blocks": ["x"]},
+                    {"filled": True, "spin": "up", "blocks": ["y"]},
                 ]
             )
 
-    def test_a_down_channel_needs_an_up_channel_to_pair_with(self):
-        """Nothing builds a lone down channel.
+    def test_a_third_channel_cannot_join_a_collinear_pair(self):
+        """Only 'up' and 'down' stack; any other pair of channels is refused.
 
-        Both routes only ever pass one physical channel as ``spin='none'``,
-        or pass up and down together.
+        The spinor channel of a noncollinear run is one manifold set on its
+        own — nothing stacks it against a collinear channel.
         """
-        with pytest.raises(ValueError, match=r"spin='down'.*no spin='up'"):
+        with pytest.raises(ValueError, match="cover the spin channels"):
             self._group(
                 [
-                    {"filled": True, "spin": "down", "filename": "a", "blocks": ["x"]},
-                    {"filled": False, "spin": "down", "filename": "b", "blocks": ["y"]},
+                    {"filled": True, "spin": "up", "blocks": ["x"]},
+                    {"filled": True, "spin": "spinor", "blocks": ["y"]},
                 ]
             )
 
-    def test_an_up_channel_on_its_own_is_not_refused(self):
-        """Negative control: it is 'down without up' that is refused, not a lone channel.
+    def test_a_lone_down_channel_is_accepted(self):
+        """The DFPT route's per-channel call is one physical channel, named honestly.
 
-        The DFPT route's per-channel call is exactly one physical channel on
-        its own (labelled ``spin='none'`` from this task's point of view);
-        a caller stating that channel as ``spin='up'`` must not be refused
-        for the same reason a lone ``spin='down'`` is.
+        A collinear DFPT run interpolates each channel in its own
+        ``RunDFPT``, so the down channel arrives on its own carrying
+        ``spin='down'``; refusing it for having no ``spin='up'`` partner
+        would force the caller to mislabel it.
         """
         grouped = self._group(
             [
-                {"filled": True, "spin": "up", "filename": "a", "blocks": ["x"]},
-                {"filled": False, "spin": "up", "filename": "b", "blocks": ["y"]},
+                {"filled": True, "spin": "down", "blocks": ["x"]},
+                {"filled": False, "spin": "down", "blocks": ["y"]},
             ]
         )
-        assert set(grouped) == {"up"}
+        assert set(grouped) == {"down"}
 
     def test_a_single_occupied_manifold_is_accepted(self):
         """Negative control: an occupied-only run is a valid, one-entry partition."""
-        grouped = self._group([{"filled": True, "spin": "none", "filename": "a", "blocks": ["x"]}])
+        grouped = self._group([{"filled": True, "spin": "none", "blocks": ["x"]}])
         assert set(grouped) == {"none"}
         assert set(grouped["none"]) == {True}
 
@@ -254,20 +278,19 @@ class TestMisleadingBlockKeysStayStructural:
             {
                 "filled": True,
                 "spin": "none",
-                "filename": "ham_occ_1.dat",
                 "blocks": [block_view("emp_1", filled=True)],
             },
             # filled=False, but its one block is named as though it were occupied.
             {
                 "filled": False,
                 "spin": "none",
-                "filename": "ham_emp_1.dat",
                 "blocks": [block_view("occ_1", filled=False)],
             },
         ]
+        hamiltonians = _hamiltonians("occ", "emp")
         wg = KoopmansBandStructureTask.build(
             structure=silicon_structure,
-            koopmans_ham_retrieved=_retrieved_with_hamiltonians(["ham_occ_1.dat", "ham_emp_1.dat"]),
+            koopmans_hamiltonians=hamiltonians,
             manifolds=manifolds,
             block_wannierizations=blocks_by_label,
             kgrid=[2, 2, 2],
@@ -275,10 +298,12 @@ class TestMisleadingBlockKeysStayStructural:
         )
         by_name = {task.name: task for task in wg.tasks}
 
-        # The task names ("occ"/"emp") and the Hamiltonian each extracts
+        # The task names ("occ"/"emp") and the Hamiltonian each one reads
         # follow ``filled``, never the block spelling.
-        assert by_name["extract_occ_hamiltonian"].inputs["filename"].value == "ham_occ_1.dat"
-        assert by_name["extract_emp_hamiltonian"].inputs["filename"].value == "ham_emp_1.dat"
+        occ_ham = by_name["interpolate_occ"].inputs["kc_ham_file"].value
+        emp_ham = by_name["interpolate_emp"].inputs["kc_ham_file"].value
+        assert occ_ham.uuid == hamiltonians["occ"].uuid
+        assert emp_ham.uuid == hamiltonians["emp"].uuid
 
         # The "occ" stage's centres come from the block *its spec lists*
         # ("emp_1"), not the block whose name would suggest it.
@@ -302,33 +327,27 @@ class TestMisleadingBlockKeysStayStructural:
             {
                 "filled": True,
                 "spin": "down",
-                "filename": "ham_occ_2.dat",
                 "blocks": [block_view("occ_down", spin="down", filled=True)],
             },
             {
                 "filled": False,
                 "spin": "down",
-                "filename": "ham_emp_2.dat",
                 "blocks": [block_view("emp_down", spin="down", filled=False)],
             },
             {
                 "filled": True,
                 "spin": "up",
-                "filename": "ham_occ_1.dat",
                 "blocks": [block_view("occ_up", spin="up", filled=True)],
             },
             {
                 "filled": False,
                 "spin": "up",
-                "filename": "ham_emp_1.dat",
                 "blocks": [block_view("emp_up", spin="up", filled=False)],
             },
         ]
         wg = KoopmansBandStructureTask.build(
             structure=silicon_structure,
-            koopmans_ham_retrieved=_retrieved_with_hamiltonians(
-                ["ham_occ_1.dat", "ham_emp_1.dat", "ham_occ_2.dat", "ham_emp_2.dat"]
-            ),
+            koopmans_hamiltonians=_manifold_hamiltonians(manifolds),
             manifolds=manifolds,
             block_wannierizations={
                 label: block_wannierization(label, num_wann=2)
@@ -347,16 +366,15 @@ class TestMisleadingBlockKeysStayStructural:
 
 
 class TestManifoldsRoundTrip:
-    """A ``list[MergeGroupWithHamiltonianId]`` input must survive a WorkGraph dict round trip."""
+    """The manifold list and its Hamiltonian namespace must survive a WorkGraph dict round trip."""
 
     @staticmethod
     def _build(manifolds, *, silicon_structure, blocks):
         from aiida_koopmans.workgraphs.ui.band_structure import KoopmansBandStructureTask
 
-        filenames = sorted({spec["filename"] for spec in manifolds})
         return KoopmansBandStructureTask.build(
             structure=silicon_structure,
-            koopmans_ham_retrieved=_retrieved_with_hamiltonians(filenames),
+            koopmans_hamiltonians=_manifold_hamiltonians(manifolds),
             manifolds=manifolds,
             block_wannierizations={
                 label: block_wannierization(label, num_wann=2) for label in blocks
@@ -366,30 +384,19 @@ class TestManifoldsRoundTrip:
         )
 
     def test_one_manifold(self, silicon_structure):
-        manifolds = [
-            {
-                "filled": True,
-                "spin": "none",
-                "filename": "ham_occ_1.dat",
-                "blocks": [block_view("occ")],
-            }
-        ]
+        manifolds = [{"filled": True, "spin": "none", "blocks": [block_view("occ")]}]
         wg = self._build(manifolds, silicon_structure=silicon_structure, blocks=["occ"])
         assert_graph_roundtrips(wg)
 
     def test_two_manifolds(self, silicon_structure):
         wg = self._build(
-            occ_emp_manifold_specs(), silicon_structure=silicon_structure, blocks=["occ", "emp"]
+            occ_emp_merge_groups(), silicon_structure=silicon_structure, blocks=["occ", "emp"]
         )
         assert_graph_roundtrips(wg)
 
     def test_four_manifolds(self, silicon_structure):
-        manifolds = occ_emp_manifold_specs(
-            spin="up", filenames=("ham_occ_1.dat", "ham_emp_1.dat"), blocks=("occ_up", "emp_up")
-        ) + occ_emp_manifold_specs(
-            spin="down",
-            filenames=("ham_occ_2.dat", "ham_emp_2.dat"),
-            blocks=("occ_down", "emp_down"),
+        manifolds = occ_emp_merge_groups("up", blocks=("occ_up", "emp_up")) + occ_emp_merge_groups(
+            "down", blocks=("occ_down", "emp_down")
         )
         wg = self._build(
             manifolds,
@@ -412,13 +419,11 @@ class TestManifoldFanOut:
 
         inputs = {
             "structure": silicon_structure,
-            "manifolds": occ_emp_manifold_specs(),
+            "manifolds": occ_emp_merge_groups(),
             "block_wannierizations": {
                 label: block_wannierization(label, num_wann=2) for label in ("occ", "emp")
             },
-            "koopmans_ham_retrieved": _retrieved_with_hamiltonians(
-                ["ham_occ_1.dat", "ham_emp_1.dat"]
-            ),
+            "koopmans_hamiltonians": _hamiltonians("occ", "emp"),
             "kgrid": [2, 2, 2],
             "kpath": _kpath(),
         }
@@ -437,8 +442,10 @@ class TestManifoldFanOut:
         """The occupied and empty stages must not read the same file."""
         wg = self._build(silicon_structure)
         by_name = {task.name: task for task in wg.tasks}
-        assert by_name["extract_occ_hamiltonian"].inputs["filename"].value == "ham_occ_1.dat"
-        assert by_name["extract_emp_hamiltonian"].inputs["filename"].value == "ham_emp_1.dat"
+        occ = by_name["interpolate_occ"].inputs["kc_ham_file"].value
+        emp = by_name["interpolate_emp"].inputs["kc_ham_file"].value
+        assert occ.get_content() == "occ"
+        assert emp.get_content() == "emp"
 
     def test_centres_come_from_the_parsed_outputs_not_a_wout(self, silicon_structure):
         """Threading the parser's table, not re-reading a retrieved folder."""
@@ -452,12 +459,8 @@ class TestManifoldFanOut:
         assert by_name["interpolate_occ"].inputs["centres"]._links
 
     def test_spin_polarized_fans_out_over_both_channels(self, silicon_structure):
-        manifolds = occ_emp_manifold_specs(
-            spin="up", filenames=("ham_occ_1.dat", "ham_emp_1.dat"), blocks=("occ_up", "emp_up")
-        ) + occ_emp_manifold_specs(
-            spin="down",
-            filenames=("ham_occ_2.dat", "ham_emp_2.dat"),
-            blocks=("occ_down", "emp_down"),
+        manifolds = occ_emp_merge_groups("up", blocks=("occ_up", "emp_up")) + occ_emp_merge_groups(
+            "down", blocks=("occ_down", "emp_down")
         )
         wg = self._build(
             silicon_structure,
@@ -466,16 +469,16 @@ class TestManifoldFanOut:
                 label: block_wannierization(label, num_wann=2)
                 for label in ("occ_up", "emp_up", "occ_down", "emp_down")
             },
-            koopmans_ham_retrieved=_retrieved_with_hamiltonians(
-                ["ham_occ_1.dat", "ham_emp_1.dat", "ham_occ_2.dat", "ham_emp_2.dat"]
-            ),
+            koopmans_hamiltonians=_manifold_hamiltonians(manifolds),
         )
         names = _task_names(wg)
         assert {"interpolate_occ_up", "interpolate_emp_up"} <= set(names)
         assert {"interpolate_occ_down", "interpolate_emp_down"} <= set(names)
         by_name = {task.name: task for task in wg.tasks}
-        # kcp.x indexes the down channel 2.
-        assert by_name["extract_occ_down_hamiltonian"].inputs["filename"].value == "ham_occ_2.dat"
+        # Each channel's manifolds read that channel's own Hamiltonians.
+        assert by_name["interpolate_occ_down"].inputs["kc_ham_file"].value.get_content() == (
+            "occ_down"
+        )
         assert by_name["merge_manifold_energies"].inputs["occupied_down"]._links
 
     def test_do_dos_gates_the_dos_task(self, silicon_structure):
@@ -514,13 +517,11 @@ class TestOffsetWiring:
 
         inputs = {
             "structure": silicon_structure,
-            "manifolds": occ_emp_manifold_specs(),
+            "manifolds": occ_emp_merge_groups(),
             "block_wannierizations": {
                 label: block_wannierization(label, num_wann=2) for label in ("occ", "emp")
             },
-            "koopmans_ham_retrieved": _retrieved_with_hamiltonians(
-                ["ham_occ_1.dat", "ham_emp_1.dat"]
-            ),
+            "koopmans_hamiltonians": _hamiltonians("occ", "emp"),
             "kgrid": [2, 2, 2],
             "kpath": _kpath(),
         }
@@ -576,11 +577,6 @@ class TestRunAgainstTheSiliconReference:
         kpath = orm.KpointsData()
         kpath.set_kpoints(np.array(si_reference["kpath_kpts"]))
 
-        retrieved = orm.FolderData()
-        for name in ("ham_occ_1.dat", "ham_emp_1.dat"):
-            retrieved.base.repository.put_object_from_filelike(io.BytesIO(ham.encode()), name)
-        retrieved.store()
-
         parsed = orm.Dict(
             {
                 "number_wfs": len(centres),
@@ -593,12 +589,14 @@ class TestRunAgainstTheSiliconReference:
 
         inputs = {
             "structure": structure,
-            "manifolds": occ_emp_manifold_specs(),
+            "manifolds": occ_emp_merge_groups(),
             "block_wannierizations": {
                 label: {**block_wannierization(label), "output_parameters": parsed}
                 for label in ("occ", "emp")
             },
-            "koopmans_ham_retrieved": retrieved,
+            # The same Hamiltonian for both manifolds: the merged bands must
+            # then be one manifold's eigenvalues concatenated with themselves.
+            "koopmans_hamiltonians": _hamiltonians("occ", "emp", content=ham),
             "kgrid": list(si_reference["kgrid"]),
             "kpath": kpath,
             "do_dos": False,
@@ -668,13 +666,11 @@ class TestSmoothInterpolationWiring:
             {
                 "filled": True,
                 "spin": "none",
-                "filename": "ham_occ_1.dat",
                 "blocks": [block_view(x, filled=True) for x in labels["occ"]],
             },
             {
                 "filled": False,
                 "spin": "none",
-                "filename": "ham_emp_1.dat",
                 "blocks": [block_view(x, filled=False) for x in labels["emp"]],
             },
         ]
@@ -685,9 +681,7 @@ class TestSmoothInterpolationWiring:
             "block_wannierizations": {
                 label: block_wannierization(label, num_wann=2) for label in every_label
             },
-            "koopmans_ham_retrieved": _retrieved_with_hamiltonians(
-                ["ham_occ_1.dat", "ham_emp_1.dat"]
-            ),
+            "koopmans_hamiltonians": _hamiltonians("occ", "emp"),
             "kgrid": [2, 2, 2],
             "kpath": _kpath(),
         }
@@ -755,18 +749,16 @@ class TestSmoothInterpolationWiring:
         }
         wg = KoopmansBandStructureTask.build(
             structure=silicon_structure,
-            koopmans_ham_retrieved=_retrieved_with_hamiltonians(["ham_occ_1.dat", "ham_emp_1.dat"]),
+            koopmans_hamiltonians=_hamiltonians("occ", "emp"),
             manifolds=[
                 {
                     "filled": True,
                     "spin": "none",
-                    "filename": "ham_occ_1.dat",
                     "blocks": [block_view(x, filled=True) for x in labels],
                 },
                 {
                     "filled": False,
                     "spin": "none",
-                    "filename": "ham_emp_1.dat",
                     "blocks": [block_view("emp", filled=False)],
                 },
             ],

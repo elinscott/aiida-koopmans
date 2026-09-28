@@ -114,7 +114,8 @@ from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
 from aiida_koopmans.workgraphs.ui.band_structure import (
     KoopmansBandStructureTask,
-    MergeGroupWithHamiltonianId,
+    extract_koopmans_hamiltonian,
+    manifold_label,
 )
 from aiida_koopmans.workgraphs.utils.wannier_merge import (
     block_nodes_by_group,
@@ -998,8 +999,8 @@ def RunDFPT(
     if smooth_block_wannier is not None:
         smooth_bands = KoopmansBandStructureTask(
             structure=structure,
-            koopmans_ham_retrieved=ham["retrieved"],
-            manifolds=_dfpt_merge_groups_with_hamiltonian(manifolds),
+            koopmans_hamiltonians=_kcw_koopmans_hamiltonians(manifolds, ham["retrieved"]),
+            manifolds=manifolds,
             block_wannierizations=block_wannier,
             smooth_block_wannierizations=smooth_block_wannier,
             kgrid=kgrid,
@@ -1017,30 +1018,26 @@ def RunDFPT(
     return outputs
 
 
-def _dfpt_merge_groups_with_hamiltonian(manifolds: list) -> list[MergeGroupWithHamiltonianId]:
-    """Add each manifold's Hamiltonian filename to :func:`RunDFPT`'s own ``manifolds``.
+def _kcw_koopmans_hamiltonians(manifolds: list, retrieved) -> dict:
+    """Lift each manifold's Koopmans Hamiltonian out of the kcw.x ``ham`` folder.
 
-    ``manifolds`` already carries real blocks (real ``num_wann``, from the
-    projection blocks :func:`SinglepointDFPTWorkflow` derived them from);
-    this only adds the one field specific to the band structure.
-
-    kcw.x's printed Hamiltonian filenames carry no channel index — each
-    channel runs as its own wann2kc/screen/ham chain in its own working
-    directory — so every file here is unpolarized from
-    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`'s
-    own point of view, whatever the manifold's own ``spin`` says: which
-    physical channel this :func:`RunDFPT` call belongs to is
-    :func:`SinglepointDFPTWorkflow`'s knowledge, not this one's.
+    Keyed by
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.manifold_label`,
+    the band structure task's own namespace key. kcw.x's filenames carry
+    the manifold's filling and no channel index — one
+    wann2kc/screen/ham chain runs per channel, each in its own working
+    directory — so the file a manifold reads follows ``filled`` alone.
     """
-    return [
-        MergeGroupWithHamiltonianId(
-            filled=group["filled"],
-            spin=SpinChannel.NONE,
-            blocks=group["blocks"],
-            filename=kcw_hamiltonian_filename(filled=group["filled"]),
-        )
-        for group in manifolds
-    ]
+    hamiltonians = {}
+    for group in manifolds:
+        filled = bool(group["filled"])
+        label = manifold_label(filled=filled, spin=SpinChannel(group["spin"]))
+        hamiltonians[label] = extract_koopmans_hamiltonian(
+            retrieved=retrieved,
+            filename=kcw_hamiltonian_filename(filled=filled),
+            metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+        ).result
+    return hamiltonians
 
 
 def _add_smooth_interpolation_dfpt_inputs(

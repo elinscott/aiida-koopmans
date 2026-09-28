@@ -3166,19 +3166,20 @@ class TestFinalKiWritesTheHamiltonians:
 class TestHamiltonianFilenames:
     """The names kcp.x writes, per QE ``CPV/write_hamiltonian.f90``."""
 
-    def test_names_follow_the_manifold_and_spin_index(self):
+    def test_names_follow_the_manifold_and_spin_channel(self):
         from aiida_koopmans.workgraphs.kcp_files import kcp_hamiltonian_filename
 
-        assert kcp_hamiltonian_filename(filled=True, spin_index=1) == "ham_occ_1.dat"
-        assert kcp_hamiltonian_filename(filled=False, spin_index=1) == "ham_emp_1.dat"
-        assert kcp_hamiltonian_filename(filled=True, spin_index=2) == "ham_occ_2.dat"
-        assert kcp_hamiltonian_filename(filled=False, spin_index=2) == "ham_emp_2.dat"
+        assert kcp_hamiltonian_filename(filled=True, spin=SpinChannel.NONE) == "ham_occ_1.dat"
+        assert kcp_hamiltonian_filename(filled=False, spin=SpinChannel.UP) == "ham_emp_1.dat"
+        assert kcp_hamiltonian_filename(filled=True, spin=SpinChannel.DOWN) == "ham_occ_2.dat"
+        assert kcp_hamiltonian_filename(filled=False, spin=SpinChannel.DOWN) == "ham_emp_2.dat"
 
-    def test_a_third_spin_index_is_rejected(self):
+    def test_a_spinor_manifold_is_rejected(self):
+        """kcp.x runs no noncollinear calculation, so it prints no such file."""
         from aiida_koopmans.workgraphs.kcp_files import kcp_hamiltonian_filename
 
-        with pytest.raises(ValueError, match="spin_index"):
-            kcp_hamiltonian_filename(filled=True, spin_index=3)
+        with pytest.raises(ValueError, match="noncollinear"):
+            kcp_hamiltonian_filename(filled=True, spin=SpinChannel.SPINOR)
 
 
 class TestDscfManifoldSpecs:
@@ -3191,28 +3192,31 @@ class TestDscfManifoldSpecs:
         specs = dscf_manifold_specs._callable(occ_emp_merge_groups(), spin_polarized=False)
 
         by_filled = {spec["filled"]: spec for spec in specs}
-        assert by_filled[True]["filename"] == "ham_occ_1.dat"
         assert [block["label"] for block in by_filled[True]["blocks"]] == ["occ"]
         assert by_filled[True]["spin"] == SpinChannel.NONE
-        assert by_filled[False]["filename"] == "ham_emp_1.dat"
         assert [block["label"] for block in by_filled[False]["blocks"]] == ["emp"]
 
-    def test_spin_polarized_names_the_down_channel_spin_index_two(self):
+    def test_spin_polarized_keeps_each_channels_blocks_apart(self):
+        """Four manifolds, each carrying only the blocks of its own channel."""
         from aiida_koopmans.workgraphs.kcp import dscf_manifold_specs
         from tests.fixtures import occ_emp_merge_groups
 
-        merge_groups = occ_emp_merge_groups("up") + occ_emp_merge_groups("down")
-        merge_groups[0]["blocks"] = [{"label": "occ_up", "spin": "up", "num_wann": 3}]
-        merge_groups[1]["blocks"] = [{"label": "emp_up", "spin": "up", "num_wann": 1}]
-        merge_groups[2]["blocks"] = [{"label": "occ_down", "spin": "down", "num_wann": 3}]
-        merge_groups[3]["blocks"] = [{"label": "emp_down", "spin": "down", "num_wann": 1}]
+        merge_groups = occ_emp_merge_groups(
+            "up", blocks=("occ_up", "emp_up")
+        ) + occ_emp_merge_groups("down", blocks=("occ_down", "emp_down"))
 
         specs = dscf_manifold_specs._callable(merge_groups, spin_polarized=True)
 
-        by_key = {(spec["filled"], SpinChannel(spec["spin"])): spec for spec in specs}
-        assert by_key[True, SpinChannel.UP]["filename"] == "ham_occ_1.dat"
-        assert by_key[True, SpinChannel.DOWN]["filename"] == "ham_occ_2.dat"
-        assert by_key[False, SpinChannel.DOWN]["filename"] == "ham_emp_2.dat"
+        by_key = {
+            (spec["filled"], SpinChannel(spec["spin"])): [
+                block["label"] for block in spec["blocks"]
+            ]
+            for spec in specs
+        }
+        assert by_key[True, SpinChannel.UP] == ["occ_up"]
+        assert by_key[False, SpinChannel.UP] == ["emp_up"]
+        assert by_key[True, SpinChannel.DOWN] == ["occ_down"]
+        assert by_key[False, SpinChannel.DOWN] == ["emp_down"]
 
     def test_a_blocks_num_wann_and_spin_come_from_the_merge_group(self):
         """The block view carries real identity data, not just its label.
@@ -3410,6 +3414,14 @@ class TestTheWorkflowGatesOnTheBandPath:
         # was asked to print them.
         final_ki = next(task for task in wg.tasks if task.name.startswith("RunFinalKI"))
         assert final_ki.inputs["write_hr"].value is True
+        # One Hamiltonian per manifold, lifted here out of the final KI's
+        # folder, so no filename reaches the band structure.
+        by_name = {task.name: task for task in wg.tasks}
+        assert sorted(
+            by_name["interpolate_band_structure"].inputs["koopmans_hamiltonians"]._sockets
+        ) == ["emp", "occ"]
+        assert by_name["extract_occ_hamiltonian"].inputs["filename"].value == "ham_occ_1.dat"
+        assert by_name["extract_emp_hamiltonian"].inputs["filename"].value == "ham_emp_1.dat"
 
     def test_without_a_path_neither_happens(
         self, periodic_ozone_structure, kcp_code, mlwf_codes, ozone_pseudo_family, kmesh

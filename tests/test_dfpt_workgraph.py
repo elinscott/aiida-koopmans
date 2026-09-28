@@ -23,7 +23,7 @@ from aiida_koopmans.workgraphs.dfpt import (
     SinglepointDFPTWorkflow,
     prepare_kcw_wannier_files,
 )
-from tests.fixtures import assert_graph_roundtrips, explicit_block
+from tests.fixtures import assert_graph_roundtrips, assert_graph_submits, explicit_block
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -1495,10 +1495,10 @@ class TestRunDFPTSmoothInterpolation:
     ):
         """The occupied blocks stay the occupied manifold on the way across.
 
-        ``RunDFPT`` builds one ``MergeGroupWithHamiltonianId`` per filling, each carrying
-        its own ``filled`` flag and Hamiltonian filename; swapping them
-        would pair the occupied Wannier centres with the empty Hamiltonian,
-        which nothing downstream would notice.
+        ``RunDFPT`` hands the band structure its own manifolds beside one
+        Hamiltonian per manifold, keyed by ``manifold_label``; swapping
+        either would pair the occupied Wannier centres with the empty
+        Hamiltonian, which nothing downstream would notice.
         """
         from tests.fixtures import block_wannierization
 
@@ -1521,11 +1521,27 @@ class TestRunDFPTSmoothInterpolation:
             bands_kpoints=bands_path,
             has_disentangle=True,
         )
-        smooth = {t.name: t for t in wg.tasks}["smooth_band_structure"].inputs
+        by_name = {t.name: t for t in wg.tasks}
+        smooth = by_name["smooth_band_structure"].inputs
 
         manifolds = {spec["filled"]: spec for spec in smooth["manifolds"].value}
         assert [str(block["label"]) for block in manifolds[True]["blocks"]] == ["occ"]
         assert [str(block["label"]) for block in manifolds[False]["blocks"]] == ["emp"]
+
+        # One Hamiltonian per manifold, lifted here out of kcw.x's own
+        # retrieved folder: the filling decides the file, and the file
+        # never reaches the band structure as a name.
+        assert sorted(smooth["koopmans_hamiltonians"]._sockets) == ["emp", "occ"]
+        assert by_name["extract_occ_hamiltonian"].inputs["filename"].value == (
+            "aiida.kcw_hr_occ.dat"
+        )
+        assert by_name["extract_emp_hamiltonian"].inputs["filename"].value == (
+            "aiida.kcw_hr_emp.dat"
+        )
+        # Submission stores every task input as a node, so a socket left
+        # inside a plain dict (rather than a namespace entry) dies here
+        # even though construction alone would not have caught it.
+        assert_graph_submits(wg)
 
     def test_a_multi_block_manifold_merges_both_hamiltonians_in_one_order(
         self, dfpt_codes, nscf_remote, occ_retrieved, bands_path, silicon_structure
@@ -2199,62 +2215,6 @@ class TestSinglepointDFPTGrouping:
             kpoints=kmesh,
         )
         assert wg.tasks["dfpt"].inputs["group_orbitals_tol"].value is None
-
-
-class TestDfptMergeGroupsWithHamiltonian:
-    """``_dfpt_merge_groups_with_hamiltonian`` adds the Hamiltonian filename to real manifolds."""
-
-    def test_each_manifold_gets_its_own_filename(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
-
-        files = _dfpt_merge_groups_with_hamiltonian(
-            manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
-        )
-
-        by_filled = {spec["filled"]: spec for spec in files}
-        assert by_filled[True]["filename"] == "aiida.kcw_hr_occ.dat"
-        assert by_filled[False]["filename"] == "aiida.kcw_hr_emp.dat"
-
-    def test_the_blocks_are_unchanged_real_projection_blocks(self):
-        """The manifold's own blocks pass through, real ``num_wann`` included.
-
-        ``RunDFPT``'s ``manifolds`` input already carries the real
-        projection blocks :func:`SinglepointDFPTWorkflow` derived; this
-        helper adds only the filename, never touches ``blocks``.
-        """
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
-
-        source = manifolds_for(occ=["occ_a", "occ_b"], emp=["emp"])
-        files = _dfpt_merge_groups_with_hamiltonian(source)
-
-        assert [spec["blocks"] for spec in files] == [group["blocks"] for group in source]
-
-    def test_the_manifold_file_is_unpolarized_whatever_the_channels_own_spin_is(self):
-        """kcw.x's filenames carry no channel index, so the spec's own ``spin`` is 'none'.
-
-        A collinear run's manifolds arrive with the real physical channel
-        (``spin='up'``/``'down'``) stamped by :func:`SinglepointDFPTWorkflow`;
-        which channel a given :func:`RunDFPT` call is for is that caller's
-        knowledge, not something :func:`KoopmansBandStructureTask` needs —
-        each call interpolates exactly one channel's own occ/emp pair, never
-        stacking across channels.
-        """
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
-
-        down_channel = [manifold_id(["occ"], filled=True)]
-        down_channel[0]["spin"] = SpinChannel.DOWN
-
-        [spec] = _dfpt_merge_groups_with_hamiltonian(down_channel)
-
-        assert spec["spin"] == SpinChannel.NONE
-
-    def test_an_occupied_only_run_keeps_one_manifold(self):
-        from aiida_koopmans.workgraphs.dfpt import _dfpt_merge_groups_with_hamiltonian
-
-        files = _dfpt_merge_groups_with_hamiltonian(manifolds_for(occ=["occ"]))
-
-        assert len(files) == 1
-        assert files[0]["filled"] is True
 
 
 class TestKcwHamiltonianFilename:
