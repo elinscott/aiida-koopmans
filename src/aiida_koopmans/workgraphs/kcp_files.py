@@ -1,9 +1,4 @@
-"""Naming for the files kcp.x retrieves under ``write_hr``.
-
-Kept apart from :mod:`aiida_koopmans.workgraphs.kcp`, which is already
-large, so the CalcJob's retrieve-list glob and the ΔSCF band-structure
-filename convention share one small, dependency-free module.
-"""
+"""Naming for the files kcp.x retrieves under ``write_hr``."""
 
 from aiida_koopmans.spin import SpinChannel
 

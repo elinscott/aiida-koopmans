@@ -159,14 +159,21 @@ def manifold_hamiltonian(**hr_files: orm.SinglefileData) -> orm.SinglefileData:
     return orm.SinglefileData(io.StringIO(merged), filename="aiida_hr.dat")
 
 
-@task(outputs=["energies", "reference"])
+class MergeManifoldEnergiesOutputs(TypedDict):
+    """Outputs of :func:`merge_manifold_energies`."""
+
+    energies: list
+    reference: float
+
+
+@task
 def merge_manifold_energies(
     occupied: list[list[float]],
     empty: list[list[float]] | None = None,
     occupied_down: list[list[float]] | None = None,
     empty_down: list[list[float]] | None = None,
     offset: float = 0.0,
-) -> dict:
+) -> MergeManifoldEnergiesOutputs:
     """Concatenate per-manifold interpolated eigenvalues into one table.
 
     Within a spin channel the occupied and empty energies join along the
@@ -216,7 +223,7 @@ def merge_manifold_energies(
         reference = float(max(occ.max(), down_occ.max()))
     energies = energies + offset
     reference = reference + offset
-    return {"energies": energies.tolist(), "reference": reference}
+    return MergeManifoldEnergiesOutputs(energies=energies.tolist(), reference=reference)
 
 
 @task.calcfunction

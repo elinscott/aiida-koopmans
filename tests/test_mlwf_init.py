@@ -506,11 +506,11 @@ class TestPwScaleOffsetWiring:
 class TestKoopmansDSCFSmoothInterpolationBuild:
     """``smooth_kpoints`` / ``smooth_mp_grid`` add the denser-mesh wannierization.
 
-    ``_wannierize_smooth_mesh`` (``workgraphs/kcp.py``) is otherwise only
-    exercised through its ``do_smooth=False`` early return — every other
-    ``KoopmansDSCFWorkflow`` build in this module omits ``kpath`` or the
-    smooth mesh inputs. These build the outer graph with both, on the same
-    periodic-mlwfs route ``TestKoopmansDSCFPeriodicMlwfsBuild`` covers.
+    The second ``WannierizeBlocks`` call in ``workgraphs/kcp.py`` is
+    otherwise skipped — every other ``KoopmansDSCFWorkflow`` build in this
+    module omits ``kpath`` or the smooth mesh inputs. These build the outer
+    graph with both, on the same periodic-mlwfs route
+    ``TestKoopmansDSCFPeriodicMlwfsBuild`` covers.
     """
 
     @staticmethod

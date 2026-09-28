@@ -108,7 +108,6 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeBlocksCodes,
     WannierizeOverrides,
     WannierOutputFiles,
-    wannierize_smooth_mesh,
 )
 from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.pw import PwCode, PwOutputs
@@ -1047,7 +1046,16 @@ def _add_smooth_interpolation_dfpt_inputs(
     bands_kpoints: orm.KpointsData | None,
     suffix: str,
     channel_display: str,
-    **smooth_mesh_kwargs: Any,
+    codes: WannierizeBlocksCodes,
+    structure: orm.StructureData,
+    blocks: list[ProjectionBlock],
+    smooth_kpoints: orm.KpointsData | None,
+    smooth_mp_grid: list[int] | None,
+    scf_remote_folder: orm.RemoteData | None,
+    pseudo_family: str | None,
+    protocol: str | None,
+    overrides: WannierizeOverrides | None,
+    parallelization: ParallelizationDict | None,
 ) -> None:
     """Wannierize one channel's blocks on the denser mesh and wire them, in place.
 
@@ -1060,17 +1068,27 @@ def _add_smooth_interpolation_dfpt_inputs(
     upstream's ``spin_type`` (see :func:`_channel_w90_defaults`), so both
     Wannierizations leave it at its default.
     """
-    smooth_blocks = wannierize_smooth_mesh(
-        do_smooth=do_smooth,
-        interpolation_kpoints=bands_kpoints,
-        call_link_label=f"wannierize_smooth{suffix}",
-        label=f"Smooth wannierization{channel_display}",
-        **smooth_mesh_kwargs,
-    )
-    if smooth_blocks is None:
+    if not do_smooth:
         return
-    dfpt_inputs["structure"] = smooth_mesh_kwargs["structure"]
-    dfpt_inputs["smooth_block_wannier"] = smooth_blocks
+    smooth = WannierizeBlocks(
+        codes=codes,
+        structure=structure,
+        blocks=blocks,
+        kpoints=smooth_kpoints,
+        mp_grid=list(cast("list[int]", smooth_mp_grid)),
+        scf_remote_folder=scf_remote_folder,
+        pseudo_family=pseudo_family,
+        protocol=protocol,
+        overrides=overrides,
+        interpolation_kpoints=bands_kpoints,
+        parallelization=parallelization,
+        metadata={
+            "call_link_label": f"wannierize_smooth{suffix}",
+            "label": f"Smooth wannierization{channel_display}",
+        },
+    )
+    dfpt_inputs["structure"] = structure
+    dfpt_inputs["smooth_block_wannier"] = smooth["blocks"]
 
 
 def _resolve_smooth_interpolation(
