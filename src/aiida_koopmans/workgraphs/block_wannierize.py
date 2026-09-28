@@ -1175,7 +1175,7 @@ def _maybe_emit_orbital_partition(
     (``projection_type``) that the PyFunction input serializer cannot
     store.
     """
-    stamped = [("filled" in block) for block in blocks]
+    stamped = [(block["filled"] is not None) for block in blocks]
     if any(stamped) and not all(stamped):
         unstamped = [
             str(block["label"]) for block, has in zip(blocks, stamped, strict=True) if not has

@@ -1062,7 +1062,7 @@ class TestOrbitalPartitionEmission:
 
     def test_partially_stamped_blocks_raise(self, wannier_codes, silicon_structure, kmesh):
         blocks = _silicon_blocks()
-        del blocks[1]["filled"]
+        blocks[1]["filled"] = None
         with pytest.raises(ValueError, match="block_2"):
             _build(wannier_codes, silicon_structure, blocks, kmesh)
 

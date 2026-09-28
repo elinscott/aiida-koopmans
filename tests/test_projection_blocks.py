@@ -187,6 +187,7 @@ class TestValidateProjectionBlock:
         block = AutomaticProjectionBlock(
             label="block_1",
             spin=SpinChannel.NONE,
+            filled=None,
             num_wann=0,
             num_bands=0,
             projection_type=WannierProjectionType.ATOMIC_PROJECTORS_QE,

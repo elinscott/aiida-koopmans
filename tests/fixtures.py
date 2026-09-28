@@ -511,6 +511,7 @@ def explicit_block(
     block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=num_wann,
         num_bands=num_wann if num_bands is None else num_bands,
         projection_type=WannierProjectionType.ANALYTIC,
@@ -521,8 +522,6 @@ def explicit_block(
         block["exclude_bands"] = list(exclude_bands)
     elif below:
         block["exclude_bands"] = below
-    if filled is not None:
-        block["filled"] = filled
     return block
 
 
@@ -616,14 +615,13 @@ def automatic_block(label, wannier_indices, spin=None, projection_type=None, fil
     block = AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=num_wann,
         num_bands=num_wann,
         projection_type=projection_type,
     )
     if wannier_indices[0] > 1:
         block["exclude_bands"] = list(range(1, wannier_indices[0]))
-    if filled is not None:
-        block["filled"] = filled
     return block
 
 
