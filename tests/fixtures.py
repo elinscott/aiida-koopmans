@@ -511,6 +511,7 @@ def explicit_block(
     block = ExplicitProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=num_wann,
         num_bands=num_wann if num_bands is None else num_bands,
         projection_type=WannierProjectionType.ANALYTIC,
@@ -521,8 +522,6 @@ def explicit_block(
         block["exclude_bands"] = list(exclude_bands)
     elif below:
         block["exclude_bands"] = below
-    if filled is not None:
-        block["filled"] = filled
     return block
 
 
@@ -575,6 +574,25 @@ def assert_graph_roundtrips(wg):
     WorkGraph.from_dict(wg.to_dict())
 
 
+def assert_graph_submits(wg):
+    """Assert a built WorkGraph's inputs can be turned into stored nodes.
+
+    Submitting a graph stores every task input as an AiiDA node and links
+    it to the process, so a value that is not a node and not JSON — an
+    unresolved socket packed into a plain dict, a graph input still in its
+    wrapper — fails there rather than at construction. A nested graph task
+    takes this path when its parent submits it, after its body has run.
+
+    Needs a profile (it stores nodes); pair it with ``aiida_profile``.
+    """
+    from aiida.engine.utils import instantiate_process
+    from aiida.manage import get_manager
+    from aiida_workgraph.engine.workgraph import WorkGraphEngine
+
+    runner = get_manager().get_runner()
+    instantiate_process(runner, WorkGraphEngine, **wg.to_engine_inputs(metadata={}))
+
+
 def automatic_block(label, wannier_indices, spin=None, projection_type=None, filled=None):
     """Build a minimal automatic projection block.
 
@@ -597,14 +615,13 @@ def automatic_block(label, wannier_indices, spin=None, projection_type=None, fil
     block = AutomaticProjectionBlock(
         label=label,
         spin=SpinChannel.NONE if spin is None else spin,
+        filled=filled,
         num_wann=num_wann,
         num_bands=num_wann,
         projection_type=projection_type,
     )
     if wannier_indices[0] > 1:
         block["exclude_bands"] = list(range(1, wannier_indices[0]))
-    if filled is not None:
-        block["filled"] = filled
     return block
 
 

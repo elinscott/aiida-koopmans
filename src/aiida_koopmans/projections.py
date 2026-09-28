@@ -221,17 +221,18 @@ class _ProjectionBlockBase(TypedDict):
 
     ``filled`` is the block's occupancy: ``True`` when its Wannier
     functions come from the occupied manifold alone, ``False`` when they
-    come from the empty manifold alone. Unset means *not yet known*, which
-    is a legitimate state: a block derived from atomic projectors exists
-    before anything has looked at the band structure, and its occupancy is
-    settled only by the runtime band-group detection. A consumer that
-    needs the occupancy and finds it unset raises
-    (:func:`block_occupancy`).
+    come from the empty manifold alone, ``None`` when it is *not yet
+    known*, which is a legitimate state: a block derived from atomic
+    projectors exists before anything has looked at the band structure,
+    and its occupancy is settled only by the runtime band-group
+    detection. ``filled`` is always present, so its absence never stands
+    in for ``None``. A consumer that needs the occupancy and finds it
+    ``None`` raises (:func:`block_occupancy`).
     """
 
     label: str
     spin: SpinChannel
-    filled: NotRequired[bool]
+    filled: bool | None
     num_wann: int
     num_bands: int
     exclude_bands: NotRequired[list[int] | None]
@@ -439,11 +440,12 @@ def block_display_name(block: ProjectionBlock, spin: SpinChannel | None = None) 
 def block_occupancy(block: ProjectionBlock) -> bool:
     """Return whether the block is occupied, raising if it does not say.
 
-    Raise :class:`BlockBoundaryError` naming the block when ``filled`` is unset: the
-    occupancy of a block derived from atomic projectors is settled by the
-    runtime band-group detection, and until then no caller may act on it.
+    Raise :class:`BlockBoundaryError` naming the block when ``filled`` is
+    ``None``: the occupancy of a block derived from atomic projectors is
+    settled by the runtime band-group detection, and until then no caller
+    may act on it.
     """
-    if "filled" not in block:
+    if block["filled"] is None:
         raise BlockBoundaryError(
             f"Block {block['label']!r} does not say whether it is occupied or "
             "empty. Stamp `filled` where the occupancy is known -- from explicit "
@@ -454,6 +456,42 @@ def block_occupancy(block: ProjectionBlock) -> bool:
             label=block["label"],
         )
     return bool(block["filled"])
+
+
+def resolve_block_occupancy(
+    block: ProjectionBlock, block_bands: Sequence[int], num_occ_bands: int | None
+) -> bool:
+    """Return whether ``block`` is occupied, from ``num_occ_bands`` if ``filled`` is ``None``.
+
+    Returns :func:`block_occupancy` when ``filled`` is already stamped.
+    Otherwise every one of ``block_bands`` (the block's own global band
+    indices) must sit on the same side of the occupied/empty boundary at
+    band ``num_occ_bands`` -- a block whose bands straddle it draws its
+    Wannier functions from both manifolds, which no single occupancy can
+    describe, and raises :class:`BlockBoundaryError`. Raises the same error
+    when ``num_occ_bands`` is not given: a block whose occupancy is
+    ``None`` has no other way to settle it.
+    """
+    if block["filled"] is not None:
+        return block_occupancy(block)
+    if num_occ_bands is None:
+        raise BlockBoundaryError(
+            f"Block {block['label']!r} does not say whether it is occupied or "
+            "empty, and no occupied-band boundary was given to settle it from "
+            "the band-group detection.",
+            label=block["label"],
+        )
+    below = [band for band in block_bands if band <= num_occ_bands]
+    above = [band for band in block_bands if band > num_occ_bands]
+    if below and above:
+        raise BlockBoundaryError(
+            f"Block {block['label']!r} spans the occupied/empty boundary at band "
+            f"{num_occ_bands}: bands {sorted(below)} are occupied and "
+            f"{sorted(above)} are empty. A projection block must come from a "
+            "single manifold.",
+            label=block["label"],
+        )
+    return bool(below)
 
 
 class ProjectionBlockId(TypedDict):
