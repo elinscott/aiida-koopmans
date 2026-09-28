@@ -442,7 +442,17 @@ class KcwHamCalculation(KcwCalculation):
         retrieve_list = super()._build_retrieve_list(parameters)
         if parameters.get("HAM", {}).get("write_hr", False):
             retrieve_list += [
-                f"{self._PREFIX}.kcw_hr_occ.dat",
-                f"{self._PREFIX}.kcw_hr_emp.dat",
+                kcw_hamiltonian_filename(filled=True),
+                kcw_hamiltonian_filename(filled=False),
             ]
         return retrieve_list
+
+
+def kcw_hamiltonian_filename(*, filled: bool) -> str:
+    """Name the Koopmans Hamiltonian kcw.x prints for one manifold.
+
+    Written in the working directory under ``HAM.write_hr``, in the
+    Wannier90 ``_hr.dat`` format on the Monkhorst-Pack R-vectors.
+    """
+    manifold = "occ" if filled else "emp"
+    return f"{KcwHamCalculation._PREFIX}.kcw_hr_{manifold}.dat"

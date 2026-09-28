@@ -892,6 +892,21 @@ def si_reference() -> dict:
         return json.load(handle)
 
 
+@pytest.fixture(scope="module")
+def si_kcw_reference() -> dict:
+    """Load a live kcw.x run's own band structure and the inputs that produced it.
+
+    Silicon on a 2x2x2 grid, four occupied and four empty Wannier
+    functions: the cell, the ``CONTROL.mp1-3`` grid, the explicit k-path
+    the ham step interpolated along, each manifold's final-state Wannier
+    centres in Å, and the eigenvalues kcw.x printed (eV, both manifolds
+    concatenated). The Hamiltonians it wrote alongside them are
+    ``data/ui/dfpt/kcw_hr_{occ,emp}.dat``.
+    """
+    with open(Path(__file__).parent / "data" / "ui" / "dfpt" / "si_kcw_reference.json") as handle:
+        return json.load(handle)
+
+
 def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int = 1) -> dict:
     """Build a stored per-block ``WannierizeBlockOutputs``-shaped entry.
 
@@ -942,12 +957,43 @@ def block_wannierization(label: str, *, with_u_dis: bool = False, num_wann: int 
     }
 
 
-def occ_emp_merge_groups(spin: str = "none") -> list[dict]:
-    """Return a one-block-per-filling ``merge_groups`` partition for one spin channel."""
+def block_view(label: str, *, spin: str = "none", filled: bool = True, num_wann: int = 1) -> dict:
+    """Return one block's :class:`~aiida_koopmans.projections.ProjectionBlockId` view."""
+    return {"label": label, "spin": spin, "filled": filled, "num_wann": num_wann}
+
+
+def occ_emp_merge_groups(
+    spin: str = "none", *, blocks: tuple[str, str] = ("occ", "emp")
+) -> list[dict]:
+    """Return a one-block-per-filling ``MergeGroupId`` partition for one spin channel."""
+    occ_block, emp_block = blocks
     return [
-        {"filled": True, "spin": spin, "blocks": [{"label": "occ"}]},
-        {"filled": False, "spin": spin, "blocks": [{"label": "emp"}]},
+        {
+            "filled": True,
+            "spin": spin,
+            "blocks": [block_view(occ_block, spin=spin, filled=True)],
+        },
+        {
+            "filled": False,
+            "spin": spin,
+            "blocks": [block_view(emp_block, spin=spin, filled=False)],
+        },
     ]
+
+
+def _task_names(wg) -> list[str]:
+    """Return every task name in a built graph, walking nested graphs."""
+    names: list[str] = []
+
+    def _walk(tasks):
+        for task_ in tasks:
+            names.append(task_.name)
+            children = getattr(task_, "children", None)
+            if children:
+                _walk(children)
+
+    _walk(wg.tasks)
+    return names
 
 
 def si_external_projector_tables() -> dict:

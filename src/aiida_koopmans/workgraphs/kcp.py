@@ -43,6 +43,7 @@ from aiida_koopmans.parallelization import (
     ParallelizationDict,
     validate_parallelization,
 )
+from aiida_koopmans.projections import MergeGroupId, ProjectionBlockId
 from aiida_koopmans.screening import AlphaScreening
 from aiida_koopmans.spin import SpinChannel
 from aiida_koopmans.utils.electrons import count_electrons_task
@@ -60,9 +61,13 @@ from aiida_koopmans.workgraphs.block_wannierize import (
     WannierizeOverrides,
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
-from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS
+from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_hamiltonian_filename
 from aiida_koopmans.workgraphs.ui import DensityOfStates
-from aiida_koopmans.workgraphs.ui.dscf import DscfBandStructureOutputs, DscfBandStructureTask
+from aiida_koopmans.workgraphs.ui.band_structure import (
+    KoopmansBandStructureTask,
+    extract_koopmans_hamiltonian,
+    manifold_label,
+)
 from aiida_koopmans.workgraphs.variational_orbitals import (
     assign_orbital_groups,
     expand_alphas_by_group,
@@ -1129,7 +1134,7 @@ def _mlwf_init_codes_for(codes: DscfCodes) -> Any:
 
 
 @task.graph
-def KoopmansDSCFWorkflow(
+def KoopmansDSCFWorkflow(  # noqa: C901
     codes: DscfCodes,
     structure: orm.StructureData,
     pseudo_family: str,
@@ -1223,7 +1228,8 @@ def KoopmansDSCFWorkflow(
       count too), ``kgrid``, and the matching explicit ``kpoints`` mesh.
 
     A ``kpath`` adds the unfold-and-interpolate stage
-    (:func:`~aiida_koopmans.workgraphs.ui.dscf.DscfBandStructureTask`):
+    (:func:`dscf_manifold_specs` into
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.KoopmansBandStructureTask`):
     the final KI prints its Koopmans Hamiltonians and they are
     interpolated onto that primitive-cell path. Only the periodic
     Wannier route can serve it — the molecular route has no Wannier
@@ -1400,21 +1406,34 @@ def KoopmansDSCFWorkflow(
         block_wannierizations = init["block_wannierizations"]
         merge_groups = init["merge_groups"]
         pw_scale_offset = init["pw_scale_offset"]
-        smooth_block_wannierizations = _wannierize_smooth_mesh(
-            do_smooth=ui_do_smooth,
-            codes=codes,
-            structure=structure,
-            blocks=blocks,
-            smooth_kpoints=smooth_kpoints,
-            smooth_mp_grid=smooth_mp_grid,
-            scf_remote_folder=init["scf_remote_folder"],
-            pseudo_family=pseudo_family,
-            wannier_protocol=wannier_protocol,
-            wannier_overrides=wannier_overrides,
-            spin_polarized=spin_polarized,
-            interpolation_kpoints=kpath,
-            parallelization=parallelization,
-        )
+        if ui_do_smooth:
+            # The denser mesh is Wannierized off the same shared scf, with
+            # the same blocks and the same overrides: the
+            # smooth-interpolation method swaps one Wannier-gauge DFT
+            # Hamiltonian for another, so only the mesh differs between the
+            # two runs. ``wannier_overrides`` must therefore carry the same
+            # ``nscf`` keywords the coarse run used, spin regime included —
+            # :func:`WannierizeBlocks` skips its own scf and runs only a
+            # fresh nscf on ``smooth_kpoints`` off ``init["scf_remote_folder"]``.
+            smooth = WannierizeBlocks(
+                codes=_wannierize_blocks_codes_for(codes),
+                structure=structure,
+                blocks=cast("list", blocks),
+                kpoints=smooth_kpoints,
+                mp_grid=list(cast("list[int]", smooth_mp_grid)),
+                scf_remote_folder=init["scf_remote_folder"],
+                pseudo_family=pseudo_family,
+                protocol=wannier_protocol,
+                overrides=wannier_overrides,
+                spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+                interpolation_kpoints=kpath,
+                parallelization=parallelization,
+                metadata={
+                    "call_link_label": "wannierize_smooth",
+                    "label": "Smooth wannierization",
+                },
+            )
+            smooth_block_wannierizations = smooth["blocks"]
     elif spin_polarized:
         # Spin-polarised systems are seeded directly from a single
         # nspin=2 from-scratch run: the up/down channels are independent,
@@ -1715,19 +1734,27 @@ def KoopmansDSCFWorkflow(
         outputs["merge_groups"] = cast("list", merge_groups)
 
     if kpath is not None:
-        bands = _interpolate_bands(
-            structure=structure,
+        manifolds = dscf_manifold_specs(
             merge_groups=cast("list", merge_groups),
+            spin_polarized=spin_polarized,
+            metadata={"call_link_label": "dscf_manifold_specs"},
+        ).result
+        bands = KoopmansBandStructureTask(
+            structure=structure,
+            koopmans_hamiltonians=_kcp_koopmans_hamiltonians(spin_polarized, ki_final["retrieved"]),
+            manifolds=manifolds,
             block_wannierizations=cast("dict", block_wannierizations),
             smooth_block_wannierizations=smooth_block_wannierizations,
-            koopmans_ham_retrieved=ki_final["retrieved"],
             kgrid=cast("list[int]", kgrid),
             kpath=kpath,
-            spin_polarized=spin_polarized,
             use_ws_distance=ui_use_ws_distance,
             do_dos=ui_do_dos,
             plotting=plotting,
             offset=pw_scale_offset,
+            metadata={
+                "call_link_label": "interpolate_band_structure",
+                "label": "Band interpolation",
+            },
         )
         outputs["band_structure"] = bands["band_structure"]
         outputs["band_structure_reference"] = bands["reference"]
@@ -1754,95 +1781,84 @@ def _wannierize_blocks_codes_for(codes: DscfCodes) -> WannierizeBlocksCodes:
     return cast("WannierizeBlocksCodes", wannierize_codes)
 
 
-def _wannierize_smooth_mesh(
-    *,
-    do_smooth: bool,
-    codes: DscfCodes,
-    structure: orm.StructureData,
-    blocks: Any,
-    smooth_kpoints: Any,
-    smooth_mp_grid: Any,
-    scf_remote_folder: Any,
-    pseudo_family: str,
-    wannier_protocol: str | None,
-    wannier_overrides: WannierizeOverrides | None,
-    spin_polarized: bool,
-    interpolation_kpoints: orm.KpointsData | None,
-    parallelization: ParallelizationDict | None,
-) -> Annotated[dict, dynamic(WannierizeBlockOutputs)] | None:
-    """Wannierize ``blocks`` on the denser mesh; return the per-block namespace.
+def dscf_manifolds(spin_polarized: bool) -> list[tuple[bool, SpinChannel]]:
+    """List the (filling, channel) manifolds a ΔSCF band structure covers.
 
-    Returns ``None`` without ``do_smooth``. Called from the
-    ``KoopmansDSCFWorkflow`` body, so the task it creates joins that
-    graph. It depends on nothing the KI chain produces, so it runs
-    alongside the screening.
-
-    ``scf_remote_folder`` must be a converged scf on ``structure``:
-    :func:`WannierizeBlocks` skips its own scf and runs only a fresh
-    nscf on ``smooth_kpoints`` off it.
-
-    ``interpolation_kpoints``, given, also runs the pw.x explicit band
-    structure and the per-block wannier90 interpolation on this denser
-    mesh — discoverable off :func:`WannierizeBlocks`' own dumped steps,
-    not re-exposed as a named output here.
+    Occupied before empty within a channel, up before down — the order the
+    interpolated eigenvalues are concatenated in.
     """
-    if not do_smooth:
-        return None
-    smooth = WannierizeBlocks(
-        codes=_wannierize_blocks_codes_for(codes),
-        structure=structure,
-        blocks=blocks,
-        kpoints=smooth_kpoints,
-        mp_grid=list(smooth_mp_grid),
-        scf_remote_folder=scf_remote_folder,
-        pseudo_family=pseudo_family,
-        protocol=wannier_protocol,
-        overrides=wannier_overrides,
-        spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
-        interpolation_kpoints=interpolation_kpoints,
-        parallelization=parallelization,
-        metadata={"call_link_label": "wannierize_smooth", "label": "Smooth wannierization"},
-    )
-    return smooth["blocks"]
+    spins = [SpinChannel.UP, SpinChannel.DOWN] if spin_polarized else [SpinChannel.NONE]
+    return [(filled, spin) for spin in spins for filled in (True, False)]
 
 
-def _interpolate_bands(
-    *,
-    structure: orm.StructureData,
-    merge_groups: list,
-    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
-    smooth_block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None,
-    koopmans_ham_retrieved: orm.FolderData,
-    kgrid: list[int],
-    kpath: orm.KpointsData,
-    spin_polarized: bool,
-    use_ws_distance: bool,
-    do_dos: bool,
-    plotting: dict | None,
-    offset: float = 0.0,
-) -> DscfBandStructureOutputs:
-    """Run the unfold-and-interpolate stage and return its outputs.
+@task
+def dscf_manifold_specs(merge_groups: list, spin_polarized: bool = False) -> list:
+    """Build the ΔSCF route's manifold specs from the initialisation's merge groups.
 
-    Returns ``band_structure`` and ``band_structure_reference`` always, and
-    ``dos`` only when ``do_dos``. ``offset`` puts the returned bands on
-    pw.x's absolute energy scale; see :func:`DscfBandStructureTask`.
+    One :class:`~aiida_koopmans.projections.MergeGroupId` per (filling,
+    spin) the run needs, carrying that manifold's blocks in band order off
+    the ``merge_groups`` partition the initialisation wannierization
+    emitted.
+
+    A genuine task, not a plain helper: ``merge_groups`` usually threads
+    through from the initialisation wannierization's own output, a future
+    the graph engine resolves only once this task actually runs.
+
+    Raises:
+        ValueError: a spin channel this route needs has no merge group.
     """
-    interpolation = DscfBandStructureTask(
-        structure=structure,
-        merge_groups=merge_groups,
-        block_wannierizations=block_wannierizations,
-        smooth_block_wannierizations=smooth_block_wannierizations,
-        koopmans_ham_retrieved=koopmans_ham_retrieved,
-        kgrid=kgrid,
-        kpath=kpath,
-        spin_polarized=spin_polarized,
-        use_ws_distance=use_ws_distance,
-        do_dos=do_dos,
-        plotting=plotting,
-        offset=offset,
-        metadata={"call_link_label": "interpolate_band_structure", "label": "Band interpolation"},
-    )
-    return interpolation
+    specs: list[MergeGroupId] = []
+    for filled, spin in dscf_manifolds(spin_polarized):
+        matches = [
+            group["blocks"]
+            for group in merge_groups
+            if bool(group["filled"]) == filled and SpinChannel(group["spin"]) == spin
+        ]
+        if not matches:
+            raise ValueError(
+                f"Interpolating a band structure needs an occupied and an empty "
+                f"projection manifold in every spin channel; the run has none for "
+                f"filled={filled}, spin={spin.value!r}. Add projections covering the "
+                "empty bands (and both spin channels, if polarized)."
+            )
+        [blocks] = matches
+        specs.append(
+            MergeGroupId(
+                filled=filled,
+                spin=spin,
+                blocks=[
+                    ProjectionBlockId(
+                        label=str(block["label"]),
+                        spin=SpinChannel(block["spin"]),
+                        filled=filled,
+                        num_wann=int(block["num_wann"]),
+                    )
+                    for block in blocks
+                ],
+            )
+        )
+    return specs
+
+
+def _kcp_koopmans_hamiltonians(spin_polarized: bool, retrieved) -> dict:
+    """Lift each manifold's Koopmans Hamiltonian out of the final KI's folder.
+
+    Keyed by
+    :func:`~aiida_koopmans.workgraphs.ui.band_structure.manifold_label`,
+    the band structure task's own namespace key. Which manifolds exist
+    follows ``spin_polarized`` alone, so the keys are known here even
+    though :func:`dscf_manifold_specs` only fills in their blocks once the
+    initialisation wannierization has run.
+    """
+    hamiltonians = {}
+    for filled, spin in dscf_manifolds(spin_polarized):
+        label = manifold_label(filled=filled, spin=spin)
+        hamiltonians[label] = extract_koopmans_hamiltonian(
+            retrieved=retrieved,
+            filename=kcp_hamiltonian_filename(filled=filled, spin=spin),
+            metadata={"call_link_label": f"extract_{label}_hamiltonian"},
+        ).result
+    return hamiltonians
 
 
 def _run_predicted_final_ki(

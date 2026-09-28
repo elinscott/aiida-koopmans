@@ -93,3 +93,38 @@ class TestRun:
         dos = wg.tasks.compute_dos_from_bands.outputs
         assert np.allclose(dos.energies.value.get_list(), si_reference["dos_energies"], atol=1e-10)
         assert np.allclose(dos.dos.value.get_list(), si_reference["dos_values"], atol=1e-8)
+
+
+def _short_kpath():
+    kpath = orm.KpointsData()
+    kpath.set_kpoints(np.array([[0.0, 0.0, 0.0], [0.5, 0.0, 0.5]]))
+    return kpath
+
+
+class TestInterpolateBandsCentres:
+    """The interpolation takes centres, never a ``.wout`` to re-parse."""
+
+    def test_an_unread_centre_is_named(self, aiida_profile, silicon_structure):
+        from aiida_koopmans.workgraphs.ui import interpolate_bands
+
+        with pytest.raises(ValueError, match="unread coordinate"):
+            interpolate_bands._callable(
+                kc_ham_file=orm.SinglefileData.from_string("x"),
+                centres=[[0.0, None, 0.0]],
+                structure=silicon_structure,
+                kpath=_short_kpath(),
+                kgrid=[1, 1, 1],
+            )
+
+    def test_centres_that_are_not_three_vectors_are_named(self, aiida_profile, silicon_structure):
+        """A per-band table of the wrong width cannot be a set of centres."""
+        from aiida_koopmans.workgraphs.ui import interpolate_bands
+
+        with pytest.raises(ValueError, match=r"one \[x, y, z\] per Wannier function"):
+            interpolate_bands._callable(
+                kc_ham_file=orm.SinglefileData.from_string("x"),
+                centres=[[0.0, 0.0]],
+                structure=silicon_structure,
+                kpath=_short_kpath(),
+                kgrid=[1, 1, 1],
+            )
