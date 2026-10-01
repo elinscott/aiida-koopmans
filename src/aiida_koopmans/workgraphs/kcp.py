@@ -500,10 +500,10 @@ def wire_descriptor_rows(
 ) -> Any:
     """Wire the descriptor rows a screening prediction consumes.
 
-    ``self_hartree`` reads them off the trial KI's per-orbital output;
-    ``power_spectrum`` runs a ``wan_mode='decompose'`` pass over the
-    snapshot's per-block Wannierizations, which does not depend on the
-    trial KI and so runs alongside it. Both return
+    ``self_hartree`` reads them off the trial KI's per-orbital output
+    (``metric``); ``power_spectrum`` runs a ``wan_mode='decompose'`` pass
+    over the snapshot's per-block Wannierizations, which takes no input
+    from any kcp.x step and ignores ``metric``. Both return
     ``{orbital_label: row}``. Called from a ``@task.graph`` body, so the
     tasks it creates join that graph.
     """
@@ -530,8 +530,8 @@ def wire_descriptor_rows(
             parallelization=parallelization,
             metadata={"call_link_label": call_link_label, "label": "Descriptors"},
         )["slots"]
-        # Labelled outside the descriptor workflow, which therefore takes
-        # no input from the trial KI and runs alongside it.
+        # Labelled outside the descriptor workflow, which therefore takes no
+        # input from any kcp.x step.
         return power_spectrum_descriptor_rows(
             slots=slots,
             orbitals=orbitals,
@@ -1206,8 +1206,10 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     * ``power_spectrum`` —
       :func:`PredictScreeningParametersFromPowerSpectrum`: no trial KI
       runs. Every orbital is predicted from its own decompose-pass row,
-      so ``orbital_groups_self_hartree_tol`` does not apply, and the
-      final KI is parented and seeded as with ``calculate_alpha=False``.
+      and the final KI is parented and seeded as with
+      ``calculate_alpha=False``. ``orbital_groups_self_hartree_tol``,
+      ``initial_alpha`` and ``initial_alphas`` raise ``ValueError`` here,
+      since without a trial none of them can take effect.
 
     Requires ``calculate_alpha=True`` and ``alpha_numsteps=1`` (there is
     nothing to iterate).
@@ -1305,6 +1307,9 @@ def KoopmansDSCFWorkflow(  # noqa: C901
         init_orbitals=init_orbitals,
         pw2wannier90_code=pw2wannier90_code,
         spin_polarized=spin_polarized,
+        self_hartree_tol=orbital_groups_self_hartree_tol,
+        initial_alpha=initial_alpha,
+        initial_alphas=initial_alphas,
     )
     predict_only = _model_replaces_refinement(ml_model=ml_model, ml_test=ml_test)
 
@@ -3991,6 +3996,9 @@ def _validate_ml_model_inputs(
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     pw2wannier90_code: orm.AbstractCode | None = None,
     spin_polarized: bool = False,
+    self_hartree_tol: float | None = None,
+    initial_alpha: float | None = None,
+    initial_alphas: AlphaScreening | None = None,
 ) -> None:
     """Fail fast on ``ml_model`` / ``ml_test`` inputs that cannot take effect.
 
@@ -4006,7 +4014,9 @@ def _validate_ml_model_inputs(
     which. A ``power_spectrum`` model additionally predicts from a
     decompose pass over the per-block Wannierizations, so it needs the
     Wannier-initialised route, a ``pw2wannier90_code`` to run that pass
-    with, and a closed shell.
+    with, and a closed shell. Without ``ml_test`` it runs no trial KI, so
+    ``self_hartree_tol``, ``initial_alpha`` and ``initial_alphas`` must all
+    be ``None``.
     """
     if ml_model is not None and descriptor is None:
         raise ValueError(
@@ -4039,6 +4049,23 @@ def _validate_ml_model_inputs(
             "prediction, so alpha_numsteps cannot take effect; set "
             "alpha_numsteps=1."
         )
+    if not ml_test and descriptor == MLDescriptor.POWER_SPECTRUM:
+        inert = [
+            name
+            for name, value in (
+                ("orbital_groups_self_hartree_tol (group_orbitals_tol)", self_hartree_tol),
+                ("initial_alpha (alpha_guess)", initial_alpha),
+                ("initial_alphas", initial_alphas),
+            )
+            if value is not None
+        ]
+        if inert:
+            raise ValueError(
+                "A power_spectrum prediction runs no trial KI: it predicts every "
+                "orbital from its own descriptor, so neither a grouping tolerance "
+                f"nor a starting alpha can take effect. Drop {', '.join(inert)}, "
+                "or use descriptor: self_hartree, whose trial KI uses both."
+            )
 
 
 def _model_replaces_refinement(*, ml_model: dict | None, ml_test: bool) -> bool:

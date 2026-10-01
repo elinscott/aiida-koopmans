@@ -853,7 +853,7 @@ def TrajectoryWorkflow(
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
-    initial_alpha: float = 0.6,
+    initial_alpha: float | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     blocks: list | None = None,
@@ -910,6 +910,11 @@ def TrajectoryWorkflow(
     ``r_max``) through ``decompose_parameters``. Both descriptors return
     rows in the same per-orbital order, the one the snapshot's ``alphas``
     are reported in.
+
+    ``initial_alpha`` and ``orbital_groups_self_hartree_tol`` pass through
+    to every snapshot's :func:`KoopmansDSCFWorkflow`, which applies 0.6 and
+    no grouping when they are ``None``, and refuses either one under
+    ``"predict"`` with ``'power_spectrum'``.
     """
     validate_parallelization(parallelization)
 

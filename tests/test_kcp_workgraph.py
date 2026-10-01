@@ -2993,7 +2993,8 @@ class TestPowerSpectrumPredictionGraph:
         final KI must be parented and seeded exactly as the screening-off
         route does it: on the Wannier initialization's save and folded
         wavefunctions, as the first orbital-dependent run, applying the
-        predicted alphas.
+        predicted alphas. A grouping tolerance or starting alpha on that
+        route is refused, since without a trial neither can take effect.
         """
         import aiida_koopmans.workgraphs.kcp as kcp_mod
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
@@ -3034,25 +3035,27 @@ class TestPowerSpectrumPredictionGraph:
             descriptor=MLDescriptor.SELF_HARTREE,
             ml_test=True,
         )
-        wg = KoopmansDSCFWorkflow.build(
-            codes={**mlwf_codes, "kcp": kcp_code},
-            structure=periodic_ozone_structure,
-            pseudo_family=ozone_pseudo_family,
-            ecutwfc=65.0,
-            ecutrho=260.0,
-            nbnd=10,
-            nspin=2,
-            correction=Correction.KI,
-            init_orbitals=VariationalOrbitalType.MLWFS,
-            blocks=ozone_projection_blocks(),
-            kgrid=[2, 1, 1],
-            kpoints=kmesh,
-            ml_model=self._model(),
-            descriptor=MLDescriptor.POWER_SPECTRUM,
-            pw2wannier90_code=aiida_local_code_factory(
+        periodic = {
+            "codes": {**mlwf_codes, "kcp": kcp_code},
+            "structure": periodic_ozone_structure,
+            "pseudo_family": ozone_pseudo_family,
+            "ecutwfc": 65.0,
+            "ecutrho": 260.0,
+            "nbnd": 10,
+            "nspin": 2,
+            "correction": Correction.KI,
+            "init_orbitals": VariationalOrbitalType.MLWFS,
+            "blocks": ozone_projection_blocks(),
+            "kgrid": [2, 1, 1],
+            "kpoints": kmesh,
+            "ml_model": self._model(),
+            "descriptor": MLDescriptor.POWER_SPECTRUM,
+            "pw2wannier90_code": aiida_local_code_factory(
                 executable="true", entry_point="koopmans.pw2wannier_decompose"
             ),
-        )
+        }
+        # Both trial-only inputs left unset: the predict route builds.
+        wg = KoopmansDSCFWorkflow.build(**periodic)
 
         assert required <= seen["PredictScreeningParametersFromPowerSpectrum"], seen
         assert required | {"descriptor"} <= seen["_run_predicted_final_ki"], seen
@@ -3078,6 +3081,15 @@ class TestPowerSpectrumPredictionGraph:
             .value
             == "Predicted screening parameters"
         )
+
+        # Without a trial KI, a grouping tolerance or a starting alpha has
+        # nothing to act on, so each is refused by name.
+        for inert, keyword in (
+            ({"orbital_groups_self_hartree_tol": 1e-4}, "group_orbitals_tol"),
+            ({"initial_alpha": 0.6}, "alpha_guess"),
+        ):
+            with pytest.raises(ValueError, match=rf"runs no trial KI.*{keyword}"):
+                KoopmansDSCFWorkflow.build(**periodic, **inert)
 
 
 # ----------------------------------------------------------------------
