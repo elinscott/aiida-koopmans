@@ -508,11 +508,11 @@ def spreads_metric_row(spreads: list, expected_count: int | None = None) -> list
 
 @task
 def assign_orbital_groups(
-    metric: list[list[float]],
     nelup: int,
     neldw: int,
     nbnd: int,
     spin_polarized: bool,
+    metric: list[list[float]] | None = None,
     tol: float | None = None,
 ) -> list[VariationalOrbital]:
     """Cluster variational orbitals by a per-orbital scalar metric.
@@ -525,7 +525,8 @@ def assign_orbital_groups(
 
     When ``tol`` is ``None`` (the default), grouping is disabled:
     every orbital becomes its own group and is its own representative.
-    This preserves the refine-every-orbital baseline.
+    This preserves the refine-every-orbital baseline. ``metric`` may be
+    omitted only then; a ``tol`` without a ``metric`` raises ``ValueError``.
 
     Returns ``list[VariationalOrbital]`` in the canonical order
     produced by :func:`enumerate_variational_orbitals`. Each entry
@@ -540,6 +541,11 @@ def assign_orbital_groups(
     # No grouping: every orbital is its own group + representative.
     if tol is None:
         return orbitals
+    if metric is None:
+        raise ValueError(
+            f"Grouping orbitals with tol={tol} needs a per-orbital `metric` to group "
+            "on. Pass one, or set tol=None to give every orbital its own group."
+        )
 
     import numpy as np
 

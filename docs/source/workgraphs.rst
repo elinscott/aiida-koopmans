@@ -99,7 +99,9 @@ which needs the Wannier-initialized route and a pw2wannier90.x code built
 with ``wan_mode='decompose'``. Under ``mode: predict`` the same decompose
 pass runs as ``PowerSpectrumDescriptorWorkflow`` inside each snapshot's
 screening step, where there are no computed screening parameters to pair
-the descriptors with.
+the descriptors with. That step runs no kcp.x calculation: each orbital's
+screening parameter is predicted from its own descriptor row, without
+orbital grouping, and the final KI starts from the DFT initialization.
 
 A trained model records the descriptor it was fitted on, the ``correction``
 and ``init_orbitals`` its screening parameters were computed under, and —

@@ -14,7 +14,8 @@ per-orbital Delta-SCF loop that refines the screening parameters, and a
 final KI with the converged alphas. Caller-supplied per-orbital
 ``initial_alphas`` either seed the refinement loop or — with
 ``calculate_alpha=False`` — replace it entirely (the final KI consumes
-them verbatim).
+them verbatim). A trained ``ml_model`` replaces the loop with a
+prediction; with the ``power_spectrum`` descriptor no trial KI runs either.
 Spin-symmetrisation (``fix_spin_contamination=True``) is not yet supported
 and is rejected at build time.
 """
@@ -1195,12 +1196,21 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     therefore requires.
 
     ``ml_model`` (a trained model dict from an ``ml:train`` trajectory
-    run) replaces the Delta-SCF refinement with
-    :func:`PredictScreeningParameters`: one trial KI at the starting
-    alphas supplies the self-Hartree descriptors, the model predicts
-    every screening parameter, and the final KI applies the predictions.
-    Requires ``calculate_alpha=True`` (the trial supplies the
-    descriptors) and ``alpha_numsteps=1`` (there is nothing to iterate).
+    run) replaces the Delta-SCF refinement with a prediction of every
+    screening parameter, which the final KI applies. Which prediction
+    runs follows ``descriptor``:
+
+    * ``self_hartree`` — :func:`PredictScreeningParameters`: one trial KI
+      at the starting alphas supplies the self-Hartree descriptors and
+      the grouping metric, and the final KI restarts from the trial save.
+    * ``power_spectrum`` —
+      :func:`PredictScreeningParametersFromPowerSpectrum`: no trial KI
+      runs. Every orbital is predicted from its own decompose-pass row,
+      so ``orbital_groups_self_hartree_tol`` does not apply, and the
+      final KI is parented and seeded as with ``calculate_alpha=False``.
+
+    Requires ``calculate_alpha=True`` and ``alpha_numsteps=1`` (there is
+    nothing to iterate).
 
     ``ml_test=True`` (with ``ml_model``) keeps the full Delta-SCF
     refinement and *additionally* runs a second final KI at the alphas
@@ -1548,7 +1558,26 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     # Unbound in skip mode; _run_predicted_final_ki never dereferences it
     # there (ml_test with calculate_alpha=False is rejected upfront).
     screening: Any = None
-    if calculate_alpha:
+    # The save the final KI restarts from when a trial KI ran; unset when the
+    # final KI is the first orbital-dependent run after the DFT init.
+    trial_remote: Any = None
+    if predict_only and descriptor == MLDescriptor.POWER_SPECTRUM:
+        screening = PredictScreeningParametersFromPowerSpectrum(
+            metadata={"label": "Predicted screening parameters"},
+            ml_model=ml_model,
+            nbnd=run_nbnd,
+            nelup=nelup,
+            neldw=neldw,
+            correction=correction,
+            init_orbitals=init_orbitals,
+            pw2wannier90_code=pw2wannier90_code,
+            nscf_remote_folder=nscf_remote_folder,
+            block_wannierizations=block_wannierizations,
+            merge_groups=merge_groups,
+            decompose_parameters=decompose_parameters,
+            parallelization=parallelization,
+        )
+    elif calculate_alpha:
         if predict_only:
             screening = PredictScreeningParameters(
                 metadata={"label": "Predicted screening parameters"},
@@ -1573,12 +1602,6 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                 ml_model=ml_model,
                 initial_evc_occupied1=initial_evc_occupied1,
                 initial_evc_occupied2=initial_evc_occupied2,
-                descriptor=descriptor,
-                pw2wannier90_code=pw2wannier90_code,
-                decompose_parameters=decompose_parameters,
-                nscf_remote_folder=nscf_remote_folder,
-                block_wannierizations=block_wannierizations,
-                merge_groups=merge_groups,
                 overrides=overrides,
                 parallelization=parallelization,
             )
@@ -1611,23 +1634,26 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                 overrides=overrides,
                 parallelization=parallelization,
             )
+        trial_remote = screening["trial_remote"]
+    if trial_remote is not None:
         # The final KI restarts from the *last iteration's* trial KI save
         # so it inherits the converged variational orbital basis (not the
         # bare DFT save); no overlay / staging is needed there.
         final_alphas = screening["alphas"]
-        final_parent = screening["trial_remote"]
+        final_parent = trial_remote
         final_overlay = None
         final_evc_occupied1 = None
         final_evc_occupied2 = None
         first_orbdep_run = False
     else:
-        # Screening skipped: the final KI is the first orbital-dependent
-        # run after the DFT init, so it takes over the trial KI's seeding
-        # role — parented on the init save with the KS-as-variational
-        # overlay (molecular route) or the folded Wannier wavefunction
-        # staging (periodic route) — and applies the caller-supplied
-        # per-orbital alphas verbatim.
-        final_alphas = initial_alphas
+        # No trial KI ran: the final KI is the first orbital-dependent run
+        # after the DFT init, so it takes over the trial KI's seeding role —
+        # parented on the init save with the KS-as-variational overlay
+        # (molecular route) or the folded Wannier wavefunction staging
+        # (periodic route). It applies the power-spectrum predictions, or
+        # the caller-supplied per-orbital alphas verbatim when screening is
+        # skipped.
+        final_alphas = initial_alphas if screening is None else screening["alphas"]
         final_parent = dft_remote
         final_overlay = (
             _ks_variational_overlay(nspin)
@@ -1650,7 +1676,8 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     #
     # ``alphas`` and ``parent_folder`` are wired explicitly at the call
     # site so the provenance graph shows what the final KI consumes:
-    # the converged DSCF screening parameters, or the injected ones.
+    # the converged DSCF screening parameters, the predicted ones, or the
+    # injected ones.
     # ------------------------------------------------------------------
     ki_final = RunFinalKI(
         kcp_code=kcp_code,
@@ -2938,7 +2965,6 @@ def PredictScreeningParameters(
     init_orbitals: VariationalOrbitalType,
     dft_remote: orm.RemoteData,
     ml_model: dict,
-    descriptor: MLDescriptor,
     nelup: int | None = None,
     neldw: int | None = None,
     tot_magnetization: int | None = None,
@@ -2947,31 +2973,19 @@ def PredictScreeningParameters(
     self_hartree_tol: float | None = None,
     initial_evc_occupied1: orm.SinglefileData | None = None,
     initial_evc_occupied2: orm.SinglefileData | None = None,
-    pw2wannier90_code: orm.AbstractCode | None = None,
-    decompose_parameters: dict | None = None,
-    nscf_remote_folder: orm.RemoteData | None = None,
-    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)] | None = None,
-    merge_groups: list | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> ScreeningParametersOutputs:
-    """Predict the screening parameters from a single trial KI.
+    """Predict the screening parameters from a single trial KI's self-Hartrees.
 
-    The ``ml_model`` counterpart of :func:`ComputeScreeningParameters`:
+    The ``self_hartree`` counterpart of :func:`ComputeScreeningParameters`:
     runs the same first trial KI / KIPZ (identical parenting, KS overlay
     and Wannier-seed staging, starting from ``initial_alphas`` when given,
     else uniform ``initial_alpha``), then replaces the per-orbital
-    Delta-SCF fan-out with :func:`predict_alpha_screening`. Grouping
-    (``self_hartree_tol``) works as in the refinement loop: one prediction
-    per representative, broadcast onto the group members — and it always
-    clusters on the trial's self-Hartrees, whichever descriptor the model
-    was trained on.
-
-    ``descriptor`` selects what the model predicts from. ``self_hartree``
-    reads the trial's own per-orbital output; ``power_spectrum`` needs
-    ``pw2wannier90_code`` plus the Wannier-route sockets
-    (``nscf_remote_folder`` / ``block_wannierizations`` / ``merge_groups``)
-    to run its decompose pass.
+    Delta-SCF fan-out with :func:`predict_alpha_screening` reading the
+    trial's per-orbital self-Hartrees. Grouping (``self_hartree_tol``)
+    works as in the refinement loop: one prediction per representative,
+    broadcast onto the group members.
 
     Returns the same ``{alphas, trial_remote}`` pair, so the final KI
     parents on the trial save and applies the predicted alphas exactly as
@@ -3042,9 +3056,70 @@ def PredictScreeningParameters(
     )
     predicted = predict_alpha_screening(
         model=ml_model,
+        descriptor_rows=self_hartree_descriptor_rows(
+            metric=metric.result, orbitals=orbitals.result
+        ).result,
+        orbitals=orbitals.result,
+        correction=correction,
+        init_orbitals=init_orbitals,
+        descriptor=MLDescriptor.SELF_HARTREE,
+        metadata={"call_link_label": "predict_alphas"},
+    )
+
+    return {
+        "alphas": predicted,
+        "trial_remote": trial["remote_folder"],
+        "trial_output_parameters": trial["output_parameters"],
+    }
+
+
+class PredictedScreeningParametersOutputs(TypedDict):
+    """Outputs of :func:`PredictScreeningParametersFromPowerSpectrum`.
+
+    * ``alphas`` — one predicted screening parameter per orbital, in the
+      shape :class:`AlphaScreening` that ``KcpCalculation`` accepts at its
+      ``alphas`` input.
+    """
+
+    alphas: AlphaScreening
+
+
+@task.graph
+def PredictScreeningParametersFromPowerSpectrum(
+    *,
+    ml_model: dict,
+    nbnd: int,
+    nelup: int,
+    neldw: int,
+    correction: Correction,
+    init_orbitals: VariationalOrbitalType,
+    pw2wannier90_code: orm.AbstractCode,
+    nscf_remote_folder: orm.RemoteData,
+    block_wannierizations: Annotated[dict, dynamic(WannierizeBlockOutputs)],
+    merge_groups: list,
+    decompose_parameters: dict | None = None,
+    parallelization: ParallelizationDict | None = None,
+) -> PredictedScreeningParametersOutputs:
+    """Predict every orbital's screening parameter from its power spectrum.
+
+    Runs no kcp.x step. A pw2wannier90.x ``wan_mode='decompose'`` pass over
+    ``block_wannierizations`` supplies one descriptor row per orbital, and
+    :func:`predict_alpha_screening` predicts each orbital's screening
+    parameter from its own row. The orbitals are the closed-shell filled
+    (``1..nelup``) and empty (``nelup+1..nbnd``) manifolds, each orbital
+    its own group: no orbital grouping applies.
+    """
+    orbitals = assign_orbital_groups(
+        nelup=nelup,
+        neldw=neldw,
+        nbnd=nbnd,
+        spin_polarized=False,
+    )
+    predicted = predict_alpha_screening(
+        model=ml_model,
         descriptor_rows=wire_descriptor_rows(
-            descriptor=descriptor,
-            metric=metric.result,
+            descriptor=MLDescriptor.POWER_SPECTRUM,
+            metric=None,
             orbitals=orbitals.result,
             pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
@@ -3057,16 +3132,11 @@ def PredictScreeningParameters(
         orbitals=orbitals.result,
         correction=correction,
         init_orbitals=init_orbitals,
-        descriptor=descriptor,
-        radial_basis=_radial_basis_for(descriptor, decompose_parameters),
+        descriptor=MLDescriptor.POWER_SPECTRUM,
+        radial_basis=resolve_radial_basis(decompose_parameters),
         metadata={"call_link_label": "predict_alphas"},
     )
-
-    return {
-        "alphas": predicted,
-        "trial_remote": trial["remote_folder"],
-        "trial_output_parameters": trial["output_parameters"],
-    }
+    return {"alphas": predicted}
 
 
 # ----------------------------------------------------------------------
@@ -3924,10 +3994,11 @@ def _validate_ml_model_inputs(
 ) -> None:
     """Fail fast on ``ml_model`` / ``ml_test`` inputs that cannot take effect.
 
-    Prediction needs a trial KI (it supplies the grouping metric and, on
-    the ``self_hartree`` route, the descriptors themselves), so both
-    routes require ``calculate_alpha=True``. Without ``ml_test`` the model
-    replaces the Delta-SCF refinement with a single pass, so
+    A model computes the screening parameters, which
+    ``calculate_alpha=False`` asks to take verbatim from ``initial_alphas``
+    instead, so both routes require ``calculate_alpha=True``. Without
+    ``ml_test`` the model replaces the Delta-SCF refinement with a single
+    prediction, so
     ``alpha_numsteps`` must stay 1; with ``ml_test`` the refinement runs
     in full (it is the comparison baseline) and ``alpha_numsteps`` is free.
 
@@ -3958,13 +4029,13 @@ def _validate_ml_model_inputs(
         return
     if not calculate_alpha:
         raise ValueError(
-            "ml_model predicts the screening parameters from a trial KI, which "
+            "ml_model predicts the screening parameters, which "
             "calculate_alpha=False skips. Either drop ml_model (to apply "
             "initial_alphas verbatim) or keep calculate_alpha=True."
         )
     if not ml_test and alpha_numsteps != 1:
         raise ValueError(
-            "ml_model replaces the Delta-SCF refinement with a single trial-KI "
+            "ml_model replaces the Delta-SCF refinement with a single "
             "prediction, so alpha_numsteps cannot take effect; set "
             "alpha_numsteps=1."
         )

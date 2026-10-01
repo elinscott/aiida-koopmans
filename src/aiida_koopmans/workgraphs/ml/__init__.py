@@ -681,8 +681,8 @@ def PowerSpectrumDescriptorWorkflow(
     The descriptor half of :func:`PowerSpectrumDatasetWorkflow`: the same
     per-block ``wan_mode='decompose'`` fan-out, split into ``(spin,
     filling)`` slots instead of paired with screening parameters. This is
-    what a prediction consumes — it runs before any alphas exist, and takes
-    no input from the trial KI, so the fan-out is free to run alongside it.
+    what a prediction consumes — it runs before any alphas exist and takes
+    no input from any kcp.x step.
     """
     slots = gather_block_descriptor_slots(
         block_descriptors=fan_out_block_descriptors(
