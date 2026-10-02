@@ -932,7 +932,7 @@ def RunDFPT(
             metadata={"call_link_label": "spreads_metric_row"},
         )
         orbitals = assign_orbital_groups(
-            metric=metric.result,
+            orbital_grouping_metric=metric.result,
             nelup=int(num_wann_occ),
             neldw=0,
             nbnd=int(num_wann_occ) + int(num_wann_emp),

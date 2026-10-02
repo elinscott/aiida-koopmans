@@ -1891,7 +1891,7 @@ class TestKoopmansDSCFGraphBuild:
             descriptor=MLDescriptor.SELF_HARTREE,
         )
         labels = self._all_link_labels(wg)
-        assert any("PredictScreeningParameters" in label for label in labels), labels
+        assert any("PredictScreeningParametersFromSelfHartree" in label for label in labels), labels
         assert not any("ComputeScreeningParameters" in label for label in labels), labels
         # The final KI still applies the (now predicted) screening parameters.
         assert any("RunFinalKI" in label for label in labels), labels
@@ -1906,7 +1906,7 @@ class TestKoopmansDSCFGraphBuild:
         from aiida import orm
         from aiida_pseudo.groups.family import PseudoPotentialFamily
 
-        from aiida_koopmans.workgraphs.kcp import PredictScreeningParameters
+        from aiida_koopmans.workgraphs.kcp import PredictScreeningParametersFromSelfHartree
 
         family = (
             orm.QueryBuilder()
@@ -1916,7 +1916,7 @@ class TestKoopmansDSCFGraphBuild:
         pseudos = family.get_pseudos(structure=ozone_structure)
         dummy_remote = orm.RemoteData(remote_path="/nonexistent/fake")
 
-        sub_wg = PredictScreeningParameters.build(
+        sub_wg = PredictScreeningParametersFromSelfHartree.build(
             kcp_code=kcp_code,
             structure=ozone_structure,
             pseudos=pseudos,
@@ -2547,7 +2547,7 @@ class TestPredictTrialMatchesComputeTrial:
     """The predict route's trial KI is the refinement route's first trial.
 
     Build both screening sub-graphs for identical inputs and compare the
-    kwargs ``PredictScreeningParameters`` hands to ``_trial_kcp_inputs``
+    kwargs ``PredictScreeningParametersFromSelfHartree`` hands to ``_trial_kcp_inputs``
     with those ``ComputeScreeningParameters`` hands to
     ``ScreeningIteration`` (whose forwarding to ``_trial_kcp_inputs`` is
     a pure pass-through of the same keys). This pins the trial's
@@ -2652,7 +2652,9 @@ class TestPredictTrialMatchesComputeTrial:
             return real_trial(**kwargs)
 
         monkeypatch.setattr(kcp_mod, "_trial_kcp_inputs", spy_trial)
-        kcp_mod.PredictScreeningParameters.build(**common, ml_model=_linear_sh_model())
+        kcp_mod.PredictScreeningParametersFromSelfHartree.build(
+            **common, ml_model=_linear_sh_model()
+        )
         monkeypatch.undo()
 
         seen_compute: dict = {}
@@ -2740,7 +2742,7 @@ class TestMlTestModeGraphBuild:
 
         # Comparison baseline: the full refinement, not the predict-only route.
         assert _has("ComputeScreeningParameters"), labels
-        assert not _has("PredictScreeningParameters"), labels
+        assert not _has("PredictScreeningParametersFromSelfHartree"), labels
         # The predicted route: model prediction + second final KI off the trial.
         assert _has("predict_alphas"), labels
         assert _has("run_final_ki_predicted"), labels
@@ -3061,7 +3063,7 @@ class TestPowerSpectrumPredictionGraph:
         assert required | {"descriptor"} <= seen["_run_predicted_final_ki"], seen
 
         names = [t.name for t in wg.tasks]
-        assert "PredictScreeningParameters" not in names, names
+        assert "PredictScreeningParametersFromSelfHartree" not in names, names
         assert "ComputeScreeningParameters" not in names, names
         final_ki = wg.tasks["RunFinalKI"]
         assert _link_source(final_ki.inputs.alphas) == [

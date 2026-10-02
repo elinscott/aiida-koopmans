@@ -206,7 +206,7 @@ class TestRefineByScalar:
         with pytest.raises(ValueError, match="tol must be positive"):
             refine_by_scalar([orb(1)], [1.0], tol=tol)
         # A tolerance with nothing to measure it against is refused the same way.
-        with pytest.raises(ValueError, match="needs a per-orbital `metric`"):
+        with pytest.raises(ValueError, match="needs a per-orbital `orbital_grouping_metric`"):
             assign_orbital_groups._callable(
                 nelup=1, neldw=1, nbnd=2, spin_polarized=False, tol=1e-4
             )
@@ -393,7 +393,7 @@ class TestAssignOrbitalGroups:
         as an *omitted* argument here.
         """
         orbitals = assign_orbital_groups._callable(
-            metric=[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
+            orbital_grouping_metric=[[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]],
             nelup=2,
             neldw=2,
             nbnd=3,

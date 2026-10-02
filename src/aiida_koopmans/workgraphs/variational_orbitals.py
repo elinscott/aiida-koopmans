@@ -512,21 +512,23 @@ def assign_orbital_groups(
     neldw: int,
     nbnd: int,
     spin_polarized: bool,
-    metric: list[list[float]] | None = None,
+    orbital_grouping_metric: list[list[float]] | None = None,
     tol: float | None = None,
 ) -> list[VariationalOrbital]:
     """Cluster variational orbitals by a per-orbital scalar metric.
 
-    ``metric`` is a per-spin, per-band array of shape ``[nspin][nbnd]``
-    — typically the trial KI's ``orbital_data["self-Hartree"]``, but
-    deliberately agnostic so the same task can be reused with any
-    per-orbital quantity (e.g. ``spreads``) by a non-kcp workflow.
-    The caller extracts the relevant array upstream and passes it in.
+    ``orbital_grouping_metric`` is a per-spin, per-band array of shape
+    ``[nspin][nbnd]`` — typically the trial KI's
+    ``orbital_data["self-Hartree"]``, but deliberately agnostic so the
+    same task can be reused with any per-orbital quantity (e.g.
+    ``spreads``) by a non-kcp workflow. The caller extracts the
+    relevant array upstream and passes it in.
 
     When ``tol`` is ``None`` (the default), grouping is disabled:
     every orbital becomes its own group and is its own representative.
-    This preserves the refine-every-orbital baseline. ``metric`` may be
-    omitted only then; a ``tol`` without a ``metric`` raises ``ValueError``.
+    This preserves the refine-every-orbital baseline.
+    ``orbital_grouping_metric`` may be omitted only then; a ``tol``
+    without one raises ``ValueError``.
 
     Returns ``list[VariationalOrbital]`` in the canonical order
     produced by :func:`enumerate_variational_orbitals`. Each entry
@@ -541,10 +543,11 @@ def assign_orbital_groups(
     # No grouping: every orbital is its own group + representative.
     if tol is None:
         return orbitals
-    if metric is None:
+    if orbital_grouping_metric is None:
         raise ValueError(
-            f"Grouping orbitals with tol={tol} needs a per-orbital `metric` to group "
-            "on. Pass one, or set tol=None to give every orbital its own group."
+            f"Grouping orbitals with tol={tol} needs a per-orbital "
+            "`orbital_grouping_metric` to group on. Pass one, or set tol=None "
+            "to give every orbital its own group."
         )
 
     import numpy as np
@@ -569,7 +572,7 @@ def assign_orbital_groups(
         else:
             spin = subset_key[0]
             spin_axis = 0 if spin is SpinChannel.NONE else spin.axis
-            data = np.array([[metric[spin_axis][o["index"] - 1]] for o in members])
+            data = np.array([[orbital_grouping_metric[spin_axis][o["index"] - 1]] for o in members])
             labels = _assign_groups_fcluster(data=data, default_tol=tol, revised_tol=tol)
         for o, label in zip(members, labels, strict=True):
             o["group_id"] = label + next_group_offset

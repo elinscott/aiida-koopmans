@@ -1200,7 +1200,7 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     screening parameter, which the final KI applies. Which prediction
     runs follows ``descriptor``:
 
-    * ``self_hartree`` — :func:`PredictScreeningParameters`: one trial KI
+    * ``self_hartree`` — :func:`PredictScreeningParametersFromSelfHartree`: one trial KI
       at the starting alphas supplies the self-Hartree descriptors and
       the grouping metric, and the final KI restarts from the trial save.
     * ``power_spectrum`` —
@@ -1584,7 +1584,7 @@ def KoopmansDSCFWorkflow(  # noqa: C901
         )
     elif calculate_alpha:
         if predict_only:
-            screening = PredictScreeningParameters(
+            screening = PredictScreeningParametersFromSelfHartree(
                 metadata={"label": "Predicted screening parameters"},
                 kcp_code=kcp_code,
                 structure=run_structure,
@@ -1940,7 +1940,7 @@ def _run_predicted_final_ki(
         output_parameters=screening["trial_output_parameters"]
     )
     trial_orbitals = assign_orbital_groups(
-        metric=trial_metric.result,
+        orbital_grouping_metric=trial_metric.result,
         nelup=nelup,
         neldw=neldw,
         nbnd=run_nbnd,
@@ -2575,7 +2575,7 @@ def ScreeningIteration(
     # unchanged.
     metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
     orbitals = assign_orbital_groups(
-        metric=metric.result,
+        orbital_grouping_metric=metric.result,
         nelup=base.nelup,
         neldw=base.neldw,
         nbnd=nbnd,
@@ -2955,7 +2955,7 @@ def ComputeScreeningParameters(
 
 
 @task.graph
-def PredictScreeningParameters(
+def PredictScreeningParametersFromSelfHartree(
     *,
     kcp_code: orm.AbstractCode,
     structure: orm.StructureData,
@@ -3052,7 +3052,7 @@ def PredictScreeningParameters(
 
     metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
     orbitals = assign_orbital_groups(
-        metric=metric.result,
+        orbital_grouping_metric=metric.result,
         nelup=base.nelup,
         neldw=base.neldw,
         nbnd=nbnd,
@@ -4098,7 +4098,7 @@ def _trial_kcp_inputs(
     """Assemble the ``KcpStep`` kwargs for a trial KI / KIPZ pass.
 
     Shared by :func:`ScreeningIteration` (whose trial seeds the per-orbital
-    Delta-SCF fan-out) and :func:`PredictScreeningParameters` (whose trial
+    Delta-SCF fan-out) and :func:`PredictScreeningParametersFromSelfHartree` (whose trial
     supplies the self-Hartree descriptors for the model prediction), so both
     trials carry identical parenting, overlay and Wannier-seed staging.
     """
