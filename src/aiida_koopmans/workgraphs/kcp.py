@@ -488,7 +488,7 @@ def _radial_basis_for(
 def wire_descriptor_rows(
     *,
     descriptor: MLDescriptor,
-    metric: Any,
+    self_hartree_energies: Any,
     orbitals: Any,
     pw2wannier90_code: orm.AbstractCode | None,
     nscf_remote_folder: Any,
@@ -501,9 +501,9 @@ def wire_descriptor_rows(
     """Wire the descriptor rows a screening prediction consumes.
 
     ``self_hartree`` reads them off the trial KI's per-orbital output
-    (``metric``); ``power_spectrum`` runs a ``wan_mode='decompose'`` pass
+    (``self_hartree_energies``); ``power_spectrum`` runs a ``wan_mode='decompose'`` pass
     over the snapshot's per-block Wannierizations, which takes no input
-    from any kcp.x step and ignores ``metric``. Both return
+    from any kcp.x step and ignores ``self_hartree_energies``. Both return
     ``{orbital_label: row}``. Called from a ``@task.graph`` body, so the
     tasks it creates join that graph.
     """
@@ -537,7 +537,7 @@ def wire_descriptor_rows(
             orbitals=orbitals,
             metadata={"call_link_label": f"{call_link_label}_rows"},
         ).result
-    return self_hartree_descriptor_rows(metric=metric, orbitals=orbitals).result
+    return self_hartree_descriptor_rows(metric=self_hartree_energies, orbitals=orbitals).result
 
 
 class ScreeningParametersOutputs(TypedDict):
@@ -1936,11 +1936,11 @@ def _run_predicted_final_ki(
     """
     if not ml_test:
         return
-    trial_metric = extract_self_hartree_from_kcp(
+    self_hartree_energies = extract_self_hartree_from_kcp(
         output_parameters=screening["trial_output_parameters"]
     )
     trial_orbitals = assign_orbital_groups(
-        orbital_grouping_metric=trial_metric.result,
+        metric=self_hartree_energies.result,
         nelup=nelup,
         neldw=neldw,
         nbnd=run_nbnd,
@@ -1951,7 +1951,7 @@ def _run_predicted_final_ki(
         model=ml_model,
         descriptor_rows=wire_descriptor_rows(
             descriptor=descriptor,
-            metric=trial_metric.result,
+            self_hartree_energies=self_hartree_energies.result,
             orbitals=trial_orbitals.result,
             pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
@@ -2573,9 +2573,11 @@ def ScreeningIteration(
     # (the default) the task short-circuits to one-orbital-per-group
     # — every orbital is its own representative, so the fan-out is
     # unchanged.
-    metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
+    self_hartree_energies = extract_self_hartree_from_kcp(
+        output_parameters=trial["output_parameters"]
+    )
     orbitals = assign_orbital_groups(
-        orbital_grouping_metric=metric.result,
+        metric=self_hartree_energies.result,
         nelup=base.nelup,
         neldw=base.neldw,
         nbnd=nbnd,
@@ -3050,9 +3052,11 @@ def PredictScreeningParametersFromSelfHartree(
         )
     )
 
-    metric = extract_self_hartree_from_kcp(output_parameters=trial["output_parameters"])
+    self_hartree_energies = extract_self_hartree_from_kcp(
+        output_parameters=trial["output_parameters"]
+    )
     orbitals = assign_orbital_groups(
-        orbital_grouping_metric=metric.result,
+        metric=self_hartree_energies.result,
         nelup=base.nelup,
         neldw=base.neldw,
         nbnd=nbnd,
@@ -3062,7 +3066,7 @@ def PredictScreeningParametersFromSelfHartree(
     predicted = predict_alpha_screening(
         model=ml_model,
         descriptor_rows=self_hartree_descriptor_rows(
-            metric=metric.result, orbitals=orbitals.result
+            metric=self_hartree_energies.result, orbitals=orbitals.result
         ).result,
         orbitals=orbitals.result,
         correction=correction,
@@ -3124,7 +3128,7 @@ def PredictScreeningParametersFromPowerSpectrum(
         model=ml_model,
         descriptor_rows=wire_descriptor_rows(
             descriptor=MLDescriptor.POWER_SPECTRUM,
-            metric=None,
+            self_hartree_energies=None,
             orbitals=orbitals.result,
             pw2wannier90_code=pw2wannier90_code,
             nscf_remote_folder=nscf_remote_folder,
