@@ -681,8 +681,8 @@ def PowerSpectrumDescriptorWorkflow(
     The descriptor half of :func:`PowerSpectrumDatasetWorkflow`: the same
     per-block ``wan_mode='decompose'`` fan-out, split into ``(spin,
     filling)`` slots instead of paired with screening parameters. This is
-    what a prediction consumes — it runs before any alphas exist, and takes
-    no input from the trial KI, so the fan-out is free to run alongside it.
+    what a prediction consumes — it runs before any alphas exist and takes
+    no input from any kcp.x step.
     """
     slots = gather_block_descriptor_slots(
         block_descriptors=fan_out_block_descriptors(
@@ -853,7 +853,7 @@ def TrajectoryWorkflow(
     init_orbitals: VariationalOrbitalType = VariationalOrbitalType.KOHN_SHAM,
     alpha_numsteps: int = 1,
     fix_spin_contamination: bool = False,
-    initial_alpha: float = 0.6,
+    initial_alpha: float | None = None,
     spin_polarized: bool = False,
     orbital_groups_self_hartree_tol: float | None = None,
     blocks: list | None = None,
@@ -910,6 +910,11 @@ def TrajectoryWorkflow(
     ``r_max``) through ``decompose_parameters``. Both descriptors return
     rows in the same per-orbital order, the one the snapshot's ``alphas``
     are reported in.
+
+    ``initial_alpha`` and ``orbital_groups_self_hartree_tol`` pass through
+    to every snapshot's :func:`KoopmansDSCFWorkflow`, which applies 0.6 and
+    no grouping when they are ``None``, and refuses either one under
+    ``"predict"`` with ``'power_spectrum'``.
     """
     validate_parallelization(parallelization)
 

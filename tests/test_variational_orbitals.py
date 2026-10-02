@@ -205,6 +205,11 @@ class TestRefineByScalar:
     def test_nonpositive_tol_raises(self, tol):
         with pytest.raises(ValueError, match="tol must be positive"):
             refine_by_scalar([orb(1)], [1.0], tol=tol)
+        # A tolerance with nothing to measure it against is refused the same way.
+        with pytest.raises(ValueError, match="needs a per-orbital `metric`"):
+            assign_orbital_groups._callable(
+                nelup=1, neldw=1, nbnd=2, spin_polarized=False, tol=1e-4
+            )
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
     def test_nonfinite_value_raises(self, bad):

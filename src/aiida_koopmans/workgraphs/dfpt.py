@@ -926,13 +926,13 @@ def RunDFPT(
                 "spreads (``spreads``, the unified WannierizeBlocks output): the "
                 "spread clustering depends on them."
             )
-        metric = spreads_metric_row(
+        spread_metric = spreads_metric_row(
             spreads=spreads,
             expected_count=int(num_wann_occ) + int(num_wann_emp),
             metadata={"call_link_label": "spreads_metric_row"},
         )
         orbitals = assign_orbital_groups(
-            metric=metric.result,
+            metric=spread_metric.result,
             nelup=int(num_wann_occ),
             neldw=0,
             nbnd=int(num_wann_occ) + int(num_wann_emp),
