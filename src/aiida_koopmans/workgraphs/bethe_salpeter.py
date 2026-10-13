@@ -103,7 +103,7 @@ _KS_KEY = "ks_eigenvalues_on_grid"
 #: * ``FFTGvecs``: the FFT cutoff, set from the protocol's ``ratio_FFTGvecs``
 #:   for every protocol. A BSE run also reads it, so a caller value stays.
 #: * ``GTermKind``: the GW terminator, from the protocol's ``default_inputs``.
-_GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
+_GW_PROTOCOL_RUNCARD_LEFTOVERS = ("GbndRnge", "FFTGvecs", "GTermKind")
 
 #: A yambo ``ndb.QP`` carries a SERIAL_NUMBER stamped from the SAVE directory
 #: it was built against (k2y's ``KcwQpDatabaseGenerator`` reads it off
@@ -483,13 +483,13 @@ def RunBetheSalpeter(
     bse_data["additional_parsing"] = ["lowest_exciton", "brightest_exciton"]
 
     # ``get_builder_from_protocol`` already returns an ``orm.Dict`` for
-    # ``parameters``: rebuild it to strip the protocol's GW-only keys the
+    # ``parameters``: rebuild it to strip the GW protocol's leftover keys the
     # caller did not state, the same get-then-rebuild idiom the k2y BSE
     # example script uses on the same builder output.
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
-    for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
-        if gw_only_key not in variables:
-            bse_params_dict["variables"].pop(gw_only_key, None)
+    for leftover_key in _GW_PROTOCOL_RUNCARD_LEFTOVERS:
+        if leftover_key not in variables:
+            bse_params_dict["variables"].pop(leftover_key, None)
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")

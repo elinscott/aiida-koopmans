@@ -192,10 +192,9 @@ OWNED: dict[str, frozenset[str]] = {
             # runlevel (its random integration is set by `RandQpts` and
             # `RandGvec`, which the caller sets); writing the excitonic
             # wavefunctions the additional-parsing quantities read; and
-            # non-linear-core-correction
-            # support, needed for a pseudopotential family that has it (as
-            # koopmans2's own PseudoDojo/SG15 defaults do) and harmless for one
-            # that does not.
+            # non-linear-core-correction support (`NLCC`), needed for a
+            # pseudopotential family that has it (as koopmans2's own
+            # PseudoDojo/SG15 defaults do) and harmless for one that does not.
             "rim_cut",
             "WRbsWF",
             "NLCC",
