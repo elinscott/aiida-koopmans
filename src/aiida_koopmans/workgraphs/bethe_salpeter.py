@@ -95,14 +95,15 @@ _EIGENVALUE_KEYS = {"ki": "ki_eigenvalues_on_grid", "pki": "pki_eigenvalues_on_g
 _KS_KEY = "ks_eigenvalues_on_grid"
 
 #: Runcard keys ``YamboRestart.get_builder_from_protocol`` computes for a GW
-#: run (``GbndRnge``/``FFTGvecs``/``GTermKind``) and leaves behind even under
-#: a ``'bse_*'`` protocol: ``GbndRnge`` is assigned from the pre-rename
-#: ``BndsRnXp`` before the BSE branch pops that key, and ``GTermKind`` /
-#: ``FFTGvecs`` come from the protocol's own ``default_inputs``, applied to
-#: every protocol regardless of calc type. None of the three mean anything to
-#: a BSE run; the k2y BSE example script strips them from the same builder
-#: output before submission.
-_GW_ONLY_RUNCARD_KEYS = ("GbndRnge", "FFTGvecs", "GTermKind")
+#: run and leaves behind even under a ``'bse_*'`` protocol, so the protocol's
+#: value for each is dropped unless the caller states one:
+#:
+#: * ``GbndRnge``: the GW band range, assigned from the pre-rename
+#:   ``BndsRnXp`` before the BSE branch pops that key.
+#: * ``FFTGvecs``: the FFT cutoff, set from the protocol's ``ratio_FFTGvecs``
+#:   for every protocol. A BSE run also reads it, so a caller value stays.
+#: * ``GTermKind``: the GW terminator, from the protocol's ``default_inputs``.
+_GW_PROTOCOL_RUNCARD_LEFTOVERS = ("GbndRnge", "FFTGvecs", "GTermKind")
 
 #: A yambo ``ndb.QP`` carries a SERIAL_NUMBER stamped from the SAVE directory
 #: it was built against (k2y's ``KcwQpDatabaseGenerator`` reads it off
@@ -482,12 +483,13 @@ def RunBetheSalpeter(
     bse_data["additional_parsing"] = ["lowest_exciton", "brightest_exciton"]
 
     # ``get_builder_from_protocol`` already returns an ``orm.Dict`` for
-    # ``parameters``: rebuild it to strip the GW-only leftover keys, the
-    # same get-then-rebuild idiom the k2y BSE example script uses on the
-    # same builder output.
+    # ``parameters``: rebuild it to strip the GW protocol's leftover keys the
+    # caller did not state, the same get-then-rebuild idiom the k2y BSE
+    # example script uses on the same builder output.
     bse_params_dict = bse_data["yres"]["yambo"]["parameters"].get_dict()
-    for gw_only_key in _GW_ONLY_RUNCARD_KEYS:
-        bse_params_dict["variables"].pop(gw_only_key, None)
+    for leftover_key in _GW_PROTOCOL_RUNCARD_LEFTOVERS:
+        if leftover_key not in variables:
+            bse_params_dict["variables"].pop(leftover_key, None)
     bse_data["yres"]["yambo"]["parameters"] = orm.Dict(bse_params_dict)
     bse_data["yres"]["yambo"]["QP_corrections"] = qp_db
     merge_parallelization_into_inputs(bse_data["yres"]["yambo"], parallelization, "yambo")

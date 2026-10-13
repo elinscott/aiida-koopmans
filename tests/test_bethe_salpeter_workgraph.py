@@ -478,7 +478,7 @@ class TestRunBetheSalpeterGraphBuild:
         combination, via ``GbndRnge``, a GW-only leftover key
         ``YamboRestart.get_builder_from_protocol`` always sets and never
         drops for a ``'bse_*'`` protocol -- see
-        :data:`~aiida_koopmans.workgraphs.bethe_salpeter._GW_ONLY_RUNCARD_KEYS`). A
+        :data:`~aiida_koopmans.workgraphs.bethe_salpeter._GW_PROTOCOL_RUNCARD_LEFTOVERS`). A
         ``BndsRnXs`` request *above* that default only reaches the BSE
         step's own override, not the init step's -- exercise that gap with
         a ``BndsRnXs`` upper bound past 300, matching the default's own
@@ -510,7 +510,7 @@ class TestRunBetheSalpeterGraphBuild:
         )
         assert init_nbnd == bse_nbnd == 500
 
-    def test_bse_variables_carry_no_gw_only_keys(
+    def test_bse_variables_drop_gw_protocol_leftovers_unless_stated(
         self,
         bse_codes,
         silicon_structure,
@@ -520,13 +520,15 @@ class TestRunBetheSalpeterGraphBuild:
         bse_parameters,
         fake_cutoffs_family,
     ):
-        """The BSE runcard must not carry protocol-derived GW-only leftover keys.
+        """The BSE runcard drops the GW protocol's leftover keys unless the caller states them.
 
         ``YamboRestart.get_builder_from_protocol`` computes ``GbndRnge``
         from the pre-rename ``BndsRnXp`` before its own BSE branch pops
         that key, and inherits ``GTermKind``/``FFTGvecs`` from its
-        protocol's ``default_inputs`` regardless of calc type -- none of
-        the three mean anything to a BSE run.
+        protocol's ``default_inputs`` regardless of calc type. A BSE run
+        ignores ``GbndRnge`` and ``GTermKind`` but reads ``FFTGvecs``, so a
+        caller-set ``FFTGvecs`` must survive while the protocol's own value
+        does not.
         """
         wg = self._build(
             bse_codes,
@@ -540,8 +542,28 @@ class TestRunBetheSalpeterGraphBuild:
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
         )
-        for gw_only_key in ("GbndRnge", "FFTGvecs", "GTermKind"):
-            assert gw_only_key not in bse_variables
+        for leftover_key in ("GbndRnge", "FFTGvecs", "GTermKind"):
+            assert leftover_key not in bse_variables
+
+        stated = {
+            **bse_parameters,
+            "variables": {**bse_parameters["variables"], "FFTGvecs": [12.0, "Ry"]},
+        }
+        wg = self._build(
+            bse_codes,
+            silicon_structure,
+            kmesh,
+            nscf_output_band,
+            ham_output_parameters,
+            stated,
+            fake_cutoffs_family,
+        )
+        stated_variables = (
+            wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
+        )
+        assert stated_variables["FFTGvecs"] == [12.0, "Ry"]
+        for leftover_key in ("GbndRnge", "GTermKind"):
+            assert leftover_key not in stated_variables
 
     def test_pki_eigenvalues_are_refused(
         self,
