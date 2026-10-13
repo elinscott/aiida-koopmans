@@ -188,10 +188,11 @@ OWNED: dict[str, frozenset[str]] = {
             "X_and_IO_ROLEs",
             "DIP_CPU",
             "DIP_ROLEs",
-            # Runcard arguments the route always turns on: the random-
-            # integration-method Coulomb-divergence treatment, needed for any
-            # periodic BSE; writing the excitonic wavefunctions the
-            # additional-parsing quantities read; and non-linear-core-correction
+            # Runcard arguments the route always turns on: the `rim_cut`
+            # runlevel (its random integration is set by `RandQpts` and
+            # `RandGvec`, which the caller sets); writing the excitonic
+            # wavefunctions the additional-parsing quantities read; and
+            # non-linear-core-correction
             # support, needed for a pseudopotential family that has it (as
             # koopmans2's own PseudoDojo/SG15 defaults do) and harmless for one
             # that does not.
