@@ -303,12 +303,13 @@ def RunBetheSalpeter(
     ``X_and_IO_CPU``/``X_and_IO_ROLEs``, ``DIP_CPU``/``DIP_ROLEs``): all are in
     :data:`aiida_koopmans.owned_keywords.OWNED`'s ``"yambo"`` entry, set (if
     at all) only through ``parallelization``'s ``yambo`` entry. Left unset,
-    yambo distributes the corresponding work over the ranks itself. A stated
-    k-only split can ask for more ranks than the k-mesh has irreducible
-    points (a run against a 2x2x2 symmorphic silicon mesh, three points,
-    aborted at four ranks with "USER parallel structure does not fit the
-    current run parameters") -- the caller's own responsibility once a split
-    is named. The same ``arguments``/``variables`` also
+    yambo distributes the work of the static screening and dipole drivers
+    over the ranks itself. A stated k-only split can ask for more ranks than
+    the k-mesh has irreducible points (a run against a 2x2x2 symmorphic
+    silicon mesh, three points, aborted at four ranks with "USER parallel
+    structure does not fit the current run parameters") -- the caller's own
+    responsibility once a split is named. The same ``arguments``/``variables``
+    also
     reach the init step (minus ``KfnQPdb`` and the role-split keys, which
     only the BSE step's own runcard carries -- the init/p2y step runs no
     parallel driver), so its own nscf sees the same
@@ -321,11 +322,12 @@ def RunBetheSalpeter(
     and BSE alike); its ``yambo`` entry sets both yambo steps' rank count, and
     (via :func:`~aiida_koopmans.parallelization.yambo_runcard_variables`) the
     BSE step's own ``bethe_salpeter``/``static_screening``/``dipoles`` role
-    split, when the caller names one. Left unset, yambo builds its own
-    parallel structure, which can itself fail to find one for a small e/h
-    phase space (this silicon example's BSE bands fail yambo's own
-    automatic structure at four, six, and eight ranks, the same rank counts
-    a k-only ``BS_CPU``/``BS_ROLEs`` split fails at).
+    split, when the caller names one. Left unset with more than one rank, the
+    BSE step gets all its ranks on yambo's electron-hole role
+    (``BS_CPU = ntasks``, ``BS_ROLEs = "eh"``): yambo's own proposal for the
+    kernel fails on a small e/h phase space (the silicon example's BSE bands
+    fail it at four, six, and eight ranks), while a named ``eh`` count
+    passes yambo's phase-space check at any size.
 
     ``protocol`` sets both the fresh scf/nscf/p2y's QE precision and yambo's
     own BSE protocol -- there is no reason for the two to differ here: the

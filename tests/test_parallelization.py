@@ -375,8 +375,28 @@ class TestYamboRuncardVariables:
     def test_no_yambo_entry_returns_empty(self):
         assert yambo_runcard_variables({"pw": {"ntasks": 4}}) == {}
 
-    def test_yambo_entry_without_any_driver_returns_empty(self):
-        assert yambo_runcard_variables({"yambo": {"ntasks": 4}}) == {}
+    def test_single_rank_without_any_driver_returns_empty(self):
+        assert yambo_runcard_variables({"yambo": {"ntasks": 1}}) == {}
+        assert yambo_runcard_variables({"yambo": {}}) == {}
+
+    def test_multi_rank_without_a_split_puts_all_ranks_on_eh(self):
+        result = yambo_runcard_variables({"yambo": {"ntasks": 4}})
+        assert result == {"BS_CPU": "4", "BS_ROLEs": "eh"}
+
+    def test_default_split_leaves_the_other_drivers_to_yambo(self):
+        result = yambo_runcard_variables({"yambo": {"ntasks": 4, "dipoles": {"c": 2, "v": 2}}})
+        assert result == {
+            "BS_CPU": "4",
+            "BS_ROLEs": "eh",
+            "DIP_CPU": "2 2",
+            "DIP_ROLEs": "c v",
+        }
+
+    def test_named_split_is_not_replaced_by_the_default(self):
+        result = yambo_runcard_variables(
+            {"yambo": {"ntasks": 4, "bethe_salpeter": {"k": 2, "eh": 2}}}
+        )
+        assert result == {"BS_CPU": "2 2", "BS_ROLEs": "k eh"}
 
     def test_one_driver_only(self):
         result = yambo_runcard_variables({"yambo": {"bethe_salpeter": {"k": 2, "eh": 2}}})
