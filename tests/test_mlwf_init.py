@@ -527,6 +527,17 @@ class TestKoopmansDSCFEpsInfAuto:
         with pytest.raises(ValueError, match="Makov-Payne"):
             build(eps_inf="auto", mp_correction=False)
 
+    def test_without_a_screening_step_to_use_it_raises(self, build):
+        """With the refinement skipped, the dielectric run's result has no consumer."""
+        alphas = {"filled": {"none": [0.6] * 9}, "empty": {"none": [0.7]}}
+        with pytest.raises(ValueError, match="only the Delta-SCF screening step uses"):
+            build(eps_inf="auto", calculate_alpha=False, initial_alphas=alphas)
+
+    @pytest.mark.parametrize("eps_inf", ["yes", "Auto", "AUTO"])
+    def test_a_string_other_than_exactly_auto_raises(self, build, eps_inf):
+        with pytest.raises(ValueError, match="give a number or exactly 'auto'"):
+            build(eps_inf=eps_inf)
+
     def test_molecule_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 

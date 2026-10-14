@@ -1274,12 +1274,16 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
     (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
     ``codes["ph"]``) runs on the primitive cell first and the isotropic
-    average of its dielectric tensor feeds every kcp.x step in place of the
-    number. It needs the Makov-Payne correction (``mp_correction``) on the
-    periodic Wannier route, the only place a dielectric constant is used.
-    The chain's ground state samples ``kpoints`` unless ``eps_kpoints``
-    gives it a mesh of its own, and runs in the ``spin_polarized`` regime
-    (which then needs ``tot_magnetization``).
+    average of its dielectric tensor replaces the number in the Makov-Payne
+    term of the Delta-SCF screening formula, the only consumer of
+    ``eps_inf`` (it reaches no kcp.x namelist). It needs the Makov-Payne
+    correction (``mp_correction``) on the periodic Wannier route and a
+    screening step that computes alphas, so it is refused with
+    ``calculate_alpha=False`` or a model that replaces the refinement.
+    Any other string is refused. The chain's ground state samples
+    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own. With
+    ``spin_polarized`` it runs in the collinear regime, which then needs
+    ``tot_magnetization``.
 
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
@@ -1344,13 +1348,21 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     # forbidden) for molecules; ``eps_inf`` falls back to 1.0 (vacuum — a
     # crude default for real materials).
     mp_correction = wannier_init if mp_correction is None else mp_correction
+    if isinstance(eps_inf, str) and eps_inf != "auto":
+        raise ValueError(f"eps_inf={eps_inf!r} is not understood: give a number or exactly 'auto'.")
     if eps_inf == "auto":
         if not (wannier_init and mp_correction):
             raise ValueError(
                 "eps_inf='auto' computes the dielectric constant of a periodic crystal "
                 "for the Makov-Payne correction, which needs init_orbitals 'mlwfs' or "
                 "'projwfs' and mp_correction on. Give eps_inf a number, or change the "
-                "initialisation."
+                "initialization."
+            )
+        if not calculate_alpha or predict_only:
+            raise ValueError(
+                "eps_inf='auto' computes a dielectric constant that only the Delta-SCF "
+                "screening step uses, and this run has none (calculate_alpha is off or a "
+                "model replaces the refinement). Remove eps_inf."
             )
         eps_scf_overrides = deepcopy(dict((wannier_overrides or {}).get("scf", {})))
         eps_system = (
