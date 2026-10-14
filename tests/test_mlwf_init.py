@@ -461,6 +461,87 @@ class TestKoopmansDSCFPeriodicMlwfsBuild:
             ), (member, missing)
 
 
+class TestKoopmansDSCFEpsInfAuto:
+    """``eps_inf="auto"`` runs the dielectric chain and feeds its result to the screening."""
+
+    @pytest.fixture
+    def build(
+        self, periodic_ozone_structure, kcp_code, mlwf_codes, ph_codes, ozone_pseudo_family, kmesh
+    ):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        def _build(**extra):
+            return KoopmansDSCFWorkflow.build(
+                structure=periodic_ozone_structure,
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+                nspin=2,
+                correction=Correction.KI,
+                init_orbitals=VariationalOrbitalType.MLWFS,
+                codes={**mlwf_codes, "kcp": kcp_code, "ph": ph_codes["ph"]},
+                blocks=_ozone_blocks(),
+                kgrid=[2, 1, 1],
+                kpoints=kmesh,
+                **extra,
+            )
+
+        return _build
+
+    def test_dielectric_result_replaces_the_number(self, build):
+        wg = build(eps_inf="auto")
+        assert "dielectric" in [t.name for t in wg.tasks]
+        links = wg.tasks["ComputeScreeningParameters"].inputs["eps_inf"]._links
+        assert [(link.from_task.name, link.from_socket._name) for link in links] == [
+            ("dielectric", "eps_inf")
+        ]
+
+    def test_a_number_runs_no_dielectric_chain(self, build):
+        wg = build(eps_inf=12.0)
+        assert "dielectric" not in [t.name for t in wg.tasks]
+
+    def test_dielectric_scf_samples_kpoints_unless_eps_kpoints_is_given(self, build):
+        from aiida.orm import KpointsData
+
+        (link,) = build(eps_inf="auto").tasks["dielectric"].inputs["scf_kpoints"]._links
+        assert link.from_socket._name == "kpoints"
+
+        dense = KpointsData()
+        dense.set_kpoints_mesh([4, 4, 4])
+        denser = build(eps_inf="auto", eps_kpoints=dense)
+        (link,) = denser.tasks["dielectric"].inputs["scf_kpoints"]._links
+        assert link.from_socket._name == "eps_kpoints"
+
+    def test_dielectric_scf_drops_nbnd_from_the_wannier_scf_overrides(self, build):
+        wannier_overrides = {
+            "scf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12, "ecutwfc": 65.0}}}},
+        }
+        wg = build(eps_inf="auto", wannier_overrides=wannier_overrides)
+        overrides = wg.tasks["dielectric"].inputs["overrides"].value
+        assert overrides["scf"]["pw"]["parameters"]["SYSTEM"] == {"ecutwfc": 65.0}
+        # The Wannier scf keeps its band count.
+        assert wannier_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 12
+
+    def test_mp_correction_off_raises(self, build):
+        with pytest.raises(ValueError, match="Makov-Payne"):
+            build(eps_inf="auto", mp_correction=False)
+
+    def test_molecule_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
+        from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
+
+        with pytest.raises(ValueError, match="periodic crystal"):
+            KoopmansDSCFWorkflow.build(
+                structure=ozone_structure,
+                pseudo_family=ozone_pseudo_family,
+                ecutwfc=65.0,
+                ecutrho=260.0,
+                nbnd=10,
+                codes={"kcp": kcp_code},
+                eps_inf="auto",
+            )
+
+
 class TestPwScaleOffsetWiring:
     """The initialization check's ``offset`` reaches the band interpolation.
 
