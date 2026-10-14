@@ -1441,7 +1441,7 @@ def _add_quality_check_dfpt_inputs(
 
 
 @task.graph
-def SinglepointDFPTWorkflow(  # noqa: C901
+def SinglepointDFPTWorkflow(
     codes: DfptCodes,
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
@@ -1453,7 +1453,6 @@ def SinglepointDFPTWorkflow(  # noqa: C901
     smooth_mp_grid: list[int] | None = None,
     smooth_interpolation_kpoints: orm.KpointsData | None = None,
     eps_kpoints: orm.KpointsData | None = None,
-    eps_kpoints_distance: float | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -1482,8 +1481,7 @@ def SinglepointDFPTWorkflow(  # noqa: C901
     ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
     dielectric chain's ground state reuses the same ``overrides["scf"]``
     (namelist keywords included) and the same mesh, unless ``eps_kpoints``
-    gives that ground state a mesh of its own or ``eps_kpoints_distance`` a
-    ``kpoints_distance`` of its own (at most one of the two) — eps_inf
+    gives that ground state a mesh of its own — eps_inf
     converges much more slowly with k-points than the singlepoint itself,
     so a denser grid there does not mean the chain's scf needs to match it.
 
@@ -1558,11 +1556,6 @@ def SinglepointDFPTWorkflow(  # noqa: C901
     (``bands_kpoints`` when unset).
     """
     validate_parallelization(parallelization)
-    if eps_kpoints is not None and eps_kpoints_distance is not None:
-        raise ValueError(
-            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
-            "ground state's mesh. Give one of the two."
-        )
     do_smooth = _resolve_smooth_interpolation(
         smooth_kpoints, smooth_mp_grid, bands_kpoints, spin, kcw_overrides
     )
@@ -1612,9 +1605,6 @@ def SinglepointDFPTWorkflow(  # noqa: C901
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
         eps_mesh = eps_kpoints if eps_kpoints is not None else scf_kpoints
-        if eps_kpoints_distance is not None:
-            eps_scf_overrides["kpoints_distance"] = eps_kpoints_distance
-            eps_mesh = None
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,

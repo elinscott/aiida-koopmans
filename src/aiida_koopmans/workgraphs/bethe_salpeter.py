@@ -624,7 +624,6 @@ def SinglepointBetheSalpeterWorkflow(
     eigenvalues: str = "ki",
     eps_inf: float | str | None = None,
     eps_kpoints: orm.KpointsData | None = None,
-    eps_kpoints_distance: float | None = None,
     l_vcut: bool | None = None,
     group_orbitals_tol: float | None = None,
     kcw_overrides: KcwOverrides | None = None,
@@ -667,16 +666,11 @@ def SinglepointBetheSalpeterWorkflow(
     ``bse_parameters`` / ``eigenvalues`` / the BSE half of
     ``parallelization`` pass straight to :func:`RunBetheSalpeter`; every other
     argument passes straight to ``SinglepointDFPTWorkflow`` -- including
-    ``eps_inf`` (with ``eps_kpoints`` / ``eps_kpoints_distance``),
+    ``eps_inf`` (with ``eps_kpoints``),
     ``l_vcut``, ``group_orbitals_tol`` and ``kcw_overrides``,
     which see no use here and reach the DFPT chain unchanged (see
     ``SinglepointDFPTWorkflow`` for what each does).
     """
-    if eps_kpoints is not None and eps_kpoints_distance is not None:
-        raise ValueError(
-            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
-            "ground state's mesh. Give one of the two."
-        )
     if set(manifolds) != {"none"}:
         raise NotImplementedError(
             "SinglepointBetheSalpeterWorkflow only supports spin='none' (manifolds keyed by a "
@@ -701,7 +695,6 @@ def SinglepointBetheSalpeterWorkflow(
         overrides=overrides,
         eps_inf=eps_inf,
         eps_kpoints=eps_kpoints,
-        eps_kpoints_distance=eps_kpoints_distance,
         l_vcut=l_vcut,
         group_orbitals_tol=group_orbitals_tol,
         kcw_overrides=kcw_overrides,

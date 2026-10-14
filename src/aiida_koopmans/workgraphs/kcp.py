@@ -1176,7 +1176,6 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     mp_correction: bool | None = None,
     eps_inf: float | Literal["auto"] | None = None,
     eps_kpoints: orm.KpointsData | None = None,
-    eps_kpoints_distance: float | None = None,
     kpath: orm.KpointsData | None = None,
     interpolation_kpoints: orm.KpointsData | None = None,
     smooth_kpoints: orm.KpointsData | None = None,
@@ -1290,9 +1289,7 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     that replaces the refinement) ``"auto"`` runs no chain and takes no
     effect, like a number.
     Any other string is refused. The chain's ground state samples
-    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own or
-    ``eps_kpoints_distance`` a ``kpoints_distance`` of its own (at most one
-    of the two). With
+    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own. With
     ``spin_polarized`` it runs in the collinear regime, which then needs
     ``tot_magnetization``.
 
@@ -1300,11 +1297,6 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     deferred; ``_validate_scope`` rejects that path.
     """
     validate_parallelization(parallelization)
-    if eps_kpoints is not None and eps_kpoints_distance is not None:
-        raise ValueError(
-            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
-            "ground state's mesh. Give one of the two."
-        )
 
     # Every kcp.x step below wires the same code; bind it once.
     kcp_code = codes["kcp"]
@@ -1389,9 +1381,6 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                 )
             eps_system.setdefault("tot_magnetization", int(tot_magnetization))
         eps_mesh = eps_kpoints if eps_kpoints is not None else kpoints
-        if eps_kpoints_distance is not None:
-            eps_scf_overrides["kpoints_distance"] = eps_kpoints_distance
-            eps_mesh = None
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,

@@ -806,24 +806,6 @@ class TestSinglepointBetheSalpeterWorkflow:
                 pseudo_family=fake_cutoffs_family.label,
             )
 
-    def test_a_mesh_and_a_spacing_for_the_dielectric_step_are_refused(
-        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
-    ):
-        """The outer graph refuses the pair, as the nested DFPT graph would at execution."""
-        with pytest.raises(ValueError, match="`eps_kpoints` and `eps_kpoints_distance`"):
-            SinglepointBetheSalpeterWorkflow.build(
-                codes=bse_full_codes,
-                structure=silicon_structure,
-                manifolds=_manifolds(),
-                kpoints=kmesh,
-                bse_parameters=bse_parameters,
-                pseudo_family=fake_cutoffs_family.label,
-                overrides=_cutoff_overrides(),
-                eps_inf="auto",
-                eps_kpoints=kmesh,
-                eps_kpoints_distance=0.1,
-            )
-
     def test_missing_cutoffs_in_overrides_is_refused(
         self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
     ):

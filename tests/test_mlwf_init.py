@@ -519,10 +519,6 @@ class TestKoopmansDSCFEpsInfAuto:
         (link,) = denser.tasks["dielectric"].inputs["scf_kpoints"]._links
         assert link.from_socket._name == "eps_kpoints"
 
-        spaced = build(eps_inf="auto", eps_kpoints_distance=0.1).tasks["dielectric"].inputs
-        assert not spaced["scf_kpoints"]._links
-        assert spaced["overrides"].value["scf"]["kpoints_distance"] == 0.1
-
     def test_dielectric_scf_drops_nbnd_from_the_wannier_scf_overrides(self, build):
         wannier_overrides = {
             "scf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12, "ecutwfc": 65.0}}}},
