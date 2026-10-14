@@ -26,7 +26,7 @@ and is rejected at build time.
 # TypedDicts.
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Annotated, Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -1174,7 +1174,7 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     wannier_protocol: str | None = None,
     wannier_overrides: WannierizeOverrides | None = None,
     mp_correction: bool | None = None,
-    eps_inf: float | str | None = None,
+    eps_inf: float | Literal["auto"] | None = None,
     eps_kpoints: orm.KpointsData | None = None,
     kpath: orm.KpointsData | None = None,
     smooth_kpoints: orm.KpointsData | None = None,
@@ -1278,8 +1278,10 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     term of the Delta-SCF screening formula, the only consumer of
     ``eps_inf`` (it reaches no kcp.x namelist). It needs the Makov-Payne
     correction (``mp_correction``) on the periodic Wannier route and a
-    screening step that computes alphas, so it is refused with
-    ``calculate_alpha=False`` or a model that replaces the refinement.
+    screening step that computes alphas. Where nothing consumes it
+    (molecule, ``mp_correction`` off, ``calculate_alpha=False`` or a model
+    that replaces the refinement) ``"auto"`` runs no chain and takes no
+    effect, like a number.
     Any other string is refused. The chain's ground state samples
     ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own. With
     ``spin_polarized`` it runs in the collinear regime, which then needs
@@ -1350,20 +1352,13 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     mp_correction = wannier_init if mp_correction is None else mp_correction
     if isinstance(eps_inf, str) and eps_inf != "auto":
         raise ValueError(f"eps_inf={eps_inf!r} is not understood: give a number or exactly 'auto'.")
+    # The dielectric constant enters only the Makov-Payne term of the
+    # Delta-SCF screening step; without a consumer ``"auto"`` takes no
+    # effect, as a number would not.
+    eps_consumed = wannier_init and mp_correction and calculate_alpha and not predict_only
+    if eps_inf == "auto" and not eps_consumed:
+        eps_inf = None
     if eps_inf == "auto":
-        if not (wannier_init and mp_correction):
-            raise ValueError(
-                "eps_inf='auto' computes the dielectric constant of a periodic crystal "
-                "for the Makov-Payne correction, which needs init_orbitals 'mlwfs' or "
-                "'projwfs' and mp_correction on. Give eps_inf a number, or change the "
-                "initialization."
-            )
-        if not calculate_alpha or predict_only:
-            raise ValueError(
-                "eps_inf='auto' computes a dielectric constant that only the Delta-SCF "
-                "screening step uses, and this run has none (calculate_alpha is off or a "
-                "model replaces the refinement). Remove eps_inf."
-            )
         eps_scf_overrides = deepcopy(dict((wannier_overrides or {}).get("scf", {})))
         eps_system = (
             eps_scf_overrides.setdefault("pw", {})

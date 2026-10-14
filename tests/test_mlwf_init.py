@@ -490,8 +490,11 @@ class TestKoopmansDSCFEpsInfAuto:
         return _build
 
     def test_dielectric_result_replaces_the_number(self, build):
+        from aiida_workgraph import WorkGraph
+
         wg = build(eps_inf="auto")
         assert "dielectric" in [t.name for t in wg.tasks]
+        assert "dielectric" in [t.name for t in WorkGraph.from_dict(wg.to_dict()).tasks]
         links = wg.tasks["ComputeScreeningParameters"].inputs["eps_inf"]._links
         assert [(link.from_task.name, link.from_socket._name) for link in links] == [
             ("dielectric", "eps_inf")
@@ -523,15 +526,15 @@ class TestKoopmansDSCFEpsInfAuto:
         # The Wannier scf keeps its band count.
         assert wannier_overrides["scf"]["pw"]["parameters"]["SYSTEM"]["nbnd"] == 12
 
-    def test_mp_correction_off_raises(self, build):
-        with pytest.raises(ValueError, match="Makov-Payne"):
-            build(eps_inf="auto", mp_correction=False)
+    def test_mp_correction_off_runs_no_dielectric_chain(self, build):
+        wg = build(eps_inf="auto", mp_correction=False)
+        assert "dielectric" not in [t.name for t in wg.tasks]
 
-    def test_without_a_screening_step_to_use_it_raises(self, build):
+    def test_without_a_screening_step_to_use_it_runs_no_dielectric_chain(self, build):
         """With the refinement skipped, the dielectric run's result has no consumer."""
         alphas = {"filled": {"none": [0.6] * 9}, "empty": {"none": [0.7]}}
-        with pytest.raises(ValueError, match="only the Delta-SCF screening step uses"):
-            build(eps_inf="auto", calculate_alpha=False, initial_alphas=alphas)
+        wg = build(eps_inf="auto", calculate_alpha=False, initial_alphas=alphas)
+        assert "dielectric" not in [t.name for t in wg.tasks]
 
     def test_spin_polarized_dielectric_scf_is_collinear_with_tot_magnetization(self, build):
         """A spin-polarized run's dielectric scf runs collinear and needs ``tot_magnetization``."""
@@ -551,19 +554,21 @@ class TestKoopmansDSCFEpsInfAuto:
         with pytest.raises(ValueError, match="give a number or exactly 'auto'"):
             build(eps_inf=eps_inf)
 
-    def test_molecule_raises(self, ozone_structure, kcp_code, ozone_pseudo_family):
+    def test_molecule_runs_no_dielectric_chain(
+        self, ozone_structure, kcp_code, ozone_pseudo_family
+    ):
         from aiida_koopmans.workgraphs.kcp import KoopmansDSCFWorkflow
 
-        with pytest.raises(ValueError, match="periodic crystal"):
-            KoopmansDSCFWorkflow.build(
-                structure=ozone_structure,
-                pseudo_family=ozone_pseudo_family,
-                ecutwfc=65.0,
-                ecutrho=260.0,
-                nbnd=10,
-                codes={"kcp": kcp_code},
-                eps_inf="auto",
-            )
+        wg = KoopmansDSCFWorkflow.build(
+            structure=ozone_structure,
+            pseudo_family=ozone_pseudo_family,
+            ecutwfc=65.0,
+            ecutrho=260.0,
+            nbnd=10,
+            codes={"kcp": kcp_code},
+            eps_inf="auto",
+        )
+        assert "dielectric" not in [t.name for t in wg.tasks]
 
 
 class TestPwScaleOffsetWiring:
