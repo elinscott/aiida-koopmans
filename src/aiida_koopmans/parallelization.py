@@ -308,7 +308,7 @@ def yambo_runcard_variables(parallelization: ParallelizationDict | None) -> dict
     appropriate parallel structure") when the irreducible k-points and the
     electron-hole pairs cannot together absorb the rank count. A named
     ``eh`` count passes yambo's phase-space check at any size, while ``k``
-    and ``t`` must not exceed their ranges (``PARALLEL_structure.F``).
+    must not exceed the irreducible k-point count (``PARALLEL_structure.F``).
 
     Every role name and rank count is validated where the input is parsed
     (koopmans2's ``YamboParallelization`` pydantic model, via

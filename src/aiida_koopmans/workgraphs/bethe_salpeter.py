@@ -309,8 +309,7 @@ def RunBetheSalpeter(
     silicon mesh, three points, aborted at four ranks with "USER parallel
     structure does not fit the current run parameters") -- the caller's own
     responsibility once a split is named. The same ``arguments``/``variables``
-    also
-    reach the init step (minus ``KfnQPdb`` and the role-split keys, which
+    also reach the init step (minus ``KfnQPdb`` and the role-split keys, which
     only the BSE step's own runcard carries -- the init/p2y step runs no
     parallel driver), so its own nscf sees the same
     ``BndsRnXs`` as the BSE step's: ``YamboWorkflow.get_builder_from_protocol``
