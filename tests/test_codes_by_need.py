@@ -60,12 +60,12 @@ CASES = {
     "KoopmansDSCFWorkflow": (
         "aiida_koopmans.workgraphs.kcp.KoopmansDSCFWorkflow",
         {"kcp"},
-        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc"},
+        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc", "ph"},
     ),
     "TrajectoryWorkflow": (
         "aiida_koopmans.workgraphs.ml.TrajectoryWorkflow",
         {"kcp"},
-        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc"},
+        {"pw", "pw2wannier90", "wannier90", "wann2kcp", "merge_evc", "projwfc", "ph"},
     ),
     "SinglepointDFPTWorkflow": (
         "aiida_koopmans.workgraphs.dfpt.SinglepointDFPTWorkflow",

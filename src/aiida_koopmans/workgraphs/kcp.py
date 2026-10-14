@@ -24,8 +24,9 @@ and is rejected at build time.
 # annotations hide ``NotRequired`` from ``TypedDict.__required_keys__``
 # (python/cpython#97727), which the dispatcher reads off the Codes
 # TypedDicts.
+from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Annotated, Any, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 import numpy as np
 from aiida import orm
@@ -63,6 +64,7 @@ from aiida_koopmans.workgraphs.block_wannierize import (
 )
 from aiida_koopmans.workgraphs.convert_spin import convert_spin1_to_spin2
 from aiida_koopmans.workgraphs.kcp_files import KCP_HAMILTONIAN_PATTERNS, kcp_hamiltonian_filename
+from aiida_koopmans.workgraphs.ph import DielectricTask
 from aiida_koopmans.workgraphs.ui import DensityOfStates
 from aiida_koopmans.workgraphs.ui.band_structure import (
     KoopmansBandStructureTask,
@@ -125,7 +127,8 @@ class DscfCodes(TypedDict):
 
     ``kcp`` runs every DSCF step; the remaining members exist only for the
     periodic Wannier-initialised route
-    (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`).
+    (:func:`~aiida_koopmans.workgraphs.mlwf_init.MlwfInitialization`),
+    plus ``ph`` for ``eps_inf="auto"``.
     ``projwfc`` additionally needs a ``kpath`` and pseudos that support the
     projected DOS (:func:`~aiida_koopmans.workgraphs.wannier90.projected_dos_supported`);
     :func:`WannierizeBlocks` decides whether it actually runs.
@@ -143,6 +146,12 @@ class DscfCodes(TypedDict):
     wann2kcp: NotRequired[WannierRouteCode]
     merge_evc: NotRequired[WannierRouteCode]
     projwfc: NotRequired[ProjwfcCode]
+    ph: NotRequired[
+        Annotated[
+            orm.AbstractCode,
+            SocketMeta(help="Needed if the dielectric constant is to be computed automatically."),
+        ]
+    ]
 
 
 class KoopmansDSCFOutputs(TypedDict):
@@ -1165,7 +1174,8 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     wannier_protocol: str | None = None,
     wannier_overrides: WannierizeOverrides | None = None,
     mp_correction: bool | None = None,
-    eps_inf: float | None = None,
+    eps_inf: float | Literal["auto"] | None = None,
+    eps_kpoints: orm.KpointsData | None = None,
     kpath: orm.KpointsData | None = None,
     smooth_kpoints: orm.KpointsData | None = None,
     smooth_mp_grid: list[int] | None = None,
@@ -1261,6 +1271,22 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     wannierization depends on nothing the KI chain produces, so it runs
     alongside the screening.
 
+    ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
+    (:func:`~aiida_koopmans.workgraphs.ph.DielectricTask`, needs
+    ``codes["ph"]``) runs on the primitive cell first and the isotropic
+    average of its dielectric tensor replaces the number in the Makov-Payne
+    term of the Delta-SCF screening formula, the only consumer of
+    ``eps_inf`` (it reaches no kcp.x namelist). It needs the Makov-Payne
+    correction (``mp_correction``) on the periodic Wannier route and a
+    screening step that computes alphas. Where nothing consumes it
+    (molecule, ``mp_correction`` off, ``calculate_alpha=False`` or a model
+    that replaces the refinement) ``"auto"`` runs no chain and takes no
+    effect, like a number.
+    Any other string is refused. The chain's ground state samples
+    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own. With
+    ``spin_polarized`` it runs in the collinear regime, which then needs
+    ``tot_magnetization``.
+
     Spin-symmetrisation (``fix_spin_contamination=True``) is still
     deferred; ``_validate_scope`` rejects that path.
     """
@@ -1324,7 +1350,44 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     # forbidden) for molecules; ``eps_inf`` falls back to 1.0 (vacuum — a
     # crude default for real materials).
     mp_correction = wannier_init if mp_correction is None else mp_correction
-    eps_inf = 1.0 if eps_inf is None else eps_inf
+    if isinstance(eps_inf, str) and eps_inf != "auto":
+        raise ValueError(f"eps_inf={eps_inf!r} is not understood: give a number or exactly 'auto'.")
+    # The dielectric constant enters only the Makov-Payne term of the
+    # Delta-SCF screening step; without a consumer ``"auto"`` takes no
+    # effect, as a number would not.
+    eps_consumed = wannier_init and mp_correction and calculate_alpha and not predict_only
+    if eps_inf == "auto" and not eps_consumed:
+        eps_inf = None
+    if eps_inf == "auto":
+        eps_scf_overrides = deepcopy(dict((wannier_overrides or {}).get("scf", {})))
+        eps_system = (
+            eps_scf_overrides.setdefault("pw", {})
+            .setdefault("parameters", {})
+            .setdefault("SYSTEM", {})
+        )
+        # The dielectric ground state needs no empty bands.
+        eps_system.pop("nbnd", None)
+        if spin_polarized:
+            if tot_magnetization is None:
+                raise ValueError(
+                    "eps_inf='auto' on a spin-polarized run needs tot_magnetization: "
+                    "pw.x rejects fixed occupations under LSDA without one."
+                )
+            eps_system.setdefault("tot_magnetization", int(tot_magnetization))
+        dielectric = DielectricTask(
+            codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
+            structure=structure,
+            pseudo_family=pseudo_family,
+            protocol=wannier_protocol,
+            scf_kpoints=eps_kpoints if eps_kpoints is not None else kpoints,
+            overrides={"scf": eps_scf_overrides},
+            parallelization=parallelization,
+            spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+            metadata={"call_link_label": "dielectric", "label": "Dielectric constant"},
+        )
+        eps_inf = dielectric["eps_inf"]
+    else:
+        eps_inf = 1.0 if eps_inf is None else eps_inf
 
     # For the periodic Wannier route every kcp.x step runs on the Γ-point
     # supercell; the extensive inputs scale by the primitive-cell count.
@@ -3966,21 +4029,15 @@ def _build_print_parameters(
 # 1. **pKIPZ.** Perturbative post-processing pass on top of a KI trial;
 #    ``_validate_scope`` rejects it.
 #
-# 2. **eps_inf='auto'** for the Makov-Payne correction. The correction
-#    itself is implemented (``compute_alpha_from_dscf``; on by default
-#    for the periodic Wannier-init route) but ``eps_inf`` must be given
-#    numerically — the automatic ph.x-based calculation of the dielectric
-#    constant is not yet wired into this route.
+# 2. **Mixing across iterations** (``alpha_mixing``).
 #
-# 3. **Mixing across iterations** (``alpha_mixing``).
-#
-# 4. **alpha-independent calc reuse** across iterations. The ``dft_n-1``
+# 3. **alpha-independent calc reuse** across iterations. The ``dft_n-1``
 #    results for filled orbitals don't depend on alpha, but every
 #    iteration currently re-runs them. NOTE: any future caching must opt
 #    out for KIPZ, whose alpha steps are alpha-*dependent* — see the
 #    TRIPWIRE comment in ``ComputeScreeningParameters``.
 #
-# 5. **ML predict shortcut**: short-circuiting the loop using a
+# 4. **ML predict shortcut**: short-circuiting the loop using a
 #    pre-trained ML model.
 # ----------------------------------------------------------------------
 
