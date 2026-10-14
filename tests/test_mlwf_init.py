@@ -533,6 +533,19 @@ class TestKoopmansDSCFEpsInfAuto:
         with pytest.raises(ValueError, match="only the Delta-SCF screening step uses"):
             build(eps_inf="auto", calculate_alpha=False, initial_alphas=alphas)
 
+    def test_spin_polarized_dielectric_scf_is_collinear_with_tot_magnetization(self, build):
+        """A spin-polarized run's dielectric scf runs collinear and needs ``tot_magnetization``."""
+        from aiida_quantumespresso.common.types import SpinType
+
+        with pytest.raises(ValueError, match="tot_magnetization"):
+            build(eps_inf="auto", spin_polarized=True)
+        dielectric = build(eps_inf="auto", spin_polarized=True, tot_magnetization=0).tasks[
+            "dielectric"
+        ]
+        assert dielectric.inputs["spin_type"].value == SpinType.COLLINEAR.value
+        system = dielectric.inputs["overrides"].value["scf"]["pw"]["parameters"]["SYSTEM"]
+        assert system["tot_magnetization"] == 0
+
     @pytest.mark.parametrize("eps_inf", ["yes", "Auto", "AUTO"])
     def test_a_string_other_than_exactly_auto_raises(self, build, eps_inf):
         with pytest.raises(ValueError, match="give a number or exactly 'auto'"):
