@@ -64,6 +64,7 @@ from copy import deepcopy
 from typing import (
     Annotated,
     Any,
+    Literal,
     NotRequired,
     TypedDict,
     cast,
@@ -1451,7 +1452,7 @@ def SinglepointDFPTWorkflow(
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
-    eps_inf: float | str | None = None,
+    eps_inf: float | Literal["auto"] | None = None,
     l_vcut: bool | None = None,
     spin: SpinType = SpinType.NONE,
     check_spread: bool = True,
