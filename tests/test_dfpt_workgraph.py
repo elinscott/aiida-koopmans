@@ -881,11 +881,31 @@ class TestSinglepointDFPTBuild:
         assert [link.from_task.name for link in scf_links] == ["scf_nscf"]
         interp_links = wannierize_inputs["interpolation_kpoints"]._links
         assert [link.from_socket._name for link in interp_links] == ["bands_kpoints"]
+        bands_links = wannierize_inputs["bands_kpoints"]._links
+        assert [link.from_socket._name for link in bands_links] == ["bands_kpoints"]
 
         dfpt_inputs = wg.tasks["dfpt"].inputs
         assert dfpt_inputs["wannierize_bands"]._links
         assert dfpt_inputs["projwfc"]._links
         assert_graph_roundtrips(wg)
+
+        # A path of its own reaches wannier90 alone; the pw.x bands keep ``bands_kpoints``.
+        own = SinglepointDFPTWorkflow.build(
+            codes=dfpt_codes,
+            structure=silicon_structure,
+            manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
+            kpoints=kmesh,
+            bands_kpoints=bands_path,
+            interpolation_kpoints=bands_path.clone(),
+            pseudo_family=fake_cutoffs_family.label,
+        )
+        own_inputs = own.tasks["wannierize"].inputs
+        assert [link.from_socket._name for link in own_inputs["interpolation_kpoints"]._links] == [
+            "interpolation_kpoints"
+        ]
+        assert [link.from_socket._name for link in own_inputs["bands_kpoints"]._links] == [
+            "bands_kpoints"
+        ]
 
     def test_no_bands_kpoints_skips_the_wannierize_quality_check(
         self, dfpt_codes, silicon_structure, kmesh
@@ -1282,6 +1302,22 @@ class TestSmoothInterpolation:
         )
 
         assert [link.from_socket._name for link in links] == ["bands_kpoints"]
+
+        # A path of its own reaches the dense wannier90 alone.
+        own = _smooth_build(
+            dfpt_codes,
+            silicon_structure,
+            kmesh,
+            fake_cutoffs_family.label,
+            smooth_interpolation_kpoints=_short_path(),
+        )
+        smooth_inputs = {t.name: t for t in own.tasks}["wannierize_smooth"].inputs
+        assert [
+            link.from_socket._name for link in smooth_inputs["interpolation_kpoints"]._links
+        ] == ["smooth_interpolation_kpoints"]
+        assert [link.from_socket._name for link in smooth_inputs["bands_kpoints"]._links] == [
+            "bands_kpoints"
+        ]
 
     def test_the_denser_wannierization_inherits_the_nspin2_overrides(
         self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family

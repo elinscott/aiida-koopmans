@@ -1176,9 +1176,12 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     mp_correction: bool | None = None,
     eps_inf: float | Literal["auto"] | None = None,
     eps_kpoints: orm.KpointsData | None = None,
+    eps_kpoints_distance: float | None = None,
     kpath: orm.KpointsData | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     smooth_kpoints: orm.KpointsData | None = None,
     smooth_mp_grid: list[int] | None = None,
+    smooth_interpolation_kpoints: orm.KpointsData | None = None,
     unfold_and_interpolate: dict | None = None,
     plotting: dict | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
@@ -1260,7 +1263,11 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     shape the result. The same ``kpath`` also reaches every
     Wannierization this route runs, so each publishes its own
     base-functional band structure — a Wannierization already runs; its
-    bands come along at no extra cost.
+    bands come along at no extra cost. Each Wannierization's wannier90
+    interpolates along a path of its own where one is given
+    (``interpolation_kpoints`` for the initialization one,
+    ``smooth_interpolation_kpoints`` for the denser one), and along
+    ``kpath`` otherwise.
 
     ``unfold_and_interpolate.smooth_int_factor`` above 1 adds the
     smooth-interpolation correction: the blocks are Wannierized a second
@@ -1283,7 +1290,9 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     that replaces the refinement) ``"auto"`` runs no chain and takes no
     effect, like a number.
     Any other string is refused. The chain's ground state samples
-    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own. With
+    ``kpoints`` unless ``eps_kpoints`` gives it a mesh of its own or
+    ``eps_kpoints_distance`` a ``kpoints_distance`` of its own (at most one
+    of the two). With
     ``spin_polarized`` it runs in the collinear regime, which then needs
     ``tot_magnetization``.
 
@@ -1291,6 +1300,11 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     deferred; ``_validate_scope`` rejects that path.
     """
     validate_parallelization(parallelization)
+    if eps_kpoints is not None and eps_kpoints_distance is not None:
+        raise ValueError(
+            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
+            "ground state's mesh. Give one of the two."
+        )
 
     # Every kcp.x step below wires the same code; bind it once.
     kcp_code = codes["kcp"]
@@ -1374,12 +1388,16 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                     "pw.x rejects fixed occupations under LSDA without one."
                 )
             eps_system.setdefault("tot_magnetization", int(tot_magnetization))
+        eps_mesh = eps_kpoints if eps_kpoints is not None else kpoints
+        if eps_kpoints_distance is not None:
+            eps_scf_overrides["kpoints_distance"] = eps_kpoints_distance
+            eps_mesh = None
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=wannier_protocol,
-            scf_kpoints=eps_kpoints if eps_kpoints is not None else kpoints,
+            scf_kpoints=eps_mesh,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
@@ -1470,7 +1488,10 @@ def KoopmansDSCFWorkflow(  # noqa: C901
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
-            interpolation_kpoints=kpath,
+            bands_kpoints=kpath,
+            interpolation_kpoints=(
+                interpolation_kpoints if interpolation_kpoints is not None else kpath
+            ),
             parallelization=parallelization,
             metadata={
                 "call_link_label": "wannier_initialization",
@@ -1504,7 +1525,12 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                 protocol=wannier_protocol,
                 overrides=wannier_overrides,
                 spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
-                interpolation_kpoints=kpath,
+                bands_kpoints=kpath,
+                interpolation_kpoints=(
+                    smooth_interpolation_kpoints
+                    if smooth_interpolation_kpoints is not None
+                    else kpath
+                ),
                 parallelization=parallelization,
                 metadata={
                     "call_link_label": "wannierize_smooth",

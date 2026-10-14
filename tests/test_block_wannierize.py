@@ -488,10 +488,13 @@ class TestBlockWannierizeGraphBuild:
     ):
         """Paired with ``scf_remote_folder``, an external nscf still gets the quality check.
 
+        It samples ``bands_kpoints``, independent of ``interpolation_kpoints``.
+
         The bands / projwfc steps read the given ``scf_remote_folder``
         rather than an internal scf (there is none), and ``overrides["nscf"]``
         is consumed as the bands step's SYSTEM seed rather than rejected.
         """
+        bands_path = labelled_kpath.clone()
         wg = WannierizeBlocks.build(
             codes=pdos_codes,
             structure=silicon_structure,
@@ -500,12 +503,15 @@ class TestBlockWannierizeGraphBuild:
             pseudo_family=fake_cutoffs_family.label,
             nscf_remote_folder=nscf_remote,
             scf_remote_folder=scf_remote,
+            bands_kpoints=bands_path,
             interpolation_kpoints=labelled_kpath,
             overrides={"nscf": {"pw": {"parameters": {"SYSTEM": {"nbnd": 12}}}}},
         )
         names = [t.name for t in wg.tasks]
         assert "scf_nscf" not in names
         assert count_pw_bands_runs(wg) == 1
+        # The pw.x bands sample ``bands_kpoints``, not wannier90's own path.
+        assert wg.tasks["bands"].inputs["kpoints"].value.uuid == bands_path.uuid
         assert names.count("projwfc") == 1
         bands_task = wg.tasks["bands"]
         assert bands_task.inputs["pw"]["parent_folder"].value.uuid == scf_remote.uuid

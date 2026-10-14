@@ -210,6 +210,31 @@ class TestSinglepointDFPTAutoEps:
         assert wg.tasks["dielectric"].inputs["scf_kpoints"].value.uuid == denser_kmesh.uuid
         assert_graph_roundtrips(wg)
 
+        # A spacing instead reaches the dielectric scf as a distance, with no mesh.
+        spaced = SinglepointDFPTWorkflow.build(
+            codes=ph_codes,
+            structure=silicon_structure,
+            manifolds=_si_manifolds(),
+            kpoints=kmesh,
+            eps_kpoints_distance=0.1,
+            pseudo_family="SSSP/1.3/PBE/efficiency",
+            eps_inf="auto",
+        ).tasks["dielectric"]
+        assert spaced.inputs["scf_kpoints"].value is None
+        assert spaced.inputs["overrides"].value["scf"]["kpoints_distance"] == 0.1
+
+        with pytest.raises(ValueError, match="Give one of the two"):
+            SinglepointDFPTWorkflow.build(
+                codes=ph_codes,
+                structure=silicon_structure,
+                manifolds=_si_manifolds(),
+                kpoints=kmesh,
+                eps_kpoints=denser_kmesh,
+                eps_kpoints_distance=0.1,
+                pseudo_family="SSSP/1.3/PBE/efficiency",
+                eps_inf="auto",
+            )
+
     def test_without_eps_kpoints_the_dielectric_scf_keeps_the_chain_mesh(
         self, ph_codes, silicon_structure, kmesh
     ):

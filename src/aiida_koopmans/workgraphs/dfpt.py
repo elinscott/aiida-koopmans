@@ -1045,6 +1045,7 @@ def _add_smooth_interpolation_dfpt_inputs(
     *,
     do_smooth: bool,
     bands_kpoints: orm.KpointsData | None,
+    interpolation_kpoints: orm.KpointsData | None,
     suffix: str,
     channel_display: str,
     codes: WannierizeBlocksCodes,
@@ -1081,7 +1082,8 @@ def _add_smooth_interpolation_dfpt_inputs(
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=overrides,
-        interpolation_kpoints=bands_kpoints,
+        bands_kpoints=bands_kpoints,
+        interpolation_kpoints=interpolation_kpoints,
         parallelization=parallelization,
         metadata={
             "call_link_label": f"wannierize_smooth{suffix}",
@@ -1439,16 +1441,19 @@ def _add_quality_check_dfpt_inputs(
 
 
 @task.graph
-def SinglepointDFPTWorkflow(
+def SinglepointDFPTWorkflow(  # noqa: C901
     codes: DfptCodes,
     structure: orm.StructureData,
     manifolds: dict[str, ManifoldBlocks],
     kpoints: orm.KpointsData,
     scf_kpoints: orm.KpointsData | None = None,
     bands_kpoints: orm.KpointsData | None = None,
+    interpolation_kpoints: orm.KpointsData | None = None,
     smooth_kpoints: orm.KpointsData | None = None,
     smooth_mp_grid: list[int] | None = None,
+    smooth_interpolation_kpoints: orm.KpointsData | None = None,
     eps_kpoints: orm.KpointsData | None = None,
+    eps_kpoints_distance: float | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -1477,9 +1482,10 @@ def SinglepointDFPTWorkflow(
     ``kpoints_distance``. Whichever it samples, the ``eps_inf = "auto"``
     dielectric chain's ground state reuses the same ``overrides["scf"]``
     (namelist keywords included) and the same mesh, unless ``eps_kpoints``
-    gives that ground state a mesh of its own — eps_inf converges much more
-    slowly with k-points than the singlepoint itself, so a denser grid
-    there does not mean the chain's scf needs to match it.
+    gives that ground state a mesh of its own or ``eps_kpoints_distance`` a
+    ``kpoints_distance`` of its own (at most one of the two) — eps_inf
+    converges much more slowly with k-points than the singlepoint itself,
+    so a denser grid there does not mean the chain's scf needs to match it.
 
     The workflow has three stages: compute the ground state (one shared
     scf + nscf via
@@ -1492,9 +1498,10 @@ def SinglepointDFPTWorkflow(
     values — sets the channels:
 
     ``bands_kpoints`` also reaches each channel's :func:`WannierizeBlocks`
-    call as its ``interpolation_kpoints`` (paired with the shared scf's
-    scratch, so the quality-check step runs off it rather than a fresh
-    scf): each channel's Wannierization then interpolates its own band
+    call (paired with the shared scf's scratch, so the quality-check step
+    runs off it rather than a fresh scf), with ``interpolation_kpoints``
+    (``bands_kpoints`` when unset) as the path wannier90 interpolates along:
+    each channel's Wannierization then interpolates its own band
     structure along the path and runs a pw.x quality-check ``bands`` run
     (the explicit reference the interpolation is judged against), forwarded
     into that channel's ``ChannelResults`` as ``wannierize_bands``. With a
@@ -1546,9 +1553,16 @@ def SinglepointDFPTWorkflow(
     structure interpolated with the dense DFT Hamiltonian in place of the
     coarse one. kcw.x's own coarse interpolation still runs and stays
     addressable on the ham step. Needs ``bands_kpoints``, and ``spin``
-    ``NONE`` or ``COLLINEAR``.
+    ``NONE`` or ``COLLINEAR``. The dense Wannierization interpolates its
+    own band structure along ``smooth_interpolation_kpoints``
+    (``bands_kpoints`` when unset).
     """
     validate_parallelization(parallelization)
+    if eps_kpoints is not None and eps_kpoints_distance is not None:
+        raise ValueError(
+            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
+            "ground state's mesh. Give one of the two."
+        )
     do_smooth = _resolve_smooth_interpolation(
         smooth_kpoints, smooth_mp_grid, bands_kpoints, spin, kcw_overrides
     )
@@ -1597,12 +1611,16 @@ def SinglepointDFPTWorkflow(
         # overrides it inherits already state that regime's magnetization.
         eps_scf_overrides = deepcopy(dict(overrides.get("scf", {})))
         eps_scf_overrides.get("pw", {}).get("parameters", {}).get("SYSTEM", {}).pop("nbnd", None)
+        eps_mesh = eps_kpoints if eps_kpoints is not None else scf_kpoints
+        if eps_kpoints_distance is not None:
+            eps_scf_overrides["kpoints_distance"] = eps_kpoints_distance
+            eps_mesh = None
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=protocol,
-            scf_kpoints=eps_kpoints if eps_kpoints is not None else scf_kpoints,
+            scf_kpoints=eps_mesh,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=spin,
@@ -1708,7 +1726,10 @@ def SinglepointDFPTWorkflow(
             nscf_remote_folder=nscf_remote_folder,
             scf_remote_folder=scf_nscf["scf_remote_folder"],
             nscf_bands=scf_nscf["nscf_output_band"],
-            interpolation_kpoints=bands_kpoints,
+            bands_kpoints=bands_kpoints,
+            interpolation_kpoints=(
+                interpolation_kpoints if interpolation_kpoints is not None else bands_kpoints
+            ),
             parallelization=parallelization,
             metadata={
                 "call_link_label": f"wannierize{suffix}",
@@ -1760,6 +1781,11 @@ def SinglepointDFPTWorkflow(
             protocol=protocol,
             overrides=wannier_overrides,
             bands_kpoints=bands_kpoints,
+            interpolation_kpoints=(
+                smooth_interpolation_kpoints
+                if smooth_interpolation_kpoints is not None
+                else bands_kpoints
+            ),
             parallelization=parallelization,
             suffix=suffix,
             channel_display=channel_display,
