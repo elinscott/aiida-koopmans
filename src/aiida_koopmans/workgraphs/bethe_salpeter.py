@@ -672,6 +672,11 @@ def SinglepointBetheSalpeterWorkflow(
     which see no use here and reach the DFPT chain unchanged (see
     ``SinglepointDFPTWorkflow`` for what each does).
     """
+    if eps_kpoints is not None and eps_kpoints_distance is not None:
+        raise ValueError(
+            "`eps_kpoints` and `eps_kpoints_distance` both describe the dielectric "
+            "ground state's mesh. Give one of the two."
+        )
     if set(manifolds) != {"none"}:
         raise NotImplementedError(
             "SinglepointBetheSalpeterWorkflow only supports spin='none' (manifolds keyed by a "
