@@ -367,6 +367,21 @@ def test_ham_output_parameters_has_the_expected_shape(aiida_profile, ham_output_
 
 
 class TestGenerateQpDatabaseRefusals:
+    def test_ragged_grid_rows_are_refused(self, aiida_profile, yambo_save, nscf_output_band):
+        ragged = orm.Dict(
+            {
+                "ks_eigenvalues_on_grid": [[], [0.0, 1.0]],
+                "ki_eigenvalues_on_grid": [[], [0.0, 1.0]],
+            }
+        ).store()
+        with pytest.raises(ValueError, match="rows of different lengths"):
+            generate_qp_database._callable(
+                yambo_save=yambo_save,
+                ham_output_parameters=ragged,
+                nscf_output_band=nscf_output_band,
+                eigenvalues=orm.Str("ki"),
+            )
+
     def test_missing_eigenvalue_keys_names_them(self, aiida_profile, yambo_save, nscf_output_band):
         bad_params = orm.Dict({"job_done": True}).store()
         with pytest.raises(ValueError, match="ki_eigenvalues_on_grid"):

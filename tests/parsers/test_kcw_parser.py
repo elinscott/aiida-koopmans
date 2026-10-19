@@ -233,3 +233,50 @@ def test_ham_parser_without_a_k_path_falls_back_to_the_stdout(
     bands = results["bands"]
     assert bands.labels is None
     assert np.allclose(bands.get_kpoints(), HAM_FIXTURE_KPATH, atol=1e-4)
+
+
+def _ham_grid_rows(
+    fixture_subdir_name, aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
+):
+    node = generate_calc_job_node(
+        entry_point_name="koopmans.kcw_ham",
+        computer=fixture_localhost,
+        test_name=fixture_subdir_name,
+        fixture_subdir="kcw_ham",
+        input_filename="aiida.khi",
+        output_filename="aiida.kho",
+        inputs={
+            "parameters": orm.Dict({"CONTROL": {}, "WANNIER": {}, "HAM": {}}),
+            "alphas": orm.List(list=[0.14] * 8),
+        },
+    )
+    parser = generate_parser("koopmans.kcw_ham")
+    results, calcfunction = parser.parse_from_node(node, store_provenance=False)
+    assert calcfunction.is_finished_ok, calcfunction.exit_message
+    return results["output_parameters"].get_dict()
+
+
+@pytest.mark.parametrize(
+    ("test_name", "n_kpoints", "n_bands"),
+    [
+        # Newer kcw.x prints a "KS Hamiltonian eigenvalues CHECK" table (WANN
+        # and PWSCF rows under the same "band energies (ev):" header) first.
+        ("check_block", 2, 8),
+        # Older kcw.x prints the KS / KI tables only.
+        ("zno_two_k", 2, 36),
+    ],
+)
+def test_ham_parser_grid_rows_ignore_the_check_block(
+    aiida_profile,
+    fixture_localhost,
+    generate_calc_job_node,
+    generate_parser,
+    test_name,
+    n_kpoints,
+    n_bands,
+):
+    params = _ham_grid_rows(
+        test_name, aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
+    )
+    for key in ("ks_eigenvalues_on_grid", "ki_eigenvalues_on_grid"):
+        assert [len(row) for row in params[key]] == [n_bands] * n_kpoints
