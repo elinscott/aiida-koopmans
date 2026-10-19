@@ -858,8 +858,12 @@ class TestSinglepointBetheSalpeterWorkflow:
         covered by ``test_dfpt_workgraph.py``).
         """
         kcw_overrides = {"screen": {"tr2": 1.0e-16}}
+        # Three paths of different lengths, so each bands socket can be told
+        # apart by the number of k-points it carries.
         wannierize_path = labelled_kpath.clone()
+        wannierize_path.set_kpoints(labelled_kpath.get_kpoints()[:2], labels=[(0, "GAMMA")])
         smooth_path = labelled_kpath.clone()
+        smooth_path.set_kpoints(labelled_kpath.get_kpoints()[:1], labels=[(0, "GAMMA")])
         wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
@@ -880,11 +884,21 @@ class TestSinglepointBetheSalpeterWorkflow:
         )
         dfpt_task = wg.tasks["dfpt"]
         assert dfpt_task.inputs["eps_inf"].value == pytest.approx(5.3)
-        # Three distinct nodes, so a swap between the bands sockets shows.
-        assert dfpt_task.inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
-        assert dfpt_task.inputs["wannierize_bands_kpoints"].value.uuid == wannierize_path.uuid
-        assert dfpt_task.inputs["wannierize_smooth_bands_kpoints"].value.uuid == smooth_path.uuid
-        assert dfpt_task.inputs["wannierize_smooth_kpoints"].value.uuid == kpath.uuid
+        n_points = {
+            name: len(dfpt_task.inputs[name].value.get_kpoints())
+            for name in (
+                "bands_kpoints",
+                "wannierize_bands_kpoints",
+                "wannierize_smooth_bands_kpoints",
+                "wannierize_smooth_kpoints",
+            )
+        }
+        assert n_points == {
+            "bands_kpoints": len(labelled_kpath.get_kpoints()),
+            "wannierize_bands_kpoints": 2,
+            "wannierize_smooth_bands_kpoints": 1,
+            "wannierize_smooth_kpoints": len(kpath.get_kpoints()),
+        }
         assert list(dfpt_task.inputs["wannierize_smooth_mp_grid"].value) == [4, 4, 4]
         assert dfpt_task.inputs["l_vcut"].value == False  # noqa: E712 -- TaggedValue proxy, `is` fails
         assert dfpt_task.inputs["group_orbitals_tol"].value == pytest.approx(0.05)
