@@ -216,9 +216,9 @@ class KcwHamParser(KcwBaseParser):
         eigenvalues: list[list[float]] = []
         ks_on_grid: list[list[float]] = []
         ki_on_grid: list[list[float]] = []
-        # A "band energies (ev):" header opens a k-point block. The block only
-        # becomes a row once a KS/KI row appears under it, so the
-        # "KS Hamiltonian eigenvalues CHECK" tables (WANN/PWSCF rows) add none.
+        # A "band energies (ev):" header opens a grid row only once a KS or KI
+        # numeric line follows it; a header whose block holds no such line
+        # opens nothing.
         header_pending = False
 
         for i_line, line in enumerate(lines):
@@ -241,8 +241,8 @@ class KcwHamParser(KcwBaseParser):
                 # level (ev): X Y"), not a grid eigenvalue row.
                 _record_homo_lumo(stripped, results)
             elif is_grid_row and ks_on_grid:
-                row = ks_on_grid if stripped.startswith("KS") else ki_on_grid
-                row[-1] += safe_floats(stripped[3:])
+                rows = ks_on_grid if stripped.startswith("KS") else ki_on_grid
+                rows[-1] += safe_floats(stripped[3:])
 
         ham_fields: KcwHamParameters = {
             "ks_eigenvalues_on_grid": ks_on_grid,

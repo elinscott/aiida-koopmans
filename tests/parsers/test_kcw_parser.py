@@ -257,13 +257,13 @@ def _ham_grid_rows(
 
 
 @pytest.mark.parametrize(
-    ("test_name", "n_kpoints", "n_bands"),
+    ("test_name", "n_kpoints", "n_bands", "first_ki"),
     [
         # Newer kcw.x prints a "KS Hamiltonian eigenvalues CHECK" table (WANN
         # and PWSCF rows under the same "band energies (ev):" header) first.
-        ("check_block", 2, 8),
+        ("check_block", 2, 8, -6.5768),
         # Older kcw.x prints the KS / KI tables only.
-        ("zno_two_k", 2, 36),
+        ("zno_two_k", 2, 36, None),
     ],
 )
 def test_ham_parser_grid_rows_ignore_the_check_block(
@@ -274,9 +274,17 @@ def test_ham_parser_grid_rows_ignore_the_check_block(
     test_name,
     n_kpoints,
     n_bands,
+    first_ki,
 ):
     params = _ham_grid_rows(
         test_name, aiida_profile, fixture_localhost, generate_calc_job_node, generate_parser
     )
     for key in ("ks_eigenvalues_on_grid", "ki_eigenvalues_on_grid"):
         assert [len(row) for row in params[key]] == [n_bands] * n_kpoints
+    if first_ki is not None:
+        # The KI table, not the check block's WANN/PWSCF rows (which equal the
+        # KS values), is what lands in the KI grid.
+        assert params["ki_eigenvalues_on_grid"][0][0] == pytest.approx(first_ki)
+        assert params["ki_eigenvalues_on_grid"][0][0] != pytest.approx(
+            params["ks_eigenvalues_on_grid"][0][0]
+        )
