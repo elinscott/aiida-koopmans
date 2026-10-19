@@ -858,6 +858,8 @@ class TestSinglepointBetheSalpeterWorkflow:
         covered by ``test_dfpt_workgraph.py``).
         """
         kcw_overrides = {"screen": {"tr2": 1.0e-16}}
+        wannierize_path = labelled_kpath.clone()
+        smooth_path = labelled_kpath.clone()
         wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
@@ -871,19 +873,17 @@ class TestSinglepointBetheSalpeterWorkflow:
             group_orbitals_tol=0.05,
             kcw_overrides=kcw_overrides,
             bands_kpoints=labelled_kpath,
-            wannierize_bands_kpoints=labelled_kpath,
+            wannierize_bands_kpoints=wannierize_path,
             wannierize_smooth_kpoints=kpath,
             wannierize_smooth_mp_grid=[4, 4, 4],
-            wannierize_smooth_bands_kpoints=labelled_kpath,
+            wannierize_smooth_bands_kpoints=smooth_path,
         )
         dfpt_task = wg.tasks["dfpt"]
         assert dfpt_task.inputs["eps_inf"].value == pytest.approx(5.3)
-        for name in (
-            "bands_kpoints",
-            "wannierize_bands_kpoints",
-            "wannierize_smooth_bands_kpoints",
-        ):
-            assert dfpt_task.inputs[name].value.uuid == labelled_kpath.uuid
+        # Three distinct nodes, so a swap between the bands sockets shows.
+        assert dfpt_task.inputs["bands_kpoints"].value.uuid == labelled_kpath.uuid
+        assert dfpt_task.inputs["wannierize_bands_kpoints"].value.uuid == wannierize_path.uuid
+        assert dfpt_task.inputs["wannierize_smooth_bands_kpoints"].value.uuid == smooth_path.uuid
         assert dfpt_task.inputs["wannierize_smooth_kpoints"].value.uuid == kpath.uuid
         assert list(dfpt_task.inputs["wannierize_smooth_mp_grid"].value) == [4, 4, 4]
         assert dfpt_task.inputs["l_vcut"].value == False  # noqa: E712 -- TaggedValue proxy, `is` fails
