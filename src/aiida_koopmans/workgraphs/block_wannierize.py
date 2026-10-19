@@ -1612,9 +1612,10 @@ def WannierizeBlocks(
             reaches both the whole-block run and every per-group re-run
             (:func:`~aiida_koopmans.workgraphs.auto_wannierize.WannierizeAndSplitBlock`).
             Without ``bands_kpoints`` it also feeds the pw.x quality-check
-            ``bands`` run (which needs the internal scf, so an external
-            ``nscf_remote_folder`` leaves it out); with ``bands_kpoints``
-            the two runs sample independent densities instead.
+            ``bands`` run (which needs an scf density: the internal one, or
+            a ``scf_remote_folder`` beside an external
+            ``nscf_remote_folder``); with ``bands_kpoints`` the two runs
+            sample independent densities instead.
         external_projectors_path / external_projectors: the projector
             directory (one ``<element>.dat`` per element, on the
             pw2wannier90 code's computer) and the per-element orbital
@@ -1678,7 +1679,7 @@ def WannierizeBlocks(
             bands_outputs, projwfc_outputs = _run_explicit_bands_and_dos_steps(
                 codes=codes,
                 structure=structure,
-                bands_kpoints=None,
+                bands_kpoints=bands_kpoints,
                 interpolation_kpoints=interpolation_kpoints,
                 scf_remote_folder=scf_remote_folder,
                 nscf_overrides=overrides.get("nscf"),

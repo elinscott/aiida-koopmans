@@ -318,9 +318,12 @@ class TestMlwfInitializationGraphBuild:
             "pseudo_family": "unused-here",
         }
 
-        wg_with_path = MlwfInitialization.build(**base_inputs, interpolation_kpoints=labelled_kpath)
+        wg_with_path = MlwfInitialization.build(
+            **base_inputs, bands_kpoints=labelled_kpath, interpolation_kpoints=labelled_kpath
+        )
         wannierize = wg_with_path.tasks["wannierize"]
         assert wannierize.inputs["interpolation_kpoints"]._links
+        assert wannierize.inputs["bands_kpoints"]._links
 
         wg_without_path = MlwfInitialization.build(**base_inputs)
         assert not wg_without_path.tasks["wannierize"].inputs["interpolation_kpoints"]._links
@@ -614,7 +617,7 @@ class TestPwScaleOffsetWiring:
 
 
 class TestKoopmansDSCFSmoothInterpolationBuild:
-    """``smooth_kpoints`` / ``smooth_mp_grid`` add the denser-mesh wannierization.
+    """``wannierize_smooth_kpoints`` / ``wannierize_smooth_mp_grid`` add the dense wannierization.
 
     The second ``WannierizeBlocks`` call in ``workgraphs/kcp.py`` is
     otherwise skipped — every other ``KoopmansDSCFWorkflow`` build in this
@@ -633,6 +636,7 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
         labelled_kpath,
         *,
         smooth: bool,
+        **extra,
     ):
         from aiida.orm import KpointsData
 
@@ -657,11 +661,11 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
             dense = KpointsData()
             dense.set_kpoints(np.zeros((8, 3)))
             inputs.update(
-                smooth_kpoints=dense,
-                smooth_mp_grid=[4, 1, 1],
+                wannierize_smooth_kpoints=dense,
+                wannierize_smooth_mp_grid=[4, 1, 1],
                 unfold_and_interpolate={"smooth_int_factor": [2, 1, 1]},
             )
-        return KoopmansDSCFWorkflow.build(**inputs)
+        return KoopmansDSCFWorkflow.build(**inputs, **extra)
 
     def test_a_denser_mesh_adds_the_second_wannierization(
         self,
@@ -696,7 +700,7 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
         """The dense wannierization skips its own scf, off the init route's converged one.
 
         The mp_grid assertion is one discriminating check: passing the
-        coarse mesh's own dimensions there instead of ``smooth_mp_grid``
+        coarse mesh's own dimensions there instead of ``wannierize_smooth_mp_grid``
         would build without error but wannierize the wrong grid. The
         ``scf_remote_folder`` link is the other: it must trace to the
         initialisation wannierization's own scf, not a fresh one built
@@ -797,7 +801,7 @@ class TestKoopmansDSCFSmoothInterpolationBuild:
 
 
 class TestDftBandStructureRouting:
-    """``kpath`` reaches exactly one Wannierization's own ``interpolation_kpoints``.
+    """``kpath`` is each Wannierization's pw.x bands path and its default wannier90 path.
 
     A Wannierization is already running; its bands come along at no extra
     cost, so ``kpath`` reaches every Wannierization the route builds — the
@@ -818,6 +822,7 @@ class TestDftBandStructureRouting:
         *,
         kpath,
         smooth: bool,
+        **extra,
     ):
         return TestKoopmansDSCFSmoothInterpolationBuild._build(
             periodic_ozone_structure,
@@ -827,6 +832,7 @@ class TestDftBandStructureRouting:
             kmesh,
             kpath,
             smooth=smooth,
+            **extra,
         )
 
     def test_no_kpath_reaches_neither_wannierization(
@@ -895,6 +901,39 @@ class TestDftBandStructureRouting:
         )
         assert wg.tasks["wannierize_smooth"].inputs["interpolation_kpoints"]._links
         assert wg.tasks["wannier_initialization"].inputs["interpolation_kpoints"]._links
+
+    def test_each_wannierization_takes_its_own_interpolation_path(
+        self,
+        periodic_ozone_structure,
+        kcp_code,
+        mlwf_codes,
+        ozone_pseudo_family,
+        kmesh,
+        labelled_kpath,
+    ):
+        """Each Wannierization's wannier90 follows its own band path; pw.x samples ``kpath``."""
+        wg = self._build(
+            periodic_ozone_structure,
+            kcp_code,
+            mlwf_codes,
+            ozone_pseudo_family,
+            kmesh,
+            kpath=labelled_kpath,
+            smooth=True,
+            wannierize_bands_kpoints=labelled_kpath.clone(),
+            wannierize_smooth_bands_kpoints=labelled_kpath.clone(),
+        )
+        for task, own in (
+            ("wannier_initialization", "wannierize_bands_kpoints"),
+            ("wannierize_smooth", "wannierize_smooth_bands_kpoints"),
+        ):
+            inputs = wg.tasks[task].inputs
+            assert [link.from_socket._name for link in inputs["interpolation_kpoints"]._links] == [
+                own
+            ], task
+            assert [link.from_socket._name for link in inputs["bands_kpoints"]._links] == [
+                "kpath"
+            ], task
 
 
 class TestProjwfcCodeThreadsThroughDSCF:
@@ -965,8 +1004,8 @@ class TestProjwfcCodeThreadsThroughDSCF:
             kgrid=[2, 1, 1],
             kpoints=kmesh,
             kpath=labelled_kpath,
-            smooth_kpoints=dense,
-            smooth_mp_grid=[4, 1, 1],
+            wannierize_smooth_kpoints=dense,
+            wannierize_smooth_mp_grid=[4, 1, 1],
             unfold_and_interpolate={"smooth_int_factor": [2, 1, 1]},
         )
         codes_socket = wg.tasks["wannierize_smooth"].inputs["codes"]["projwfc"]

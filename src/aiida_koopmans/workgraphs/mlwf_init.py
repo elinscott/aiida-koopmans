@@ -351,6 +351,7 @@ def MlwfInitialization(
     pseudo_family: str | None = None,
     wannier_protocol: str | None = None,
     wannier_overrides: WannierizeOverrides | None = None,
+    bands_kpoints: orm.KpointsData | None = None,
     interpolation_kpoints: orm.KpointsData | None = None,
     parallelization: ParallelizationDict | None = None,
 ) -> MlwfInitializationOutputs:
@@ -381,11 +382,14 @@ def MlwfInitialization(
             ``gamma_trick``).
         pseudo_family / wannier_protocol / wannier_overrides: forwarded to
             the wannierisation builders.
+        bands_kpoints: a labelled explicit-path primitive-cell k-list the
+            pw.x explicit band structure runs along; ``interpolation_kpoints``
+            when unset.
         interpolation_kpoints: a labelled explicit-path primitive-cell
-            k-list. Given, the wannierisation also runs the pw.x explicit
-            band structure and the per-block wannier90 interpolation along
-            it — both discoverable off :func:`WannierizeBlocks`' own
-            dumped steps, not re-exposed as a named output here. Absent,
+            k-list. Given, the wannierisation also runs the per-block
+            wannier90 interpolation along it — discoverable off
+            :func:`WannierizeBlocks`' own dumped steps, as is the pw.x
+            band structure, not re-exposed as a named output here. Absent,
             this graph runs exactly as before.
         parallelization: Per-code parallelization mapping (keyed by code name);
             threaded to the wannierize, folding, and kcp.x steps.
@@ -425,6 +429,7 @@ def MlwfInitialization(
         protocol=wannier_protocol,
         overrides=wannier_overrides,
         spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
+        bands_kpoints=bands_kpoints,
         interpolation_kpoints=interpolation_kpoints,
         parallelization=parallelization,
         metadata={"call_link_label": "wannierize", "label": "Wannierization"},

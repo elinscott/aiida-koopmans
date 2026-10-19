@@ -1177,8 +1177,10 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     eps_inf: float | Literal["auto"] | None = None,
     eps_kpoints: orm.KpointsData | None = None,
     kpath: orm.KpointsData | None = None,
-    smooth_kpoints: orm.KpointsData | None = None,
-    smooth_mp_grid: list[int] | None = None,
+    wannierize_bands_kpoints: orm.KpointsData | None = None,
+    wannierize_smooth_kpoints: orm.KpointsData | None = None,
+    wannierize_smooth_mp_grid: list[int] | None = None,
+    wannierize_smooth_bands_kpoints: orm.KpointsData | None = None,
     unfold_and_interpolate: dict | None = None,
     plotting: dict | None = None,
     overrides: KoopmansDSCFOverrides | None = None,
@@ -1260,15 +1262,18 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     shape the result. The same ``kpath`` also reaches every
     Wannierization this route runs, so each publishes its own
     base-functional band structure — a Wannierization already runs; its
-    bands come along at no extra cost.
+    bands come along at no extra cost. Each Wannierization's wannier90
+    interpolates along the band path set for that step (``wannierize_bands_kpoints`` for the
+    initialization one, ``wannierize_smooth_bands_kpoints`` for the smooth
+    one), or along ``kpath`` when none is set.
 
     ``unfold_and_interpolate.smooth_int_factor`` above 1 adds the
     smooth-interpolation correction: the blocks are Wannierized a second
-    time on the denser mesh the caller states as ``smooth_kpoints``
-    (explicit k-point list) plus ``smooth_mp_grid`` (its Monkhorst-Pack
-    dimensions), and each manifold's coarse DFT Hamiltonian is swapped
-    for that denser one inside the interpolation. The second
-    wannierization depends on nothing the KI chain produces, so it runs
+    time on the denser mesh the caller states as
+    ``wannierize_smooth_kpoints`` (explicit k-point list) plus
+    ``wannierize_smooth_mp_grid`` (its Monkhorst-Pack dimensions), and each
+    manifold's coarse DFT Hamiltonian is swapped for that denser one inside the
+    interpolation. The second wannierization depends on nothing the KI chain produces, so it runs
     alongside the screening.
 
     ``eps_inf`` may be ``"auto"``: a scf + ph.x dielectric chain
@@ -1315,8 +1320,8 @@ def KoopmansDSCFWorkflow(  # noqa: C901
     ui_use_ws_distance, ui_do_dos, ui_do_smooth = _resolve_band_interpolation_knobs(
         unfold_and_interpolate,
         kpath=kpath,
-        smooth_kpoints=smooth_kpoints,
-        smooth_mp_grid=smooth_mp_grid,
+        wannierize_smooth_kpoints=wannierize_smooth_kpoints,
+        wannierize_smooth_mp_grid=wannierize_smooth_mp_grid,
     )
     _validate_alpha_inputs(
         initial_alpha=initial_alpha,
@@ -1374,12 +1379,13 @@ def KoopmansDSCFWorkflow(  # noqa: C901
                     "pw.x rejects fixed occupations under LSDA without one."
                 )
             eps_system.setdefault("tot_magnetization", int(tot_magnetization))
+        eps_mesh = eps_kpoints if eps_kpoints is not None else kpoints
         dielectric = DielectricTask(
             codes={"pw": reference(codes, "pw"), "ph": reference(codes, "ph")},
             structure=structure,
             pseudo_family=pseudo_family,
             protocol=wannier_protocol,
-            scf_kpoints=eps_kpoints if eps_kpoints is not None else kpoints,
+            scf_kpoints=eps_mesh,
             overrides={"scf": eps_scf_overrides},
             parallelization=parallelization,
             spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
@@ -1470,7 +1476,10 @@ def KoopmansDSCFWorkflow(  # noqa: C901
             pseudo_family=pseudo_family,
             wannier_protocol=wannier_protocol,
             wannier_overrides=wannier_overrides,
-            interpolation_kpoints=kpath,
+            bands_kpoints=kpath,
+            interpolation_kpoints=(
+                wannierize_bands_kpoints if wannierize_bands_kpoints is not None else kpath
+            ),
             parallelization=parallelization,
             metadata={
                 "call_link_label": "wannier_initialization",
@@ -1492,19 +1501,24 @@ def KoopmansDSCFWorkflow(  # noqa: C901
             # two runs. ``wannier_overrides`` must therefore carry the same
             # ``nscf`` keywords the coarse run used, spin regime included —
             # :func:`WannierizeBlocks` skips its own scf and runs only a
-            # fresh nscf on ``smooth_kpoints`` off ``init["scf_remote_folder"]``.
+            # fresh nscf on ``wannierize_smooth_kpoints`` off ``init["scf_remote_folder"]``.
             smooth = WannierizeBlocks(
                 codes=_wannierize_blocks_codes_for(codes),
                 structure=structure,
                 blocks=cast("list", blocks),
-                kpoints=smooth_kpoints,
-                mp_grid=list(cast("list[int]", smooth_mp_grid)),
+                kpoints=wannierize_smooth_kpoints,
+                mp_grid=list(cast("list[int]", wannierize_smooth_mp_grid)),
                 scf_remote_folder=init["scf_remote_folder"],
                 pseudo_family=pseudo_family,
                 protocol=wannier_protocol,
                 overrides=wannier_overrides,
                 spin_type=SpinType.COLLINEAR if spin_polarized else SpinType.NONE,
-                interpolation_kpoints=kpath,
+                bands_kpoints=kpath,
+                interpolation_kpoints=(
+                    wannierize_smooth_bands_kpoints
+                    if wannierize_smooth_bands_kpoints is not None
+                    else kpath
+                ),
                 parallelization=parallelization,
                 metadata={
                     "call_link_label": "wannierize_smooth",
@@ -3220,15 +3234,15 @@ def _resolve_band_interpolation_knobs(
     knobs: dict | None,
     *,
     kpath: orm.KpointsData | None,
-    smooth_kpoints: orm.KpointsData | None,
-    smooth_mp_grid: list[int] | None,
+    wannierize_smooth_kpoints: orm.KpointsData | None,
+    wannierize_smooth_mp_grid: list[int] | None,
 ) -> tuple[bool, bool, bool]:
     """Return ``(use_ws_distance, do_dos, do_smooth)``, rejecting inert settings.
 
     ``smooth_int_factor`` above 1 in any direction asks for the
     smooth-interpolation method, which replaces the DFT part of the
     Koopmans Hamiltonian with one wannierized on a denser mesh; the caller
-    states that mesh through ``smooth_kpoints`` and ``smooth_mp_grid``, and
+    states that mesh through ``wannierize_smooth_kpoints`` and ``wannierize_smooth_mp_grid``, and
     both are then required.
     """
     settings = dict(knobs) if knobs else {}
@@ -3243,8 +3257,8 @@ def _resolve_band_interpolation_knobs(
     missing = [
         name
         for name, value in (
-            ("smooth_kpoints", smooth_kpoints),
-            ("smooth_mp_grid", smooth_mp_grid),
+            ("wannierize_smooth_kpoints", wannierize_smooth_kpoints),
+            ("wannierize_smooth_mp_grid", wannierize_smooth_mp_grid),
         )
         if value is None
     ]
@@ -3256,7 +3270,7 @@ def _resolve_band_interpolation_knobs(
         )
     if not do_smooth and len(missing) < 2:
         raise ValueError(
-            "`smooth_kpoints` / `smooth_mp_grid` state the denser mesh the "
+            "`wannierize_smooth_kpoints` / `wannierize_smooth_mp_grid` state the denser mesh the "
             "smooth-interpolation method wannierizes, and this run asks for no such "
             "method. Set unfold_and_interpolate.smooth_int_factor above 1, or drop them."
         )
