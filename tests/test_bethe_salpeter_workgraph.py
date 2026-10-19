@@ -347,14 +347,10 @@ class TestRunBetheSalpeterGraphBuild:
     ):
         """``parallelization['yambo']['ntasks']`` reaches both calc's resources.
 
-        Neither step's runcard gets a ``BS_CPU``/``BS_ROLEs`` split: this
-        route leaves yambo to build its own parallel structure instead. A
-        stated k-only split can ask for more ranks than the k-mesh has
-        irreducible points -- the live failure this route hit, 4 ranks
-        against a 3-point mesh -- but yambo's own automatic structure can
-        fail the same run the same way; this test only checks the runcard
-        the builder emits, not whether a given rank count actually runs
-        (that needs a live yambo run to discriminate).
+        With no named split, the BSE step's runcard puts all four ranks on
+        the electron-hole role, which yambo accepts at any rank count; the
+        init step's runcard carries no split. This test checks the runcard
+        the builder emits, not that yambo runs it.
         """
         wg = self._build(
             bse_codes,
@@ -376,8 +372,8 @@ class TestRunBetheSalpeterGraphBuild:
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
         )
-        assert "BS_CPU" not in bse_variables
-        assert "BS_ROLEs" not in bse_variables
+        assert bse_variables["BS_CPU"] == "4"
+        assert bse_variables["BS_ROLEs"] == "eh"
 
     def test_parallelization_yambo_role_split_reaches_the_bse_step_only(
         self,
@@ -589,11 +585,16 @@ class TestRunBetheSalpeterGraphBuild:
             )
 
     @pytest.mark.parametrize(
-        "parallelization",
-        [None, {"yambo": {"ntasks": 1}}, {"yambo": {"ntasks": 4}}],
-        ids=["no-parallelization", "explicit-single-rank", "multi-rank"],
+        ("parallelization", "expected"),
+        [
+            (None, None),
+            ({"yambo": {"ntasks": 1}}, None),
+            ({"yambo": {"ntasks": 4}}, ("4", "eh")),
+            ({"yambo": {"ntasks": 4, "bethe_salpeter": {"k": 2, "eh": 2}}}, ("2 2", "k eh")),
+        ],
+        ids=["no-parallelization", "explicit-single-rank", "multi-rank-default", "named-split"],
     )
-    def test_bs_roles_never_set(
+    def test_bs_roles_follow_the_rank_count(
         self,
         bse_codes,
         silicon_structure,
@@ -603,15 +604,12 @@ class TestRunBetheSalpeterGraphBuild:
         bse_parameters,
         fake_cutoffs_family,
         parallelization,
+        expected,
     ):
-        """No rank count writes ``BS_CPU``/``BS_ROLEs`` onto the runcard, at any tested rank.
+        """One rank writes no split; many ranks write the default or the named split.
 
-        This route never derives a split itself -- a stated k-only split
-        can ask for more ranks than the k-mesh has irreducible points, the
-        live failure this route hit (4 ranks against a 3-point mesh). This
-        test only checks the runcard the builder emits; whether a given
-        rank count actually runs is a live-yambo question this test cannot
-        discriminate.
+        This test checks the runcard the builder emits; whether yambo runs
+        a given rank count is a live-yambo question.
         """
         wg = self._build(
             bse_codes,
@@ -626,8 +624,11 @@ class TestRunBetheSalpeterGraphBuild:
         bse_variables = (
             wg.tasks["bse"].inputs["yres"]["yambo"]["parameters"].value.get_dict()["variables"]
         )
-        assert "BS_CPU" not in bse_variables
-        assert "BS_ROLEs" not in bse_variables
+        if expected is None:
+            assert "BS_CPU" not in bse_variables
+            assert "BS_ROLEs" not in bse_variables
+        else:
+            assert (bse_variables["BS_CPU"], bse_variables["BS_ROLEs"]) == expected
 
     def test_bse_qp_corrections_wired_from_the_qp_database(
         self,

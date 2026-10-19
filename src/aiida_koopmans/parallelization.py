@@ -112,8 +112,11 @@ class YamboParallelization(CodeParallelization, total=False):
     "eh": 2}``), merged into the BSE step's own runcard ``variables`` as
     that driver's ``*_CPU``/``*_ROLEs`` strings (see
     :func:`yambo_runcard_variables`, :data:`YAMBO_ROLE_DRIVERS` and
-    ``workgraphs/bethe_salpeter.py``). A driver absent here is left to
-    yambo's own automatic parallel structure. Mirrors the koopmans2
+    ``workgraphs/bethe_salpeter.py``). A ``static_screening`` or ``dipoles``
+    entry absent here is left to yambo's own automatic parallel structure.
+    An absent ``bethe_salpeter`` entry with ``ntasks`` above 1 becomes
+    ``{"eh": ntasks}``, since yambo's own proposal for that kernel fails on
+    small electron-hole spaces. Mirrors the koopmans2
     ``YamboParallelization`` pydantic model, which validates every role
     name and rank count before this dict is ever built -- this class states
     that contract; it enforces nothing at runtime itself.
@@ -298,6 +301,15 @@ def yambo_runcard_variables(parallelization: ParallelizationDict | None) -> dict
     entry contributes nothing, which is when yambo distributes that work
     over its own ranks itself.
 
+    ``bethe_salpeter`` is the exception: with ``ntasks`` above 1 and no
+    ``bethe_salpeter`` entry, it emits ``BS_CPU = ntasks`` and
+    ``BS_ROLEs = "eh"``, all ranks on the electron-hole role. yambo's own
+    proposal for the Bethe-Salpeter kernel aborts ("Impossible to define an
+    appropriate parallel structure") when the irreducible k-points and the
+    electron-hole pairs cannot together absorb the rank count. A named
+    ``eh`` count passes yambo's phase-space check at any size, while ``k``
+    must not exceed the irreducible k-point count (``PARALLEL_structure.F``).
+
     Every role name and rank count is validated where the input is parsed
     (koopmans2's ``YamboParallelization`` pydantic model, via
     :class:`BetheSalpeterRoles` / :class:`StaticScreeningRoles` /
@@ -313,6 +325,9 @@ def yambo_runcard_variables(parallelization: ParallelizationDict | None) -> dict
     # non-literal key lookup on a TypedDict types as object, and a
     # wrapt-proxied graph value must never reach here as a TaggedValue.
     cfg: dict[str, Any] = dict(cfg_entry)
+    ntasks = int(cfg.get("ntasks") or 1)
+    if ntasks > 1 and not cfg.get("bethe_salpeter"):
+        cfg["bethe_salpeter"] = {"eh": ntasks}
     variables: dict[str, str] = {}
     for driver, (prefix, role_order) in YAMBO_ROLE_DRIVERS.items():
         roles = cfg.get(driver)
