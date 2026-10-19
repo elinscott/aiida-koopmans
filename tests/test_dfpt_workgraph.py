@@ -889,19 +889,20 @@ class TestSinglepointDFPTBuild:
         assert dfpt_inputs["projwfc"]._links
         assert_graph_roundtrips(wg)
 
-        # A path of its own reaches wannier90 alone; the pw.x bands keep ``bands_kpoints``.
+        # ``wannierize_bands_kpoints`` reaches only the Wannierization's wannier90 step;
+        # its pw.x bands step still samples ``bands_kpoints``.
         own = SinglepointDFPTWorkflow.build(
             codes=dfpt_codes,
             structure=silicon_structure,
             manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
             kpoints=kmesh,
             bands_kpoints=bands_path,
-            interpolation_kpoints=bands_path.clone(),
+            wannierize_bands_kpoints=bands_path.clone(),
             pseudo_family=fake_cutoffs_family.label,
         )
         own_inputs = own.tasks["wannierize"].inputs
         assert [link.from_socket._name for link in own_inputs["interpolation_kpoints"]._links] == [
-            "interpolation_kpoints"
+            "wannierize_bands_kpoints"
         ]
         assert [link.from_socket._name for link in own_inputs["bands_kpoints"]._links] == [
             "bands_kpoints"
@@ -913,7 +914,7 @@ class TestSinglepointDFPTBuild:
         """Negative control: without a bands path, no quality-check wiring exists.
 
         ``scf_remote_folder`` is still handed to ``WannierizeBlocks`` (it is
-        cheap and unconditional), but with no ``interpolation_kpoints`` the
+        cheap and unconditional), but with no band path the
         quality check itself never runs, so ``RunDFPT`` gets no
         ``wannierize_bands``.
         """
@@ -1226,8 +1227,8 @@ def _smooth_build(dfpt_codes, silicon_structure, kmesh, pseudo_family, **overrid
     """Build a silicon DFPT workflow with the smooth-interpolation mesh set."""
     from aiida.orm import KpointsData
 
-    smooth_kpoints = KpointsData()
-    smooth_kpoints.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]])
+    wannierize_smooth_kpoints = KpointsData()
+    wannierize_smooth_kpoints.set_kpoints([[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]])
     inputs = {
         "codes": dfpt_codes,
         "structure": silicon_structure,
@@ -1239,8 +1240,8 @@ def _smooth_build(dfpt_codes, silicon_structure, kmesh, pseudo_family, **overrid
         },
         "kpoints": kmesh,
         "bands_kpoints": _short_path(),
-        "smooth_kpoints": smooth_kpoints,
-        "smooth_mp_grid": [8, 8, 8],
+        "wannierize_smooth_kpoints": wannierize_smooth_kpoints,
+        "wannierize_smooth_mp_grid": [8, 8, 8],
         "pseudo_family": pseudo_family,
     }
     inputs.update(overrides)
@@ -1256,7 +1257,7 @@ def _short_path():
 
 
 class TestSmoothInterpolation:
-    """``smooth_kpoints`` / ``smooth_mp_grid`` add a second Wannierization."""
+    """``wannierize_smooth_kpoints`` / ``wannierize_smooth_mp_grid`` add a second Wannierization."""
 
     def test_the_denser_mesh_is_wannierized_and_reaches_the_band_structure(
         self, dfpt_codes, silicon_structure, kmesh, fake_cutoffs_family
@@ -1303,18 +1304,19 @@ class TestSmoothInterpolation:
 
         assert [link.from_socket._name for link in links] == ["bands_kpoints"]
 
-        # A path of its own reaches the dense wannier90 alone.
+        # ``wannierize_smooth_bands_kpoints`` reaches only the smooth Wannierization's
+        # wannier90 step; its pw.x bands step still samples ``bands_kpoints``.
         own = _smooth_build(
             dfpt_codes,
             silicon_structure,
             kmesh,
             fake_cutoffs_family.label,
-            smooth_interpolation_kpoints=_short_path(),
+            wannierize_smooth_bands_kpoints=_short_path(),
         )
         smooth_inputs = {t.name: t for t in own.tasks}["wannierize_smooth"].inputs
         assert [
             link.from_socket._name for link in smooth_inputs["interpolation_kpoints"]._links
-        ] == ["smooth_interpolation_kpoints"]
+        ] == ["wannierize_smooth_bands_kpoints"]
         assert [link.from_socket._name for link in smooth_inputs["bands_kpoints"]._links] == [
             "bands_kpoints"
         ]
@@ -1471,14 +1473,14 @@ class TestSmoothInterpolation:
 
     def test_half_the_denser_mesh_is_refused(self, dfpt_codes, silicon_structure, kmesh):
         """The k-point list and its grid dimensions state one thing between them."""
-        with pytest.raises(ValueError, match="only `smooth_mp_grid` was given"):
+        with pytest.raises(ValueError, match="only `wannierize_smooth_mp_grid` was given"):
             SinglepointDFPTWorkflow.build(
                 codes=dfpt_codes,
                 structure=silicon_structure,
                 manifolds={"none": {"occ": [_block("occ", range(1, 5))]}},
                 kpoints=kmesh,
                 bands_kpoints=_short_path(),
-                smooth_mp_grid=[8, 8, 8],
+                wannierize_smooth_mp_grid=[8, 8, 8],
                 pseudo_family="SSSP/1.3/PBE/efficiency",
             )
 

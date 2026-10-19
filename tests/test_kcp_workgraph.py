@@ -3324,8 +3324,8 @@ class TestInterpolationKnobs:
         return _resolve_band_interpolation_knobs(
             knobs,
             kpath=_kpath(),
-            smooth_kpoints=smooth.get("smooth_kpoints"),
-            smooth_mp_grid=smooth.get("smooth_mp_grid"),
+            wannierize_smooth_kpoints=smooth.get("wannierize_smooth_kpoints"),
+            wannierize_smooth_mp_grid=smooth.get("wannierize_smooth_mp_grid"),
         )
 
     @staticmethod
@@ -3339,12 +3339,14 @@ class TestInterpolationKnobs:
     def test_a_scaled_factor_with_its_mesh_asks_for_smooth_interpolation(self):
         assert self._resolve(
             {"smooth_int_factor": [2, 2, 2]},
-            smooth_kpoints=self._dense_mesh(),
-            smooth_mp_grid=[4, 4, 4],
+            wannierize_smooth_kpoints=self._dense_mesh(),
+            wannierize_smooth_mp_grid=[4, 4, 4],
         ) == (True, True, True)
 
     def test_a_scaled_factor_without_its_mesh_names_what_is_missing(self):
-        with pytest.raises(ValueError, match="smooth_kpoints and smooth_mp_grid"):
+        with pytest.raises(
+            ValueError, match="wannierize_smooth_kpoints and wannierize_smooth_mp_grid"
+        ):
             self._resolve({"smooth_int_factor": [2, 2, 2]})
 
     def test_a_mesh_without_a_scaled_factor_is_refused(self):
@@ -3352,8 +3354,8 @@ class TestInterpolationKnobs:
         with pytest.raises(ValueError, match="smooth_int_factor"):
             self._resolve(
                 {"smooth_int_factor": [1, 1, 1]},
-                smooth_kpoints=self._dense_mesh(),
-                smooth_mp_grid=[4, 4, 4],
+                wannierize_smooth_kpoints=self._dense_mesh(),
+                wannierize_smooth_mp_grid=[4, 4, 4],
             )
 
     def test_an_unscaled_factor_passes_and_the_knobs_come_through(self):
@@ -3371,7 +3373,10 @@ class TestInterpolationKnobs:
 
         with pytest.raises(ValueError, match="without a `kpath`"):
             _resolve_band_interpolation_knobs(
-                {"do_dos": True}, kpath=None, smooth_kpoints=None, smooth_mp_grid=None
+                {"do_dos": True},
+                kpath=None,
+                wannierize_smooth_kpoints=None,
+                wannierize_smooth_mp_grid=None,
             )
 
     def test_no_knobs_and_no_path_is_silent(self):
@@ -3379,7 +3384,7 @@ class TestInterpolationKnobs:
         from aiida_koopmans.workgraphs.kcp import _resolve_band_interpolation_knobs
 
         assert _resolve_band_interpolation_knobs(
-            None, kpath=None, smooth_kpoints=None, smooth_mp_grid=None
+            None, kpath=None, wannierize_smooth_kpoints=None, wannierize_smooth_mp_grid=None
         ) == (True, True, False)
 
 
