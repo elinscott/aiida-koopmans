@@ -839,7 +839,14 @@ class TestSinglepointBetheSalpeterWorkflow:
         assert {t.name for t in rebuilt.tasks} == {t.name for t in wg.tasks}
 
     def test_dfpt_knobs_reach_the_nested_dfpt_call(
-        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
+        self,
+        bse_full_codes,
+        silicon_structure,
+        kmesh,
+        kpath,
+        labelled_kpath,
+        bse_parameters,
+        fake_cutoffs_family,
     ):
         """The DFPT knobs reach the nested DFPT call's own input sockets.
 
@@ -863,9 +870,22 @@ class TestSinglepointBetheSalpeterWorkflow:
             l_vcut=False,
             group_orbitals_tol=0.05,
             kcw_overrides=kcw_overrides,
+            bands_kpoints=labelled_kpath,
+            wannierize_bands_kpoints=labelled_kpath,
+            wannierize_smooth_kpoints=kpath,
+            wannierize_smooth_mp_grid=[4, 4, 4],
+            wannierize_smooth_bands_kpoints=labelled_kpath,
         )
         dfpt_task = wg.tasks["dfpt"]
         assert dfpt_task.inputs["eps_inf"].value == pytest.approx(5.3)
+        for name in (
+            "bands_kpoints",
+            "wannierize_bands_kpoints",
+            "wannierize_smooth_bands_kpoints",
+        ):
+            assert dfpt_task.inputs[name].value.uuid == labelled_kpath.uuid
+        assert dfpt_task.inputs["wannierize_smooth_kpoints"].value.uuid == kpath.uuid
+        assert list(dfpt_task.inputs["wannierize_smooth_mp_grid"].value) == [4, 4, 4]
         assert dfpt_task.inputs["l_vcut"].value == False  # noqa: E712 -- TaggedValue proxy, `is` fails
         assert dfpt_task.inputs["group_orbitals_tol"].value == pytest.approx(0.05)
         # ``kcw_overrides`` is a namespace socket (control/wannier/screen/ham
@@ -892,5 +912,13 @@ class TestSinglepointBetheSalpeterWorkflow:
         assert dfpt_task.inputs["eps_inf"].value is None
         assert dfpt_task.inputs["l_vcut"].value is None
         assert dfpt_task.inputs["group_orbitals_tol"].value is None
+        for name in (
+            "bands_kpoints",
+            "wannierize_bands_kpoints",
+            "wannierize_smooth_kpoints",
+            "wannierize_smooth_mp_grid",
+            "wannierize_smooth_bands_kpoints",
+        ):
+            assert dfpt_task.inputs[name].value is None
         for sub in ("control", "wannier", "screen", "ham"):
             assert dfpt_task.inputs["kcw_overrides"][sub].value is None

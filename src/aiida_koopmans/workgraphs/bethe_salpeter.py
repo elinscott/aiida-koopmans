@@ -628,6 +628,11 @@ def SinglepointBetheSalpeterWorkflow(
     kpoints: orm.KpointsData,
     bse_parameters: dict,
     scf_kpoints: orm.KpointsData | None = None,
+    bands_kpoints: orm.KpointsData | None = None,
+    wannierize_bands_kpoints: orm.KpointsData | None = None,
+    wannierize_smooth_kpoints: orm.KpointsData | None = None,
+    wannierize_smooth_mp_grid: list[int] | None = None,
+    wannierize_smooth_bands_kpoints: orm.KpointsData | None = None,
     pseudo_family: str | None = None,
     protocol: str | None = None,
     overrides: WannierizeOverrides | None = None,
@@ -680,6 +685,12 @@ def SinglepointBetheSalpeterWorkflow(
     ``l_vcut``, ``group_orbitals_tol`` and ``kcw_overrides``,
     which see no use here and reach the DFPT chain unchanged (see
     ``SinglepointDFPTWorkflow`` for what each does).
+
+    ``bands_kpoints`` and the ``wannierize_*`` k-point inputs also pass
+    straight to the DFPT chain, so a band path yields the Koopmans band
+    structure under ``dfpt.channels.none.bands`` as it does on
+    ``SinglepointDFPTWorkflow``. The BSE step reads only the grid
+    eigenvalues and takes none of them.
     """
     if set(manifolds) != {"none"}:
         raise NotImplementedError(
@@ -700,6 +711,11 @@ def SinglepointBetheSalpeterWorkflow(
         manifolds=manifolds,
         kpoints=kpoints,
         scf_kpoints=scf_kpoints,
+        bands_kpoints=bands_kpoints,
+        wannierize_bands_kpoints=wannierize_bands_kpoints,
+        wannierize_smooth_kpoints=wannierize_smooth_kpoints,
+        wannierize_smooth_mp_grid=wannierize_smooth_mp_grid,
+        wannierize_smooth_bands_kpoints=wannierize_smooth_bands_kpoints,
         pseudo_family=pseudo_family,
         protocol=protocol,
         overrides=overrides,
