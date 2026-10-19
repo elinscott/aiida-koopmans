@@ -216,6 +216,10 @@ class KcwHamParser(KcwBaseParser):
         eigenvalues: list[list[float]] = []
         ks_on_grid: list[list[float]] = []
         ki_on_grid: list[list[float]] = []
+        # A "band energies (ev):" header opens a grid row only once a KS or KI
+        # numeric line follows it; a header whose block holds no such line
+        # opens nothing.
+        header_pending = False
 
         for i_line, line in enumerate(lines):
             if "KC interpolated eigenvalues at k=" in line:
@@ -223,18 +227,22 @@ class KcwHamParser(KcwBaseParser):
                 eigenvalues.append(_interpolated_block(lines, i_line + 2))
 
             if "band energies (ev):" in line:
-                ks_on_grid.append([])
-                ki_on_grid.append([])
+                header_pending = True
 
             stripped = line.strip()
+            is_grid_row = stripped.startswith(("KS ", "KI ")) and _is_numeric_row(stripped[3:])
+            if is_grid_row and header_pending:
+                ks_on_grid.append([])
+                ki_on_grid.append([])
+                header_pending = False
+
             if "highest occupied" in stripped and "level" in stripped:
                 # Summary line ("KS/KI highest occupied, lowest unoccupied
                 # level (ev): X Y"), not a grid eigenvalue row.
                 _record_homo_lumo(stripped, results)
-            elif stripped.startswith("KS ") and ks_on_grid and _is_numeric_row(stripped[3:]):
-                ks_on_grid[-1] += safe_floats(stripped[3:])
-            elif stripped.startswith("KI ") and ki_on_grid and _is_numeric_row(stripped[3:]):
-                ki_on_grid[-1] += safe_floats(stripped[3:])
+            elif is_grid_row and ks_on_grid:
+                rows = ks_on_grid if stripped.startswith("KS") else ki_on_grid
+                rows[-1] += safe_floats(stripped[3:])
 
         ham_fields: KcwHamParameters = {
             "ks_eigenvalues_on_grid": ks_on_grid,

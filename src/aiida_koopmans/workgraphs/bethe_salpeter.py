@@ -176,6 +176,15 @@ def generate_qp_database(
             f"`eigenvalues={flavor!r}` eigenvalues. Keys present: {sorted(params)}."
         )
 
+    for key in required_keys:
+        row_lengths = {len(row) for row in params[key]}
+        if len(row_lengths) > 1:
+            raise ValueError(
+                f"`{key}` has rows of different lengths {sorted(row_lengths)}: the "
+                "kcw.x `ham` output it came from was not parsed into one row per "
+                "k-point. Invalidate that `ham` step's cache and rerun it."
+            )
+
     n_nscf_kpoints = nscf_output_band.get_array("kpoints").shape[0]
     for key in required_keys:
         n_grid_kpoints = np.asarray(params[key]).shape[0]
