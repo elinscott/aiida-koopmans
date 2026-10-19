@@ -839,7 +839,14 @@ class TestSinglepointBetheSalpeterWorkflow:
         assert {t.name for t in rebuilt.tasks} == {t.name for t in wg.tasks}
 
     def test_dfpt_knobs_reach_the_nested_dfpt_call(
-        self, bse_full_codes, silicon_structure, kmesh, bse_parameters, fake_cutoffs_family
+        self,
+        bse_full_codes,
+        silicon_structure,
+        kmesh,
+        kpath,
+        labelled_kpath,
+        bse_parameters,
+        fake_cutoffs_family,
     ):
         """The DFPT knobs reach the nested DFPT call's own input sockets.
 
@@ -851,6 +858,12 @@ class TestSinglepointBetheSalpeterWorkflow:
         covered by ``test_dfpt_workgraph.py``).
         """
         kcw_overrides = {"screen": {"tr2": 1.0e-16}}
+        # Three paths of different lengths, so each bands socket can be told
+        # apart by the number of k-points it carries.
+        wannierize_path = labelled_kpath.clone()
+        wannierize_path.set_kpoints(labelled_kpath.get_kpoints()[:2], labels=[(0, "GAMMA")])
+        smooth_path = labelled_kpath.clone()
+        smooth_path.set_kpoints(labelled_kpath.get_kpoints()[:1], labels=[(0, "GAMMA")])
         wg = SinglepointBetheSalpeterWorkflow.build(
             codes=bse_full_codes,
             structure=silicon_structure,
@@ -863,9 +876,30 @@ class TestSinglepointBetheSalpeterWorkflow:
             l_vcut=False,
             group_orbitals_tol=0.05,
             kcw_overrides=kcw_overrides,
+            bands_kpoints=labelled_kpath,
+            wannierize_bands_kpoints=wannierize_path,
+            wannierize_smooth_kpoints=kpath,
+            wannierize_smooth_mp_grid=[4, 4, 4],
+            wannierize_smooth_bands_kpoints=smooth_path,
         )
         dfpt_task = wg.tasks["dfpt"]
         assert dfpt_task.inputs["eps_inf"].value == pytest.approx(5.3)
+        n_points = {
+            name: len(dfpt_task.inputs[name].value.get_kpoints())
+            for name in (
+                "bands_kpoints",
+                "wannierize_bands_kpoints",
+                "wannierize_smooth_bands_kpoints",
+                "wannierize_smooth_kpoints",
+            )
+        }
+        assert n_points == {
+            "bands_kpoints": len(labelled_kpath.get_kpoints()),
+            "wannierize_bands_kpoints": 2,
+            "wannierize_smooth_bands_kpoints": 1,
+            "wannierize_smooth_kpoints": len(kpath.get_kpoints()),
+        }
+        assert list(dfpt_task.inputs["wannierize_smooth_mp_grid"].value) == [4, 4, 4]
         assert dfpt_task.inputs["l_vcut"].value == False  # noqa: E712 -- TaggedValue proxy, `is` fails
         assert dfpt_task.inputs["group_orbitals_tol"].value == pytest.approx(0.05)
         # ``kcw_overrides`` is a namespace socket (control/wannier/screen/ham
@@ -892,5 +926,13 @@ class TestSinglepointBetheSalpeterWorkflow:
         assert dfpt_task.inputs["eps_inf"].value is None
         assert dfpt_task.inputs["l_vcut"].value is None
         assert dfpt_task.inputs["group_orbitals_tol"].value is None
+        for name in (
+            "bands_kpoints",
+            "wannierize_bands_kpoints",
+            "wannierize_smooth_kpoints",
+            "wannierize_smooth_mp_grid",
+            "wannierize_smooth_bands_kpoints",
+        ):
+            assert dfpt_task.inputs[name].value is None
         for sub in ("control", "wannier", "screen", "ham"):
             assert dfpt_task.inputs["kcw_overrides"][sub].value is None
